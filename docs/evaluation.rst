@@ -5,7 +5,8 @@ Evaluation defines the metric contract for a run and the optional subgroup
 breakdowns that appear in the saved outputs. Each task's default
 metrics are listed in the :doc:`task zoo <tasks>`; detection additionally
 exposes ``f1_per_class``, ``precision``, ``recall`` and ``mean_f1_per_image``
-(see :doc:`detection`).
+(see :doc:`detection`). Segmentation and detection predictions are covered in
+:ref:`grid-predictions`.
 
 .. autoclass:: soma.config.EvalConfig
    :members:
@@ -104,3 +105,83 @@ predictions made outside soma can be scored without a run directory.
    :members:
 
 .. autofunction:: soma.evaluation.compare
+
+.. _grid-predictions:
+
+Segmentation and detection predictions
+--------------------------------------
+
+For a segmentation or detection head, :func:`soma.predict` returns one of two
+prediction types instead of a table, and :func:`soma.evaluate` scores it
+against a target source rather than a targets frame:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 39 39
+
+   * -
+     - :class:`~soma.evaluation.LabelMapPredictions`
+     - :class:`~soma.evaluation.PointPredictions`
+   * - Holds
+     - One ``(H, W)`` uint8 label map per sample
+     - A frame ``sample_id, x, y, class, score`` in level-0 pixels, plus every
+       sample id (a sample with no detection is still scored)
+   * - Saved as
+     - ``save(dir)``: one PNG per sample and ``index.parquet``;
+       ``load(dir)`` reads it back
+     - ``to_parquet(path)`` / ``from_parquet(path)``
+   * - Scored against
+     - :class:`~soma.data.LabelMapSource` or :class:`~soma.data.CachedLabelMapSource`
+     - :class:`~soma.data.PointSource`
+   * - Metrics
+     - ``mean_dice``, ``mean_iou``, ``dataset_global_mean_dice``,
+       ``foreground_mean_dice``, ``dice_per_class``
+     - ``mean_f1``, ``f1_per_class``, ``precision``, ``recall``,
+       ``mean_f1_per_image``
+
+Label maps are scored from per-sample confusion counts. Points are matched to
+the annotations per class within the matching distance δ, with Hungarian
+assignment by default. A metric given as a ``{name, params}`` leaf can change
+the matching: ``matching: greedy`` matches by descending score, and
+``match_distance`` overrides δ (in level-0 pixels):
+
+.. code-block:: python
+
+   import soma
+   from soma.data import AnnotationManifest, PointSource
+   from soma.evaluation import PointPredictions, sweep_threshold
+
+   targets = PointSource.from_manifest(AnnotationManifest.from_csv("dataset.csv"))
+   tune = PointPredictions.from_parquet("run/predictions_tune.parquet")
+   test = PointPredictions.from_parquet("run/predictions_test.parquet")
+
+   threshold, _ = sweep_threshold(tune, targets.subset(tune.sample_ids), per_class=True)
+   evaluation = soma.evaluate(
+       test.with_threshold(threshold),
+       targets.subset(test.sample_ids),
+       metrics=[{"name": "mean_f1", "params": {"matching": "greedy"}}],
+   )
+
+Point predictions keep every peak above the head's ``min_score``. Choosing an
+operating point is a separate step: ``with_threshold`` takes one threshold or a
+``{class: threshold}`` mapping, and :func:`~soma.evaluation.sweep_threshold`
+picks the threshold that maximises a metric on the given targets (one per
+class with ``per_class=True``). Sweep on tune and apply the result to test.
+
+Per-sample confusion matrices are recomputable from saved label maps with
+:func:`soma.evaluation.confusion_records`.
+
+``soma evaluate`` also accepts a label-map directory or a points parquet. It
+scores label maps against the masks in the cohort CSV's ``label_mask_path``
+column and points against the files in its ``points_path`` column; both must
+already hold class indices.
+
+.. autoclass:: soma.evaluation.LabelMapPredictions
+   :members: save, load
+
+.. autoclass:: soma.evaluation.PointPredictions
+   :members: with_threshold, to_parquet, from_parquet
+
+.. autofunction:: soma.evaluation.sweep_threshold
+
+.. autofunction:: soma.evaluation.confusion_records

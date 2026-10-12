@@ -20,7 +20,7 @@ segmentation decoder on two concatenated encoders.
 
 Each member can select its feature kind, attention settings, output variant,
 and extraction window. If omitted, ``feature_kind`` resolves to
-``cls_attention`` for a pixel classifier and ``patch_features`` for a decoder.
+``patch_features``.
 All members share the run's read spacing and supervision size; per-member
 spacing is not supported. Set ``dense_window_size`` and
 ``dense_window_overlap`` on a member to override the shared preprocessing
@@ -29,18 +29,18 @@ settings, for example when an encoder requires a fixed input size.
 Concatenation resolution
 ------------------------
 
-``concat_resolution`` defaults according to the trainable component:
+``concat_resolution`` selects where the members' grids are combined:
 
-* ``target`` for a :doc:`pixel classifier <../decoders/pixel-classifier>`:
-  each member is interpolated to its padded encoded size and cropped to the
-  shared supervision target. Channels then stack into ``(Σd_i, H, W)``.
-  This preserves each member's padding and crop geometry even when token-grid
-  sizes differ.
-* ``grid`` for a :doc:`decoder <../decoders>`: each member is resampled to a
-  common token grid before channels are stacked. ``concat_grid_size`` sets
-  that grid's ``(height, width)``; by default soma takes the largest height
-  and width across members. This mode treats each grid as spanning the target
-  field of view and ignores individual members' padding fractions.
+* ``grid`` (the default) resamples each member to a common token grid before
+  channels are stacked, which is what a :doc:`decoder <../decoders>` consumes.
+  ``concat_grid_size`` sets that grid's ``(height, width)``; by default soma
+  takes the largest height and width across members. This mode treats each
+  grid as spanning the target field of view and ignores individual members'
+  padding fractions.
+* ``target`` interpolates each member to its padded encoded size and crops it
+  to the shared supervision target. Channels then stack into
+  ``(Σd_i, H, W)``. This preserves each member's padding and crop geometry
+  even when token-grid sizes differ.
 
 Normalization follows resampling and precedes concatenation. Per-member
 ``member_norm`` accepts ``none``, ``l2``, or ``layernorm`` and operates across

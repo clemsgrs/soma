@@ -1,7 +1,7 @@
 """HestBenchmark family ``hest/<task>`` (all 9 HEST-Benchmark tasks) — offline conformance.
 
 No HEST data or GPU here: the registry lookup (all 9 tasks), the Benchmark-Protocol
-conformance, the ``build_config`` recipe (dataset_type=spatial_expression, probe method, PCA
+conformance, the ``build_config`` recipe (tile extraction for the probe predictor, PCA
 latent dim 256, encoder axis defaulting to uni2, the virchow2 CLS variant / h-optimus-1
 default), the external-only ``reference/hest.csv`` parse (9 tasks × the reproduction encoders),
 the default ``summary.json`` scorer, ``curate`` delegation, and the external-only ``--record``
@@ -55,7 +55,7 @@ def test_hest_facet_fixes_task_and_varies_encoder():
 # --- build_config recipe fidelity -----------------------------------------------------
 
 
-def test_build_config_encodes_spatial_expression_probe(tmp_path):
+def test_build_config_encodes_the_probe_recipe(tmp_path):
     config = get_benchmark("hest/IDC").build_config(
         encoder="uni2",
         dataset_csv=tmp_path / "dataset.csv",
@@ -63,14 +63,82 @@ def test_build_config_encodes_spatial_expression_probe(tmp_path):
         output_root=tmp_path / "runs",
         seed=3,
     )
-    assert config.dataset_type == "spatial_expression"
+    assert config.dataset_type == "tile"
     assert config.task.name == "regression"
-    assert config.training.method == "ridge_pca_probe"
     assert config.task.params["pca_components"] == 256  # PCA latent dim
     assert config.encoder.name == "uni2"
     assert config.encoder.output_variant is None  # uni2 uses the slide2vec default
-    assert config.evaluation.metrics == ["pearson"]
+    assert config.evaluation.metrics == ["mean_pearson"]
     assert config.training.seed == 3
+
+
+def test_run_refuses_a_fold_selection_before_extracting(tmp_path, monkeypatch):
+    # The closed-form probe fits every fold in one launch; silently ignoring run.folds
+    # would refit the folds another launch owns.
+    from dataclasses import replace
+
+    config = get_benchmark("hest/IDC").build_config(
+        encoder="uni2",
+        dataset_csv=tmp_path / "dataset.csv",
+        splits_csv=tmp_path / "splits.csv",
+        output_root=tmp_path / "runs",
+        seed=0,
+    )
+    config = replace(config, run_id="pinned", folds=(1,))
+    benchmark = get_benchmark("hest/IDC")
+    monkeypatch.setattr(
+        type(benchmark), "_run_folds", lambda *args, **kwargs: pytest.fail("extraction ran")
+    )
+
+    with pytest.raises(ValueError, match=r"run\.folds"):
+        benchmark.run(config)
+    assert not (tmp_path / "runs").exists()
+
+
+def test_run_refuses_a_drifted_resume_before_rewriting_the_run(tmp_path, monkeypatch):
+    # Seed is outside experiment identity, so resuming a pinned run with another seed lands
+    # on the same run dir; like Pipeline.train, the runner must refuse rather than
+    # overwrite its config.yaml and refit every fold.
+    import yaml
+    from dataclasses import replace
+
+    (tmp_path / "dataset.csv").write_text(
+        "sample_id,image_path,target_index,spacing_at_level_0\n"
+        "a,a.png,0,0.5\nb,b.png,1,0.5\n"
+    )
+    (tmp_path / "splits.csv").write_text("sample_id,split\na,train\nb,test\n")
+    benchmark = get_benchmark("hest/IDC")
+    calls = []
+    monkeypatch.setattr(
+        type(benchmark),
+        "_run_folds",
+        lambda self, config, run_dir: calls.append(config.training.seed) or {"test/mean_pearson": 0.5},
+    )
+
+    def config_for(seed):
+        config = benchmark.build_config(
+            encoder="uni2",
+            dataset_csv=tmp_path / "dataset.csv",
+            splits_csv=tmp_path / "splits.csv",
+            output_root=tmp_path / "runs",
+            seed=seed,
+        )
+        return replace(config, run_id="pinned")
+
+    benchmark.run(config_for(0))
+    (run_dir,) = (tmp_path / "runs").glob("experiments/*/runs/pinned")
+    saved = (run_dir / "config.yaml").read_text()
+    run_yaml = (run_dir / "run.yaml").read_text()
+
+    with pytest.raises(ValueError, match="Refusing to resume run 'pinned'"):
+        benchmark.run(config_for(1))
+    assert calls == [0]
+    assert (run_dir / "config.yaml").read_text() == saved
+    assert (run_dir / "run.yaml").read_text() == run_yaml
+    assert yaml.safe_load(saved)["run"]["seed"] == 0
+
+    benchmark.run(config_for(0))  # an identical relaunch still runs
+    assert calls == [0, 0]
 
 
 def test_build_config_defaults_to_uni2(tmp_path):
@@ -101,11 +169,10 @@ def test_build_config_pins_virchow2_cls_patch_mean_variant(tmp_path):
     # HEST's virchow2 is the 2560-d CLS+mean concat; the 1280-d CLS-only variant would not match.
     assert config.encoder.output_variant == "cls_patch_mean"
     # Everything else stays the fixed HEST probe recipe (identical to the uni2 build).
-    assert config.dataset_type == "spatial_expression"
+    assert config.dataset_type == "tile"
     assert config.task.name == "regression"
-    assert config.training.method == "ridge_pca_probe"
     assert config.task.params["pca_components"] == 256  # PCA latent dim
-    assert config.evaluation.metrics == ["pearson"]
+    assert config.evaluation.metrics == ["mean_pearson"]
     assert config.training.seed == 3
 
 
@@ -122,8 +189,7 @@ def test_build_config_h_optimus_1_uses_slide2vec_default_variant(tmp_path):
     )
     assert config.encoder.name == "h-optimus-1"
     assert config.encoder.output_variant is None  # slide2vec default (CLS, 1536-d)
-    assert config.dataset_type == "spatial_expression"
-    assert config.training.method == "ridge_pca_probe"
+    assert config.dataset_type == "tile"
 
 
 def test_output_variants_maps_only_virchow2_to_cls_patch_mean():

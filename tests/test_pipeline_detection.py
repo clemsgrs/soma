@@ -1,16 +1,14 @@
-"""End-to-end (offline) routing test for dataset_type='detection'.
+"""The grid fold on detection, offline: pre-extracted dense grids + point files on disk.
 
-Builds a pre-extracted dense feature store + point-annotation manifest + splits on
-disk, then runs ``train_one_detection_fold`` — exercising geometry-from-sidecar,
-decoder + DetectionHead construction, the DetectionDataset loaders, ``Trainer.fit``
-(streaming F1@δ tune metric), checkpoint reload, the tune-split threshold sweep, and
-``_evaluate_grid`` (metrics + level-0 predictions CSV). No encoder / GPU needed:
-the grids are written directly.
+``train_one_grid_fold`` builds the PointSource, the head (µm distances resolved at the
+grids' spacing), the decoder and ``DenseModel``, fits, predicts every peak above
+``min_score``, sweeps per-class thresholds on tune (or scores at ``validation_threshold``
+without a tune split) and evaluates. No encoder / GPU needed: the grids are written
+directly.
 """
 
 from __future__ import annotations
 
-import csv
 import json
 from pathlib import Path
 
@@ -18,585 +16,157 @@ import numpy as np
 import pytest
 import torch
 
-from soma.config import (
-    DecoderConfig,
-    EvalConfig,
-    PreprocessingConfig,
-    TaskConfig,
-    TrainingConfig,
-)
-from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-from soma.dense import CachedGridSource, DenseSampleSpacing
+from soma.config import DecoderConfig, EvalConfig, PreprocessingConfig, TaskConfig, TrainingConfig
+from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
+from soma.dense import CachedGridSource
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
-from soma.pipeline import train_one_detection_fold
+from soma.evaluation import PointPredictions
+from soma.pipeline import train_one_grid_fold
 
 NUM_CLASSES = 2
 TARGET = 16
 PATCH = 4
 FEATURE_DIM = 4
-# Detection distances are µm-only; grids are read flat at this bookkeeping spacing, so
-# source_spacing_um == effective_spacing_um == SPACING makes the transform identity, and
-# match_distance/sigma in µm divide by SPACING to recover target-frame pixels.
+# Grids are read flat at this spacing: level-0 == frame, and µm distances divide by it.
 SPACING = 0.2  # µm/px; 0.6 µm -> 3 px (δ), 0.3 µm -> 1.5 px (σ)
+PARAMS = {"num_classes": NUM_CLASSES, "match_distance": 0.6, "sigma": 0.3}
 
 
-def _grid_source_over(by_id):
-    """A protocol-shaped GridSource: ``spacing`` is the effective float, ``geometry``
-    carries the level-0 anchor (``effective / source``)."""
-    from types import SimpleNamespace
-
-    from soma.data import GridGeometry
-
-    return SimpleNamespace(
-        spacing=lambda sample_id: by_id[sample_id].effective_spacing_um,
-        geometry=lambda sample_id: GridGeometry.from_sizes(
-            target_size=16,
-            patch_size=4,
-            level0_px_per_token_px=(
-                by_id[sample_id].effective_spacing_um / by_id[sample_id].source_spacing_um
-            ),
-        ),
-    )
-
-
-def test_detection_spacing_allows_heterogeneous_sources_with_one_effective_grid():
-    from types import SimpleNamespace
-
-    from soma.pipeline import _resolve_detection_sample_spacings
-
-    by_id = {
-        "a": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.5),
-        "b": DenseSampleSpacing(source_spacing_um=0.4, effective_spacing_um=0.5),
-    }
-    source = _grid_source_over(by_id)
-
-    resolved, effective = _resolve_detection_sample_spacings(
-        source, [SimpleNamespace(sample_id="a"), SimpleNamespace(sample_id="b")]
-    )
-
-    assert resolved == by_id
-    assert effective == 0.5
-
-
-def test_detection_spacing_rejects_multiple_effective_grids_with_sample_ids():
-    from types import SimpleNamespace
-
-    import pytest
-
-    from soma.pipeline import _resolve_detection_sample_spacings
-
-    by_id = {
-        "a": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.5),
-        "b": DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=1.0),
-    }
-    source = _grid_source_over(by_id)
-
-    with pytest.raises(ValueError, match=r"effective_spacing_um.*0.5.*a.*1.0.*b"):
-        _resolve_detection_sample_spacings(
-            source, [SimpleNamespace(sample_id="a"), SimpleNamespace(sample_id="b")]
-        )
-
-
-def _build_detection_run(root: Path, sample_ids: list[str], make_images: bool = False):
+def _build(root: Path, sample_ids: list[str], *, spacings: dict[str, float] | None = None):
     dense_dir = root / "dense"
     points_dir = root / "points"
-    dense_dir.mkdir()
+    dense_dir.mkdir(parents=True)
     points_dir.mkdir()
-
-    geom = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
-    meta = dense_grid_metadata(geom, feature_dim=FEATURE_DIM, pad_mode="reflect", spacing_um=SPACING)
-    meta.update(source_spacing_um=SPACING, effective_spacing_um=SPACING)
-
-    rng = np.random.default_rng(0)
+    geometry = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
     rows = []
     for sid in sample_ids:
-        write_dense_grid(dense_dir, sid, torch.randn(FEATURE_DIM, *geom.grid_shape), meta)
-        # A couple of points per tile, well inside the frame, classes 0/1.
-        pts = points_dir / f"{sid}.csv"
-        pts.write_text("x,y,class\n4,4,0\n11,11,1\n")
-        if make_images:
-            # A real source tile (absolute path) so the overlay writer can render — the
-            # default builder leaves image_path dangling (overlays then fail-soft).
-            from PIL import Image
-
-            img_path = root / f"{sid}.jpg"
-            Image.fromarray(np.full((TARGET, TARGET, 3), 127, dtype=np.uint8)).save(img_path)
-            img_ref = str(img_path)
-        else:
-            img_ref = f"{sid}.jpg"
-        rows.append((sid, img_ref, str(pts)))
-
+        spacing = (spacings or {}).get(sid, SPACING)
+        meta = dense_grid_metadata(geometry, feature_dim=FEATURE_DIM, pad_mode="reflect", spacing_um=spacing)
+        meta.update(source_spacing_um=spacing, effective_spacing_um=spacing)
+        write_dense_grid(dense_dir, sid, torch.randn(FEATURE_DIM, *geometry.grid_shape), meta)
+        points = points_dir / f"{sid}.csv"
+        points.write_text("x,y,class\n4,4,0\n11,11,1\n")
+        rows.append(f"{sid},{sid}.jpg,{points},{spacing}")
     manifest_csv = root / "manifest.csv"
-    manifest_csv.write_text(
-        "sample_id,image_path,points_path,spacing_at_level_0\n"
-        + "\n".join(f"{sid},{img},{pp},{SPACING}" for sid, img, pp in rows)
-        + "\n"
-    )
-    splits_csv = root / "splits.csv"
-    assign = {sample_ids[0]: "train", sample_ids[1]: "train", sample_ids[2]: "tune", sample_ids[3]: "test"}
-    splits_csv.write_text(
-        "sample_id,split,fold\n" + "\n".join(f"{sid},{s},0" for sid, s in assign.items()) + "\n"
-    )
-
+    manifest_csv.write_text("sample_id,image_path,points_path,spacing_at_level_0\n" + "\n".join(rows) + "\n")
     manifest = legacy_samples_from_csv(manifest_csv)
-    splits = legacy_folds_from_csv(splits_csv, manifest)
-    store = CachedGridSource(dense_dir)
-    return manifest, splits, store
+    return manifest, CachedGridSource(dense_dir)
 
 
-def test_train_one_detection_fold_end_to_end(tmp_path: Path):
-    sample_ids = ["s0", "s1", "s2", "s3"]
-    manifest, splits, store = _build_detection_run(tmp_path, sample_ids)
+def _splits(root: Path, manifest, assign: dict[str, str]):
+    path = root / "splits.csv"
+    path.write_text("sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n")
+    return legacy_folds_from_csv(path, manifest).folds[0]
 
-    result = train_one_detection_fold(
+
+def _run(tmp_path, manifest, store, fold_split, *, params=PARAMS, training=None, evaluation=None):
+    return train_one_grid_fold(
         feature_store=store,
         dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(
-            name="detection",
-            params={
-                "num_classes": NUM_CLASSES,
-                "match_distance": 0.6,  # µm -> 3 px at SPACING
-                "sigma": 0.3,  # µm -> 1.5 px
-            },
-        ),
-        training=TrainingConfig(epochs=2, batch_size=2),
+        fold_split=fold_split,
+        task=TaskConfig(name="detection", params=dict(params)),
+        training=training or TrainingConfig(epochs=2, batch_size=2),
         fold_dir=tmp_path / "fold",
         decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"]),
+        dataset_type="detection",
+        evaluation=evaluation or EvalConfig(metrics=["mean_f1", "f1_per_class"]),
         preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
     )
 
-    assert "mean_f1" in result.tune_evaluation.metrics
-    assert "test" in result.test_evaluations
-    assert "mean_f1" in result.test_evaluations["test"].metrics
 
-    # Frozen thresholds + per-split prediction CSVs are written.
-    thr = json.loads((tmp_path / "fold" / "detection_thresholds.json").read_text())
-    assert len(thr["score_threshold_per_class"]) == NUM_CLASSES
-    assert thr["source"] == "tune_sweep"
-    assert (tmp_path / "fold" / "predictions_test.csv").exists()
-    header = (tmp_path / "fold" / "predictions_test.csv").read_text().splitlines()[0]
-    assert header == "sample_id,x,y,class,score"
+IDS = ["s0", "s1", "s2", "s3"]
+ASSIGN = {"s0": "train", "s1": "train", "s2": "tune", "s3": "test"}
 
 
-@pytest.mark.parametrize("configured,expected", [(None, [0.5, 0.5]), (0.7, [0.7, 0.7]), ([0.4, 0.6], [0.4, 0.6])])
-def test_detection_fold_without_tune_keeps_the_configured_threshold(tmp_path: Path, configured, expected):
-    # No tune split: train stands in for tune (allow_missing_tune), so a sweep would pick an
-    # in-sample cut. The configured threshold is kept and applied at test.
-    manifest, _, store = _build_detection_run(tmp_path, ["s0", "s1", "s2", "s3"])
-    splits_csv = tmp_path / "splits_no_tune.csv"
-    splits_csv.write_text("sample_id,split,fold\ns0,train,0\ns1,train,0\ns2,train,0\ns3,test,0\n")
-    params = {"num_classes": NUM_CLASSES, "match_distance": 0.6, "sigma": 0.3}
-    if configured is not None:
-        params["score_threshold"] = configured
-
-    train_one_detection_fold(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=legacy_folds_from_csv(splits_csv, manifest).folds[0],
-        task=TaskConfig(name="detection", params=params),
-        training=TrainingConfig(epochs=2, batch_size=2, allow_missing_tune=True),
-        fold_dir=tmp_path / "fold",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1"]),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
-    )
-
-    thr = json.loads((tmp_path / "fold" / "detection_thresholds.json").read_text())
-    assert thr == {"score_threshold_per_class": expected, "source": "configured"}
-    for row in (tmp_path / "fold" / "predictions_test.csv").read_text().splitlines()[1:]:
-        _, _, _, cls, score = row.split(",")
-        assert float(score) >= expected[int(cls)]
-
-
-def test_train_one_detection_fold_with_class_scheme(tmp_path: Path):
-    """``classes`` / ``drop`` define the classes: the fixture's two ids become one class."""
-    manifest, splits, store = _build_detection_run(tmp_path, ["s0", "s1", "s2", "s3"])
-
-    train_one_detection_fold(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(
-            name="detection",
-            params={"classes": {"cell": [0]}, "drop": [1], "match_distance": 0.6, "sigma": 0.3},
-        ),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        fold_dir=tmp_path / "fold",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"]),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
-    )
+def test_grid_fold_scores_detection_from_persisted_point_predictions(tmp_path: Path):
+    manifest, store = _build(tmp_path / "data", IDS)
+    result = _run(tmp_path, manifest, store, _splits(tmp_path, manifest, ASSIGN))
 
     fold = tmp_path / "fold"
-    thr = json.loads((fold / "detection_thresholds.json").read_text())
-    assert len(thr["score_threshold_per_class"]) == 1
-    names = {
-        r["metric"]: r["class_name"] for r in csv.DictReader((fold / "metrics_test.csv").open())
-    }
-    assert names["f1_class_0"] == "cell"
-    assert "f1_class_1" not in names
-    # Each test tile annotates one kept point (id 0) and one dropped point (id 1).
-    per_image = list(csv.DictReader((fold / "detection_per_image_test.csv").open()))
-    assert [int(r["n_gt"]) for r in per_image] == [1]
+    assert "mean_f1" in result.tune_evaluation.metrics
+    assert "mean_f1" in result.test_evaluations["test"].metrics
+    assert not (fold / "detection_thresholds.json").exists()
+    test = PointPredictions.from_parquet(fold / "predictions_test.parquet")
+    tune = PointPredictions.from_parquet(fold / "predictions_tune.parquet")
+    assert test.sample_ids == ["s3"] and tune.sample_ids == ["s2"]
+    assert test.match_distance_px == pytest.approx(3.0)
+    assert json.loads((fold / "metrics.json").read_text()).keys() == {"tune", "test"}
 
 
-def test_train_one_detection_fold_eval_only_from_checkpoint(tmp_path: Path):
-    """``checkpoint_path`` loads a trained checkpoint and skips the train loop, so a
-    finished fold's eval artifacts can be regenerated without retraining. The threshold
-    sweep + scoring are deterministic, so the regenerated metrics reproduce the original;
-    no epoch history exists (``train_result is None``, no ``training_history.json``) and no
-    new checkpoint is written."""
-    sample_ids = ["s0", "s1", "s2", "s3"]
-    manifest, splits, store = _build_detection_run(tmp_path, sample_ids)
+def test_grid_fold_without_a_tune_split_scores_at_the_validation_threshold(tmp_path: Path, monkeypatch):
+    """Train stands in for tune, so a sweep would pick an in-sample cut: no sweep runs."""
+    import soma.evaluation
 
-    common = dict(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(
-            name="detection",
-            params={
-                "num_classes": NUM_CLASSES,
-                "match_distance": 0.6,
-                "sigma": 0.3,
-            },
-        ),
-        training=TrainingConfig(epochs=2, batch_size=2),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"]),
-        preprocessing=PreprocessingConfig(
-            requested_spacing_um=SPACING, requested_tile_size_px=TARGET
-        ),
-    )
+    manifest, store = _build(tmp_path / "data", IDS)
+    fold_split = _splits(tmp_path, manifest, {"s0": "train", "s1": "train", "s2": "train", "s3": "test"})
 
-    trained = train_one_detection_fold(fold_dir=tmp_path / "trained", **common)
-    checkpoint = tmp_path / "trained" / "best_model.pt"
-    assert checkpoint.exists()
+    def no_sweep(*args, **kwargs):  # pragma: no cover - the behaviour under test
+        raise AssertionError("swept a threshold without a tune split")
 
-    eval_only = train_one_detection_fold(
-        fold_dir=tmp_path / "eval_only", checkpoint_path=checkpoint, **common
-    )
-
-    # Training was skipped: no epoch history, no history file, no fresh checkpoint.
-    assert eval_only.train_result is None
-    assert not (tmp_path / "eval_only" / "training_history.json").exists()
-    assert not (tmp_path / "eval_only" / "best_model.pt").exists()
-    # The same weights + deterministic decode/match reproduce the headline metric exactly.
-    assert (
-        eval_only.test_evaluations["test"].metrics["mean_f1"]
-        == trained.test_evaluations["test"].metrics["mean_f1"]
-    )
-
-
-def test_train_one_detection_fold_on_attention_grids(tmp_path: Path):
-    """Detection on cls_attention grids is a pure feature_kind flip — the head/decoder
-    are input_dim-agnostic, so a K-channel attention grid trains the same fold."""
-    dense_dir = tmp_path / "dense"
-    points_dir = tmp_path / "points"
-    dense_dir.mkdir()
-    points_dir.mkdir()
-
-    K = 6  # attention channels (blocks × heads), not a patch-feature dim
-    geom = compute_dense_geometry(target_size=TARGET, patch_size=PATCH)
-    meta = dense_grid_metadata(
-        geom, feature_dim=K, pad_mode="reflect", spacing_um=SPACING,
-        feature_kind="cls_attention", attention_blocks=(-1,),
-    )
-    meta.update(source_spacing_um=SPACING, effective_spacing_um=SPACING)
-    sample_ids = ["s0", "s1", "s2", "s3"]
-    rows = []
-    for sid in sample_ids:
-        write_dense_grid(dense_dir, sid, torch.rand(K, *geom.grid_shape), meta)
-        pts = points_dir / f"{sid}.csv"
-        pts.write_text("x,y,class\n4,4,0\n11,11,1\n")
-        rows.append((sid, f"{sid}.jpg", str(pts)))
-    (tmp_path / "manifest.csv").write_text(
-        "sample_id,image_path,points_path,spacing_at_level_0\n"
-        + "\n".join(f"{s},{i},{p},{SPACING}" for s, i, p in rows) + "\n"
-    )
-    assign = {sample_ids[0]: "train", sample_ids[1]: "train", sample_ids[2]: "tune", sample_ids[3]: "test"}
-    (tmp_path / "splits.csv").write_text(
-        "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
-    )
-    manifest = legacy_samples_from_csv(tmp_path / "manifest.csv")
-    splits = legacy_folds_from_csv(tmp_path / "splits.csv", manifest)
-    store = CachedGridSource(dense_dir)
-    assert store.metadata("s0")["feature_kind"] == "cls_attention"
-    assert store.feature_dim == K
-
-    result = train_one_detection_fold(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(
-            name="detection",
-            params={
-                "num_classes": NUM_CLASSES,
-                "match_distance": 0.6,
-                "sigma": 0.3,
-            },
-        ),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        fold_dir=tmp_path / "fold",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1"]),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
+    monkeypatch.setattr(soma.evaluation, "sweep_threshold", no_sweep)
+    result = _run(
+        tmp_path, manifest, store, fold_split,
+        params={**PARAMS, "validation_threshold": 0.7},
+        training=TrainingConfig(epochs=1, batch_size=2, allow_missing_tune=True),
     )
     assert "mean_f1" in result.test_evaluations["test"].metrics
 
 
-def test_train_one_detection_fold_requires_num_classes(tmp_path: Path):
-    import pytest
-
-    manifest, splits, store = _build_detection_run(tmp_path, ["s0", "s1", "s2", "s3"])
-    with pytest.raises(ValueError, match="num_classes"):
-        train_one_detection_fold(
-            feature_store=store,
-            dataset=manifest,
-            fold_split=splits.folds[0],
-            task=TaskConfig(name="detection", params={}),
-            training=TrainingConfig(epochs=1, batch_size=2),
-            fold_dir=tmp_path / "fold",
-            decoder=DecoderConfig(name="lightweight_conv"),
-        )
-
-
-def test_detection_fold_writes_qualitative_artifacts(tmp_path: Path):
-    """A detection fold writes the per-image manifest + split-level metrics CSVs and,
-    with real source tiles, the plain pred/GT point overlays (design §3) — all from the
-    consolidated single decode+match, leaving the per-point CSV byte-for-byte unchanged."""
-    sample_ids = ["s0", "s1", "s2", "s3"]
-    manifest, splits, store = _build_detection_run(tmp_path, sample_ids, make_images=True)
-
-    train_one_detection_fold(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(
-            name="detection",
-            params={
-                "num_classes": NUM_CLASSES,
-                "match_distance": 0.6,
-                "sigma": 0.3,
-            },
-        ),
+def test_grid_fold_folds_the_class_scheme_into_its_point_source(tmp_path: Path):
+    """``classes`` / ``drop``: the fixture's two ids become one named class."""
+    manifest, store = _build(tmp_path / "data", IDS)
+    result = _run(
+        tmp_path, manifest, store, _splits(tmp_path, manifest, ASSIGN),
+        params={"classes": {"cell": [0]}, "drop": [1], "match_distance": 0.6, "sigma": 0.3},
         training=TrainingConfig(epochs=1, batch_size=2),
-        fold_dir=tmp_path / "fold",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"]),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
     )
-    fold = tmp_path / "fold"
-
-    # Per-point CSV header unchanged (the documented stitch-ready level-0 output).
-    assert (fold / "predictions_test.csv").read_text().splitlines()[0] == "sample_id,x,y,class,score"
-
-    for split in ("tune", "test"):
-        # Per-image manifest CSV (always) with the specified columns.
-        manifest_csv = fold / f"detection_per_image_{split}.csv"
-        assert manifest_csv.exists()
-        rows = list(csv.DictReader(manifest_csv.open()))
-        assert rows  # one row per evaluated tile
-        assert {
-            "sample_id", "pred_overlay_path", "gt_overlay_path",
-            *(f"match_overlay_class_{c}" for c in range(NUM_CLASSES)),
-            "n_pred", "n_gt", "tp", "fp", "fn", "mean_f1",
-        } <= set(rows[0])
-        # Split-level per-class metrics CSV (always).
-        metrics_rows = {r["metric"] for r in csv.DictReader((fold / f"metrics_{split}.csv").open())}
-        assert "mean_f1" in metrics_rows
-        assert {f"f1_class_{c}" for c in range(NUM_CLASSES)} <= metrics_rows
-
-    # Real source tiles -> pred/GT overlays + one per-class match overlay per evaluated
-    # tile (test split = s3).
-    assert (fold / "pred_overlays" / "test" / "s3.png").is_file()
-    assert (fold / "gt_overlays" / "test" / "s3.png").is_file()
-    for c in range(NUM_CLASSES):
-        assert (fold / "match_overlays" / f"class_{c}" / "test" / "s3.png").is_file()
+    assert set(result.test_evaluations["test"].metrics) == {"mean_f1", "f1_class_0"}
+    predictions = PointPredictions.from_parquet(tmp_path / "fold" / "predictions_test.parquet")
+    assert predictions.classes == ("cell",)
 
 
-def test_detection_fold_overlays_suppressible(tmp_path: Path):
-    """save_detection_overlays=False suppresses the overlays; the per-point CSV, the
-    per-image manifest, and the split-level metrics CSV are still written."""
-    sample_ids = ["s0", "s1", "s2", "s3"]
-    manifest, splits, store = _build_detection_run(tmp_path, sample_ids, make_images=True)
-
-    train_one_detection_fold(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(
-            name="detection",
-            params={
-                "num_classes": NUM_CLASSES,
-                "match_distance": 0.6,
-                "sigma": 0.3,
-            },
-        ),
+def test_grid_fold_holdout_test_never_touches_the_test_split(tmp_path: Path):
+    manifest, store = _build(tmp_path / "data", IDS)
+    result = _run(
+        tmp_path, manifest, store, _splits(tmp_path, manifest, ASSIGN),
+        evaluation=EvalConfig(metrics=["mean_f1"], holdout_test=True),
         training=TrainingConfig(epochs=1, batch_size=2),
-        fold_dir=tmp_path / "fold",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1"], save_detection_overlays=False),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
     )
-    fold = tmp_path / "fold"
-
-    assert not (fold / "pred_overlays").exists()
-    assert not (fold / "gt_overlays").exists()
-    assert not (fold / "match_overlays").exists()
-    assert (fold / "predictions_test.csv").exists()
-    assert (fold / "detection_per_image_test.csv").exists()
-    assert (fold / "metrics_test.csv").exists()
-
-
-def test_detection_fold_heatmap_artifacts_opt_in(tmp_path: Path):
-    """save_detection_heatmaps=True writes per-class viridis overlays + a float16 npz
-    sidecar per evaluated tile, and threads the manifest's heatmap columns; off by default
-    those artifacts are absent and the columns are empty."""
-    sample_ids = ["s0", "s1", "s2", "s3"]
-    manifest, splits, store = _build_detection_run(tmp_path, sample_ids, make_images=True)
-
-    train_one_detection_fold(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(
-            name="detection",
-            params={
-                "num_classes": NUM_CLASSES,
-                "match_distance": 0.6,
-                "sigma": 0.3,
-            },
-        ),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        fold_dir=tmp_path / "fold",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1"], save_detection_heatmaps=True),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
-    )
-    fold = tmp_path / "fold"
-
-    # Test split = s3: per-class colormap overlay + raw float16 (C,H,W) npz sidecar.
-    for c in range(NUM_CLASSES):
-        assert (fold / "heatmap_overlays" / f"class_{c}" / "test" / "s3.png").is_file()
-    npz = fold / "heatmaps" / "test" / "s3.npz"
-    assert npz.is_file()
-    arr = np.load(npz)["heatmap"]
-    assert arr.dtype == np.float16
-    assert arr.shape[0] == NUM_CLASSES
-
-    row = next(r for r in csv.DictReader((fold / "detection_per_image_test.csv").open()) if r["sample_id"] == "s3")
-    assert {f"heatmap_overlay_class_{c}" for c in range(NUM_CLASSES)} <= set(row)
-    assert row["heatmap_npz_path"] == "heatmaps/test/s3.npz"
-    assert row["heatmap_overlay_class_0"] == "heatmap_overlays/class_0/test/s3.png"
-
-
-def test_train_one_detection_fold_holdout_test_skips_test(tmp_path: Path):
-    """evaluation.holdout_test: no test inference, no test artifacts, tune-only metrics.
-
-    The tune-split threshold sweep and tune evaluation still run, so the run is a
-    valid model-selection candidate while never touching the declared test split.
-    """
-    sample_ids = ["s0", "s1", "s2", "s3"]
-    manifest, splits, store = _build_detection_run(tmp_path, sample_ids)
-
-    result = train_one_detection_fold(
-        feature_store=store,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(
-            name="detection",
-            params={
-                "num_classes": NUM_CLASSES,
-                "match_distance": 0.6,
-                "sigma": 0.3,
-            },
-        ),
-        training=TrainingConfig(epochs=2, batch_size=2),
-        fold_dir=tmp_path / "fold",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=EvalConfig(metrics=["mean_f1", "f1_per_class"], holdout_test=True),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
-    )
-
-    # Tune still evaluated; no test split touched.
-    assert "mean_f1" in result.tune_evaluation.metrics
     assert result.test_evaluations == {}
-
-    # Threshold sweep (tune-only) still ran and was frozen.
-    thr = json.loads((tmp_path / "fold" / "detection_thresholds.json").read_text())
-    assert len(thr["score_threshold_per_class"]) == NUM_CLASSES
-
-    # No test prediction CSV; metrics.json carries tune only.
-    assert not (tmp_path / "fold" / "predictions_test.csv").exists()
-    metrics = json.loads((tmp_path / "fold" / "metrics.json").read_text())
-    assert list(metrics.keys()) == ["tune"]
+    assert not (tmp_path / "fold" / "predictions_test.parquet").exists()
 
 
-class _FixedHeatmapModel(torch.nn.Module):
-    """Stands in for decoder + head: returns one fixed ``(1, C, H, W)`` heatmap per sample."""
-
-    def __init__(self, heatmap: torch.Tensor) -> None:
-        super().__init__()
-        self.heatmap = heatmap
-
-    def forward(self, features):
-        from types import SimpleNamespace
-
-        return SimpleNamespace(logits=self.heatmap.expand(features.shape[0], -1, -1, -1))
+def test_grid_fold_refuses_detection_over_several_effective_spacings(tmp_path: Path):
+    manifest, store = _build(tmp_path / "data", IDS, spacings={"s3": 0.4})
+    with pytest.raises(ValueError, match="one effective spacing"):
+        _run(tmp_path, manifest, store, _splits(tmp_path, manifest, ASSIGN))
 
 
-def _ignore_right_half_batch():
-    """One 32x32 sample: GT at (5,5) and (5,25), right half (columns 16..) not annotated.
+def test_grid_fold_requires_num_classes(tmp_path: Path):
+    manifest, store = _build(tmp_path / "data", IDS)
+    with pytest.raises(ValueError, match="num_classes"):
+        _run(tmp_path, manifest, store, _splits(tmp_path, manifest, ASSIGN), params={"match_distance": 0.6})
 
-    Predicted spikes: 0.3 at (5,5), 0.8 at (5,25), and three 0.5 spikes on ignored pixels.
-    """
-    from soma.dense import DenseSampleSpacing
-    from soma.dense.geometry import compute_dense_geometry
-    from soma.tasks.detection import DetectionHead
-    from soma.training.segmentation_dataset import SegmentationBatch
 
-    head = DetectionHead(
-        num_classes=1, geometry=compute_dense_geometry(target_size=32, patch_size=4),
-        delta_px=3.0, sigma_px=1.5, sample_spacings={"s": DenseSampleSpacing(1.0, 1.0)},
-        metrics=["mean_f1"],
+def test_grid_fold_writes_opt_in_heatmaps_and_point_overlays(tmp_path: Path):
+    from PIL import Image
+
+    _, store = _build(tmp_path / "data", IDS)
+    rows = []
+    for sid in IDS:  # real tiles, so the overlays can render
+        Image.fromarray(np.full((TARGET, TARGET, 3), 127, dtype=np.uint8)).save(tmp_path / f"{sid}.png")
+        rows.append(f"{sid},{tmp_path / f'{sid}.png'},{tmp_path / 'data' / 'points' / f'{sid}.csv'},{SPACING}")
+    manifest_csv = tmp_path / "manifest_with_tiles.csv"
+    manifest_csv.write_text("sample_id,image_path,points_path,spacing_at_level_0\n" + "\n".join(rows) + "\n")
+    manifest = legacy_samples_from_csv(manifest_csv)
+    _run(
+        tmp_path, manifest, store, _splits(tmp_path, manifest, ASSIGN),
+        evaluation=EvalConfig(metrics=["mean_f1"], save_detection_heatmaps=True),
+        training=TrainingConfig(epochs=1, batch_size=2),
     )
-    heatmap = torch.zeros(1, 1, 32, 32)
-    for (x, y), score in [((5, 5), 0.3), ((5, 25), 0.8), ((20, 5), 0.5), ((20, 15), 0.5), ((20, 25), 0.5)]:
-        heatmap[0, 0, y, x] = score
-    valid = torch.ones(1, 32, 32, dtype=torch.bool)
-    valid[:, :, 16:] = False
-    batch = SegmentationBatch(
-        features=torch.zeros(1, 4, 8, 8),
-        targets={"gt_points": torch.tensor([[[5.0, 5.0, 0.0], [5.0, 25.0, 0.0]]]), "valid": valid},
-        sample_ids=("s",),
-    )
-    return _FixedHeatmapModel(heatmap), head, [batch]
-
-
-def test_threshold_sweep_ignores_predictions_on_ignored_pixels():
-    from soma.pipeline import _sweep_detection_thresholds
-
-    model, head, loader = _ignore_right_half_batch()
-
-    # Scored, the three ignored 0.5 spikes would push the threshold above 0.5 (F1 2/3);
-    # ignored, the best cut keeps both supervised peaks (F1 1), so it sits at or below 0.3.
-    (threshold,) = _sweep_detection_thresholds(model, loader, torch.device("cpu"), head)
-
-    assert threshold < 0.5
-
-
-def test_evaluate_grid_ignores_detections_on_ignored_pixels(tmp_path: Path):
-    from soma.learn import DenseLearner
-    from soma.pipeline import _evaluate_grid
-
-    model, head, loader = _ignore_right_half_batch()
-    head.score_threshold = 0.2
-    model.task_head = head
-
-    report = _evaluate_grid(DenseLearner(model), loader, torch.device("cpu"))
-
-    assert report.metrics["mean_f1"] == pytest.approx(1.0)
+    fold = tmp_path / "fold"
+    heatmap = np.load(fold / "heatmaps" / "test" / "s3.npz")["heatmap"]
+    assert heatmap.shape == (NUM_CLASSES, TARGET, TARGET) and heatmap.dtype == np.float16
+    assert (fold / "overlays" / "test" / "pred" / "s3.png").is_file()
+    assert (fold / "overlays" / "test" / "gt" / "s3.png").is_file()

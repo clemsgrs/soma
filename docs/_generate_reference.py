@@ -26,7 +26,7 @@ from soma.benchmarks import eva as eva_bench
 from soma.benchmarks import eva_segmentation as eva_seg_bench
 from soma.benchmarks import eva_slide as eva_slide_bench
 from soma.benchmarks import ocelot as ocelot_bench
-from soma.training.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
+from soma.benchmarks.hest.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 
 
 def _default_config_yaml_block() -> str:
@@ -117,9 +117,6 @@ def build_cli_rst() -> str:
         ``soma list decoders``
            List all registered dense decoder presets.
 
-        ``soma list pixel-classifiers``
-           List all registered per-pixel classifier presets.
-
         ``soma list tasks``
            List all registered task-head presets.
 
@@ -128,8 +125,13 @@ def build_cli_rst() -> str:
            ``soma reproduce`` and ``soma leaderboard`` accept.
 
         ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]``
-           Score a predictions parquet against the targets in ``dataset.csv``,
-           joined by ``sample_id``; no run directory is needed. ``--splits``
+           Score saved predictions against the targets in ``dataset.csv``,
+           joined by ``sample_id``; no run directory is needed. ``PREDICTIONS``
+           is a predictions parquet, a points parquet (detection), or a
+           label-map directory (segmentation). A predictions parquet is scored
+           against the cohort's target columns, points against the files in its
+           ``points_path`` column, and label maps against the class-index masks
+           in its ``label_mask_path`` column. ``--splits``
            selects one split (default ``test``) of one fold (default ``0``);
            without it every row of the cohort is a target. Every prediction
            needs a target and every target a prediction. ``--metrics`` takes
@@ -595,7 +597,7 @@ def build_eva_benchmark_rst() -> str:
         ),
         (
             "augmentation",
-            "MoNuSAC train only: ``random_resized_crop_scale: [0.08, 1.0]`` "
+            "MoNuSAC train only: ``crop_scale: [0.08, 1.0]`` "
             "(torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none",
         ),
         (
@@ -622,7 +624,13 @@ def build_eva_benchmark_rst() -> str:
             "empty targets skipped (MONAI ``DiceMetric(include_background=False)``)",
         ),
         ("varied axis", "``encoder``"),
-        ("primary metric", f"``{seg_head.primary_metric}`` (from ``summary.json``)"),
+        (
+            "primary metric",
+            f"``{seg_head.primary_metric}``. CoNSeP: from ``summary.json``. MoNuSAC: "
+            "re-scored from the run's saved ``predictions_test/`` label maps with EVA's "
+            "counting (``summary.json`` uses soma's standard counting, which drops "
+            "``Ambiguous`` pixels from the predicted area too)",
+        ),
         ("canonical seeds", f"``{seeds}`` (averaged)"),
     ]
     seg_raw_layout_rows = [
@@ -767,8 +775,9 @@ def build_eva_benchmark_rst() -> str:
         "resized 224 px crop from them, as EVA's online config does. CoNSeP\n"
         "merges HoVer-Net's seven nucleus types into background, other, inflammatory,\n"
         "epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is\n"
-        "excluded from the loss and the metric. Both datasets report on EVA's validation\n"
-        "split, which is soma's ``test`` split (``tune_is_test``).\n\n"
+        "excluded from the loss and from the metric's target area. As in EVA, the pixels\n"
+        "predicted there still count towards the predicted area. Both datasets report on\n"
+        "EVA's validation split, which is soma's ``test`` split (``tune_is_test``).\n\n"
         + _kv_table("Setting", "Value", seg_protocol_rows)
         + "\n\nThe decoder, loss and confusion counting exist only for this benchmark and are\n"
         "registered under ``eva_`` names; they are not general soma components. The dense\n"
@@ -863,7 +872,11 @@ def build_hest_benchmark_rst() -> str:
         return f"{title}\n{'-' * len(title)}\n\n{body}"
 
     protocol_rows = [
-        ("head", "closed-form Ridge probe — no trained head, no gradient loop"),
+        (
+            "predictor",
+            "``soma.benchmarks.hest.probe.RidgePCAProbe``: a closed-form Ridge probe, "
+            "no trained head, no gradient loop",
+        ),
         (
             "features",
             "``StandardScaler`` → ``PCA(n_components="
@@ -877,7 +890,8 @@ def build_hest_benchmark_rst() -> str:
         ("targets", "50-gene ``log1p(counts)`` vector per 112 µm spot (baked by the curator)"),
         (
             "metric",
-            "``pearson`` — per gene, pooled over test spots → mean over 50 genes → mean over folds",
+            "``mean_pearson`` — per gene, pooled over test spots → mean over 50 genes → mean "
+            "over folds; each gene's own Pearson is reported as ``pearson_geneNN_<symbol>``",
         ),
         ("task family", f"``{head.facet.fixed['task']}``"),
         ("varied axis", "``encoder``"),
@@ -900,8 +914,7 @@ def build_hest_benchmark_rst() -> str:
             "NeurIPS 2024).\n\n"
             "HEST provides 9 registered datasets: "
             + task_list
-            + ".\nAll share the same closed-form "
-            ":ref:`spatial-expression probe <regression-task>` protocol; see\n"
+            + ".\nAll share the same closed-form Ridge+PCA probe protocol; see\n"
             ":doc:`benchmarking` for the shared workflow.\n\n"
             "**Pipeline:** spot tiles → frozen encoder → Ridge+PCA probe → mean Pearson",
         _section(
@@ -920,6 +933,20 @@ def build_hest_benchmark_rst() -> str:
             "--raw-root /path/to/hest-bench/IDC\n\n"
             "Or run HEST's 9 datasets in one go::\n\n"
             "    soma reproduce hest --encoder virchow2 --raw-root /path/to/hest-bench",
+        ),
+        _section(
+            "How the benchmark runs",
+            "The benchmark trains no model through the pipeline; it composes soma's\n"
+            "verbs itself. It extracts each spot's tile features once into the feature\n"
+            "cache, then, for each fold:\n\n"
+            "1. fits :class:`~soma.benchmarks.hest.probe.RidgePCAProbe`\n"
+            "   (``StandardScaler`` → ``PCA`` → ``Ridge``) on the train spots;\n"
+            "2. predicts the test spots as :class:`~soma.evaluation.Predictions` with one\n"
+            "   ``value_<k>`` column per gene;\n"
+            "3. scores them with :func:`soma.evaluate`: ``mean_pearson`` plus one\n"
+            "   ``pearson_geneNN_<symbol>`` metric per gene.\n\n"
+            "Each fold writes ``metrics.json`` and ``predictions_<split>.parquet``; the run\n"
+            "writes ``summary.json``.",
         ),
         _section(
             "Results",

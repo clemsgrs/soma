@@ -57,9 +57,9 @@ from soma.benchmarks.registry import (
 )
 from soma.config import PipelineConfig, load_config
 from soma.curation.manifest import CuratedManifest
-from soma.detection.froc import patch_area_mm2, score_monkey_froc
+from soma.benchmarks.froc import patch_area_mm2, score_monkey_froc
 from soma.detection.matching import detection_counts, match_assignment, reduce_f1
-from soma.detection.midog_f1 import midog_f1
+from soma.benchmarks.midog_f1 import midog_f1
 
 __all__ = [
     "BENCHMARK_NAME",

@@ -23,9 +23,10 @@ The decoder output passes through a sigmoid to give one heatmap in ``[0, 1]``
 per object class; background is the absence of a peak. The training target is a
 **peak Gaussian** rendered at each annotated point (peak value 1, overlaps
 merged by element-wise **max**, not a count-preserving density map), and the
-loss is **foreground-weighted MSE**. At inference, peaks are recovered per
-channel by **local maxima + NMS + a per-class score threshold**, then matched to
-ground truth with **class-aware F1@δ**.
+loss is **foreground-weighted MSE**. At inference, the head recovers peaks per
+channel by **local maxima + NMS** and keeps every peak above ``min_score``. A
+**per-class score threshold**, chosen on the tune split, then selects the
+points that are matched to ground truth with **class-aware F1@δ**.
 
 Data contract
 -------------
@@ -83,8 +84,8 @@ Classes
 
 ``classes`` names each class and the annotated id(s) that form it; several ids
 merge into one class, which gets one heatmap channel. The class index is the
-declaration order and the names are written to the ``class_name`` column of
-``metrics_<split>.csv``. The ids need not be 0-based: a dataset annotated with
+declaration order and the names are stored with the predictions. The ids need
+not be 0-based: a dataset annotated with
 ``{1, 2}`` can be declared as ``classes: {background_cell: [1], tumor_cell: [2]}``.
 
 ``drop`` lists the annotated ids to discard. A dropped point leaves the
@@ -125,10 +126,11 @@ everywhere.
   and from the ground truth used for matching. A point is removed when its
   level-0 pixel is ignored, or when its pixel in the ``target_size`` frame is
   ignored.
-- **Predictions.** Peaks on ignored pixels are dropped before matching, in the
-  threshold sweep, in evaluation (metrics and the prediction CSV) and in the
-  detection benchmark.
-- **Area.** The FROC per-mm² area of a sample covers its supervised pixels only.
+- **Predictions.** Peaks on ignored pixels are left out whenever predictions
+  are scored: in the threshold sweep, in evaluation and in the detection
+  benchmark. The saved predictions file keeps them.
+- **Area.** The FROC per-mm² area of a sample (:mod:`soma.benchmarks.froc`)
+  covers its supervised pixels only.
 
 The mask is mapped to the run's ``target_size`` frame like the points: each
 target pixel takes the value of its nearest level-0 pixel.
@@ -160,8 +162,8 @@ into the run's ``target_size`` frame for encoding and matching::
 Both spacings come from each dense artifact's slide2vec sidecar;
 ``effective_spacing_um`` can differ slightly from
 ``preprocessing.requested_spacing_um`` when a WSI reader accepts a nearby native
-level. Predicted points are written back to the source frame in the prediction
-CSV.
+level. Predicted points are written back to the source frame in the predictions
+file.
 
 Configuration
 -------------
@@ -193,6 +195,21 @@ using each grid's persisted ``effective_spacing_um``. Samples may have different
 source spacings, but a run requires one effective spacing and uniform grid
 geometry.
 
+The other task parameters are:
+
+- ``min_score`` (default ``0.01``): the lowest peak score the head emits. Keep
+  it low; the operating threshold is chosen afterwards on the predictions.
+- ``validation_threshold`` (default ``0.5``): the fixed peak threshold of the
+  validation metrics computed during training, which drive checkpoint selection
+  and early stopping.
+- ``foreground_weight`` (default ``10``): the MSE up-weight on near-peak pixels.
+- ``matching``: ``hungarian`` (default) or ``greedy``, used for training-time
+  validation and for scoring.
+- ``classes`` / ``drop``: the class scheme; see :ref:`detection-classes`.
+
+Detection also runs with ``data.feature_mode: live``, which re-encodes the tiles
+at every step; see :ref:`live-mode`. Detection cannot be augmented yet.
+
 The default feature kind is ``patch_features``. To probe attention maps with
 the same head, loss, and evaluator, use an attention-capable encoder and set:
 
@@ -215,13 +232,12 @@ same-class GT within δ) using optimal one-to-one **Hungarian** assignment (defa
 leaderboard-comparable number). Matched pairs are TP, unmatched predictions FP,
 unmatched GT FN.
 
-* **Score threshold** — swept per class on the **tune** split to maximise F1, frozen
-  into ``detection_thresholds.json``, and applied unchanged at test (no test leakage).
-  A run without a tune split (``training.allow_missing_tune``) keeps the configured
-  ``task.params.score_threshold`` (default ``0.5``) instead: train stands in for tune
-  there, and a sweep on the training samples picks an in-sample cut.
-  ``detection_thresholds.json`` records which happened as ``source``
-  (``tune_sweep`` or ``configured``).
+* **Score threshold** — the pipeline sweeps one threshold per class on the **tune**
+  predictions to maximise F1 (:func:`soma.evaluation.sweep_threshold` with
+  ``per_class=True``) and applies it unchanged to every test split (no test
+  leakage). A run without a tune split (``training.allow_missing_tune``) scores at
+  ``validation_threshold`` instead: train stands in for tune there, and a sweep on
+  the training samples would pick an in-sample cut.
 * **Aggregation** — the headline ``mean_f1`` is **dataset-global** (counts pooled per
   class → one F1 per class → mean across classes, OCELOT-faithful). ``mean_f1_per_image``
   is available as a secondary (per-image macro). Per-class F1 / precision / recall are
@@ -230,11 +246,14 @@ unmatched GT FN.
 Outputs
 -------
 
-Each fold writes ``metrics.json`` (tune + per test split), ``detection_thresholds.json``
-(the frozen per-class thresholds), and ``predictions_<split>.csv`` with columns
+Each fold writes ``metrics.json`` (tune + per test split) and
+``predictions_<split>.parquet`` for tune and every test split. The predictions
+are a :class:`~soma.evaluation.PointPredictions` with columns
 ``sample_id, x, y, class, score`` in **level-0** coordinates; ``class`` is the class
-index. ``metrics_<split>.csv`` lists the per-class F1, precision and recall with each
-class's name.
+index. They hold every peak above ``min_score``, before any threshold, so a
+different threshold or matching rule can be applied later without rerunning
+inference (see :ref:`grid-predictions`). Point overlays and raw heatmaps are
+optional; see :doc:`outputs`.
 
 Task head
 ---------

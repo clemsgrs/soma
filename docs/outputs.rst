@@ -54,6 +54,9 @@ per-fold artifacts are written directly inside it; with several folds, each
   configured
 - ``attention/<split>/<sample_id>.npz`` and ``heatmaps/<sample_id>.png`` when
   heatmaps are enabled
+- for segmentation and detection, the predictions of tune and every test split
+  and the optional overlays, probabilities and heatmaps; see
+  :ref:`grid-outputs`
 
 Split-specific artifacts
 ------------------------
@@ -69,7 +72,8 @@ Prediction files
 ``sample_id`` column, the columns the task head declares (``prob_0`` …
 ``prob_<k-1>`` and ``predicted_label`` for classification, ``predicted_label``
 and ``raw_score`` for ordinal classification, ``predicted_value`` for
-regression, ``risk_score`` for survival), any column a custom learner adds, and
+regression (``value_0`` … ``value_<G-1>`` with ``num_outputs: G``),
+``risk_score`` for survival), any column a custom learner adds, and
 ``is_placeholder``. A placeholder row is a baseline prediction for a sample
 without features (see :doc:`evaluation`). Targets are not stored here; they
 come from ``dataset.csv``. The parquet schema metadata records the task family,
@@ -77,11 +81,6 @@ the soma version, the role of each column and the class label of each
 probability column. Read the file with
 :meth:`soma.evaluation.Predictions.from_parquet` and score it again with
 ``soma evaluate`` (see :doc:`cli`).
-
-Segmentation and detection runs keep their CSV prediction files: a per-tile
-``predictions_<split>.csv`` with raster and overlay paths, and for detection
-the level-0 point list ``predictions_<split>.csv``
-(``sample_id,x,y,class,score``).
 
 Metric keys in ``summary.json`` are prefixed by split name:
 
@@ -92,6 +91,53 @@ Metric keys in ``summary.json`` are prefixed by split name:
 metrics (AUROC, AUPRC, C-index, ...) are ``nan`` on a fold whose split holds a single
 class or no comparable pairs; such folds are excluded from ``*_mean`` / ``*_std`` and
 counted in ``test/<metric>_nan_folds``, which is only written when the count is non-zero.
+
+.. _grid-outputs:
+
+Segmentation and detection outputs
+----------------------------------
+
+Segmentation and detection runs write predictions for tune and for every test
+split:
+
+- **Segmentation:** ``predictions_<split>/``, one PNG label map of class indices
+  per sample and an ``index.parquet``. Read it with
+  :meth:`soma.evaluation.LabelMapPredictions.load`.
+- **Detection:** ``predictions_<split>.parquet``, the level-0 point list
+  ``sample_id, x, y, class, score`` with every peak above the head's
+  ``min_score``, before any threshold. Read it with
+  :meth:`soma.evaluation.PointPredictions.from_parquet`.
+
+``soma evaluate`` scores either again (see :ref:`grid-predictions`). Optional
+artifacts follow ``evaluation`` settings:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 36 36 28
+
+   * - Setting
+     - Writes
+     - Default
+   * - ``save_segmentation_overlays``
+     - ``overlays/<split>/pred/`` and ``overlays/<split>/gt/``: predicted and
+       annotated classes blended over each tile
+     - ``true``
+   * - ``save_segmentation_probabilities``
+     - ``probabilities/<split>/<sample_id>.npz``: the float16
+       ``(C, H, W)`` softmax
+     - ``false``
+   * - ``save_detection_overlays``
+     - ``overlays/<split>/pred/`` and ``overlays/<split>/gt/``: predicted
+       points (at ``validation_threshold``) and annotated points drawn over
+       each tile
+     - ``true``
+   * - ``save_detection_heatmaps``
+     - ``heatmaps/<split>/<sample_id>.npz``: the float16 ``(C, H, W)``
+       heatmap
+     - ``false``
+
+Per-sample confusion matrices are not written; recompute them from the saved
+label maps with :func:`soma.evaluation.confusion_records`.
 
 Run index
 ---------

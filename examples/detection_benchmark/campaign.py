@@ -510,12 +510,11 @@ def score_cell(
 ) -> None:
     """Freeze knobs on tune, score test, and persist per-sample predictions + metrics (live path).
 
-    Loads the trained decoder + the cached dense grids, decodes per-image points at the
+    Reads the run's persisted point predictions, decodes per-sample points at the
     tune-frozen per-class thresholds, records each predicted point's matched/unmatched flag,
     then computes the dataset's native metric off those points. Writes ``predictions.json``
     (the per-sample cache) and ``metrics.json`` (native-metric blocks, the score threshold,
-    and both selection frames). This is GPU/data-bound and not exercised in CI; the pure
-    re-aggregation it feeds is.
+    and both selection frames).
     """
     from soma.benchmarks.detection_benchmark import score_dataset_points, write_cell_predictions
 
@@ -548,103 +547,79 @@ def score_cell(
     )
 
 
-def _decode_split_points(model, loader, head, device, manifest) -> list:
-    """Decode one loader into per-sample :class:`SamplePrediction` (points + matched flags).
+def _decode_split_points(predictions, targets, manifest, frame, *, threshold=None, tile_px: int) -> list:
+    """Per-sample :class:`SamplePrediction` (level-0 points + matched flags) of one split.
 
-    Mirrors ``soma.pipeline._evaluate_detection``: decode NMS peaks at the frozen per-class
-    thresholds, match once per image (the same ``match_assignment`` the headline counts read),
-    and record each predicted point's matched/unmatched flag. Points are transformed to the
-    level-0 frame, and every sample carries its evaluated ``area_mm2`` for the FROC per-mm²
-    axis (MONKEY uses it; the other scorers ignore it). Under an ignore mask, peaks on
-    ignored pixels are dropped and the area covers the valid pixels only. Returned in the
-    frame the native point scorers consume.
+    ``predictions`` are the run's persisted :class:`~soma.evaluation.PointPredictions`
+    (every peak above the head's ``min_score``, level-0 pixels); ``threshold`` (one score
+    per class, ``None`` keeps every peak) is applied first. Each sample is matched once
+    (the same ``match_assignment`` the headline counts read) within the level-0
+    tolerance; under an ignore mask the points on ignored pixels are dropped and the area
+    covers the valid pixels only. ``frame`` carries the run's class count, matcher and
+    spacings (see :func:`_point_frame`). Tiled datasets fold back to per-ROI samples.
     """
     import numpy as np
-    import torch
 
-    from soma.benchmarks.detection_benchmark import SamplePrediction
-    from soma.detection.encode import transform_points_to_level0
-    from soma.detection.froc import patch_area_mm2
+    from soma.benchmarks.detection_benchmark import SamplePrediction, stitch_tiles_to_rois
+    from soma.benchmarks.froc import patch_area_mm2
+    from soma.detection.encode import points_on_valid
     from soma.detection.matching import match_assignment
 
-    top, left, crop_w, crop_h = head._crop_box
+    scale = frame.spacing.effective_spacing_um / frame.spacing.source_spacing_um
+    delta_level0 = frame.delta_px * scale
     samples: list[SamplePrediction] = []
-    model.eval()
-    with torch.no_grad():
-        for batch in loader:
-            out = model(batch.features.to(device))
-            gt_points = batch.targets["gt_points"]
-            valid = batch.targets.get("valid")
-            for b, sid in enumerate(batch.sample_ids):
-                heatmap = out.logits[b]
-                # Peaks on ignore-mask pixels are not scored; the area counts valid pixels only.
-                pred_xy, pred_cls, pred_score = head._predict_points(
-                    heatmap, None if valid is None else valid[b]
-                )
-                valid_fraction = 1.0 if valid is None else float(valid[b].float().mean())
-                gt_xy, gt_cls = head._strip_padding(gt_points[b])
-                assignment = match_assignment(
-                    pred_xy, pred_cls, pred_score, gt_xy, gt_cls,
-                    num_classes=head.num_classes, delta=head.delta_px, method=head.matching,
-                )
-                matched = np.zeros(pred_xy.shape[0], dtype=bool)
-                for m in assignment:
-                    if m.pairs.shape[0]:
-                        matched[m.pairs[:, 0]] = True
-                spacing = head.spacing_for_sample(sid)
-                xy_l0 = (
-                    transform_points_to_level0(
-                        pred_xy,
-                        source_spacing_um=spacing.source_spacing_um,
-                        effective_spacing_um=spacing.effective_spacing_um,
-                        crop_top=top,
-                        crop_left=left,
-                    )
-                    if pred_xy.shape[0]
-                    else np.zeros((0, 2))
-                )
-                gt_l0 = (
-                    transform_points_to_level0(
-                        gt_xy,
-                        source_spacing_um=spacing.source_spacing_um,
-                        effective_spacing_um=spacing.effective_spacing_um,
-                        crop_top=top,
-                        crop_left=left,
-                    )
-                    if gt_xy.shape[0]
-                    else np.zeros((0, 2))
-                )
-                samples.append(
-                    SamplePrediction(
-                        sample_id=str(sid),
-                        pred_xy=xy_l0.tolist(),
-                        pred_score=[float(s) for s in pred_score],
-                        pred_class=[int(c) for c in pred_cls],
-                        gt_xy=gt_l0.tolist(),
-                        gt_class=[int(c) for c in gt_cls],
-                        matched=matched.tolist(),
-                        area_mm2=patch_area_mm2(
-                            int(crop_w), int(crop_h), spacing.source_spacing_um
-                        ) * valid_fraction,
-                    )
-                )
+    for sid in predictions.sample_ids:
+        pred_xy, pred_cls, pred_score = predictions.points(sid)
+        if threshold is not None and pred_xy.shape[0]:
+            keep = pred_score >= np.asarray(threshold, dtype=np.float64)[pred_cls]
+            pred_xy, pred_cls, pred_score = pred_xy[keep], pred_cls[keep], pred_score[keep]
+        points = targets.load(sid)
+        gt_xy = points.xy.numpy().astype(np.float64).reshape(-1, 2)
+        gt_cls = points.classes.numpy().astype(np.int64).reshape(-1)
+        valid_fraction = 1.0
+        if points.ignore_mask is not None:
+            ignored = np.asarray(points.ignore_mask) == 255
+            valid_fraction = float((~ignored).mean())
+            if pred_xy.shape[0]:
+                keep = ~points_on_valid(pred_xy, ignored)
+                pred_xy, pred_cls, pred_score = pred_xy[keep], pred_cls[keep], pred_score[keep]
+            if gt_xy.shape[0]:
+                keep = ~points_on_valid(gt_xy, ignored)
+                gt_xy, gt_cls = gt_xy[keep], gt_cls[keep]
+        matched = np.zeros(pred_xy.shape[0], dtype=bool)
+        for m in match_assignment(
+            pred_xy, pred_cls, pred_score, gt_xy, gt_cls,
+            num_classes=frame.num_classes, delta=delta_level0, method=frame.matching,
+        ):
+            if m.pairs.shape[0]:
+                matched[m.pairs[:, 0]] = True
+        samples.append(
+            SamplePrediction(
+                sample_id=str(sid),
+                pred_xy=pred_xy.tolist(),
+                pred_score=[float(s) for s in pred_score],
+                pred_class=[int(c) for c in pred_cls],
+                gt_xy=gt_xy.tolist(),
+                gt_class=[int(c) for c in gt_cls],
+                matched=matched.tolist(),
+                area_mm2=patch_area_mm2(int(tile_px), int(tile_px), frame.spacing.effective_spacing_um)
+                * valid_fraction,
+            )
+        )
     # Tiled datasets (MIDOG/MONKEY) carry source_wsi/tile_x/tile_y -> fold the per-tile
-    # detections back to one per-ROI SamplePrediction for the native per-ROI metric; untiled
-    # datasets (OCELOT) pass through unchanged.
-    from soma.benchmarks.detection_benchmark import stitch_tiles_to_rois
-
-    return stitch_tiles_to_rois(samples, manifest, head)
+    # detections back to one per-ROI SamplePrediction for the native per-ROI metric;
+    # untiled datasets (OCELOT) pass through unchanged.
+    return stitch_tiles_to_rois(samples, manifest, frame)
 
 
-def _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest) -> list[float]:
+def _sweep_thresholds_on_rois(tune, targets, manifest, frame, *, tile_px: int) -> list[float]:
     """Freeze per-class detection thresholds on the STITCHED per-ROI tune predictions.
 
-    The tune loader yields per-*tile* batches, and tile overlaps double-count both GT and
-    predictions — so sweeping the threshold on them optimizes a per-tile surrogate, not the
-    per-ROI F1 the cell is actually scored by (a threshold that wins on duplicated tiles can
-    lose after stitching). We instead decode every tune candidate peak (threshold 0), fold
-    them to per-ROI via the same stitch the scorer uses, and sweep there, so the frozen knob
-    matches the reported objective.
+    Tile overlaps double-count both GT and predictions, so sweeping on per-tile samples
+    optimizes a per-tile surrogate, not the per-ROI F1 the cell is scored by (a threshold
+    that wins on duplicated tiles can lose after stitching). Every persisted tune peak is
+    folded to per-ROI via the same stitch the scorer uses, and the sweep runs there, so
+    the frozen knob matches the reported objective.
 
     Checkpoint and early-stopping still monitor per-tile tune F1 during training. Because
     overlap copies weight some ROI objects more than once, that monitor is only a proxy for
@@ -655,164 +630,101 @@ def _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest) -> lis
     from soma.benchmarks.detection_benchmark import _per_image_arrays
     from soma.detection.matching import sweep_score_thresholds
 
-    saved = head.score_threshold
-    head.score_threshold = 0.0  # keep every candidate peak so the sweep sees the full set
-    try:
-        roi_samples = _decode_split_points(model, tune_loader, head, device, manifest)
-    finally:
-        head.score_threshold = saved
+    roi_samples = _decode_split_points(tune, targets, manifest, frame, threshold=None, tile_px=tile_px)
     pred_xy, pred_score, pred_class, gt_xy, gt_class, _area = _per_image_arrays(roi_samples)
+    scale = frame.spacing.effective_spacing_um / frame.spacing.source_spacing_um
     return sweep_score_thresholds(
         pred_xy, pred_class, pred_score, gt_xy, gt_class,
-        num_classes=head.num_classes, delta=head.delta_px, method=head.matching,
+        num_classes=frame.num_classes, delta=frame.delta_px * scale, method=frame.matching,
+    )
+
+
+def _point_frame(cfg, spec, predictions):
+    """The run's point frame for scoring: class count, matcher, radii and spacings.
+
+    Radii are the run's own µm distances at its frame spacing (``delta_px`` /
+    ``nms_distance_px`` in frame pixels, as the stitch expects); the level-0 spacing
+    follows from the predictions' level-0 tolerance (``match_distance_px``).
+    """
+    from types import SimpleNamespace
+
+    from soma.dense import DenseSampleSpacing
+
+    params = dict(cfg.task.params)
+    match_um = float(params["match_distance"])
+    effective = float(cfg.preprocessing.requested_spacing_um or spec.spacing_um)
+    spacing = DenseSampleSpacing(
+        source_spacing_um=match_um / float(predictions.match_distance_px),
+        effective_spacing_um=effective,
+    )
+    return SimpleNamespace(
+        num_classes=predictions.num_classes,
+        delta_px=match_um / effective,
+        nms_distance_px=float(params.get("nms_distance", match_um)) / effective,
+        matching=spec.match_method,
+        spacing=spacing,
+        spacing_for_sample=lambda sid: spacing,
     )
 
 
 def _decode_cell_points(
     dataset: str, replicate: int, run_dir: Path, *, fold_index: int | None = None
 ) -> tuple[CellPredictions, CellPredictions, list[float]]:
-    """Reload a trained cell and decode its tune + test per-sample points (live GPU path).
+    """Score a trained cell from its persisted tune + test point predictions (no model).
 
-    ``fold_index`` names a folds-axis cell's fold: its split and its ``fold_<k>/`` weights.
-    ``None`` is a single-fold (seeds-axis) run, whose weights sit at the run dir.
+    ``fold_index`` names a folds-axis cell's fold: its ``fold_<k>/`` predictions. ``None``
+    is a single-fold (seeds-axis) run, whose predictions sit at the run dir.
 
-    Rebuilds the model + dense grids + loaders from the run's saved config (the reload is
-    dataset-agnostic — it reads everything from the config), sweeps the per-class detection
-    thresholds on ``tune`` and freezes them, then decodes tune + test points at those frozen
-    knobs. Requires a GPU/CPU torch runtime + the cached dense grids; not exercised in CI (no
-    data/GPU), exactly like ``soma.benchmarks.ocelot._greedy_report_for_run``.
+    Reads the run's saved config, its ``predictions_tune.parquet`` /
+    ``predictions_<test>.parquet`` (every peak above ``min_score``, level-0 pixels) and the
+    point annotations, freezes per-class thresholds on tune (tiled datasets on the
+    stitched per-ROI frame; untiled ones with soma's sample-native
+    :func:`~soma.evaluation.sweep_threshold`), then decodes tune + test at those knobs.
     """
-    import functools
-    import inspect
-    import math
-
-    import torch
-
     from soma.benchmarks.detection_benchmark import CellPredictions, dataset_spec
-    from soma.benchmarks.ocelot import (
-        _locate_checkpoint,
-        _locate_run_config,
-        build_detection_model_from_checkpoint,
-    )
-    from soma import FeatureExtractor
-    from soma.cache import resolve_cache_root
+    from soma.benchmarks.ocelot import _locate_run_config
+    from soma.class_scheme import resolve_classes
     from soma.config import load_config
-    from soma.data._legacy import (
-        bind_detection_targets,
-        legacy_folds_from_csv,
-        legacy_samples_from_csv,
-    )
-    from soma.encoders.validation import resolve_preprocessing_config
-    from soma.pipeline import (
-        _make_loaders,
-        _resolve_detection_px,
-        _resolve_detection_sample_spacings,
-        _sweep_detection_thresholds,
-        extraction_shape,
-        extraction_unit,
-    )
-    from soma.tasks.detection import DetectionHead
-    from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
+    from soma.data import AnnotationManifest, PointSource
+    from soma.data._legacy import legacy_samples_from_csv
+    from soma.evaluation import PointPredictions, sweep_threshold
 
     spec = dataset_spec(dataset)
-    cfg = load_config(str(_locate_run_config(run_dir)))
+    config_path = _locate_run_config(run_dir)
+    cfg = load_config(str(config_path))
+    folder = config_path.parent if fold_index is None else config_path.parent / f"fold_{fold_index}"
     manifest = legacy_samples_from_csv(cfg.dataset_csv)
-    splits = legacy_folds_from_csv(cfg.splits_csv, manifest)
-    fold_split = splits.folds[0 if fold_index is None else fold_index]
-    train_records = [manifest.samples[s] for s in fold_split.train]
-    tune_records = [manifest.samples[s] for s in fold_split.tune]
-    test_by_split = {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
-
-    from dataclasses import replace as _replace
-
-    rescore_root = run_dir / "rescore_extraction"
-    if cfg.composite is not None:
-        # Composite (rung 4) cell: rebuild the multi-encoder concat view exactly as the
-        # training run did — each member resolves to its own dense cache (pure hits after
-        # the sweep's extraction), concatenated at load time over the manifest this
-        # function already holds. Reuses the pipeline's own builder so scoring can never
-        # diverge from what trained.
-        from soma.pipeline import build_composite_dense_store
-
-        store = build_composite_dense_store(cfg, manifest, output_root=rescore_root)
-    else:
-        pre = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
-        cache_cfg = _replace(
-            cfg.cache,
-            root_dir=resolve_cache_root(
-                cfg.cache, feature_dir=rescore_root, output_root=cfg.output_root
-            ),
-        )
-        store = FeatureExtractor(
-            manifest,
-            cfg.encoder,
-            pre,
-            shape=extraction_shape(cfg.dataset_type),
-            unit=extraction_unit(cfg),
-            execution=cfg.execution,
-            cache=cache_cfg,
-            output_root=rescore_root,
-        ).extract().source
-
-    p = dict(cfg.task.params)
-    num_classes = int(p["num_classes"])
-    all_records = train_records + tune_records + [
-        record for records in test_by_split.values() for record in records
+    _, _, class_remap, dropped = resolve_classes(
+        cfg.task.params, excluded_key="drop", subject="detection"
+    )
+    targets = PointSource.from_manifest(
+        AnnotationManifest.from_csv(cfg.dataset_csv), class_remap=class_remap, drop=dropped
+    )
+    tune = PointPredictions.from_parquet(folder / "predictions_tune.parquet")
+    tests = [
+        PointPredictions.from_parquet(path)
+        for path in sorted(folder.glob("predictions_*.parquet"))
+        if path.name != "predictions_tune.parquet"
     ]
-    sample_spacings, effective_spacing_um = _resolve_detection_sample_spacings(
-        store, all_records
-    )
-    delta_px = _resolve_detection_px(
-        float(p["match_distance"]), effective_spacing_um, "match_distance"
-    )
-    sigma_px = (
-        _resolve_detection_px(float(p["sigma"]), effective_spacing_um, "sigma")
-        if p.get("sigma") is not None else delta_px / 3.0
-    )
-    geometry = store.geometry(train_records[0].sample_id)
-    head = DetectionHead(
-        num_classes=num_classes, geometry=geometry, delta_px=delta_px, sigma_px=sigma_px,
-        nms_distance_px=delta_px, matching=spec.match_method,
-        foreground_weight=float(p.get("foreground_weight", 10.0)),
-        sample_spacings=sample_spacings,
-        metrics=cfg.evaluation.metrics,
-    )
-    # The head reads its points through a bound PointSource, never off a record.
-    bind_detection_targets(head, manifest.records)
-    # One reconstruction path for every re-scorer: it rebuilds the run's feature adaptor
-    # (issue #286) and sizes the decoder from the adaptor's output width, so a checkpoint
-    # trained under a projection loads back into the model that wrote it.
-    model = build_detection_model_from_checkpoint(
-        store=store,
-        checkpoint_path=_locate_checkpoint(run_dir, fold=fold_index),
-        decoder=cfg.decoder,
-        task_head=head,
-        geometry=geometry,
-        normalization=cfg.normalization,
-        projection=cfg.projection,
-        encoder_identity=cfg.encoder.name if cfg.encoder is not None else "",
-    )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device).eval()
-
-    collate = functools.partial(detection_collate_fn, target_dtypes=head.target_dtypes)
-    _, tune_loader, test_loaders = _make_loaders(
-        DetectionDataset, collate, train_records, tune_records, test_by_split,
-        cfg.training, store, head.extract_targets,
-    )
-    # Freeze per-class detection thresholds on tune, then decode both splits at those
-    # knobs. Tiled datasets sweep on the stitched per-ROI frame (the per-tile surrogate
-    # double-counts overlap copies); untiled datasets keep the pipeline's sample-native
-    # sweep so their published numbers stay pinned.
+    frame = _point_frame(cfg, spec, tune)
+    tile_px = int(cfg.preprocessing.requested_tile_size_px)
     if spec.stitch_to_roi:
-        score_thresholds = _sweep_thresholds_on_rois(model, tune_loader, head, device, manifest)
+        score_thresholds = _sweep_thresholds_on_rois(tune, targets, manifest, frame, tile_px=tile_px)
     else:
-        score_thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
-    head.score_threshold = score_thresholds
-    tune_samples = _decode_split_points(model, tune_loader, head, device, manifest)
+        swept, _ = sweep_threshold(
+            tune, targets.subset(tune.sample_ids), per_class=True, matching=spec.match_method
+        )
+        score_thresholds = [float(swept[c]) for c in range(tune.num_classes)]
+    tune_samples = _decode_split_points(
+        tune, targets, manifest, frame, threshold=score_thresholds, tile_px=tile_px
+    )
     test_samples: list = []
-    for loader in test_loaders.values():
-        test_samples.extend(_decode_split_points(model, loader, head, device, manifest))
+    for predictions in tests:
+        test_samples.extend(
+            _decode_split_points(
+                predictions, targets, manifest, frame, threshold=score_thresholds, tile_px=tile_px
+            )
+        )
 
     encoder_label = cfg.encoder.name if cfg.encoder is not None else cfg.composite.label
     make = lambda samples: CellPredictions(  # noqa: E731

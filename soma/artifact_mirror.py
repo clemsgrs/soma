@@ -92,9 +92,6 @@ def _resume_recipe(payload: dict[str, Any]) -> dict[str, Any]:
         run.pop("mirror_root", None)
         run.pop("resume", None)
         run.pop("run_id", None)
-    evaluation = normalized.get("evaluation")
-    if isinstance(evaluation, dict):
-        evaluation.pop("save_segmentation_confusion_evidence", None)
     return normalized
 
 

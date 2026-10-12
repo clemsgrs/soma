@@ -686,7 +686,13 @@ def _reproduce_one(
             overrides=overrides,
         )
         with _panel_runtime_boundary(isolate_runtime_failures):
-            pipeline_cls(config).run()
+            # A benchmark that composes the verbs itself (HEST's closed-form probe) runs
+            # its own config; every other one is a Pipeline run.
+            runner = getattr(benchmark, "run", None)
+            if callable(runner):
+                runner(config)
+            else:
+                pipeline_cls(config).run()
             metrics = _require_reported_scores(
                 benchmark,
                 benchmark.score(seed_root),

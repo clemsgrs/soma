@@ -6,6 +6,7 @@ from soma.data.adapters import from_arrays, from_directory
 from soma.data.cached import CachedSetSource
 from soma.data.cohort import Cohort, FoldSplit
 from soma.data.geometry import GridGeometry
+from soma.data.images import TileImageSource
 from soma.data.manifests import AnnotationEntry, AnnotationManifest, ImageEntry, ImageManifest
 from soma.data.records import SampleRecord
 from soma.data.sources import (
@@ -56,6 +57,7 @@ __all__ = [
     "resolve_class_scheme",
     "SetSource",
     "TargetSource",
+    "TileImageSource",
     "covers",
     "ensure_filename_safe_id",
     "from_arrays",

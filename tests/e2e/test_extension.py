@@ -20,7 +20,7 @@ from torch import Tensor, nn
 from soma.decoders.base import Decoder
 from soma.decoders.registry import decoder_registry
 from soma.evaluation import Predictions
-from soma.learn import MILLearner, PredictOutput
+from soma.learn import DenseLearner, MILLearner, PredictOutput
 from soma.tasks.classification import BinaryClassificationHead
 from soma.tasks.dense_metrics import soft_dice_loss
 from soma.tasks.registry import task_registry
@@ -35,7 +35,7 @@ CUSTOM_DECODER = "e2e_two_stage_conv"
 CUSTOM_SET_HEAD = "e2e_label_smoothing_classification"
 
 # Call counters: the scenario proves the overrides actually ran, not just registered.
-CALLS = {"loss": 0, "decoder": 0, "entropy": 0, "smoothing": 0, "predict": 0}
+CALLS = {"loss": 0, "decoder": 0, "entropy": 0, "smoothing": 0, "predict": 0, "smooth_grid": 0}
 
 
 class AttentionEntropyLearner(MILLearner):
@@ -63,6 +63,24 @@ class AttentionEntropyLearner(MILLearner):
         entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1)
         CALLS["predict"] += 1
         return PredictOutput(columns={**step.columns, "attention_entropy": entropy}, raw=step.raw)
+
+
+class SmoothGridLearner(DenseLearner):
+    """``DenseLearner`` plus a total-variation penalty on the predicted class probabilities:
+    one ``training_step`` override on the grid shape, named by dotted path in the config."""
+
+    def __init__(self, model, *, weight: float, **kwargs) -> None:
+        super().__init__(model, **kwargs)
+        self.weight = float(weight)
+
+    def training_step(self, batch) -> Tensor:
+        output = self.forward_batch(batch)
+        probabilities = output.logits.softmax(dim=1)
+        variation = (probabilities[..., 1:, :] - probabilities[..., :-1, :]).abs().mean() + (
+            probabilities[..., 1:] - probabilities[..., :-1]
+        ).abs().mean()
+        CALLS["smooth_grid"] += 1
+        return self.compute_loss(output, batch) + self.weight * variation
 
 
 class LabelSmoothingHead(BinaryClassificationHead):
@@ -242,4 +260,54 @@ def test_custom_learner_by_dotted_path_trains_through_cli(
         ),
     )
     artifact.check_equal("custom_head/check_task_head", "passed", "passed")
+    artifact.assert_passed()
+
+
+def test_custom_grid_learner_by_dotted_path_trains_through_cli(
+    tmp_path, encoder_name, new_artifact, registered_extensions
+):
+    """A ``DenseLearner`` subclass adding a regulariser trains a cached segmentation run
+    through the CLI via the ``training.learner`` leaf."""
+    CALLS["smooth_grid"] = 0
+    artifact = new_artifact("extension_custom_grid_learner")
+    roi_px = 96
+    dataset_csv, splits_csv = make_dense_dataset(tmp_path / "data", "segmentation", size=roi_px)
+    epochs = 20
+    config = {
+        "run": {"output_root": str(tmp_path / "runs"), "seed": 0},
+        "data": {
+            "dataset_csv": str(dataset_csv),
+            "splits_csv": str(splits_csv),
+            "dataset_type": "segmentation",
+        },
+        "preprocessing": {
+            "backend": "openslide",
+            "requested_tile_size_px": roi_px,
+            "requested_spacing_um": SPACING_UM,
+        },
+        "execution": CPU_EXECUTION,
+        "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
+        "encoder": {"name": encoder_name, "precision": "fp32", "batch_size": 8},
+        "decoder": {"name": "lightweight_conv"},
+        "task": {"name": "segmentation", "params": {"num_classes": 3}},
+        "evaluation": {"metrics": ["mean_dice", "mean_iou"]},
+        "normalization": {"method": "zscore"},
+        "training": {
+            "epochs": epochs,
+            "learning_rate": 3e-3,
+            "batch_size": 4,
+            "patience": epochs,
+            "learner": {
+                "name": "tests.e2e.test_extension.SmoothGridLearner",
+                "params": {"weight": 0.1},
+            },
+            **CPU_LOADER,
+        },
+    }
+    run = run_soma(config, tmp_path / "config.yaml")
+
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("custom_training_steps", CALLS["smooth_grid"], epochs)
+    artifact.check_at_least("test/mean_dice", run.summary["test/mean_dice"], 0.8)
     artifact.assert_passed()

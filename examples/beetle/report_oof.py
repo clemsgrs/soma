@@ -104,6 +104,48 @@ def _read_sample_to_patient(sample_patient_csv: str | Path) -> dict[str, str]:
     return mapping
 
 
+def roi_crop_targets(
+    roi_dataset_csv: str | Path,
+    *,
+    classes: Mapping[str, Sequence[int]],
+    ignore: Sequence[int],
+    size: tuple[int, int] = (512, 512),
+):
+    """The label-map source of a run's sampled ROIs: the mask crops listed in its
+    ``segmentation_rois/dataset.csv`` (``label_mask_crop_path``), class scheme folded in."""
+    import pandas as pd
+
+    from soma.data import CachedLabelMapSource, build_label_remap
+
+    rois = pd.read_csv(roi_dataset_csv)
+    return CachedLabelMapSource(
+        dict(zip(rois["sample_id"].astype(str), rois["label_mask_crop_path"])),
+        size=size,
+        label_remap=build_label_remap(classes, ignore=ignore),
+    )
+
+
+def write_tune_evidence(run_dir: str | Path, *, num_folds: int, targets) -> list[Path]:
+    """Write each fold's ``confusion_evidence_tune.json`` from its saved tune label maps.
+
+    soma writes every fold's predicted tune label maps (``predictions_tune/``); the
+    per-ROI confusion records this report groups are recomputed from them against
+    ``targets``, the run's label-map source (:func:`roi_crop_targets` for sampled ROIs).
+    """
+    from soma.evaluation import LabelMapPredictions, confusion_records, write_confusion_records
+
+    paths = []
+    for fold in range(int(num_folds)):
+        fold_dir = Path(run_dir) / f"fold_{fold}"
+        predictions = LabelMapPredictions.load(fold_dir / "predictions_tune")
+        path = fold_dir / "confusion_evidence_tune.json"
+        write_confusion_records(
+            path, confusion_records(predictions, targets.subset(predictions.sample_ids), fold=fold)
+        )
+        paths.append(path)
+    return paths
+
+
 def group_sample_confusions(
     records: Sequence[SegmentationConfusionRecord],
     sample_to_patient: Mapping[str, str],
@@ -393,6 +435,8 @@ __all__ = [
     "bootstrap_summary_payload",
     "confusion_metrics_payload",
     "group_sample_confusions",
+    "roi_crop_targets",
+    "write_tune_evidence",
     "main",
     "patient_bootstrap",
 ]

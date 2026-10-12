@@ -12,7 +12,7 @@ from soma.learn.dense import DenseLearner
 from soma.learn.learner import Learner
 from soma.learn.mil import MILLearner
 from soma.learn.trainer import FitResult, Trainer
-from soma.training.model import EmbeddingModel, LiveSegmentationModel, MILModel, SegmentationModel
+from soma.training.model import DenseModel, EmbeddingModel, MILModel
 
 __all__ = ["fit", "learner_for"]
 
@@ -21,13 +21,13 @@ def learner_for(model: nn.Module, *, loss=None, optimizer=None, schedulers: Sequ
     """Wrap a bare model in the learner for its shape."""
     if isinstance(model, (MILModel, EmbeddingModel)):
         return MILLearner(model, loss=loss, optimizer=optimizer, schedulers=schedulers)
-    if isinstance(model, (SegmentationModel, LiveSegmentationModel)):
+    if isinstance(model, DenseModel):
         if loss is not None:
             raise ValueError("loss= applies to the set shape; subclass DenseLearner for a custom dense loss")
         return DenseLearner(model, optimizer=optimizer, schedulers=schedulers)
     raise TypeError(
         f"cannot pick a learner for {type(model).__name__}; pass a Learner or a MILModel / "
-        "EmbeddingModel / SegmentationModel"
+        "EmbeddingModel / DenseModel"
     )
 
 

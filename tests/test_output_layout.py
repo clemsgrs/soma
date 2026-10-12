@@ -8,7 +8,6 @@ import yaml
 
 from soma.config import (
     AggregatorConfig,
-    AugmentationConfig,
     CacheConfig,
     CompositeConfig,
     DecoderConfig,
@@ -19,7 +18,6 @@ from soma.config import (
     MasksConfig,
     NormalizationConfig,
     PipelineConfig,
-    PixelClassifierConfig,
     PreprocessingConfig,
     ProjectionConfig,
     SamplingConfig,
@@ -155,7 +153,7 @@ def test_canonical_experiment_payload_names_checkpoint_selection_unconditionally
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
     assert payload["training"]["checkpoint_selection"] == "best"
-    assert payload["identity_version"] == 6
+    assert payload["identity_version"] == 7
 
 
 def test_canonical_epoch_experiment_payload_names_null_step_budget(tmp_path: Path):
@@ -245,26 +243,6 @@ def test_explicit_class_request_ratios_define_experiment_identity(tmp_path: Path
     assert build_experiment_spec(equal).experiment_id != build_experiment_spec(
         weighted
     ).experiment_id
-
-
-def test_segmentation_confusion_evidence_is_identity_neutral_but_persisted(tmp_path: Path):
-    ordinary = _make_pipeline_config(tmp_path)
-    with_evidence = _make_pipeline_config(
-        tmp_path,
-        evaluation=EvalConfig(
-            save_segmentation_confusion_evidence=True,
-        ),
-    )
-
-    assert "save_segmentation_confusion_evidence" not in canonical_experiment_payload(
-        ordinary
-    )["evaluation"]
-    assert build_experiment_spec(with_evidence).experiment_id == build_experiment_spec(
-        ordinary
-    ).experiment_id
-    assert config_yaml_dict(with_evidence)["evaluation"][
-        "save_segmentation_confusion_evidence"
-    ] is True
 
 
 def test_pipeline_config_rejects_roi_batch_sampling_outside_cached_segmentation(
@@ -393,24 +371,6 @@ def test_build_experiment_spec_distinguishes_dense_decoder_settings(tmp_path: Pa
     wider_spec = build_experiment_spec(wider_decoder)
 
     assert shallow_spec.experiment_id != wider_spec.experiment_id
-
-
-def test_build_experiment_spec_distinguishes_dense_pixel_classifier_choices(tmp_path: Path):
-    logistic = _make_segmentation_config(
-        tmp_path,
-        decoder=None,
-        pixel_classifier=PixelClassifierConfig(name="logistic", params={"C": 1.0}),
-    )
-    random_forest = _make_segmentation_config(
-        tmp_path,
-        decoder=None,
-        pixel_classifier=PixelClassifierConfig(name="random_forest", params={"n_estimators": 25}),
-    )
-
-    logistic_spec = build_experiment_spec(logistic)
-    forest_spec = build_experiment_spec(random_forest)
-
-    assert logistic_spec.experiment_id != forest_spec.experiment_id
 
 
 def test_build_experiment_spec_distinguishes_dense_composite_model_choices(tmp_path: Path):
@@ -547,7 +507,7 @@ def test_build_experiment_spec_distinguishes_live_augmentation_choices(tmp_path:
     horizontal_flip = _make_segmentation_config(
         tmp_path,
         feature_mode="live",
-        augmentation=AugmentationConfig(horizontal_flip=0.5),
+        augmentation={"name": "segmentation", "params": {"horizontal_flip": 0.5}},
     )
 
     no_aug_spec = build_experiment_spec(no_augmentation)
@@ -681,8 +641,8 @@ def test_run_manifest_records_identity_version(tmp_path: Path):
         config=config, experiment=layout.experiment, run_dir=layout.run_dir,
         run_id=layout.run_id, status="running",
     )
-    assert run.to_dict()["identity_version"] == 6
-    assert layout.experiment.to_dict()["identity_version"] == 6
+    assert run.to_dict()["identity_version"] == 7
+    assert layout.experiment.to_dict()["identity_version"] == 7
 
 
 def test_git_provenance_comes_from_the_soma_checkout_not_cwd(tmp_path: Path, monkeypatch):

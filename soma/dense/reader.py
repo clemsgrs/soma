@@ -150,14 +150,18 @@ def read_image_at_spacing(
     backend: str = "auto",
     tolerance: float = 0.05,
     interpolation: str = "area",
+    spacing_at_level_0: float | None = None,
 ) -> np.ndarray:
-    """Read an RGB tile as a ``(H, W, 3)`` uint8 array (flat PIL or spacing-aware hs2p)."""
+    """Read an RGB tile as a ``(H, W, 3)`` uint8 array (flat PIL or spacing-aware hs2p).
+
+    ``spacing_at_level_0`` overrides the file's own level-0 µm/px (a manifest declaration).
+    """
     if _is_flat(path, spacing_um):
         with Image.open(path) as image:
             return np.ascontiguousarray(np.array(image.convert("RGB")))
     from hs2p.wsi.wsi import WSI
 
-    wsi = WSI(path=Path(path), backend=backend)
+    wsi = WSI(path=Path(path), backend=backend, spacing_at_level_0=spacing_at_level_0)
     arr = wsi.read_full_at_spacing(
         float(spacing_um), tolerance=float(tolerance), interpolation=interpolation
     )
@@ -173,6 +177,7 @@ def read_image_region_at_spacing(
     backend: str = "auto",
     tolerance: float = 0.05,
     interpolation: str = "area",
+    spacing_at_level_0: float | None = None,
 ) -> np.ndarray:
     """Read a ``size=(w, h)`` RGB region at ``(x, y)`` (level-0) and ``spacing_um``.
 
@@ -180,10 +185,11 @@ def read_image_region_at_spacing(
     image is a whole-slide raster, so each ROI reads only its window (never the whole
     gigapixel slide) at the same spacing/size as its dense grid — mirroring the read the
     slide-manifest extractor uses, so overlays register to the features and the supervision.
+    ``spacing_at_level_0`` overrides the file's own level-0 µm/px.
     """
     from hs2p.wsi.wsi import WSI
 
-    wsi = WSI(path=Path(path), backend=backend)
+    wsi = WSI(path=Path(path), backend=backend, spacing_at_level_0=spacing_at_level_0)
     arr = wsi.read_region_at_spacing(
         location=tuple(location),
         requested_spacing_um=float(spacing_um),
@@ -210,6 +216,41 @@ def _reference_geometry(
     ) as slide:
         width, height = slide.level_dimensions[0]
         return float(slide.spacing), (int(width), int(height))
+
+
+@lru_cache(maxsize=1024)
+def _served_spacing(
+    image_path: str,
+    backend: str,
+    spacing_at_level_0: float | None,
+    spacing_um: float,
+    tolerance: float,
+) -> tuple[float, float]:
+    """``(level-0 µm/px, served µm/px)`` of a spacing-aware read of ``image_path``.
+
+    Runs hs2p's own level selection, so the served spacing is what
+    :func:`read_image_at_spacing` returns: a pyramid level within ``tolerance`` of
+    ``spacing_um`` is read unresized at its own spacing, anything else is resampled to
+    ``spacing_um``. Opened once per image per process; a declared ``spacing_at_level_0``
+    overrides the file's own, as it does for the reads.
+    """
+    from hs2p.wsi.geometry import select_level_for_spacing_read
+    from hs2p.wsi.reader import open_slide
+
+    with open_slide(
+        Path(image_path), backend, spacing_override=spacing_at_level_0
+    ) as slide:
+        level0 = float(slide.spacing)
+        downsamples = list(slide.level_downsamples)
+    selection = select_level_for_spacing_read(
+        requested_spacing_um=float(spacing_um),
+        level0_spacing_um=level0,
+        level_downsamples=downsamples,
+        tolerance=float(tolerance),
+        content_kind="image",
+    )
+    served = selection.read_spacing_um if selection.is_within_tolerance else spacing_um
+    return level0, float(served)
 
 
 @contextmanager

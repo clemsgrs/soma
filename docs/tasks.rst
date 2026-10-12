@@ -69,9 +69,16 @@ independent.
 Regression
 ----------
 
-The ``regression`` head maps a feature vector to continuous predictions, trains
-with MSE, and reports ``mae`` and ``r2`` by default. For gene-expression vectors
-and the closed-form Ridge+PCA probe, see the :doc:`hest-gene-expression-benchmark`.
+The ``regression`` head maps a feature vector to continuous predictions and
+trains with MSE. With one output it reads the ``value`` target, predicts
+``predicted_value``, and reports ``mae`` and ``r2`` by default.
+
+``num_outputs: G`` regresses ``G`` values at once, such as a gene panel. The
+head then reads the targets ``value_0`` to ``value_<G-1>``, predicts columns of
+the same names, and reports ``mean_pearson``: the Pearson correlation of each
+output over the samples, averaged over the outputs. The
+:doc:`hest-gene-expression-benchmark` scores a closed-form Ridge+PCA probe
+with the same columns and metric.
 
 .. autoclass:: soma.tasks.regression.RegressionHead
    :members:

@@ -7,7 +7,7 @@ from collections import Counter
 import pytest
 
 from soma.config import TrainingConfig
-from soma.training.segmentation_roi_sampler import SegmentationRoiBatchSampler
+from soma.learn.roi_sampler import SegmentationRoiBatchSampler
 
 
 @pytest.mark.parametrize(

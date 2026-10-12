@@ -168,10 +168,10 @@ def test_ordinary_task_default_and_identity_match_semantic_manifest_contract(
     assert payload["task"] == {"name": "binary_classification", "params": {}}
     assert "representation" not in payload
     assert experiment.experiment_id == (
-        "895313e0237b1b7a1051640bcf1e3b1cf37f821d313f9e9c76fedfa1b8946806"
+        "e5042d6c81f06435914f679313822baac3405392180393bb0b7406ea150fb0b7"
     )
     assert experiment.slug == (
-        "dataset-precomputed-slide-binary-classification_895313e0237b"
+        "dataset-precomputed-slide-binary-classification_e5042d6c81f0"
     )
 
 
@@ -198,7 +198,7 @@ def test_representation_v1_rejects_noncanonical_protocol(
     [
         {"normalization": {"method": "l2"}},
         {"projection": {"method": "random", "target_dim": 8}},
-        {"augmentation": {"horizontal_flip": 0.5}},
+        {"augmentation": {"name": "segmentation", "params": {"horizontal_flip": 0.5}}},
     ],
 )
 def test_representation_rejects_active_feature_transforms(tmp_path: Path, extra: dict):

@@ -11,7 +11,6 @@ import torch.nn.functional as F
 from soma.benchmarks import Benchmark, get_benchmark, list_benchmarks
 from soma.benchmarks import eva_segmentation as seg
 from soma.benchmarks.eva import EvaTileClassificationBenchmark
-from soma.config import AugmentationConfig
 from soma.curation.manifest import CuratedManifest
 from soma.decoders.registry import decoder_registry
 from soma.dense import compute_dense_geometry
@@ -109,7 +108,7 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
     assert config.tags == ["eva", "consep", "uni2", "segmentation"]
     # CoNSeP's online transforms are deterministic: the cached grids are EVA's samples.
     assert config.feature_mode == "cached"
-    assert not config.augmentation.is_enabled()
+    assert config.augmentation is None
 
 
 def test_monusac_config_ignores_the_ambiguous_class(tmp_path: Path):
@@ -128,8 +127,7 @@ def test_monusac_config_random_resized_crops_whole_train_images_live(tmp_path: P
         dataset_csv=tmp_path / "d.csv", splits_csv=tmp_path / "s.csv", output_root=tmp_path
     )
     assert config.feature_mode == "live"
-    assert config.augmentation.random_resized_crop_scale == (0.08, 1.0)
-    assert config.augmentation == AugmentationConfig(random_resized_crop_scale=(0.08, 1.0))
+    assert config.augmentation == {"name": "segmentation", "params": {"crop_scale": [0.08, 1.0]}}
 
 
 def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):
@@ -319,3 +317,96 @@ def test_conv_with_image_decoder_builds_through_the_registry_for_a_grid():
         "eva_conv_with_image", None, geometry=geometry, input_dim=3, num_classes=5
     )
     assert isinstance(decoder, seg.EvaConvWithImageDecoder)
+
+
+# --- scoring ----------------------------------------------------------------------------
+
+
+def _finished_run(tmp_path: Path, dataset: str, masks: dict, predicted: dict) -> tuple[Path, Path]:
+    """A finished single-fold EVA run: flat masks, its saved config and ``predictions_test/``.
+
+    Returns ``(output_root, dataset_csv)``.
+    """
+    import numpy as np
+    import pandas as pd
+    from PIL import Image
+
+    from soma.config import save_config
+    from soma.evaluation import LabelMapPredictions
+
+    rows = []
+    for sample_id, mask in masks.items():
+        mask = np.asarray(mask, dtype=np.uint8)
+        image_path, mask_path = tmp_path / f"{sample_id}.png", tmp_path / f"{sample_id}_mask.png"
+        Image.fromarray(np.zeros((*mask.shape, 3), dtype=np.uint8)).save(image_path)
+        Image.fromarray(mask).save(mask_path)
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "image_path": str(image_path),
+                "label_mask_path": str(mask_path),
+                "spacing_at_level_0": 0.25,
+            }
+        )
+    dataset_csv = tmp_path / "dataset.csv"
+    pd.DataFrame(rows).to_csv(dataset_csv, index=False)
+    config = get_benchmark(f"eva/{dataset}").build_config(
+        dataset_csv=dataset_csv, splits_csv=tmp_path / "splits.csv", output_root=tmp_path
+    )
+    run_dir = tmp_path / "experiments" / "exp" / "runs" / "run"
+    run_dir.mkdir(parents=True)
+    save_config(config, run_dir / "config.yaml")
+    spec = seg.DATASETS[dataset]
+    LabelMapPredictions(
+        {sid: np.asarray(m, dtype=np.uint8) for sid, m in predicted.items()},
+        classes=spec.class_names,
+        ignore_index=5 if spec.ignore_index is None else spec.ignore_index,
+    ).save(run_dir / "predictions_test")
+    return tmp_path, dataset_csv
+
+
+def _core_evaluation(output_root: Path, dataset_csv: Path) -> dict[str, float]:
+    from soma.data import AnnotationManifest, LabelMapSource
+    from soma.evaluation import LabelMapPredictions, evaluate
+
+    predictions = LabelMapPredictions.load(
+        output_root / "experiments" / "exp" / "runs" / "run" / "predictions_test"
+    )
+    shape = predictions[predictions.sample_ids[0]].shape
+    targets = LabelMapSource.from_manifests(AnnotationManifest.from_csv(dataset_csv), size=shape)
+    return evaluate(predictions, targets, metrics=seg.METRICS).metrics
+
+
+def test_monusac_score_counts_ignored_pixels_as_predicted_area_like_eva(tmp_path: Path):
+    # One nucleus pixel, one Ambiguous (ignored) pixel predicted as that nucleus class.
+    # EVA counts the ignored pixel as predicted area: Dice 2*1 / (2 + 1) = 2/3.
+    output_root, dataset_csv = _finished_run(
+        tmp_path, "monusac", masks={"a": [[1, 5]]}, predicted={"a": [[1, 1]]}
+    )
+    scores = get_benchmark("eva/monusac").score(output_root)
+    assert set(scores) == {f"test/{metric}" for metric in seg.METRICS}
+    assert scores["test/foreground_mean_dice"] == pytest.approx(2 / 3)
+    # Core evaluate drops the ignored pixel from both sides (the standard counts).
+    assert _core_evaluation(output_root, dataset_csv)["foreground_mean_dice"] == pytest.approx(1.0)
+
+
+def test_monusac_score_equals_core_evaluate_without_ignored_pixels(tmp_path: Path):
+    output_root, dataset_csv = _finished_run(
+        tmp_path,
+        "monusac",
+        masks={"a": [[0, 1], [2, 2]], "b": [[3, 3], [0, 4]]},
+        predicted={"a": [[0, 1], [2, 1]], "b": [[3, 0], [0, 4]]},
+    )
+    scores = get_benchmark("eva/monusac").score(output_root)
+    core = _core_evaluation(output_root, dataset_csv)
+    assert scores == pytest.approx({f"test/{metric}": core[metric] for metric in seg.METRICS})
+
+
+def test_eva_label_map_counts_match_the_training_time_eva_counts():
+    mask = torch.tensor([[[0, 1], [1, 5]]])
+    pred = torch.tensor([[[0, 1], [1, 1]]])
+    expected = seg.eva_confusion_counts(
+        _logits_from_pred(pred, num_classes=2), mask, num_classes=2, ignore_index=5
+    )
+    counts = seg.eva_label_map_counts(pred[0].numpy(), mask[0], num_classes=2, ignore_index=5)
+    assert counts.tolist() == expected[0].tolist()

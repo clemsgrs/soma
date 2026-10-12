@@ -1,47 +1,27 @@
-"""Detection (cell / nucleus point detection) — dense-feature heatmap path.
+"""Detection (cell / nucleus point detection) — the grid shape's point machinery.
 
-detection-v1 reuses the segmentation front half verbatim (frozen encoder →
-``encode_tiles_dense`` → ``(d, h, w)`` cache → ``decoder`` → dense head); only the
-output representation is detection-specific. This package owns that new machinery,
-kept free of the torch ``TaskHead`` so each piece unit-tests on tiny explicit inputs:
+Pure, weight-free pieces the :class:`soma.tasks.detection.DetectionHead` and
+:func:`soma.evaluate` compose, each unit-testable on tiny explicit inputs:
 
-* :mod:`soma.detection.encode` — level-0 → target-frame coordinate transform and the
-  point → per-class peak-heatmap target encoder (design §4, §5).
-* :mod:`soma.detection.peaks` — local-maxima + NMS + threshold peak extraction that
-  turns a predicted heatmap back into ``(x, y, class, score)`` points (design §6).
-* :mod:`soma.detection.matching` — class-aware F1@δ point matching (Hungarian /
-  greedy), per-image TP/FP/FN accumulation, the global + per-image-macro reduce, and
-  the per-class tune-split threshold sweep (design §7).
-* :mod:`soma.detection.froc` — FROC scoring (sensitivity vs false-positives/mm²), the
-  Monkey challenge's native metric, of which F1@δ is the one-threshold special case.
-* :mod:`soma.detection.midog_f1` — the MIDOG-native single-class F1 scorer, a thin
-  dataset-global adapter over the matcher (7.5 µm tolerance, Hungarian).
+* :mod:`soma.detection.encode` — level-0 <-> target-frame coordinate transforms and the
+  point -> per-class peak-heatmap target encoder.
+* :mod:`soma.detection.peaks` — local-maxima + NMS + threshold peak extraction that turns
+  a predicted heatmap back into ``(x, y, class, score)`` points.
+* :mod:`soma.detection.matching` — class-aware F1@δ point matching (Hungarian / greedy),
+  per-image TP/FP/FN accumulation, the global + per-image-macro reduce, and the per-class
+  threshold sweep.
+* :mod:`soma.detection.io` — point-file and ignore-mask readers.
 
-The head that wires these into the soma task contract is
-:class:`soma.tasks.detection.DetectionHead`.
+Protocol scorers (MIDOG F1, Monkey FROC) and the attention-map rung live with their
+benchmarks under :mod:`soma.benchmarks`.
 """
 
 from __future__ import annotations
 
-from soma.detection.attention import attention_to_detection_heatmap
 from soma.detection.encode import (
     render_peak_heatmap,
     transform_points_to_level0,
     transform_points_to_target,
-)
-from soma.detection.froc import (
-    DEFAULT_FP_THRESHOLDS,
-    MNL_CLASS_NAME,
-    MNL_MATCH_UM,
-    MONKEY_CLASS_NAMES,
-    MONKEY_MATCH_UM,
-    FrocResult,
-    compute_froc,
-    froc_curve,
-    froc_score_at_thresholds,
-    label_detections,
-    patch_area_mm2,
-    score_monkey_froc,
 )
 from soma.detection.matching import (
     ClassMatch,
@@ -51,15 +31,9 @@ from soma.detection.matching import (
     reduce_f1,
     sweep_score_thresholds,
 )
-from soma.detection.midog_f1 import (
-    MIDOG_MATCH_DISTANCE_UM,
-    MidogF1Score,
-    midog_f1,
-)
 from soma.detection.peaks import extract_peaks
 
 __all__ = [
-    "attention_to_detection_heatmap",
     "transform_points_to_target",
     "transform_points_to_level0",
     "render_peak_heatmap",
@@ -70,19 +44,4 @@ __all__ = [
     "detection_counts",
     "reduce_f1",
     "sweep_score_thresholds",
-    "DEFAULT_FP_THRESHOLDS",
-    "MNL_CLASS_NAME",
-    "MNL_MATCH_UM",
-    "MONKEY_CLASS_NAMES",
-    "MONKEY_MATCH_UM",
-    "FrocResult",
-    "compute_froc",
-    "froc_curve",
-    "froc_score_at_thresholds",
-    "label_detections",
-    "patch_area_mm2",
-    "score_monkey_froc",
-    "MIDOG_MATCH_DISTANCE_UM",
-    "MidogF1Score",
-    "midog_f1",
 ]

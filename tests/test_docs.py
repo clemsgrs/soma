@@ -21,7 +21,6 @@ TUTORIALS = [
     "walkthrough-segmentation.ipynb",
     "walkthrough-detection.ipynb",
     "walkthrough-composite.ipynb",
-    "walkthrough-attention-segmentation.ipynb",
 ]
 
 
@@ -340,7 +339,6 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "walkthrough-slide-encoder",
             "walkthrough-detection",
             "walkthrough-segmentation",
-            "walkthrough-attention-segmentation",
             "walkthrough-composite",
         ),
         "benchmarking.rst": (

@@ -674,76 +674,134 @@ def test_realized_epochs_reads_a_fold_cells_history(tmp_path: Path):
     assert m.realized_epochs(tmp_path, fold=0) is None
 
 
-def test_roi_threshold_sweep_uses_stitched_predictions_and_restores_head(monkeypatch):
-    m = _load_driver()
+class _Points:
+    """A stand-in PointSource over in-memory level-0 points."""
+
+    def __init__(self, points):
+        self._points = points
+
+    @property
+    def sample_ids(self):
+        return list(self._points)
+
+    def load(self, sample_id):
+        return self._points[sample_id]
+
+    def subset(self, ids):
+        return _Points({sid: self._points[sid] for sid in ids})
+
+
+def _frame(num_classes=1, delta=30.0):
     from soma.dense import DenseSampleSpacing
 
     spacing = DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.25)
-    head = SimpleNamespace(
-        score_threshold=[0.25],
-        num_classes=1,
-        delta_px=30.0,
-        nms_distance_px=30.0,
-        matching="hungarian",
-        spacing_for_sample=lambda sid: spacing,
+    return SimpleNamespace(
+        num_classes=num_classes, delta_px=delta, nms_distance_px=delta, matching="hungarian",
+        spacing=spacing, spacing_for_sample=lambda sid: spacing,
     )
+
+
+def test_roi_threshold_sweep_uses_stitched_predictions():
+    import pandas as pd
+    import torch
+
+    from soma.data import Points
+    from soma.evaluation import PointPredictions
+
+    m = _load_driver()
     manifest = SimpleNamespace(
         samples={
             "roi_t0": SimpleNamespace(
-                metadata={
-                    "source_wsi": "roi", "tile_x": 0, "tile_y": 0,
-                    "roi_width": 512, "roi_height": 512,
-                }
+                metadata={"source_wsi": "roi", "tile_x": 0, "tile_y": 0, "roi_width": 512, "roi_height": 512}
             ),
             "roi_t1": SimpleNamespace(
-                metadata={
-                    "source_wsi": "roi", "tile_x": 100, "tile_y": 0,
-                    "roi_width": 512, "roi_height": 512,
-                }
+                metadata={"source_wsi": "roi", "tile_x": 100, "tile_y": 0, "roi_width": 512, "roi_height": 512}
             ),
         }
     )
-    tiles = [
-        SamplePrediction(
-            "roi_t0",
-            pred_xy=[[100.0, 100.0], [300.0, 300.0]], pred_score=[0.9, 0.8], pred_class=[0, 0],
-            gt_xy=[[100.0, 100.0]], gt_class=[0], matched=[True, False],
+    # t1 holds an overlap copy of t0's GT point at ROI (100, 100), with a weak 0.1 peak on it.
+    predictions = PointPredictions(
+        pd.DataFrame(
+            {
+                "sample_id": ["roi_t0", "roi_t0", "roi_t1"],
+                "x": [100.0, 300.0, 0.0],
+                "y": [100.0, 300.0, 100.0],
+                "class": [0, 0, 0],
+                "score": [0.9, 0.8, 0.1],
+            }
         ),
-        SamplePrediction(
-            "roi_t1",
-            pred_xy=[[0.0, 100.0]], pred_score=[0.1], pred_class=[0],
-            gt_xy=[[0.0, 100.0]], gt_class=[0], matched=[True],
-        ),
-    ]
-    observed_thresholds = []
-
-    def decode(*_args):
-        observed_thresholds.append(head.score_threshold)
-        from soma.benchmarks.detection_benchmark import stitch_tiles_to_rois
-
-        return stitch_tiles_to_rois(tiles, manifest, head)
-
-    monkeypatch.setattr(m, "_decode_split_points", decode)
+        classes=["mitosis"],
+        sample_ids=["roi_t0", "roi_t1"],
+        match_distance_px=30.0,
+    )
+    targets = _Points(
+        {
+            "roi_t0": Points(xy=torch.tensor([[100.0, 100.0]]), classes=torch.tensor([0])),
+            "roi_t1": Points(xy=torch.tensor([[0.0, 100.0]]), classes=torch.tensor([0])),
+        }
+    )
 
     from soma.detection.matching import sweep_score_thresholds
 
+    tiles = [predictions.points(sid) for sid in predictions.sample_ids]
     tile_threshold = sweep_score_thresholds(
-        [np.asarray(s.pred_xy) for s in tiles],
-        [np.asarray(s.pred_class) for s in tiles],
-        [np.asarray(s.pred_score) for s in tiles],
-        [np.asarray(s.gt_xy) for s in tiles],
-        [np.asarray(s.gt_class) for s in tiles],
-        num_classes=1,
-        delta=30.0,
-        method="hungarian",
+        [t[0] for t in tiles], [t[1] for t in tiles], [t[2] for t in tiles],
+        [targets.load(s).xy.numpy() for s in predictions.sample_ids],
+        [targets.load(s).classes.numpy() for s in predictions.sample_ids],
+        num_classes=1, delta=30.0, method="hungarian",
     )
+    threshold = m._sweep_thresholds_on_rois(predictions, targets, manifest, _frame(), tile_px=512)
 
-    threshold = m._sweep_thresholds_on_rois(object(), object(), head, object(), manifest)
-
-    assert tile_threshold == [0.1]  # overlap copy wins on the old per-tile surrogate
+    assert tile_threshold == [0.1]  # the overlap copy wins on the per-tile surrogate
     assert threshold == [0.9]
-    assert observed_thresholds == [0.0]
-    assert head.score_threshold == [0.25]
+
+
+def test_decode_split_points_drops_ignored_predictions_and_counts_valid_area():
+    import numpy as np
+    import pandas as pd
+    import torch
+
+    from soma.data import Points
+    from soma.evaluation import PointPredictions
+
+    m = _load_driver()
+    # A 32 px tile at 1 µm/px whose right half is ignored: the right-half peak and point
+    # are not scored, and the area covers the valid half only.
+    ignore = np.zeros((32, 32), dtype=np.uint8)
+    ignore[:, 16:] = 255
+    predictions = PointPredictions(
+        pd.DataFrame(
+            {
+                "sample_id": ["s"] * 3,
+                "x": [5.0, 5.0, 25.0],
+                "y": [5.0, 25.0, 5.0],
+                "class": [0, 0, 0],
+                "score": [0.9, 0.8, 0.95],
+            }
+        ),
+        classes=["cell"],
+        sample_ids=["s"],
+        match_distance_px=3.0,
+    )
+    targets = _Points(
+        {"s": Points(xy=torch.tensor([[5.0, 5.0], [5.0, 25.0], [25.0, 5.0]]), classes=torch.tensor([0, 0, 0]), ignore_mask=ignore)}
+    )
+    from soma.dense import DenseSampleSpacing
+
+    spacing = DenseSampleSpacing(source_spacing_um=1.0, effective_spacing_um=1.0)
+    frame = SimpleNamespace(
+        num_classes=1, delta_px=3.0, nms_distance_px=3.0, matching="hungarian",
+        spacing=spacing, spacing_for_sample=lambda sid: spacing,
+    )
+    manifest = SimpleNamespace(samples={"s": SimpleNamespace(metadata={})})
+
+    (sample,) = m._decode_split_points(predictions, targets, manifest, frame, threshold=[0.2], tile_px=32)
+
+    # Only the two supervised peaks survive; both match.
+    assert sorted(map(tuple, sample.pred_xy)) == [(5.0, 5.0), (5.0, 25.0)]
+    assert sample.matched == [True, True]
+    # Half of the 32x32 frame at 1 µm/px is valid: 16 * 32 µm² = 0.000512 mm².
+    assert sample.area_mm2 == pytest.approx(0.000512)
 
 
 def test_score_cell_persists_roi_threshold_and_checkpoint_proxy(tmp_path: Path, monkeypatch):
@@ -1209,24 +1267,3 @@ def test_main_composite_config_guards(monkeypatch, tmp_path: Path):
     with pytest.raises(SystemExit, match="no composite"):
         m.main(["extract", "--config", single, "--datasets", "midog",
                 "--out-root", str(tmp_path)])
-
-
-def test_decode_split_points_drops_ignored_predictions_and_counts_valid_area():
-    from types import SimpleNamespace
-
-    import torch
-
-    from tests.test_pipeline_detection import _ignore_right_half_batch
-
-    m = _load_driver()
-    model, head, loader = _ignore_right_half_batch()
-    head.score_threshold = 0.2
-    manifest = SimpleNamespace(samples={"s": SimpleNamespace(metadata={})})
-
-    (sample,) = m._decode_split_points(model, loader, head, torch.device("cpu"), manifest)
-
-    # Only the two supervised peaks survive; both match.
-    assert sorted(map(tuple, sample.pred_xy)) == [(5.0, 5.0), (5.0, 25.0)]
-    assert sample.matched == [True, True]
-    # Half of the 32x32 frame at 1 µm/px is valid: 16 * 32 µm² = 0.000512 mm².
-    assert sample.area_mm2 == pytest.approx(0.000512)

@@ -13,7 +13,11 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from soma.evaluation.metrics import DEFAULT_METRICS, metric_registry
+from soma.evaluation.metrics import (
+    DEFAULT_METRICS,
+    MULTI_OUTPUT_REGRESSION_METRICS,
+    metric_registry,
+)
 from soma.evaluation.predictions import (
     PLACEHOLDER_COLUMN,
     Predictions,
@@ -63,6 +67,20 @@ class Evaluation:
         return text
 
 
+def _is_default(metrics: str | Sequence[MetricLike] | None) -> bool:
+    """``"default"``, ``None`` or an empty list: the catalogue defaults."""
+    if isinstance(metrics, str):
+        return metrics == "default"
+    return metrics is None or len(metrics) == 0
+
+
+def _output_columns(predictions: Predictions) -> list[str]:
+    """The ``value_<k>`` prediction columns of a multi-output regression (else empty)."""
+    if predictions.task_family != "regression":
+        return []
+    return [c for c in predictions.prediction_columns if c.startswith("value_")]
+
+
 def resolve_frame_metrics(
     metrics: str | Sequence[MetricLike] | None, task_family: str
 ) -> dict[str, Callable[[pd.DataFrame, pd.DataFrame], float]]:
@@ -72,9 +90,7 @@ def resolve_frame_metrics(
     entry is a registry key, a dotted import path to a callable, or a callable; a
     registry key outside ``task_family`` is refused.
     """
-    if metrics is None or (isinstance(metrics, str) and metrics == "default") or (
-        not isinstance(metrics, str) and len(metrics) == 0
-    ):
+    if _is_default(metrics):
         if task_family not in DEFAULT_METRICS:
             raise ValueError(f"no default metrics for task family {task_family!r}")
         metrics = DEFAULT_METRICS[task_family]
@@ -169,6 +185,10 @@ def _align(predictions: Predictions, targets: pd.DataFrame) -> tuple[pd.DataFram
         keys = family_target_keys(predictions.task_family)
     except ValueError:  # a family soma does not know: its metrics read what they need
         keys = ()
+    outputs = _output_columns(predictions)
+    if outputs:
+        # A multi-output regression scores each value_<k> against the same-named target.
+        keys = tuple(outputs)
     if len(targets):
         required = [key for key in keys if key not in targets.columns]
         if required:
@@ -183,27 +203,44 @@ def _align(predictions: Predictions, targets: pd.DataFrame) -> tuple[pd.DataFram
 
 
 def evaluate(
-    predictions: Predictions,
-    targets: pd.DataFrame,
+    predictions,
+    targets,
     metrics: str | Sequence[MetricLike] | None = "default",
     subgroups: Sequence[str] = (),
 ) -> "Evaluation":
-    """Score ``predictions`` against ``targets`` (e.g. :meth:`soma.data.Cohort.targets`).
+    """Score ``predictions`` against ``targets``; the prediction noun picks the scoring.
 
-    The two are joined by ``sample_id`` and must cover the same ids: an unknown
-    prediction id, a target without a prediction, or a duplicate id is refused. Fill
-    samples the model could not score with :class:`~soma.evaluation.Baseline` first.
+    * :class:`~soma.evaluation.Predictions` (set shape) against a targets frame such as
+      :meth:`soma.data.Cohort.targets`, joined by ``sample_id``.
+    * :class:`~soma.evaluation.PointPredictions` against a
+      :class:`~soma.data.PointSource`: class-aware point matching within the
+      predictions' ``match_distance_px`` (Hungarian by default; a metric leaf with
+      params ``matching="greedy"`` / ``match_distance`` in level-0 px overrides).
+    * :class:`~soma.evaluation.LabelMapPredictions` against a
+      :class:`~soma.data.LabelMapSource`: per-image confusion counts reduced to Dice,
+      IoU and the per-class scores.
+
+    Both sides must cover the same ids: an unknown prediction id, a target without a
+    prediction, or a duplicate id is refused. Fill samples the model could not score with
+    :class:`~soma.evaluation.Baseline` first; restrict a target source with ``subset``.
 
     Args:
         predictions: What the model said.
         targets: One row per sample, indexed by ``sample_id`` (or with a ``sample_id``
             column), holding the target columns of the predictions' family and any
-            metadata columns ``subgroups`` names.
-        metrics: ``"default"`` (the family's catalogue defaults) or a list of registry
-            keys, dotted paths and ``(predictions, targets) -> float`` callables.
-        subgroups: Target columns to break the metrics down by.
+            metadata columns ``subgroups`` names; a target source for grid nouns.
+        metrics: ``"default"`` (the family's catalogue defaults; ``mean_pearson`` for a
+            multi-output regression's ``value_<k>`` columns) or a list of registry keys,
+            ``{name, params}`` leaves (grid), dotted paths and callables.
+        subgroups: Target columns to break the metrics down by (set shape only).
     """
+    from soma.evaluation.grid import LabelMapPredictions, PointPredictions, evaluate_grid
+
+    if isinstance(predictions, (LabelMapPredictions, PointPredictions)):
+        return evaluate_grid(predictions, targets, metrics=metrics, subgroups=subgroups)
     family = predictions.task_family
+    if _is_default(metrics) and _output_columns(predictions):
+        metrics = MULTI_OUTPUT_REGRESSION_METRICS
     resolved = resolve_frame_metrics(metrics, family)
     missing = [column for column in subgroups if column not in _targets_by_id(targets).columns]
     if missing:

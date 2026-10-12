@@ -10,15 +10,6 @@ import pytest
 from soma.artifact_mirror import ArtifactMirror, _resume_recipe
 
 
-def test_resume_recipe_ignores_operational_evidence_export_setting() -> None:
-    with_export = {"evaluation": {"save_segmentation_confusion_evidence": True}}
-    without_export = {"evaluation": {}}
-
-    assert _resume_recipe(with_export) == _resume_recipe(without_export) == {
-        "evaluation": {}
-    }
-
-
 def test_resume_recipe_treats_other_evaluation_settings_as_recipe() -> None:
     payload = {"evaluation": {"patient_oof": {"arm": "legacy"}}}
 

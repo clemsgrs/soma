@@ -99,11 +99,9 @@ def test_public_import_surface_dependencies_are_declared():
     # torchvision is imported by the dense augmentation / segmentation loaders.
     assert "torchvision" in dependencies
 
-    # The dense pixel-classifier adapter stays optional and reports its own missing
-    # dependency only when the xgboost classifier is selected.
+    # Pixel classifiers were removed with their xgboost extra.
     assert "xgboost" not in dependencies
-    extras = data["project"]["optional-dependencies"]
-    assert any(dep.lower().startswith("xgboost") for dep in extras["pixel"])
+    assert "pixel" not in data["project"]["optional-dependencies"]
 
     import soma
 
@@ -120,16 +118,17 @@ def test_top_level_package_exports_dense_configuration_and_discovery_surface():
         AttentionConfig,
         CompositeConfig,
         EncoderMemberConfig,
-        PixelClassifierConfig,
     )
 
     expected_exports = {
         "AttentionConfig": AttentionConfig,
         "CompositeConfig": CompositeConfig,
         "EncoderMemberConfig": EncoderMemberConfig,
-        "PixelClassifierConfig": PixelClassifierConfig,
         "list_decoders": soma.list_decoders,
-        "list_pixel_classifiers": soma.list_pixel_classifiers,
+        "DenseModel": soma.training.model.DenseModel,
+        "TileImageSource": soma.data.TileImageSource,
+        "LabelMapPredictions": soma.evaluation.LabelMapPredictions,
+        "PointPredictions": soma.evaluation.PointPredictions,
     }
 
     for name, expected in expected_exports.items():

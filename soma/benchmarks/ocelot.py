@@ -4,8 +4,9 @@ This is the first registered :class:`~soma.benchmarks.registry.Benchmark` (ADR 0
 absorbs the former ``examples/ocelot/`` harness into first-class package code:
 
 * the greedy (OCELOT-official) matcher — :func:`build_greedy_report` and
-  :func:`_greedy_report_for_run` — becomes the :meth:`OcelotBenchmark.score` override
-  (greedy is OCELOT's leaderboard-comparable matcher, not soma's headline metric);
+  :func:`_greedy_report_for_run`, which re-sweep and re-score the run's persisted
+  ``PointPredictions`` with ``matching="greedy"`` — is the :meth:`OcelotBenchmark.score`
+  override (greedy is OCELOT's leaderboard-comparable matcher, not soma's headline metric);
 * the static per-cell configs become committed package YAML that
   :meth:`OcelotBenchmark.build_config` loads by ``(encoder, spacing)`` axes;
 * the expected numbers move to ``reference/ocelot.csv`` (a broad, config-agnostic band
@@ -21,7 +22,7 @@ attributable on that second benchmark axis.
 
 from __future__ import annotations
 
-import functools
+from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -85,51 +86,6 @@ REFERENCE_ENVIRONMENT: dict[str, str] = {
 # --- greedy (OCELOT-official) scorer -------------------------------------------------
 
 
-def build_greedy_report(
-    *,
-    model,
-    head,
-    device,
-    tune_loader,
-    test_loaders: dict,
-    dataset,
-    matching: str,
-) -> dict:
-    """Greedy (OCELOT-official) report: the leakage-free headline.
-
-    Per-class score thresholds are swept on the *tune* split, frozen, then applied once to
-    each test split — the leakage-free number a real submitter reports. No oracle ceiling.
-    The greedy matcher is whatever ``head.matching`` selects, so the sweep and the
-    evaluations stay greedy-consistent.
-
-    Pass an empty ``test_loaders`` for a tune-only report: the returned dict then carries
-    just ``matching``, ``score_threshold_per_class``, and ``tune``.
-    """
-    from soma.learn import DenseLearner
-    from soma.pipeline import _evaluate_grid, _sweep_detection_thresholds
-
-    headline_thresholds = _sweep_detection_thresholds(model, tune_loader, device, head)
-    head.score_threshold = headline_thresholds
-    learner = DenseLearner(model)
-    tune_evaluation = _evaluate_grid(learner, tune_loader, device)
-    out: dict = {
-        "matching": matching,
-        "score_threshold_per_class": headline_thresholds,
-        "tune": tune_evaluation.metrics,
-    }
-    for name, loader in test_loaders.items():
-        head.score_threshold = headline_thresholds
-        headline = _evaluate_grid(learner, loader, device)
-        out[name] = {
-            "headline": {
-                "note": "reported result — per-class thresholds frozen from the tune split (leakage-free)",
-                "score_threshold_per_class": headline_thresholds,
-                "metrics": headline.metrics,
-            },
-        }
-    return out
-
-
 def _locate_run_config(run_dir: Path) -> Path:
     """The saved ``config.yaml`` for the run under ``run_dir`` (output_root or run dir)."""
     direct = run_dir / "config.yaml"
@@ -141,65 +97,6 @@ def _locate_run_config(run_dir: Path) -> Path:
     if configs:
         return configs[-1]
     raise FileNotFoundError(f"no config.yaml found under {run_dir}")
-
-
-def build_detection_model_from_checkpoint(
-    *,
-    store,
-    checkpoint_path: Path,
-    decoder,
-    task_head,
-    geometry,
-    normalization=None,
-    projection=None,
-    encoder_identity: str = "",
-):
-    """Rebuild a trained dense-detection model from its checkpoint, for re-scoring.
-
-    Reconstructing a trained model from config + checkpoint breaks two ways once a run can
-    carry a feature adaptor (issue #286), and only one of them is visible from the keys:
-
-    * the strict ``load_state_dict`` rejects the adaptor's extra buffers unless the adaptor
-      is rebuilt here too, and
-    * the decoder must be built against the adaptor's **output** width — a decoder built
-      against the encoder's native dim loads the checkpoint's ``target_dim``-shaped weights
-      by name but then reads the wrong number of channels.
-
-    The adaptor is built **unfitted**: the checkpoint's buffers are the fitted state, and
-    loading them is exactly what makes the re-score apply the transform the run trained
-    under. Returns the model in eval mode on CPU; the caller moves it.
-    """
-    import torch
-
-    from soma.decoders.registry import build_decoder_for_grid
-    from soma.training.feature_adaptor import (
-        build_feature_adaptor,
-        feature_adaptor_output_dim,
-    )
-    from soma.training.model import SegmentationModel
-
-    feature_adaptor = build_feature_adaptor(
-        normalization,
-        projection,
-        num_features=store.feature_dim,
-        encoder_identity=encoder_identity,
-    )
-    decoder_obj = build_decoder_for_grid(
-        decoder.name,
-        decoder.params,
-        geometry=geometry,
-        input_dim=feature_adaptor_output_dim(
-            feature_adaptor, num_features=store.feature_dim
-        ),
-        num_classes=task_head.num_classes,
-    )
-    model = SegmentationModel(
-        decoder=decoder_obj, task_head=task_head, feature_adaptor=feature_adaptor
-    )
-    model.load_state_dict(
-        torch.load(checkpoint_path, map_location="cpu", weights_only=True)["model_state_dict"]
-    )
-    return model.eval()
 
 
 def _locate_checkpoint(run_dir: Path, *, fold: int | None = None) -> Path:
@@ -244,125 +141,94 @@ def resolve_dense_cache_dir(
     return extraction.artifacts.feature_dir.parent
 
 
-def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> dict:
-    """Re-score a trained OCELOT run with the greedy matcher (no training).
+def build_greedy_report(
+    *,
+    tune,
+    tests: dict,
+    targets,
+    matching: str = "greedy",
+    metrics: Sequence[str] = ("mean_f1",),
+) -> dict:
+    """Greedy (OCELOT-official) report over persisted point predictions.
 
-    Reloads the run's saved config, the dense grids it trained on (recomputed cache key),
-    and its ``best_model.pt``, then re-runs just the evaluation half with greedy matching.
-    Requires the cached dense grids + a GPU/CPU torch runtime; this is the live path
-    ``soma reproduce ocelot --from-run-dir`` drives. Not exercised in CI (no data/GPU).
+    Per-class score thresholds are swept on the *tune* predictions with ``matching``,
+    frozen, then applied once to each test split — the leakage-free number a real
+    submitter reports. ``tune`` and each of ``tests`` are
+    :class:`~soma.evaluation.PointPredictions` carrying every peak above the head's
+    ``min_score``; ``targets`` is the run's :class:`~soma.data.PointSource`.
+
+    Pass an empty ``tests`` for a tune-only report: the returned dict then carries just
+    ``matching``, ``score_threshold_per_class``, and ``tune``.
     """
-    import torch
+    from soma.evaluation import evaluate, sweep_threshold
 
-    from soma.data import Cohort
-    from soma.data._legacy import bind_detection_targets, legacy_samples_from_csv
-    from soma.dense import CachedGridSource
-    from soma.pipeline import (
-        _make_loaders,
-        _resolve_detection_px,
-        _resolve_detection_sample_spacings,
+    leaves = [{"name": name, "params": {"matching": matching}} for name in metrics]
+    threshold, _ = sweep_threshold(
+        tune, targets.subset(tune.sample_ids), per_class=True, matching=matching
     )
-    from soma.tasks.detection import DetectionHead
-    from soma.training.detection_dataset import DetectionDataset, detection_collate_fn
+    per_class = [float(threshold[c]) for c in range(tune.num_classes)]
+    tune_evaluation = evaluate(
+        tune.with_threshold(threshold), targets.subset(tune.sample_ids), metrics=leaves
+    )
+    out: dict = {
+        "matching": matching,
+        "score_threshold_per_class": per_class,
+        "tune": tune_evaluation.metrics,
+    }
+    for name, predictions in tests.items():
+        headline = evaluate(
+            predictions.with_threshold(threshold),
+            targets.subset(predictions.sample_ids),
+            metrics=leaves,
+        )
+        out[name] = {
+            "headline": {
+                "note": "reported result — per-class thresholds frozen from the tune split (leakage-free)",
+                "score_threshold_per_class": per_class,
+                "metrics": headline.metrics,
+            },
+        }
+    return out
 
-    run_dir = Path(run_dir)
-    config_path = _locate_run_config(run_dir)
+
+def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> dict:
+    """Re-score a trained OCELOT run with the greedy matcher (no training, no model).
+
+    Reads the run's saved config and its persisted ``predictions_tune.parquet`` /
+    ``predictions_<test>.parquet`` (every peak above ``min_score``, level-0 pixels), then
+    re-sweeps and re-scores with ``matching`` against the run's point annotations.
+    """
+    from soma.class_scheme import resolve_classes
+    from soma.data import AnnotationManifest, PointSource
+    from soma.evaluation import PointPredictions
+    from soma.evaluation.metrics import resolve_metrics
+
+    config_path = _locate_run_config(Path(run_dir))
+    folder = config_path.parent
     cfg = load_config(str(config_path))
-    manifest = legacy_samples_from_csv(cfg.dataset_csv)
-    fold_split = Cohort.from_csv(cfg.dataset_csv, cfg.splits_csv).folds[0]
-    train_records = [manifest.samples[s] for s in fold_split.train]
-    probe_id = train_records[0].sample_id
-
-    store_dir = resolve_dense_cache_dir(cfg, manifest)
-    if store_dir is None:
-        raise RuntimeError(
-            "caching is disabled in this config; greedy re-scoring needs the cached dense "
-            "grids the run trained on."
-        )
-    store = CachedGridSource(store_dir)
-    if probe_id not in store.sample_ids:
+    tune_path = folder / "predictions_tune.parquet"
+    if not tune_path.is_file():
         raise FileNotFoundError(
-            f"recomputed dense cache dir {store_dir} does not contain sample '{probe_id}' "
-            f"({len(store.sample_ids)} samples present); the config likely no longer "
-            f"matches the run, or extraction is incomplete."
+            f"no predictions_tune.parquet in {folder}; greedy re-scoring reads the run's "
+            "persisted point predictions"
         )
-    ckpt = _locate_checkpoint(run_dir)
-
-    tune_records = [manifest.samples[s] for s in fold_split.tune]
-    test_by_split = {n: [manifest.samples[s] for s in ids] for n, ids in fold_split.tests.items()}
-
-    p = dict(cfg.task.params)
-    num_classes = int(p["num_classes"])
-    all_records = train_records + tune_records + [
-        record for records in test_by_split.values() for record in records
-    ]
-    sample_spacings, effective_spacing_um = _resolve_detection_sample_spacings(
-        store, all_records
+    tests = {
+        path.stem.removeprefix("predictions_"): PointPredictions.from_parquet(path)
+        for path in sorted(folder.glob("predictions_*.parquet"))
+        if path != tune_path
+    }
+    _, _, class_remap, dropped = resolve_classes(
+        cfg.task.params, excluded_key="drop", subject="detection"
     )
-    delta_px = _resolve_detection_px(
-        float(p["match_distance"]), effective_spacing_um, "match_distance"
-    )
-    sigma_px = (
-        _resolve_detection_px(float(p["sigma"]), effective_spacing_um, "sigma")
-        if p.get("sigma") is not None
-        else delta_px / 3.0
-    )
-    # NMS radius follows the run's own task params (µm, like the pipeline); the previous
-    # hard-coded ``delta_px`` silently re-scored a run trained with a different radius.
-    nms_px = (
-        _resolve_detection_px(float(p["nms_distance"]), effective_spacing_um, "nms_distance")
-        if p.get("nms_distance") is not None
-        else delta_px
-    )
-    geometry = store.geometry(train_records[0].sample_id)
-
-    head = DetectionHead(
-        num_classes=num_classes,
-        geometry=geometry,
-        delta_px=delta_px,
-        sigma_px=sigma_px,
-        nms_distance_px=nms_px,
-        matching=matching,
-        foreground_weight=float(p.get("foreground_weight", 10.0)),
-        sample_spacings=sample_spacings,
-        metrics=cfg.evaluation.metrics,
-    )
-    bind_detection_targets(head, manifest.records)
-
-    # Rebuild the trained model — including any feature adaptor the run carried, whose
-    # buffers and rewired decoder width the strict load below depends on (issue #286).
-    model = build_detection_model_from_checkpoint(
-        store=store,
-        checkpoint_path=ckpt,
-        decoder=cfg.decoder,
-        task_head=head,
-        geometry=geometry,
-        normalization=cfg.normalization,
-        projection=cfg.projection,
-        encoder_identity=cfg.encoder.name if cfg.encoder is not None else "",
-    )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model.to(device).eval()
-
-    collate = functools.partial(detection_collate_fn, target_dtypes=head.target_dtypes)
-    _, tune_loader, test_loaders = _make_loaders(
-        DetectionDataset,
-        collate,
-        train_records,
-        tune_records,
-        test_by_split,
-        cfg.training,
-        store,
-        head.extract_targets,
+    targets = PointSource.from_manifest(
+        AnnotationManifest.from_csv(cfg.dataset_csv), class_remap=class_remap, drop=dropped
     )
     return build_greedy_report(
-        model=model,
-        head=head,
-        device=device,
-        tune_loader=tune_loader,
-        test_loaders=test_loaders,
-        dataset=manifest,
+        tune=PointPredictions.from_parquet(tune_path),
+        tests=tests,
+        targets=targets,
         matching=matching,
+        metrics=resolve_metrics("detection", cfg.evaluation.metrics),
     )
 
 

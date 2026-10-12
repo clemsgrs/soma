@@ -61,8 +61,10 @@ def _stable_json(payload: dict[str, Any]) -> str:
 #: Bump when the canonical payload changes shape. Recorded on every run and
 #: experiment manifest so ids minted under different rules are never compared as equal.
 #: v5 added ``augmentation.random_resized_crop_scale`` to the augmentation block; v6 added
-#: ``training.hold_patience_until_monitor_moves``.
-IDENTITY_VERSION = 6
+#: ``training.hold_patience_until_monitor_moves``; v7 dropped ``pixel_classifier`` and
+#: ``training.method`` / ``max_train_pixels`` and made ``augmentation`` a ``{name, params}``
+#: leaf (or ``None``).
+IDENTITY_VERSION = 7
 
 # Loader plumbing: changes throughput, never the trained model or its evaluation.
 _TRAINING_IDENTITY_EXCLUDED = ("seed", "num_workers", "pin_memory", "persistent_workers")
@@ -71,7 +73,6 @@ _EVALUATION_IDENTITY_EXCLUDED = (
     "overwrite_test",
     "save_segmentation_overlays",
     "save_segmentation_probabilities",
-    "save_segmentation_confusion_evidence",
     "save_detection_overlays",
     "save_detection_heatmaps",
 )
@@ -234,13 +235,10 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
         "composite": asdict(config.composite) if config.composite is not None else None,
         "aggregator": asdict(config.aggregator) if config.aggregator is not None else None,
         "decoder": asdict(config.decoder) if config.decoder is not None else None,
-        "pixel_classifier": (
-            asdict(config.pixel_classifier) if config.pixel_classifier is not None else None
-        ),
         "task": task_config_dict(config.task),
         "evaluation": _evaluation_identity(config),
         "heatmaps": _heatmap_identity(config),
-        "augmentation": asdict(config.augmentation),
+        "augmentation": config.augmentation,
         "training": _training_identity(config),
         "tags": list(config.tags),
     }

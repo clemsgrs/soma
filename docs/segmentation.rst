@@ -3,8 +3,7 @@ Segmentation
 
 Segmentation predicts a class for every pixel in a tile or region. A frozen
 encoder produces dense feature grids; a trainable :doc:`decoder <decoders>`
-maps them to class logits. Alternatively, use a decoder-free
-:doc:`pixel classifier <decoders/pixel-classifier>` on the same grids.
+maps them to class logits.
 
 The :doc:`segmentation walkthrough <tutorials/walkthrough-segmentation>` runs
 the decoder path on a small synthetic dataset.
@@ -96,7 +95,7 @@ Classes
 
 ``classes`` names each class and the raw mask value(s) that form it; several
 values merge into one class. The class index is the declaration order (``tumor``
-is 0) and the names are recorded beside the confusion matrices. ``ignore``
+is 0) and the names are stored with the predictions. ``ignore``
 lists the raw values excluded from the loss and the metrics. No name is
 reserved.
 
@@ -139,6 +138,41 @@ mask pixel.
 ``preprocessing.feature_kind`` selects patch features or attention maps as the
 grid content; see :doc:`decoders`.
 
+.. _native-window:
+
+Choose the extraction window
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Read spacing and encoder-window size control different aspects of the input:
+spacing sets physical scale, while window size sets the context visible in one
+forward pass. Select the spacing through ``requested_spacing_um``; soma does
+not force every run to an encoder's recommended spacing.
+
+.. list-table::
+   :header-rows: 1
+
+   * - ``dense_window_size``
+     - Behavior
+     - Context
+   * - ``null`` (default)
+     - Encode the whole padded tile in one forward pass.
+     - All positions in the tile can attend to one another.
+   * - Encoder's native input size
+     - Slide native-size windows and stitch their token grids.
+     - Attention is local to each window.
+   * - Larger than the native input size
+     - Use larger windows where supported by the encoder.
+     - More context per window, with a different input geometry from pretraining.
+
+Whole-tile and larger-window extraction require encoder support for the input
+size. Native-size windows at a recommended spacing preserve those two
+pretraining input settings, but each window's tokens only see that window. Set
+``dense_window_overlap`` to overlap windows and blend their grids.
+
+soma does not resize a complete image to the encoder's native pixel size (the
+method of `Ramchandani et al., 2026 <https://arxiv.org/abs/2602.18747>`_),
+because that also changes the physical scale.
+
 A starting configuration
 ------------------------
 
@@ -172,7 +206,11 @@ the dataset and the encoder. Tuning them is part of the modeling work.
 The head trains with cross-entropy plus soft Dice; the overlap term supports
 Tversky weighting (``beta > alpha`` puts more weight on false negatives) and
 focal Tversky (``gamma > 1``). At evaluation, each pixel receives the class with
-the largest logit. For live re-encoding and augmentation, see :doc:`training`.
+the largest logit.
+
+By default the decoder trains on cached feature grids. To augment the tiles,
+set ``data.feature_mode: live`` and an ``augmentation`` leaf; the encoder then
+re-encodes each augmented tile at every step. See :ref:`live-mode`.
 
 Dice reduction and checkpoint selection
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -244,10 +282,14 @@ exposure, and repeat counts.
 Outputs
 -------
 
-Evaluation streams per-image confusion counts rather than retaining every
-sample's logits. Each fold writes ``metrics.json`` and prediction rasters,
-with optional overlays and probabilities; see :doc:`outputs` for the artifact
-layout and :doc:`evaluation` for evaluation settings.
+Each fold predicts one label map per sample for tune and every test split and
+saves it as ``predictions_<split>/``: one PNG of class indices per sample and an
+``index.parquet``. The metrics in ``metrics.json`` are computed from these label
+maps, so they can be read back with
+:meth:`soma.evaluation.LabelMapPredictions.load` and scored again without
+rerunning inference (see :ref:`grid-predictions`). Overlays and per-pixel
+probabilities are optional; see :doc:`outputs` for the artifact layout and
+:doc:`evaluation` for evaluation settings.
 
 Task head
 ---------

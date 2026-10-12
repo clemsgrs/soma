@@ -46,22 +46,26 @@ The methods worth overriding are:
 
 * ``compute_loss(predictions, targets)`` for a custom training objective.
 * ``compute_metrics`` for classification, regression and survival metrics.
-  Dense heads use ``finalize_eval_metrics(counts)`` to reduce metrics during
-  tuning and split evaluation. ``dense_stats`` supplies the per-image statistics
-  during dense tuning and segmentation split evaluation.
+  Segmentation and detection heads instead return per-image statistics from
+  ``dense_stats`` and reduce them with ``finalize_eval_metrics(counts)``; the
+  learner uses these for the validation metrics computed during training. Split
+  evaluation scores the saved predictions through :func:`soma.evaluate`.
   Metric *names* are validated against the family's list in
   :mod:`soma.evaluation.metrics`, so a new name must be added
   there before a config can request it.
-* ``postprocess(raw_output)`` for a custom prediction format in classification,
-  regression and survival split evaluation. Dense segmentation and detection
-  tuning and split evaluation bypass it. Whole-slide sliding-window segmentation
-  inference also bypasses it: the predictor blends the folds' softmaxes across
-  tiles and takes the argmax itself. Detection point decoding uses
-  ``_predict_points(heatmap)``.
+* ``postprocess(raw_output)`` for a custom prediction format. The segmentation
+  head returns one label map per sample; the detection head returns every peak
+  above ``min_score`` in level-0 pixels. Whole-slide sliding-window
+  segmentation inference bypasses it: the predictor blends the folds' softmaxes
+  across tiles and takes the argmax itself.
 * ``prediction_columns`` and ``to_columns(processed)`` for what
   :func:`soma.predict` writes. The base implementation covers the
   classification, ordinal, regression and survival families; a head of a new
-  family overrides both. :func:`soma.testing.check_task_head` checks a set-shape
+  family overrides both. Segmentation and detection heads also implement
+  ``assemble_predictions(sample_ids, columns)``, which builds the
+  :class:`~soma.evaluation.LabelMapPredictions` or
+  :class:`~soma.evaluation.PointPredictions` that ``predict`` returns.
+  :func:`soma.testing.check_task_head` checks a set-shape
   head on one batch: the declared columns match ``to_columns``, every column is
   numeric, the family :class:`~soma.evaluation.Baseline` yields the same
   columns, and :func:`soma.evaluate` on a parquet round-trip agrees with
@@ -174,10 +178,30 @@ a batch). A ``predict_step`` override can add a column; it lands in
             entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1)
             return PredictOutput(columns={**step.columns, "attention_entropy": entropy}, raw=step.raw)
 
+A grid learner is a :class:`soma.learn.DenseLearner` subclass, named the same
+way in ``training.learner``. Its batches are :class:`soma.learn.GridBatch`
+objects holding cached ``features`` or live ``pixels`` and the raw supervision
+in ``targets``.
+
 :func:`soma.testing.check_learner`
 checks a learner against the contract on one batch. From Python, :func:`soma.fit`
 trains a learner, or a bare model wrapped in its shape's learner, with
 ``Checkpoint``, ``EarlyStopping`` and ``Progress`` installed.
+
+Custom encoder stage or image source
+------------------------------------
+
+The live path (see :ref:`live-mode`) re-encodes pixels through an encoder
+stage inside :class:`soma.training.model.DenseModel`. Any parameter-free
+``nn.Module`` with the stage contract can replace
+:class:`soma.extract.FrozenEncoder`: a ``geometry``, a ``feature_dim``, an
+``input_device``, a ``preprocessor()`` and a deterministic ``forward`` over
+preprocessed or raw uint8 pixel batches.
+:func:`soma.testing.check_encoder_stage` checks a stage, and
+:class:`soma.testing.FakeEncoder` is a weight-free example. An image source
+serves ``(3, H, W)`` uint8 pixels by sample id with a ``geometry`` and a
+``spacing``, like :class:`soma.data.TileImageSource`;
+:func:`soma.testing.check_image_source` checks one.
 
 Registering before the run
 --------------------------

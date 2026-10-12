@@ -258,8 +258,9 @@ MoNuSAC train images are kept whole, and each training step draws a new random
 resized 224 px crop from them, as EVA's online config does. CoNSeP
 merges HoVer-Net's seven nucleus types into background, other, inflammatory,
 epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is
-excluded from the loss and the metric. Both datasets report on EVA's validation
-split, which is soma's ``test`` split (``tune_is_test``).
+excluded from the loss and from the metric's target area. As in EVA, the pixels
+predicted there still count towards the predicted area. Both datasets report on
+EVA's validation split, which is soma's ``test`` split (``tune_is_test``).
 
 .. list-table::
    :header-rows: 1
@@ -272,7 +273,7 @@ split, which is soma's ``test`` split (``tune_is_test``).
    * - features
      - CoNSeP: cached dense grids. MoNuSAC: re-encoded every step (``feature_mode: live``) because its train crops are random
    * - augmentation
-     - MoNuSAC train only: ``random_resized_crop_scale: [0.08, 1.0]`` (torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none
+     - MoNuSAC train only: ``crop_scale: [0.08, 1.0]`` (torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none
    * - decoder
      - ``eva_conv_with_image`` (EVA's online ``ConvDecoderWithImage``, the leaderboard decoder): nearest ×2 → 3x3 conv-BN-ReLU (64) → bilinear to the tile size → concat the ImageNet-normalised RGB tile → 2 × 3x3 conv-BN-ReLU (32) → 1x1 conv (classes). ``eva_conv_ms`` (the offline ``ConvDecoderMS``) stays registered for reference
    * - loss
@@ -288,7 +289,7 @@ split, which is soma's ``test`` split (``tune_is_test``).
    * - varied axis
      - ``encoder``
    * - primary metric
-     - ``test/foreground_mean_dice`` (from ``summary.json``)
+     - ``test/foreground_mean_dice``. CoNSeP: from ``summary.json``. MoNuSAC: re-scored from the run's saved ``predictions_test/`` label maps with EVA's counting (``summary.json`` uses soma's standard counting, which drops ``Ambiguous`` pixels from the predicted area too)
    * - canonical seeds
      - ``0, 1, 2, 3, 4`` (averaged)
 

@@ -264,6 +264,22 @@ def test_pipeline_rejects_monitor_outside_effective_task_metrics():
         )
 
 
+def test_pipeline_validates_the_monitor_against_the_heads_own_metrics():
+    """A multi-output regression reports ``mean_pearson``, not the family's ``mae``/``r2``."""
+    task = TaskConfig(name="regression", params={"num_outputs": 2})
+    cfg = _make_pipeline_config(
+        task=task, training=TrainingConfig(monitor="mean_pearson", monitor_mode="max")
+    )
+    assert cfg.training.monitor == "mean_pearson"
+    with pytest.raises(ValueError, match="monitor 'mae'.*Available metrics: mean_pearson"):
+        _make_pipeline_config(task=task, training=TrainingConfig(monitor="mae", monitor_mode="min"))
+    # A one-output regression keeps the family defaults.
+    single = TaskConfig(name="regression", params={})
+    assert _make_pipeline_config(
+        task=single, training=TrainingConfig(monitor="mae", monitor_mode="min")
+    ).training.monitor == "mae"
+
+
 def test_pipeline_defers_monitor_validation_to_a_custom_learner():
     """A configured learner owns its ``validation_summary`` keys; the Checkpoint callback
     validates the monitor against the real summary at the first evaluation."""
@@ -640,66 +656,8 @@ def test_segmentation_config_valid():
     assert cfg.aggregator is None
 
 
-def test_pixel_classifier_rejects_last_checkpoint_selection():
-    """`last` is a Trainer capability; pixel classifiers own separate fit loops."""
-    from soma.config import PixelClassifierConfig
-
-    with pytest.raises(ValueError, match="checkpoint_selection='last'.*pixel_classifier"):
-        _seg_config(
-            decoder=None,
-            pixel_classifier=PixelClassifierConfig(name="mlp"),
-            training=TrainingConfig(checkpoint_selection="last", patience=None),
-        )
-
-
-def test_pixel_classifier_rejects_an_optimizer_step_budget():
-    """Pixel classifiers do not train through Trainer optimizer updates."""
-    from soma.config import PixelClassifierConfig
-
-    with pytest.raises(ValueError, match="max_steps.*pixel_classifier.*Trainer"):
-        _seg_config(
-            decoder=None,
-            pixel_classifier=PixelClassifierConfig(name="mlp"),
-            training=TrainingConfig(epochs=None, max_steps=10),
-        )
-
-
-def test_closed_form_probe_rejects_last_checkpoint_selection():
-    """A closed-form probe has no epoch checkpoint that `last` could select."""
-    with pytest.raises(ValueError, match="checkpoint_selection='last'.*ridge_pca_probe"):
-        PipelineConfig(
-            dataset_csv="data.csv",
-            splits_csv="splits.csv",
-            output_root="out",
-            dataset_type="spatial_expression",
-            task=TaskConfig(name="regression"),
-            training=TrainingConfig(
-                method="ridge_pca_probe",
-                checkpoint_selection="last",
-                patience=None,
-            ),
-        )
-
-
-def test_closed_form_probe_rejects_an_optimizer_step_budget():
-    """The closed-form probe has no Trainer optimizer updates to budget."""
-    with pytest.raises(ValueError, match="max_steps.*ridge_pca_probe.*Trainer"):
-        PipelineConfig(
-            dataset_csv="data.csv",
-            splits_csv="splits.csv",
-            output_root="out",
-            dataset_type="spatial_expression",
-            task=TaskConfig(name="regression"),
-            training=TrainingConfig(
-                epochs=None,
-                max_steps=10,
-                method="ridge_pca_probe",
-            ),
-        )
-
-
 def test_segmentation_requires_decoder():
-    with pytest.raises(ValueError, match="requires either a decoder .* or a pixel_classifier"):
+    with pytest.raises(ValueError, match="requires a decoder"):
         _seg_config(decoder=None)
 
 
@@ -1046,35 +1004,10 @@ def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
     assert loaded.preprocessing.masks.min_coverage == {"tumor": 0.1}
 
 
-def test_pixel_classifier_config_round_trips_through_yaml(tmp_path: Path):
-    from soma.config import AttentionConfig, PixelClassifierConfig, PreprocessingConfig
-
-    cfg = _seg_config(
-        decoder=None,
-        pixel_classifier=PixelClassifierConfig(name="xgboost", params={"n_estimators": 100}),
-        preprocessing=PreprocessingConfig(
-            attention=AttentionConfig(blocks=[-1, -2], include_registers=True)
-        ),
-    )
-    # cross-defaulted feature_kind survives the roundtrip.
-    assert cfg.preprocessing.feature_kind == "cls_attention"
-    path = tmp_path / "cfg.yaml"
-    save_config(cfg, path)
-    loaded = load_config(path)
-    assert loaded.pixel_classifier.name == "xgboost"
-    assert loaded.pixel_classifier.params == {"n_estimators": 100}
-    assert loaded.decoder is None
-    assert loaded.preprocessing.feature_kind == "cls_attention"
-    assert loaded.preprocessing.attention.blocks == (-1, -2)
-    assert loaded.preprocessing.attention.include_registers is True
-
-
 def test_composite_round_trips_through_yaml(tmp_path: Path):
-    from soma.config import CompositeConfig, EncoderMemberConfig, PixelClassifierConfig
+    from soma.config import CompositeConfig, EncoderMemberConfig
 
     cfg = _seg_config(
-        decoder=None,
-        pixel_classifier=PixelClassifierConfig(name="xgboost"),
         composite=CompositeConfig(
             encoders=[
                 EncoderMemberConfig(name="uni", feature_kind="cls_attention"),
@@ -1088,8 +1021,8 @@ def test_composite_round_trips_through_yaml(tmp_path: Path):
     assert loaded.composite is not None and len(loaded.composite.encoders) == 2
     assert [m.name for m in loaded.composite.encoders] == ["uni", "phikon"]
     assert loaded.composite.encoders[1].feature_kind == "patch_features"
-    # Pixel-classifier consumer → target mode; member_norm cross-defaults by feature_kind.
-    assert loaded.composite.concat_resolution == "target"
+    # The decoder consumes token grids → grid mode; member_norm defaults by feature_kind.
+    assert loaded.composite.concat_resolution == "grid"
     assert loaded.composite.encoders[0].member_norm == "none"  # cls_attention
     assert loaded.composite.encoders[1].member_norm == "l2"  # patch_features
 
@@ -1146,7 +1079,7 @@ def test_composite_only_yaml_loads_without_tripping_xor(tmp_path: Path):
             "dataset_type": "segmentation",
         },
         "task": {"name": "segmentation", "params": {"num_classes": 3}},
-        "pixel_classifier": {"name": "xgboost"},
+        "decoder": {"name": "lightweight_conv"},
         "composite": {
             "encoders": [
                 {"name": "uni", "feature_kind": "cls_attention"},
@@ -1170,7 +1103,7 @@ def test_composite_yaml_rejects_unknown_keys(tmp_path: Path):
             "dataset_type": "segmentation",
         },
         "task": {"name": "segmentation", "params": {"num_classes": 3}},
-        "pixel_classifier": {"name": "xgboost"},
+        "decoder": {"name": "lightweight_conv"},
         "composite": {
             "encoders": [{"name": "uni"}],
             "concat_resoluton": "target",
@@ -1213,12 +1146,10 @@ def test_detection_rejects_point_id_in_a_class_and_in_drop():
 
 
 def test_encoder_xor_composite():
-    from soma.config import CompositeConfig, EncoderConfig, EncoderMemberConfig, PixelClassifierConfig
+    from soma.config import CompositeConfig, EncoderConfig, EncoderMemberConfig
 
     with pytest.raises(ValueError, match="XOR"):
         _seg_config(
-            decoder=None,
-            pixel_classifier=PixelClassifierConfig(name="xgboost"),
             encoder=EncoderConfig(name="uni"),
             composite=CompositeConfig(encoders=[EncoderMemberConfig(name="phikon")]),
         )
@@ -1540,20 +1471,6 @@ def test_evaluation_holdout_test_roundtrip(tmp_path: Path):
     assert loaded.evaluation.holdout_test is True
 
 
-def test_segmentation_confusion_evidence_config_roundtrip(tmp_path: Path):
-    cfg = _make_pipeline_config(
-        evaluation=EvalConfig(
-            save_segmentation_confusion_evidence=True,
-        )
-    )
-    yaml_path = tmp_path / "config.yaml"
-
-    save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
-
-    assert loaded.evaluation.save_segmentation_confusion_evidence is True
-
-
 def test_evaluation_subgroups_roundtrip(tmp_path: Path):
     cfg = _make_pipeline_config(
         evaluation=EvalConfig(
@@ -1702,7 +1619,7 @@ def _seg_kwargs(**overrides):
 def test_feature_mode_defaults_to_cached():
     config = PipelineConfig(**_seg_kwargs())
     assert config.feature_mode == "cached"
-    assert not config.augmentation.is_enabled()
+    assert config.augmentation is None
 
 
 def test_invalid_feature_mode_raises():
@@ -1722,39 +1639,60 @@ def test_live_feature_mode_requires_segmentation():
         )
 
 
-def test_augmentation_requires_live_feature_mode():
-    from soma.config import AugmentationConfig
+_FLIP = {"name": "segmentation", "params": {"horizontal_flip": 0.5, "rotation_degrees": 10.0}}
 
+
+def test_augmentation_requires_live_feature_mode():
     with pytest.raises(ValueError, match="augmentation requires feature_mode='live'"):
-        PipelineConfig(**_seg_kwargs(augmentation=AugmentationConfig(horizontal_flip=0.5)))
+        PipelineConfig(**_seg_kwargs(augmentation=_FLIP))
 
 
 def test_live_segmentation_with_augmentation_is_valid():
-    from soma.config import AugmentationConfig
-
-    config = PipelineConfig(
-        **_seg_kwargs(
-            feature_mode="live",
-            augmentation=AugmentationConfig(horizontal_flip=0.5, rotation_degrees=10.0),
-        )
-    )
+    config = PipelineConfig(**_seg_kwargs(feature_mode="live", augmentation=_FLIP))
     assert config.feature_mode == "live"
-    assert config.augmentation.is_enabled()
+    assert config.augmentation == _FLIP
+
+
+def test_live_detection_is_valid_but_its_points_cannot_be_augmented():
+    detection = dict(
+        dataset_type="detection",
+        task=TaskConfig(name="detection", params={"num_classes": 1, "match_distance": 3.0}),
+    )
+    assert PipelineConfig(**_seg_kwargs(feature_mode="live", **detection)).feature_mode == "live"
+    with pytest.raises(ValueError, match="point targets cannot be augmented yet"):
+        PipelineConfig(**_seg_kwargs(feature_mode="live", augmentation=_FLIP, **detection))
+
+
+def test_detection_score_threshold_is_refused_with_its_replacements_named():
+    with pytest.raises(ValueError, match="min_score.*validation_threshold"):
+        PipelineConfig(
+            **_seg_kwargs(
+                dataset_type="detection",
+                task=TaskConfig(
+                    name="detection", params={"num_classes": 1, "match_distance": 3.0, "score_threshold": 0.5}
+                ),
+            )
+        )
+
+
+def test_augmentation_is_a_name_params_leaf(tmp_path: Path):
+    with pytest.raises(ValueError, match="name, params"):
+        load_config_from_dict({"augmentation": {"horizontal_flip": 0.5}}, tmp_path)
+    with pytest.raises(ValueError, match="Unknown augmentation"):
+        PipelineConfig(**_seg_kwargs(feature_mode="live", augmentation={"name": "nope", "params": {}}))
 
 
 def test_live_no_aug_is_valid():
     config = PipelineConfig(**_seg_kwargs(feature_mode="live"))
-    assert config.feature_mode == "live" and not config.augmentation.is_enabled()
+    assert config.feature_mode == "live" and config.augmentation is None
 
 
 def test_feature_mode_and_augmentation_roundtrip(tmp_path: Path):
-    from soma.config import AugmentationConfig
-
     config = PipelineConfig(
         **_seg_kwargs(
             encoder=EncoderConfig(name="uni2"),
             feature_mode="live",
-            augmentation=AugmentationConfig(horizontal_flip=0.5, brightness=0.2),
+            augmentation={"name": "segmentation", "params": {"horizontal_flip": 0.5, "brightness": 0.2}},
         )
     )
     path = tmp_path / "config.yaml"
@@ -1762,49 +1700,6 @@ def test_feature_mode_and_augmentation_roundtrip(tmp_path: Path):
     loaded = load_config(path)
     assert loaded.feature_mode == "live"
     assert loaded.augmentation == config.augmentation
-
-
-def test_augmentation_rejects_out_of_range():
-    from soma.config import AugmentationConfig
-
-    with pytest.raises(ValueError, match="horizontal_flip"):
-        AugmentationConfig(horizontal_flip=1.5)
-    with pytest.raises(ValueError, match="scale"):
-        AugmentationConfig(scale=1.0)
-    with pytest.raises(ValueError, match="hue"):
-        AugmentationConfig(hue=0.9)
-
-
-def test_augmentation_random_resized_crop_scale_enables_and_coerces():
-    from soma.config import AugmentationConfig
-
-    assert AugmentationConfig().random_resized_crop_scale is None
-    config = AugmentationConfig(random_resized_crop_scale=[0.08, 1.0])
-    assert config.random_resized_crop_scale == (0.08, 1.0)
-    assert config.is_enabled()
-
-
-@pytest.mark.parametrize("scale", [(0.0, 1.0), (0.5, 0.4), (0.5, 1.5), (0.5,), (0.1, 0.5, 1.0)])
-def test_augmentation_rejects_malformed_random_resized_crop_scale(scale):
-    from soma.config import AugmentationConfig
-
-    with pytest.raises(ValueError, match="random_resized_crop_scale"):
-        AugmentationConfig(random_resized_crop_scale=scale)
-
-
-def test_random_resized_crop_scale_roundtrips(tmp_path: Path):
-    from soma.config import AugmentationConfig
-
-    config = PipelineConfig(
-        **_seg_kwargs(
-            encoder=EncoderConfig(name="uni2"),
-            feature_mode="live",
-            augmentation=AugmentationConfig(random_resized_crop_scale=(0.08, 1.0)),
-        )
-    )
-    path = tmp_path / "config.yaml"
-    save_config(config, path)
-    assert load_config(path).augmentation == config.augmentation
 
 
 # --- Helpers ---
@@ -1921,3 +1816,18 @@ def test_load_config_rejects_retired_cache_keys_as_unknown(tmp_path: Path, retir
     (key,) = retired
     with pytest.raises(TypeError, match=f"unexpected keyword argument '{key}'"):
         load_config(yaml_path)
+
+
+def load_config_from_dict(overrides: dict, tmp_path: Path) -> PipelineConfig:
+    """Write a minimal segmentation YAML with ``overrides`` and load it."""
+    import yaml
+
+    data = {
+        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "segmentation"},
+        "decoder": {"name": "lightweight_conv"},
+        "task": {"name": "segmentation", "params": {"num_classes": 2}},
+        **overrides,
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(data))
+    return load_config(path)

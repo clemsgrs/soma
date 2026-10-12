@@ -22,14 +22,13 @@ from soma.config import (
 )
 from soma import FeatureExtractor
 from soma.data._legacy import LegacySamples, legacy_samples_from_csv
-from soma.dense.geometry import compute_dense_geometry
 from soma.dense.reader import build_label_remap
 from soma.dense_slide_extraction import (
     build_roi_dataset,
     sample_slide_rois,
     write_roi_mask_crops,
 )
-from soma.tasks.segmentation import SegmentationHead
+from soma.data import CachedLabelMapSource
 
 from examples.beetle.curate import _NATIVE_LEVEL_0_EXCEPTIONS
 
@@ -452,13 +451,12 @@ def run_representative_extraction_parity(
         preprocessing=preprocessing,
     )
     label_remap = build_label_remap(_CLASSES, ignore=_IGNORE)
-    head = SegmentationHead(
-        num_classes=4,
-        geometry=compute_dense_geometry(target_size=512, patch_size=14),
-        spacing_um=0.5,
-        spacing_policy="native_if_coarser",
-        backend=preprocessing.mask_backend,
-        tolerance=preprocessing.tolerance,
+    label_maps = CachedLabelMapSource(
+        {
+            record.sample_id: record.label_mask_crop_path
+            for record in roi_dataset.samples.values()
+        },
+        size=(512, 512),
         label_remap=label_remap,
     )
 
@@ -527,7 +525,7 @@ def run_representative_extraction_parity(
                 f"BEETLE representative {record.sample_id} fp16/fp32 cosine similarity "
                 f"{parity.cosine_similarity} is below {threshold}"
             )
-        mask = head.extract_targets(record)["mask"]
+        mask = label_maps.load(record.sample_id)
         if tuple(mask.shape) != (512, 512):
             raise ValueError(
                 f"BEETLE representative {record.sample_id} mask has shape {tuple(mask.shape)}"

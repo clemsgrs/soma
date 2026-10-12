@@ -233,7 +233,15 @@ def _patch_extraction(monkeypatch):
     # Image region read → a deterministic RGB window per ROI (the overlay writer reads the
     # ROI window from the whole-slide image_path, never opening the gigapixel slide).
     def _fake_image_region(
-        path, *, location, size, spacing_um, backend, tolerance, interpolation="area"
+        path,
+        *,
+        location,
+        size,
+        spacing_um,
+        backend,
+        tolerance,
+        interpolation="area",
+        spacing_at_level_0=None,
     ):
         w, h = size
         return np.zeros((h, w, 3), dtype=np.uint8)
@@ -339,6 +347,35 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
         assert crop_path.name == f"{row.region_x}_{row.region_y}.png"
         with Image.open(crop_path) as crop:
             assert np.asarray(crop).tolist() == [[1 if row.region_x else 0] * TARGET] * TARGET
+
+
+def test_slide_manifest_overlays_read_each_roi_window(tmp_path: Path, monkeypatch):
+    """``save_segmentation_overlays`` (on by default) blends each ROI's prediction and
+    supervision over its own window of the whole slide, read at the run spacing."""
+    import soma.dense.reader as reader_mod
+    from soma.pipeline import Pipeline
+
+    _patch_extraction(monkeypatch)
+    reads: list[tuple[str, tuple[int, int], tuple[int, int], float]] = []
+
+    def _window(path, *, location, size, spacing_um, backend, tolerance, interpolation="area", spacing_at_level_0=None):
+        reads.append((Path(path).name, tuple(location), tuple(size), spacing_um))
+        return np.zeros((size[1], size[0], 3), dtype=np.uint8)
+
+    monkeypatch.setattr(reader_mod, "read_image_region_at_spacing", _window)
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+    Pipeline(_config(tmp_path, manifest, splits, masks=None)).run()
+
+    (overlays,) = (tmp_path / "out").rglob("overlays/test")
+    for kind in ("pred", "gt"):
+        assert sorted(path.name for path in (overlays / kind).glob("*.png")) == [
+            "s3__x0_y0.png",
+            "s3__x32_y0.png",
+        ]
+    assert {read for read in reads if read[0] == "s3.tif"} == {
+        ("s3.tif", (0, 0), (TARGET, TARGET), 0.5),
+        ("s3.tif", (TARGET, 0), (TARGET, TARGET), 0.5),
+    }
 
 
 def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(

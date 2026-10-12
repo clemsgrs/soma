@@ -1,4 +1,5 @@
-"""``soma.testing.check_learner`` on soma's own learners: every aggregator, seg and det."""
+"""``soma.testing.check_learner`` on soma's own learners: every aggregator, seg and det
+(cached grids and the live encoder stage)."""
 
 from __future__ import annotations
 
@@ -8,17 +9,14 @@ import torch
 
 from soma.aggregators import aggregator_registry, list_aggregators
 from soma.decoders.registry import decoder_registry
-from soma.dense import DenseSampleSpacing
 from soma.dense.geometry import compute_dense_geometry
-from soma.detection.encode import render_peak_heatmap
-from soma.learn import Budget, DenseLearner, MILLearner
+from soma.learn import Budget, DenseLearner, GridBatch, MILLearner
 from soma.tasks.classification import BinaryClassificationHead, BranchAwareClassificationHead
 from soma.tasks.detection import DetectionHead
 from soma.tasks.segmentation import SegmentationHead
-from soma.testing import ConformanceError, check_learner
+from soma.testing import ConformanceError, FakeEncoder, check_learner
 from soma.training.collate import BagBatch, HierarchicalBagBatch
-from soma.training.model import MILModel, SegmentationModel
-from soma.training.segmentation_dataset import SegmentationBatch
+from soma.training.model import DenseModel, MILModel
 
 D = 16
 BUDGET = Budget(max_epochs=2, max_steps=None, updates_per_epoch=2)
@@ -76,8 +74,8 @@ def test_mil_learner_conforms_for_every_aggregator_under_bf16_autocast(name):
         check_learner(learner, batch, budget=BUDGET)
 
 
-def _grid_batch(targets: dict[str, torch.Tensor]) -> SegmentationBatch:
-    return SegmentationBatch(features=torch.randn(2, D, 8, 8), targets=targets, sample_ids=("a", "b"))
+def _grid_batch(targets: dict[str, torch.Tensor]) -> GridBatch:
+    return GridBatch(features=torch.randn(2, D, 8, 8), pixels=None, targets=targets, sample_ids=("a", "b"))
 
 
 def test_dense_learner_conforms_for_segmentation():
@@ -85,30 +83,47 @@ def test_dense_learner_conforms_for_segmentation():
     geometry = compute_dense_geometry(target_size=32, patch_size=4)
     head = SegmentationHead(num_classes=3, geometry=geometry, metrics=["mean_dice"])
     decoder = decoder_registry.get("linear")(input_dim=D, num_classes=3)
-    learner = DenseLearner(SegmentationModel(decoder=decoder, task_head=head))
+    learner = DenseLearner(DenseModel(decoder, head))
     batch = _grid_batch({"mask": torch.randint(0, 3, (2, 32, 32))})
     check_learner(learner, batch, budget=BUDGET)
+
+
+def _points() -> torch.Tensor:
+    """Two level-0 points per image (one NaN-padded row in the second)."""
+    first = torch.tensor([[10.0, 12.0, 0.0], [20.0, 8.0, 1.0]])
+    second = torch.tensor([[5.0, 25.0, 1.0], [float("nan")] * 3])
+    return torch.stack([first, second])
 
 
 def test_dense_learner_conforms_for_detection():
     torch.manual_seed(0)
     geometry = compute_dense_geometry(target_size=32, patch_size=4)
     head = DetectionHead(
-        num_classes=2,
-        geometry=geometry,
-        delta_px=3.0,
-        sigma_px=1.5,
-        score_threshold=0.5,
-        sample_spacings={"a": DenseSampleSpacing(1.0, 1.0), "b": DenseSampleSpacing(1.0, 1.0)},
+        num_classes=2, geometry=geometry, spacing_um=1.0, match_distance=3.0, sigma=1.5,
         metrics=["mean_f1"],
     )
     decoder = decoder_registry.get("linear")(input_dim=D, num_classes=2)
-    learner = DenseLearner(SegmentationModel(decoder=decoder, task_head=head))
-    xy, cls = np.array([[10.0, 12.0], [20.0, 8.0]]), np.array([0, 1])
-    heatmap = render_peak_heatmap(xy, cls, target_size=(32, 32), num_classes=2, sigma=1.5)
-    gt = torch.tensor([[10.0, 12.0, 0.0], [20.0, 8.0, 1.0]])
-    batch = _grid_batch({"heatmap": torch.stack([heatmap, heatmap]), "gt_points": torch.stack([gt, gt])})
+    learner = DenseLearner(DenseModel(decoder, head))
+    ignore = torch.zeros(2, 32, 32, dtype=torch.bool)
+    ignore[1, :4] = True
+    check_learner(learner, _grid_batch({"points": _points(), "ignore": ignore}), budget=BUDGET)
+
+
+@pytest.mark.parametrize("raw", [True, False], ids=["uint8-pixels", "preprocessed-pixels"])
+def test_dense_learner_conforms_with_a_live_encoder_stage(raw):
+    """The parameter-free stage sits inside the model: nothing of it is optimized or
+    checkpointed, and pixels stay on the stage's input device."""
+    torch.manual_seed(0)
+    stage = FakeEncoder(target_size=32, patch_size=4)
+    head = SegmentationHead(num_classes=3, geometry=stage.geometry, metrics=["mean_dice"])
+    decoder = decoder_registry.get("linear")(input_dim=stage.feature_dim, num_classes=3)
+    learner = DenseLearner(DenseModel(decoder, head, encoder=stage))
+    pixels = torch.randint(0, 256, (2, 3, 32, 32), dtype=torch.uint8)
+    if not raw:
+        pixels = torch.stack([stage.preprocessor()(item) for item in pixels])
+    batch = GridBatch(features=None, pixels=pixels, targets={"mask": torch.randint(0, 3, (2, 32, 32))}, sample_ids=("a", "b"))
     check_learner(learner, batch, budget=BUDGET)
+    assert not any(key.startswith("encoder") for key in learner.trainable_state_dict())
 
 
 def test_check_learner_names_the_broken_method():

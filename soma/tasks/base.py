@@ -12,7 +12,7 @@ from torch import Tensor, nn
 from soma.evaluation.predictions import family_prediction_columns
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
     from soma.data import SampleRecord
 
@@ -34,6 +34,19 @@ def build_input_dropout(dropout: float) -> nn.Dropout | None:
     if isinstance(dropout, bool) or not 0.0 <= dropout < 1.0:
         raise ValueError(f"dropout must be a probability in [0.0, 1.0), got {dropout!r}.")
     return nn.Dropout(dropout) if dropout > 0.0 else None
+
+
+def as_grid_geometry(geometry):
+    """A grid head's bound geometry as a :class:`~soma.data.GridGeometry`.
+
+    A bare :class:`~soma.data.geometry.DenseGridGeometry` (a frame layout without a
+    level-0 anchor) anchors at the origin with level-0 pixels equal to frame pixels.
+    """
+    from soma.data.geometry import GridGeometry
+
+    if isinstance(geometry, GridGeometry):
+        return geometry
+    return GridGeometry.from_dense(geometry)
 
 
 _CLASSIFICATION_FAMILIES = frozenset({"binary_classification", "multiclass_classification"})
@@ -141,6 +154,33 @@ class TaskHead(ABC, nn.Module):
             Dict mapping metric name to scalar value.
         """
         ...
+
+    @classmethod
+    def resolve_target_schema(cls, params: "Mapping[str, Any] | None" = None) -> dict[str, type]:
+        """The ``target_schema`` of a head built from ``params`` (a config's ``task.params``).
+
+        What cohort loading validates before any head exists. The class's own
+        ``target_schema`` by default; a head whose target keys depend on its params (a
+        multi-output regression) overrides it.
+        """
+        return dict(cls.target_schema)
+
+    @classmethod
+    def resolve_metrics(
+        cls,
+        params: "Mapping[str, Any] | None" = None,
+        metrics: "Sequence[str] | None" = None,
+    ) -> list[str]:
+        """The metrics a head built from ``params`` reports for the requested ``metrics``.
+
+        What config validation checks the training monitor against before any head
+        exists. The family's effective metrics by default (an empty request means the
+        family defaults); a head whose metrics depend on its params (a multi-output
+        regression) overrides it.
+        """
+        from soma.evaluation.metrics import resolve_metrics as family_metrics
+
+        return family_metrics(cls.task_family, list(metrics or []))
 
     @property
     def target_keys(self) -> tuple[str, ...]:

@@ -166,14 +166,3 @@ def test_reference_csv_has_key_metric_expected_tolerance_source_columns():
         assert (row["url"] or "").strip().startswith("http")
 
 
-def test_greedy_rescore_passes_nms_distance_through():
-    """The re-scorer resolves ``task.params.nms_distance`` like the pipeline instead of
-    hard-coding the NMS radius to the matching distance (source-level pin: the greedy
-    re-scorer needs a trained run + dense cache to execute)."""
-    import inspect
-
-    import soma.benchmarks.ocelot as ocelot_mod
-
-    source = inspect.getsource(ocelot_mod._greedy_report_for_run)
-    assert "nms_distance_px=nms_px" in source
-    assert 'p.get("nms_distance")' in source

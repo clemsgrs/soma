@@ -175,7 +175,7 @@ def test_point_source_reads_points_and_ignore_masks(tmp_path: Path) -> None:
         tmp_path / "a.csv", index=False
     )
     ignore = np.zeros((8, 32), dtype=np.uint8)
-    ignore[:, 16:] = 255
+    ignore[:, 24:] = 255
     Image.fromarray(ignore).save(tmp_path / "a_ignore.png")
     frame = pd.DataFrame(
         {
@@ -193,6 +193,39 @@ def test_point_source_reads_points_and_ignore_masks(tmp_path: Path) -> None:
     check_target_source(source)
     with pytest.raises(KeyError):
         source.load("ghost")
+
+
+def test_point_source_drops_ignored_points_before_checking_their_classes(tmp_path: Path) -> None:
+    # A point on an ignored pixel is not supervision: its class id may be one the task
+    # never declared, and neither class_remap nor the head's range check may refuse it.
+    from soma.tasks.detection import DetectionHead
+
+    pd.DataFrame({"x": [10, 20], "y": [5, 6], "class": [1, 9]}).to_csv(
+        tmp_path / "a.csv", index=False
+    )
+    ignore = np.zeros((8, 32), dtype=np.uint8)
+    ignore[:, 16:] = 255  # (20, 6) lies on an ignored pixel
+    Image.fromarray(ignore).save(tmp_path / "a_ignore.png")
+    manifest = AnnotationManifest.from_frame(
+        pd.DataFrame(
+            {
+                "sample_id": ["a"],
+                "points_path": [tmp_path / "a.csv"],
+                "ignore_mask_path": [tmp_path / "a_ignore.png"],
+            }
+        )
+    )
+
+    remapped = PointSource.from_manifest(manifest, class_remap={1: 0}).load("a")
+    assert remapped.xy.tolist() == [[10.0, 5.0]]
+    assert remapped.classes.tolist() == [0]
+
+    points = PointSource.from_manifest(manifest).load("a")
+    assert points.xy.tolist() == [[10.0, 5.0]]
+    assert points.classes.tolist() == [1]
+    geometry = GridGeometry.from_sizes(target_size=32, patch_size=4)
+    head = DetectionHead(num_classes=2, geometry=geometry, spacing_um=1.0, match_distance=3.0)
+    head.check_target("a", points)
 
 
 def test_cached_set_source_reads_hs2p_coordinate_archives(tmp_path: Path) -> None:

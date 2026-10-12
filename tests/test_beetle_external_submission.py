@@ -35,11 +35,15 @@ class _ConstantFoldModel:
             dtype=torch.float32,
         )
         self._target_size = target_size
-        self.task_head = SimpleNamespace(num_classes=4)
+        self.head = SimpleNamespace(num_classes=4)
+        self.encoder = None  # every fold shares the (absent) stage
 
-    def __call__(self, batch):
+    def encode(self, batch):
+        return batch
+
+    def forward_from_grid(self, grid, pixels=None):
         logits = self._logits[None, :, None, None].expand(
-            batch.shape[0], 4, self._target_size, self._target_size
+            grid.shape[0], 4, self._target_size, self._target_size
         )
         return SimpleNamespace(logits=logits)
 

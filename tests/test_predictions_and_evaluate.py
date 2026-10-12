@@ -105,6 +105,24 @@ def test_default_metrics_are_the_family_catalogue_defaults():
     assert list(evaluation.metrics) == ["auroc", "balanced_accuracy", "auprc", "f1"]
 
 
+def _gene_panel(values=((0.1, 2.0), (0.4, 1.0), (0.3, 3.5), (0.9, 0.5))) -> Predictions:
+    frame = pd.DataFrame(values, columns=["value_0", "value_1"])
+    frame.insert(0, "sample_id", IDS)
+    return Predictions(frame, task_family="regression")
+
+
+def test_a_multi_output_regression_defaults_to_mean_pearson():
+    targets = pd.DataFrame(
+        {"value_0": [0.0, 0.5, 0.2, 1.0], "value_1": [2.5, 1.5, 3.0, 0.0]},
+        index=pd.Index(IDS, name="sample_id"),
+    )
+
+    evaluation = evaluate(_gene_panel(), targets)
+
+    assert list(evaluation.metrics) == ["mean_pearson"]
+    assert evaluation.metrics == evaluate(_gene_panel(), targets, metrics=["mean_pearson"]).metrics
+
+
 def test_a_prediction_without_a_target_is_refused():
     with pytest.raises(ValueError, match="1 prediction id"):
         evaluate(_binary(), _labels(ids=["a", "b", "c", "x"]))
@@ -224,6 +242,57 @@ def test_baseline_per_family(family, targets, expected):
     frame = Baseline.fit(pd.DataFrame(targets, index=IDS), task_family=family).predict(["x"]).frame
 
     assert {column: frame[column].iloc[0] for column in expected} == expected
+
+
+def test_a_multi_output_regression_baseline_predicts_each_output_mean():
+    targets = pd.DataFrame({"value_0": [1.0, 2.0, 6.0, 7.0], "value_1": [0.0, 0.0, 1.0, 1.0]}, index=IDS)
+
+    baseline = Baseline.fit(targets, task_family="regression")
+    frame = baseline.predict(["x"]).frame
+
+    assert baseline.prediction_columns == ("value_0", "value_1")
+    assert frame[["value_0", "value_1"]].iloc[0].tolist() == [4.0, 0.5]
+
+
+def test_a_scalar_regression_baseline_ignores_value_like_metadata_columns():
+    from soma.data import Cohort
+
+    records = pd.DataFrame(
+        {
+            "sample_id": IDS,
+            "value_0": [1.0, 2.0, 6.0, 7.0],
+            "value_1": [0.0, 0.0, 1.0, 1.0],  # an unused manifest column, kept as metadata
+            "split": ["train", "train", "tune", "test"],
+        }
+    )
+    cohort = Cohort.from_frames(records, targets={"value": "value_0"}, dtypes={"value": float})
+
+    baseline = Baseline.fit(cohort.targets("train"), task_family="regression")
+
+    assert baseline.prediction_columns == ("predicted_value",)
+    assert baseline.predict(["x"]).frame["predicted_value"].iloc[0] == 1.5
+
+
+def test_a_multi_output_regression_baseline_keeps_to_the_heads_target_keys():
+    from soma.data import Cohort
+    from soma.tasks.regression import RegressionHead
+
+    records = pd.DataFrame(
+        {
+            "sample_id": IDS,
+            "value_0": [1.0, 2.0, 6.0, 7.0],
+            "value_1": [0.0, 0.0, 1.0, 1.0],
+            "value_2": [5.0, 5.0, 5.0, 5.0],  # an unused manifest column, kept as metadata
+            "split": ["train", "train", "tune", "test"],
+        }
+    )
+    head = RegressionHead(input_dim=4, num_outputs=2)
+    cohort = Cohort.from_frames(records, targets=list(head.target_keys), dtypes=dict(head.target_schema))
+
+    baseline = Baseline.fit(cohort.targets("train"), task_family="regression", target_keys=head.target_keys)
+
+    assert baseline.prediction_columns == ("value_0", "value_1")
+    assert baseline.predict(["x"]).frame[["value_0", "value_1"]].iloc[0].tolist() == [1.5, 0.0]
 
 
 # --- compare ----------------------------------------------------------------------- #
@@ -386,3 +455,83 @@ def test_soma_evaluate_scores_the_tune_split_of_a_cohort_without_a_test_split(tm
     payload = json.loads(out.read_text())
     assert payload["num_samples"] == 2
     assert payload["metrics"]["accuracy"] == 1.0
+
+
+# --- grid nouns -------------------------------------------------------------------- #
+
+
+def test_integer_threshold_keys_are_class_indices_even_with_decimal_class_names():
+    from soma.evaluation import PointPredictions
+
+    frame = pd.DataFrame(
+        {
+            "sample_id": ["s"] * 4,
+            "x": [1.0, 2.0, 3.0, 4.0],
+            "y": [1.0, 2.0, 3.0, 4.0],
+            "class": [0, 0, 1, 1],
+            "score": [0.2, 0.5, 0.6, 0.8],
+        }
+    )
+    predictions = PointPredictions(frame, classes=["1", "2"], sample_ids=["s"], match_distance_px=3.0)
+
+    # An int key is an index (the shape sweep_threshold(per_class=True) returns); a str is a name.
+    assert predictions.with_threshold({0: 0.3, 1: 0.7}).frame["score"].tolist() == [0.5, 0.8]
+    assert predictions.with_threshold({"1": 0.3, "2": 0.7}).frame["score"].tolist() == [0.5, 0.8]
+    with pytest.raises(ValueError, match="unknown class '3'"):
+        predictions.with_threshold({"1": 0.3, "3": 0.7})
+
+
+def test_point_predictions_with_numpy_classes_round_trip(tmp_path):
+    from soma.evaluation import PointPredictions
+
+    frame = pd.DataFrame({"sample_id": ["s"], "x": [1.0], "y": [2.0], "class": [1], "score": [0.9]})
+    # NumPy class names (np.unique(labels)) are written as plain JSON scalars.
+    PointPredictions(frame, classes=np.array([0, 1]), sample_ids=["s"], match_distance_px=3.0).to_parquet(
+        tmp_path / "points.parquet"
+    )
+    assert PointPredictions.from_parquet(tmp_path / "points.parquet").classes == (0, 1)
+
+
+def test_label_map_predictions_with_numpy_classes_round_trip(tmp_path):
+    from soma.evaluation import LabelMapPredictions
+
+    maps = {"s": np.array([[0, 1], [1, 0]], dtype=np.uint8)}
+    LabelMapPredictions(maps, classes=np.array([0, 1])).save(tmp_path / "maps")
+    assert LabelMapPredictions.load(tmp_path / "maps").classes == (0, 1)
+
+
+class _LabelMaps:
+    """A minimal label-map target source."""
+
+    def __init__(self, maps):
+        self._maps = maps
+
+    @property
+    def sample_ids(self):
+        return list(self._maps)
+
+    def load(self, sample_id):
+        return torch.as_tensor(self._maps[sample_id])
+
+
+@pytest.mark.parametrize("undeclared_on", ["both", "prediction", "target"])
+def test_label_map_scoring_refuses_labels_outside_the_classes(undeclared_on):
+    from soma.evaluation import LabelMapPredictions
+
+    declared = np.array([[0, 1], [1, 0]], dtype=np.uint8)
+    undeclared = np.array([[0, 2], [1, 2]], dtype=np.uint8)
+    # Undeclared on both sides used to score Dice 1 by silently dropping label 2.
+    prediction = declared if undeclared_on == "target" else undeclared
+    target = declared if undeclared_on == "prediction" else undeclared
+    predictions = LabelMapPredictions({"s": prediction}, classes=["a", "b"])
+    with pytest.raises(ValueError, match=r"(?s)'s'.*\[2\]"):
+        evaluate(predictions, _LabelMaps({"s": target}))
+
+
+def test_label_map_scoring_skips_ignored_target_pixels_before_the_range_check():
+    from soma.evaluation import LabelMapPredictions
+
+    target = np.array([[0, 255], [1, 255]], dtype=np.uint8)
+    prediction = np.array([[0, 7], [1, 9]], dtype=np.uint8)
+    evaluation = evaluate(LabelMapPredictions({"s": prediction}, classes=["a", "b"]), _LabelMaps({"s": target}))
+    assert evaluation.metrics["mean_dice"] == 1.0

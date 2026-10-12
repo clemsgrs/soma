@@ -46,9 +46,6 @@ Available commands
 ``soma list decoders``
    List all registered dense decoder presets.
 
-``soma list pixel-classifiers``
-   List all registered per-pixel classifier presets.
-
 ``soma list tasks``
    List all registered task-head presets.
 
@@ -57,8 +54,13 @@ Available commands
    ``soma reproduce`` and ``soma leaderboard`` accept.
 
 ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]``
-   Score a predictions parquet against the targets in ``dataset.csv``,
-   joined by ``sample_id``; no run directory is needed. ``--splits``
+   Score saved predictions against the targets in ``dataset.csv``,
+   joined by ``sample_id``; no run directory is needed. ``PREDICTIONS``
+   is a predictions parquet, a points parquet (detection), or a
+   label-map directory (segmentation). A predictions parquet is scored
+   against the cohort's target columns, points against the files in its
+   ``points_path`` column, and label maps against the class-index masks
+   in its ``label_mask_path`` column. ``--splits``
    selects one split (default ``test``) of one fold (default ``0``);
    without it every row of the cohort is a target. Every prediction
    needs a target and every target a prediction. ``--metrics`` takes
@@ -175,7 +177,6 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      overwrite_test: false
 
    training:
-     method: gradient
      epochs: 50
      learning_rate: 1.0e-4
      weight_decay: 1.0e-5
@@ -200,17 +201,7 @@ YAML uses ``aggregation`` for the Python ``aggregator`` argument.
      pin_memory: true
      persistent_workers: true
 
-   augmentation:
-     horizontal_flip: 0.0
-     vertical_flip: 0.0
-     rotation_degrees: 0.0
-     translate: 0.0
-     scale: 0.0
-     brightness: 0.0
-     contrast: 0.0
-     saturation: 0.0
-     hue: 0.0
-     random_resized_crop_scale: null  # [min, max] area fraction, e.g. [0.08, 1.0]; crops to the tile size first
+   augmentation: null
 
    normalization:
      method: none  # none | zscore | l2 | layernorm

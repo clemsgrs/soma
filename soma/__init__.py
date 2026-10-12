@@ -10,7 +10,6 @@ except PackageNotFoundError:  # not installed (e.g. running from a source checko
 from soma.config import (
     AggregatorConfig,
     AttentionConfig,
-    AugmentationConfig,
     CacheConfig,
     CompositeConfig,
     DecoderConfig,
@@ -20,7 +19,6 @@ from soma.config import (
     ExecutionConfig,
     MasksConfig,
     PipelineConfig,
-    PixelClassifierConfig,
     PreprocessingConfig,
     RepresentationConfig,
     PreviewConfig,
@@ -48,6 +46,7 @@ from soma.data import (
     SampleRecord,
     SetSource,
     TargetSource,
+    TileImageSource,
     covers,
     from_arrays,
     from_directory,
@@ -55,7 +54,15 @@ from soma.data import (
     require_coverage,
 )
 from soma.decoders import list_decoders
-from soma.evaluation import Baseline, Evaluation, Predictions, evaluate, predict
+from soma.evaluation import (
+    Baseline,
+    Evaluation,
+    LabelMapPredictions,
+    PointPredictions,
+    Predictions,
+    evaluate,
+    predict,
+)
 from soma.dense import CachedGridSource, DenseSourceProvenance
 from soma.extraction import (
     ExtractionArtifacts,
@@ -80,7 +87,6 @@ from soma.learn import (
     Trainer,
     fit,
 )
-from soma.pixel_classifiers import list_pixel_classifiers
 from soma.pipeline import (
     FoldResult,
     Pipeline,
@@ -94,21 +100,13 @@ from soma.preprocessing import (
     save_overlay_preview,
     write_coordinate_preview,
 )
-from soma.dense.live import LiveSegmentationSource
 from soma.training.model import (
+    DenseModel,
+    DenseModelOutput,
     EmbeddingModel,
     EmbeddingModelOutput,
-    LiveSegmentationModel,
-    SegmentationModel,
-    SegmentationModelOutput,
 )
 from soma.training.sample_dataset import SampleBatch, SampleDataset, sample_collate_fn
-from soma.training.segmentation_dataset import (
-    LiveSegmentationDataset,
-    SegmentationBatch,
-    SegmentationDataset,
-    segmentation_collate_fn,
-)
 from soma.tasks import list_task_heads
 
 __all__ = [
@@ -116,7 +114,6 @@ __all__ = [
     # Config
     "AggregatorConfig",
     "AttentionConfig",
-    "AugmentationConfig",
     "CacheConfig",
     "CompositeConfig",
     "DecoderConfig",
@@ -126,7 +123,6 @@ __all__ = [
     "ExecutionConfig",
     "MasksConfig",
     "PipelineConfig",
-    "PixelClassifierConfig",
     "PreprocessingConfig",
     "RepresentationConfig",
     "PreviewConfig",
@@ -138,7 +134,6 @@ __all__ = [
     "list_models",
     "list_aggregators",
     "list_decoders",
-    "list_pixel_classifiers",
     "list_task_heads",
     # Data
     "AnnotationManifest",
@@ -154,6 +149,7 @@ __all__ = [
     "SampleRecord",
     "SetSource",
     "TargetSource",
+    "TileImageSource",
     "covers",
     "from_arrays",
     "from_directory",
@@ -186,6 +182,8 @@ __all__ = [
     # Evaluation
     "Baseline",
     "Evaluation",
+    "LabelMapPredictions",
+    "PointPredictions",
     "Predictions",
     "evaluate",
     "predict",
@@ -200,15 +198,9 @@ __all__ = [
     "write_coordinate_preview",
     "EmbeddingModel",
     "EmbeddingModelOutput",
-    "LiveSegmentationModel",
-    "LiveSegmentationSource",
-    "SegmentationModel",
-    "SegmentationModelOutput",
+    "DenseModel",
+    "DenseModelOutput",
     "SampleBatch",
     "SampleDataset",
     "sample_collate_fn",
-    "LiveSegmentationDataset",
-    "SegmentationBatch",
-    "SegmentationDataset",
-    "segmentation_collate_fn",
 ]

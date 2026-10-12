@@ -206,7 +206,7 @@ def test_composite_target_mode_is_byte_identical_without_norm(tmp_path: Path):
 def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
     from soma.config import DecoderConfig, EvalConfig, TaskConfig, TrainingConfig
     from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-    from soma.pipeline import train_one_segmentation_fold
+    from soma.pipeline import train_one_grid_fold
 
     ids = ["s0", "s1", "s2", "s3"]
     a = _write_member(tmp_path, "a", ids, patch=4, k=3)  # 2x2 grid
@@ -233,8 +233,9 @@ def test_decoder_fold_runs_through_composite_grid_mode(tmp_path: Path):
     manifest = legacy_samples_from_csv(manifest_csv)
     splits = legacy_folds_from_csv(splits_csv, manifest)
 
-    result = train_one_segmentation_fold(
+    result = train_one_grid_fold(
         feature_store=comp,
+        dataset_type="segmentation",
         dataset=manifest,
         fold_split=splits.folds[0],
         task=TaskConfig(name="segmentation", params={"num_classes": 2}),
@@ -286,51 +287,3 @@ def test_pipeline_resolve_preprocessing_propagates_composite_spacing():
         task=TaskConfig(name="segmentation", params={"num_classes": 2}),
     )
     assert resolve_pipeline_preprocessing(cfg).requested_spacing_um == 0.5
-
-
-def test_pixel_classifier_fold_runs_through_composite(tmp_path: Path):
-    pytest.importorskip("xgboost")
-    from soma.config import EvalConfig, PixelClassifierConfig, TaskConfig, TrainingConfig
-    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-    from soma.pipeline import train_one_pixel_classifier_fold
-
-    ids = ["s0", "s1", "s2", "s3"]
-    a = _write_member(tmp_path, "a", ids, patch=4, k=3)
-    b = _write_member(tmp_path, "b", ids, patch=2, k=4)
-    comp = CompositeDenseFeatureStore([a, b])
-
-    masks_dir = tmp_path / "masks"
-    masks_dir.mkdir()
-    rng = np.random.default_rng(0)
-    rows = []
-    for sid in ids:
-        mask = rng.integers(0, 2, size=(TARGET, TARGET), dtype=np.uint8)
-        Image.fromarray(mask).save(masks_dir / f"{sid}.png")
-        rows.append((sid, f"{sid}.jpg", str(masks_dir / f"{sid}.png")))
-    manifest_csv = tmp_path / "manifest.csv"
-    manifest_csv.write_text(
-        "sample_id,image_path,label_mask_path\n" + "\n".join(f"{s},{i},{m}" for s, i, m in rows) + "\n"
-    )
-    splits_csv = tmp_path / "splits.csv"
-    assign = {ids[0]: "train", ids[1]: "train", ids[2]: "tune", ids[3]: "test"}
-    splits_csv.write_text(
-        "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
-    )
-    manifest = legacy_samples_from_csv(manifest_csv)
-    splits = legacy_folds_from_csv(splits_csv, manifest)
-
-    result = train_one_pixel_classifier_fold(
-        feature_store=comp,
-        dataset=manifest,
-        fold_split=splits.folds[0],
-        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
-        training=TrainingConfig(epochs=1, batch_size=1, max_train_pixels=500),
-        fold_dir=tmp_path / "fold",
-        pixel_classifier=PixelClassifierConfig(
-            name="xgboost", params={"n_estimators": 8, "max_depth": 2, "early_stopping_rounds": None}
-        ),
-        evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
-    )
-    assert "test" in result.test_evaluations
-    assert 0.0 <= result.test_evaluations["test"].metrics["mean_dice"] <= 1.0
-    assert (tmp_path / "fold" / "preds" / "test" / "s3.png").is_file()

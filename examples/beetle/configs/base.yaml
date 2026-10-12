@@ -76,11 +76,9 @@ evaluation:
   metrics: [mean_dice, dataset_global_mean_dice, mean_iou, dice_per_class]
   save_segmentation_overlays: false
   save_segmentation_probabilities: false
-  save_segmentation_confusion_evidence: true
   holdout_test: true
 
 training:
-  method: gradient
   epochs: 30
   learning_rate: 1.0e-4
   weight_decay: 1.0e-5
@@ -95,13 +93,4 @@ training:
   gradient_accumulation: 1
   num_workers: 4
 
-augmentation:
-  horizontal_flip: 0.0
-  vertical_flip: 0.0
-  rotation_degrees: 0.0
-  translate: 0.0
-  scale: 0.0
-  brightness: 0.0
-  contrast: 0.0
-  saturation: 0.0
-  hue: 0.0
+augmentation: null

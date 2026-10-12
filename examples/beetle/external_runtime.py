@@ -211,20 +211,18 @@ def validate_selected_run_recipe(
 def load_selected_fold_predictor(run_dir: Path, checkpoint_paths: tuple[Path, ...]):
     """Load the selected run recipe, one frozen encoder, and all five fold decoders."""
     from soma.config import load_config
-    from soma.dense.live import build_live_segmentation_source
-    from soma.dense.predict import (
-        SlidingWindowSegmentationPredictor,
-        build_live_segmentation_models,
-    )
+    from soma.dense.predict import SlidingWindowSegmentationPredictor, build_dense_models
+    from soma.pipeline import live_encoder_for
+    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
     config = load_config(run_dir / "config.yaml")
     if config.decoder is None or config.task is None or config.encoder is None:
         raise ValueError(
             "BEETLE External inference requires encoder, decoder, and task config"
         )
-    source = build_live_segmentation_source(config)
-    models = build_live_segmentation_models(
-        source,
+    encoder = live_encoder_for(config)
+    models = build_dense_models(
+        encoder,
         decoder_name=config.decoder.name,
         decoder_params=config.decoder.params,
         num_classes=len(config.task.params["classes"]),
@@ -233,7 +231,14 @@ def load_selected_fold_predictor(run_dir: Path, checkpoint_paths: tuple[Path, ..
         projection=config.projection,
         encoder_identity=config.encoder.name,
     )
-    return SlidingWindowSegmentationPredictor.from_source(source, models)
+    preprocessing = resolve_pipeline_preprocessing(config)
+    return SlidingWindowSegmentationPredictor.from_encoder(
+        encoder,
+        models,
+        spacing_um=preprocessing.requested_spacing_um,
+        backend=preprocessing.backend,
+        tolerance=float(preprocessing.tolerance),
+    )
 
 
 __all__ = [

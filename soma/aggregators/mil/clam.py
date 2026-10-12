@@ -165,7 +165,7 @@ class _CLAMBase(Aggregator):
                 f"ordinal_classification, and regression tasks, got '{task_family}'."
             )
 
-        if task_family == "regression" and getattr(task_head, "num_targets", 1) != 1:
+        if task_family == "regression" and getattr(task_head, "num_outputs", 1) != 1:
             raise ValueError("clam_sb currently supports only single-target regression tasks.")
 
         inferred_mode = self._TASK_TO_MODE[task_family]

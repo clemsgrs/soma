@@ -10,7 +10,7 @@ target-resolution logits — no chance of three divergent resize paths.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -21,7 +21,7 @@ from torch import Tensor
 from soma.dense.reader import accepted_mask_values
 from soma.dense.reader import load_mask as load_mask
 from soma.evaluation.metrics import resolve_metrics
-from soma.tasks.base import TaskHead
+from soma.tasks.base import TaskHead, as_grid_geometry
 from soma.tasks.dense_metrics import (
     dense_confusion_counts,
     reduce_dice_iou,
@@ -31,8 +31,9 @@ from soma.tasks.dense_metrics import (
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from soma.data import SampleRecord, TargetSource
+    from soma.data import SampleRecord
     from soma.dense.geometry import DenseGridGeometry
+    from soma.evaluation.grid import LabelMapPredictions
 
 
 class SegmentationHead(TaskHead):
@@ -61,14 +62,19 @@ class SegmentationHead(TaskHead):
             before averaging class Dice, or ``foreground_mean_dice`` for the
             background-free, empty-target-skipping per-image mean.
 
-    A slide-manifest ROI's mask is the crop ROI sampling stored at its
-    ``label_mask_crop_path`` (read at its grid's spacing when it was written), so
-    targets never reopen the annotation raster.
+        class_names: One name per class index, carried by the predictions.
+
+    Supervision is a raw ``(B, H, W)`` label map at the target size (``ignore_index``
+    folded in), served by a :class:`~soma.data.LabelMapSource`; ``target_kind`` declares
+    it so :func:`soma.learn.loaders` refuses a points source. The mask-read arguments
+    (``spacing_um`` ... ``pixel_mapping``) describe how the pipeline builds that source
+    (:attr:`label_map_read_params`); the head itself never reads a file.
     """
 
     target_dtypes = {"mask": torch.long}
     target_schema: dict[str, type] = {}
     task_family = "segmentation"
+    target_kind = "label_map"
     # Eval streams compact per-image confusion counts instead of full logits — dense
     # logits (N, C, H, W) would OOM if concatenated across a cohort. The trainer /
     # evaluator accumulate `dense_stats` rows and call `finalize_eval_metrics`.
@@ -94,10 +100,15 @@ class SegmentationHead(TaskHead):
         tolerance: float = 0.05,
         label_remap: "np.ndarray | None" = None,
         pixel_mapping: Mapping[str, int | list[int]] | None = None,
+        class_names: Sequence[str] | None = None,
     ) -> None:
         super().__init__()
         if num_classes < 1:
             raise ValueError(f"num_classes must be >= 1, got {num_classes}")
+        if num_classes > 256:
+            raise ValueError(
+                f"label maps are uint8 rasters (max 256 classes); got num_classes={num_classes}"
+            )
         if 0 <= ignore_index < num_classes:
             raise ValueError(
                 f"ignore_index {ignore_index} must be outside [0, num_classes={num_classes})."
@@ -161,12 +172,26 @@ class SegmentationHead(TaskHead):
                 label_remap=label_remap,
             )
         )
-        self._encoded_size = tuple(int(s) for s in geometry.encoded_size)
-        self._crop_box = tuple(int(v) for v in geometry.crop_box)
+        self._geometry = as_grid_geometry(geometry)
+        self._encoded_size = tuple(int(s) for s in self._geometry.encoded_size)
+        self._crop_box = tuple(int(v) for v in self._geometry.crop_box)
         self.metrics = resolve_metrics("segmentation", metrics or [])
-        # Dense supervision comes from a TargetSource bound by the caller (bind_targets);
-        # the head never reads a file path off a record.
-        self._target_source: "TargetSource | None" = None
+        if class_names is None:
+            class_names = [f"class_{index}" for index in range(self.num_classes)]
+        if len(class_names) != self.num_classes:
+            raise ValueError(
+                f"class_names has {len(class_names)} entries for num_classes={self.num_classes}."
+            )
+        self.class_names = tuple(str(name) for name in class_names)
+
+    @property
+    def geometry(self):
+        """The bound :class:`~soma.data.GridGeometry` (crop box, target size)."""
+        return self._geometry
+
+    @property
+    def classes(self) -> tuple[str, ...]:
+        return self.class_names
 
     @property
     def label_remap(self) -> "np.ndarray | None":
@@ -212,16 +237,6 @@ class SegmentationHead(TaskHead):
         return upsampled[:, :, top : top + height, left : left + width]
 
     @property
-    def target_source(self) -> "TargetSource | None":
-        """The bound label-map source, or ``None`` before :meth:`bind_targets`."""
-        return self._target_source
-
-    def bind_targets(self, source: "TargetSource") -> "SegmentationHead":
-        """Bind the :class:`~soma.data.TargetSource` ``extract_targets`` reads label maps from."""
-        self._target_source = source
-        return self
-
-    @property
     def label_map_read_params(self) -> dict[str, Any]:
         """Constructor kwargs for a :class:`~soma.data.LabelMapSource` matching this head."""
         _, _, target_h, target_w = self._crop_box
@@ -236,30 +251,28 @@ class SegmentationHead(TaskHead):
             "image_backend": self._image_backend,
         }
 
-    def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
-        if self._target_source is None:
-            raise RuntimeError(
-                "SegmentationHead has no target source; call head.bind_targets(source) with "
-                "a LabelMapSource / CachedLabelMapSource before extracting targets."
-            )
-        mask = self._target_source.load(record.sample_id)
-        if not torch.is_tensor(mask) or mask.ndim != 2:
+    def check_target(self, sample_id: str, mask: Tensor) -> None:
+        """Refuse a label map holding a value outside the classes and ``ignore_index``.
+
+        Caught here, naming the sample, an off-by-one labeling (classes ``{1, 2, 3}``) or a
+        stray value would otherwise surface as a cryptic one_hot / cross-entropy index
+        assert (device-side on CUDA) far from its cause.
+        """
+        # An elementwise bounds test, not ``torch.unique`` over the whole map: it runs on
+        # every sample of every epoch, and sorting a megapixel map dominated data loading.
+        bad = ((mask < 0) | (mask >= self.num_classes)) & (mask != self.ignore_index)
+        if bool(bad.any()):
+            invalid = sorted(torch.unique(mask[bad]).tolist())
             raise ValueError(
-                f"target source returned {type(mask).__name__} for '{record.sample_id}'; "
-                "SegmentationHead needs a (H, W) label map."
-            )
-        mask = mask.to(torch.long)
-        # Catch off-by-one labelings (e.g. classes {1,2,3}) and stray values here,
-        # with the sample_id — otherwise they surface as a cryptic one_hot/cross_entropy
-        # index assert (a device-side async assert on CUDA) far from the cause.
-        allowed = set(range(self.num_classes)) | {self.ignore_index}
-        invalid = sorted(v for v in torch.unique(mask).tolist() if v not in allowed)
-        if invalid:
-            raise ValueError(
-                f"mask for '{record.sample_id}' has label value(s) {invalid} outside "
+                f"mask for '{sample_id}' has label value(s) {invalid} outside "
                 f"[0, num_classes={self.num_classes}) ∪ {{ignore_index={self.ignore_index}}}."
             )
-        return {"mask": mask}
+
+    def extract_targets(self, record: "SampleRecord") -> dict[str, Tensor]:
+        raise TypeError(
+            "SegmentationHead reads its label maps from a TargetSource, not from records: "
+            "pass targets=LabelMapSource(...) to soma.learn.loaders"
+        )
 
     def compute_loss(self, predictions: Tensor, targets: dict[str, Tensor]) -> Tensor:
         return segmentation_loss(
@@ -323,6 +336,29 @@ class SegmentationHead(TaskHead):
     def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
         prediction = raw_output.argmax(dim=1).detach().cpu().numpy().astype(np.uint8)
         return {"prediction": prediction}
+
+    # --- predictions ------------------------------------------------------ #
+
+    @property
+    def prediction_columns(self) -> tuple[str, ...]:
+        return ("label_map",)
+
+    def to_columns(self, processed: dict[str, Any]) -> dict[str, Any]:
+        """One ``(H, W)`` uint8 label map per sample."""
+        return {"label_map": processed["prediction"]}
+
+    def assemble_predictions(
+        self, sample_ids: Sequence[str], columns: dict[str, list[Any]]
+    ) -> "LabelMapPredictions":
+        """The noun :func:`soma.predict` returns for this head."""
+        from soma.evaluation.grid import LabelMapPredictions
+
+        return LabelMapPredictions(
+            dict(zip(sample_ids, columns.get("label_map", []), strict=True)),
+            classes=self.classes,
+            ignore_index=self.ignore_index,
+            geometry=self.geometry,
+        )
 
 
 task_registry.register("segmentation", SegmentationHead)
