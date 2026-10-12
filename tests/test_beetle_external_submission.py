@@ -273,9 +273,9 @@ def test_external_infer_command_ensembles_spacing_maps_pngs_and_flat_zip(
         [0.01, 0.01, 0.97, 0.01],
     ]
     for fold, probabilities in enumerate(fold_probabilities):
-        fold_dir = run_dir / f"fold_{fold}"
-        fold_dir.mkdir()
-        torch.save({"probabilities": probabilities}, fold_dir / "best_model.pt")
+        bundle = run_dir / f"fold_{fold}" / "bundle"
+        bundle.mkdir(parents=True)
+        torch.save({"probabilities": probabilities}, bundle / "weights.safetensors")
 
     loaded_checkpoints: list[Path] = []
 
@@ -284,7 +284,8 @@ def test_external_infer_command_ensembles_spacing_maps_pngs_and_flat_zip(
         geometry = compute_dense_geometry(target_size=8, patch_size=4)
         models = [
             _ConstantFoldModel(
-                torch.load(path, weights_only=True)["probabilities"], target_size=8
+                torch.load(path / "weights.safetensors", weights_only=True)["probabilities"],
+                target_size=8,
             )
             for path in checkpoint_paths
         ]
@@ -325,9 +326,7 @@ def test_external_infer_command_ensembles_spacing_maps_pngs_and_flat_zip(
         == 0
     )
 
-    assert loaded_checkpoints == [
-        run_dir / f"fold_{fold}" / "best_model.pt" for fold in range(5)
-    ]
+    assert loaded_checkpoints == [run_dir / f"fold_{fold}" / "bundle" for fold in range(5)]
     for filename, _patient, _wsi, _spacing, width, height in specs:
         with Image.open(output_dir / filename) as prediction:
             assert prediction.mode == "L"

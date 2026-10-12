@@ -277,10 +277,10 @@ def _git_commit() -> str:
     """Short ``HEAD`` SHA of the soma checkout (``-dirty`` if *tracked* code has changes).
 
     Resolved from the installed package location, not the CWD, so it pins the code that
-    actually produced the number (see :func:`soma.provenance.soma_git_state`). Returns
+    actually produced the number (see :func:`soma.pipeline.layout.soma_git_state`). Returns
     ``"unknown"`` outside a git checkout, e.g. for a wheel install.
     """
-    from soma.provenance import soma_git_state
+    from soma.pipeline.layout import soma_git_state
 
     state = soma_git_state()
     if state.short is None:

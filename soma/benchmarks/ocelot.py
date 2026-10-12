@@ -99,24 +99,6 @@ def _locate_run_config(run_dir: Path) -> Path:
     raise FileNotFoundError(f"no config.yaml found under {run_dir}")
 
 
-def _locate_checkpoint(run_dir: Path, *, fold: int | None = None) -> Path:
-    """The newest ``best_model.pt`` under ``run_dir`` (deterministic across re-runs).
-
-    A single-fold run keeps its weights at the run dir. A multi-fold run keeps each fold's
-    under ``fold_<k>/``, so ``fold`` selects that fold's weights.
-    """
-    name = "best_model.pt" if fold is None else f"fold_{fold}/best_model.pt"
-    direct = run_dir / name
-    if direct.is_file():
-        return direct
-    candidates = sorted(
-        run_dir.glob(f"experiments/*/runs/*/{name}"), key=lambda p: p.stat().st_mtime
-    )
-    if not candidates:
-        raise FileNotFoundError(f"no {name} under {run_dir}")
-    return candidates[-1]
-
-
 def resolve_dense_cache_dir(
     cfg: PipelineConfig, manifest: LegacySamples
 ) -> Path | None:

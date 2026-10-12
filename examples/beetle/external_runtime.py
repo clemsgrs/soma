@@ -1,4 +1,4 @@
-"""Bind BEETLE's selected run, checkpoints, and immutable encoder runtime."""
+"""Bind BEETLE's selected run, fold bundles, and immutable encoder runtime."""
 
 from __future__ import annotations
 
@@ -145,15 +145,13 @@ def selected_checkpoints(run_dir: str | Path, selected_arm: str) -> tuple[Path, 
         raise ValueError(
             f"BEETLE selected run config must carry beetle and {selected_arm!r} tags"
         )
-    checkpoints = tuple(
-        run_dir / f"fold_{fold}" / "best_model.pt" for fold in range(NUM_FOLDS)
-    )
-    missing = [str(path) for path in checkpoints if not path.is_file()]
+    bundles = tuple(run_dir / f"fold_{fold}" / "bundle" for fold in range(NUM_FOLDS))
+    missing = [str(path) for path in bundles if not path.is_dir()]
     if missing:
         raise FileNotFoundError(
-            f"BEETLE selected arm requires five fold-selected checkpoints; missing={missing}"
+            f"BEETLE selected arm requires five fold bundles; missing={missing}"
         )
-    return checkpoints
+    return bundles
 
 
 def validate_selected_run_recipe(
@@ -208,11 +206,12 @@ def validate_selected_run_recipe(
     }
 
 
-def load_selected_fold_predictor(run_dir: Path, checkpoint_paths: tuple[Path, ...]):
-    """Load the selected run recipe, one frozen encoder, and all five fold decoders."""
+def load_selected_fold_predictor(run_dir: Path, bundle_paths: tuple[Path, ...]):
+    """Load the selected run recipe, one frozen encoder, and all five fold bundles."""
+    from soma import load
     from soma.config import load_config
-    from soma.dense.predict import SlidingWindowSegmentationPredictor, build_dense_models
-    from soma.pipeline import live_encoder_for
+    from soma.dense.predict import SlidingWindowSegmentationPredictor
+    from soma.pipeline.build import live_encoder_for
     from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
     config = load_config(run_dir / "config.yaml")
@@ -220,21 +219,11 @@ def load_selected_fold_predictor(run_dir: Path, checkpoint_paths: tuple[Path, ..
         raise ValueError(
             "BEETLE External inference requires encoder, decoder, and task config"
         )
-    encoder = live_encoder_for(config)
-    models = build_dense_models(
-        encoder,
-        decoder_name=config.decoder.name,
-        decoder_params=config.decoder.params,
-        num_classes=len(config.task.params["classes"]),
-        ckpt_paths=checkpoint_paths,
-        normalization=config.normalization,
-        projection=config.projection,
-        encoder_identity=config.encoder.name,
-    )
     preprocessing = resolve_pipeline_preprocessing(config)
-    return SlidingWindowSegmentationPredictor.from_encoder(
-        encoder,
-        models,
+    # The folds trained on cached grids: the stage that extracted them re-encodes the ROIs.
+    return SlidingWindowSegmentationPredictor.from_bundles(
+        [load(path) for path in bundle_paths],
+        encoder=live_encoder_for(config),
         spacing_um=preprocessing.requested_spacing_um,
         backend=preprocessing.backend,
         tolerance=float(preprocessing.tolerance),

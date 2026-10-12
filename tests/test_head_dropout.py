@@ -206,10 +206,9 @@ class TestReachesTheHeadThroughTheConfig:
         return seen
 
     def _train(self, tmp_path, *, slide_level):
-        from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
-        from soma.config import AggregatorConfig, TaskConfig, TrainingConfig
+        from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
         from soma.data import CachedSetSource
-        from soma.pipeline import train_one_fold
+        from soma.pipeline import Pipeline
 
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         if slide_level:
@@ -219,17 +218,16 @@ class TestReachesTheHeadThroughTheConfig:
             for i in range(NUM_SAMPLES):
                 torch.save(torch.randn(PIPELINE_D), feature_dir / f"s{i}.pt")
 
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        return train_one_fold(
-            feature_store=CachedSetSource(feature_dir),
-            dataset=dataset,
-            fold_split=splits.folds[0],
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=tmp_path / "out",
+            dataset_type="slide",
             aggregator=None if slide_level else AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="binary_classification", params={"dropout": 0.2}),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold",
+            training=TrainingConfig(epochs=2, patience=10, batch_size=2, pin_memory=False),
         )
+        return Pipeline(config, source=CachedSetSource(feature_dir)).run().fold_results[0]
 
     def test_single_embedding_path(self, tmp_path, built_probabilities):
         result = self._train(tmp_path, slide_level=True)

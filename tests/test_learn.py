@@ -761,6 +761,45 @@ class TestFitSugar:
         )
         assert len(result.history) == 6 and result.selected_epoch == 0
 
+    def test_callbacks_passed_explicitly_replace_the_ones_fit_would_build(self):
+        """A ``Checkpoint`` / ``EarlyStopping`` in ``callbacks`` is the run's selection and
+        stopping policy, not a second one next to the policy ``fit`` would build."""
+        import soma
+        from soma.learn import Checkpoint, EarlyStopping
+
+        class Worsening(MILLearner):
+            def validation_summary(self, outputs):
+                self.evaluations = getattr(self, "evaluations", 0) + 1
+                return {"loss": float(self.evaluations)}
+
+        def worsening():
+            return Worsening(_learner().model)
+
+        # A default Checkpoint(monitor="absent") would refuse the first evaluation.
+        checkpoint = Checkpoint(selection="last")
+        result = soma.fit(
+            worsening(), _bag_loader(), _bag_loader(),
+            monitor="absent", patience=None, max_epochs=4, device="cpu", progress=False,
+            callbacks=[checkpoint],
+        )
+        assert result.selected_epoch == 3 and checkpoint.best_epoch == 3
+
+        # The default EarlyStopping(patience=1) would stop this run after two epochs.
+        stopper = EarlyStopping(patience=50)
+        result = soma.fit(
+            worsening(), _bag_loader(), _bag_loader(),
+            patience=1, max_epochs=5, device="cpu", progress=False, callbacks=[stopper],
+        )
+        assert len(result.history) == 5 and stopper.evaluations == 5 and not stopper.stopped
+
+    def test_seed_everything_is_a_top_level_verb(self):
+        import soma
+
+        soma.seed_everything(3, fold=1)
+        first = torch.rand(2)
+        soma.seed_everything(4)
+        assert torch.equal(first, torch.rand(2))
+
     def test_a_learner_with_loss_or_optimizer_is_an_error(self):
         import soma
 

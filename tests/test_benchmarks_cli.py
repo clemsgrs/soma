@@ -670,7 +670,7 @@ def panel_benchmark():
 
 def _write_completed_panel_run(config, metric: str, score: float) -> None:
     """Persist the ordinary completed-Run artifacts consumed by the Leaderboard."""
-    from soma.output_layout import (
+    from soma.pipeline.layout import (
         create_run_metadata,
         resolve_managed_output_paths,
         write_experiment_metadata,
@@ -722,7 +722,7 @@ def test_reproduce_panel_reports_every_invalid_encoder_before_work(
         ),
     )
     monkeypatch.setattr(
-        "soma.output_layout.write_run_metadata",
+        "soma.pipeline.layout.write_run_metadata",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             AssertionError("invalid panel must not write a Run")
         ),

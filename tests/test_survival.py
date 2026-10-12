@@ -10,6 +10,7 @@ import pandas as pd
 import pytest
 import torch
 
+from soma.data import CachedSetSource
 from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
 from soma.data import SampleRecord
 from soma.data._legacy import legacy_samples_from_csv
@@ -323,8 +324,8 @@ class TestSurvivalEndToEnd:
             task=TaskConfig(name="survival"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         assert isinstance(result, PipelineResult)
         test_report = result.fold_results[0].test_evaluations["test"]
@@ -377,8 +378,8 @@ class TestSurvivalEndToEnd:
             task=TaskConfig(name="survival"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         assert isinstance(result, PipelineResult)
         assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics
@@ -412,11 +413,13 @@ def test_explicit_width_trains_sparse_whole_dataset_with_four_outputs(tmp_path, 
                                 checkpoint_selection="last", patience=None,
                                 allow_missing_tune=True),
     )
-    result = Pipeline(config, feature_dir=features).run()
+    result = Pipeline(config, source=CachedSetSource(features)).run()
     fold = result.fold_results[0]
     assert 0 <= fold.test_evaluations["test"].metrics["c_index"] <= 1
-    checkpoint = torch.load(fold.train_result.checkpoint_path, weights_only=False)
-    assert tuple(checkpoint["model_state_dict"]["task_head.fc.weight"].shape) == (4, 4)
+    from safetensors.torch import load_file
+
+    weights = load_file(result.run_dir / "bundle" / "weights.safetensors")
+    assert tuple(weights["task_head.fc.weight"].shape) == (4, 4)
     assert pd.read_csv(dataset_csv)["bin"].tolist() == [0, 3, 0, 3]
     assert {name: (features / name).read_bytes() for name in original} == original
 

@@ -412,3 +412,70 @@ def write_coordinates_artifact(
     artifacts = save_tiling_result(result, output_dir, tiles_dir=output_dir)
     assert artifacts.coordinates_npz_path is not None
     return Path(artifacts.coordinates_npz_path)
+
+
+def write_cached_bags(
+    root: Path, n: int = 16, dim: int = 8, seed: int = 0, tileless: tuple[str, ...] = ("s15",)
+) -> tuple[Path, Path, Path]:
+    """A pooled tile-feature cache over a labelled cohort, written without extraction.
+
+    Each sample is a bag of ``(n_tiles, dim)`` vectors whose mean depends on its label, so
+    a MIL model can learn the task. The feature manifest (``process_list.csv``) records
+    the ``tileless`` samples as ``empty``: tiling found no tissue, so they have no bag and
+    are scored with the training baseline. Returns ``(dataset_csv, splits_csv,
+    feature_dir)``; samples ``s00``..``s09`` train, the next three tune, the rest test.
+    """
+    import torch
+
+    rng = np.random.default_rng(seed)
+    feature_dir = root / "features"
+    feature_dir.mkdir(parents=True)
+    sample_ids = [f"s{i:02d}" for i in range(n)]
+    labels = ["tumor" if i % 2 == 0 else "normal" for i in range(n)]
+    statuses = []
+    for index, (sample_id, label) in enumerate(zip(sample_ids, labels)):
+        if sample_id in tileless:
+            statuses.append({"sample_id": sample_id, "feature_status": "empty", "feature_path": ""})
+            continue
+        centre = 1.0 if label == "tumor" else -1.0
+        bag = rng.normal(centre, 1.0, size=(4 + index % 5, dim)).astype(np.float32)
+        path = feature_dir / f"{sample_id}.pt"
+        torch.save(torch.from_numpy(bag), path)
+        statuses.append({"sample_id": sample_id, "feature_status": "success", "feature_path": str(path)})
+    pd.DataFrame(statuses).to_csv(feature_dir / "process_list.csv", index=False)
+    dataset_csv = root / "dataset.csv"
+    pd.DataFrame(
+        {
+            "sample_id": sample_ids,
+            "image_path": [f"/slides/{s}.tif" for s in sample_ids],
+            "label": labels,
+        }
+    ).to_csv(dataset_csv, index=False)
+    splits_csv = root / "splits.csv"
+    split = ["train"] * 10 + ["tune"] * 3 + ["test"] * (n - 13)
+    pd.DataFrame({"sample_id": sample_ids, "split": split}).to_csv(splits_csv, index=False)
+    return dataset_csv, splits_csv, feature_dir
+
+
+def write_cached_grids(dataset_csv: Path, out_dir: Path, *, patch_size: int = 8) -> Path:
+    """A dense grid cache over a :func:`make_dense_dataset` cohort, written without
+    extraction: each ``(3, h, w)`` grid is the mean RGB of every ``patch_size`` patch (in
+    ``[0, 1]``), what the weight-free literal encoder returns. The sidecars record the
+    read spacing so the grids pass the same checks as extracted ones."""
+    import tifffile
+    import torch
+
+    from soma.dense import compute_dense_geometry, dense_grid_metadata, write_dense_grid
+
+    frame = pd.read_csv(dataset_csv)
+    for sample_id, image_path in zip(frame["sample_id"], frame["image_path"]):
+        image = tifffile.imread(image_path).astype(np.float32) / 255.0
+        size = int(image.shape[0])
+        grid_px = size // patch_size
+        pooled = image.reshape(grid_px, patch_size, grid_px, patch_size, 3).mean(axis=(1, 3))
+        grid = torch.from_numpy(np.ascontiguousarray(pooled.transpose(2, 0, 1)))
+        geometry = compute_dense_geometry(target_size=size, patch_size=patch_size)
+        metadata = dense_grid_metadata(geometry, feature_dim=3, pad_mode="reflect", spacing_um=SPACING_UM)
+        metadata.update({"source_spacing_um": SPACING_UM, "effective_spacing_um": SPACING_UM})
+        write_dense_grid(out_dir, str(sample_id), grid, metadata)
+    return out_dir

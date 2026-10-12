@@ -645,24 +645,6 @@ def test_driver_fold_cell_is_done_once_its_fold_finished(tmp_path: Path):
     assert m.training_done(out, "monkey", "uni2", 2, "folds")
 
 
-def test_checkpoint_lookup_finds_a_fold_cells_weights(tmp_path: Path):
-    from soma.benchmarks.ocelot import _locate_checkpoint
-
-    seeds_cell, fold_cell = tmp_path / "seeds", tmp_path / "folds"
-    seeds_run = _fold_run_dir(seeds_cell)
-    seeds_run.joinpath("best_model.pt").write_text("x")
-    fold_dir = _fold_run_dir(fold_cell) / "fold_1"
-    fold_dir.mkdir()
-    fold_dir.joinpath("best_model.pt").write_text("x")
-
-    # Single-fold (seeds) runs keep their weights at the run dir, found as before.
-    assert _locate_checkpoint(seeds_cell) == seeds_run / "best_model.pt"
-    # A fold cell's weights live under fold_<k>/.
-    assert _locate_checkpoint(fold_cell, fold=1) == fold_dir / "best_model.pt"
-    with pytest.raises(FileNotFoundError):
-        _locate_checkpoint(fold_cell, fold=0)
-
-
 def test_realized_epochs_reads_a_fold_cells_history(tmp_path: Path):
     m = _load_driver()
     fold_dir = _fold_run_dir(tmp_path) / "fold_1"
@@ -926,7 +908,7 @@ def test_train_cell_folds_axis_trains_only_its_own_fold(tmp_path: Path, monkeypa
     Without a fold selection soma trains every fold of the splits in every cell, so a
     5-fold dataset costs 5x the training and the cells are not independent replicates.
     """
-    from soma.output_layout import resolve_managed_output_paths
+    from soma.pipeline.layout import resolve_managed_output_paths
 
     m = _load_driver()
     cmds: list[list[str]] = []
@@ -1187,7 +1169,8 @@ def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
     """
     from soma.config import load_config
     from soma.dense_extraction import _DenseImageExtractor
-    from soma.pipeline import composite_member_extraction_spec, resolve_pipeline_preprocessing
+    from soma.pipeline.build import composite_member_extraction_spec
+    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
     repo_root = Path(__file__).resolve().parents[1]
     overrides = {"cache": {"root_dir": str(tmp_path)}}

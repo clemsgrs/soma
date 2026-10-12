@@ -448,58 +448,63 @@ def test_render_heatmaps_skips_unknown_sample(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def _save_bundle(fold_dir: Path, aggregator: str, *, feature_dim: int = 4) -> None:
+    """A fold's bundle for a MIL model over ``aggregator``, as the pipeline writes it."""
+    import pandas as pd
+
+    import soma
+    from soma.learn import FitResult, MILLearner
+    from soma.pipeline.build import build_set_model
+
+    model = build_set_model(
+        kind="mil",
+        feature_dim=feature_dim,
+        aggregator={"name": aggregator, "params": {}},
+        head={"name": "binary_classification", "params": {"num_classes": 2}},
+    )
+    fit = FitResult(MILLearner(model), pd.DataFrame(), 0, ("loss", 0.0), None, 0)
+    soma.save(fit, fold_dir / "bundle")
+
+
 def test_save_attention_skips_no_attention_aggregator(tmp_path, caplog):
     """TransMIL/MeanPool/MaxPool are skipped without error."""
-    from soma.config import (
-        AggregatorConfig, CacheConfig, EncoderConfig, HeatmapConfig,
-        PipelineConfig, TaskConfig, TrainingConfig, save_config,
-    )
-
-    config = PipelineConfig(
-        dataset_csv=tmp_path / "dataset.csv",
-        splits_csv=tmp_path / "splits.csv",
-        output_root=tmp_path / "out",
-        dataset_type="slide",
-        aggregator=AggregatorConfig(name="mean_pool"),
-        task=TaskConfig(name="binary_classification", params={"num_classes": 2}),
-    )
-    save_config(config, tmp_path / "config.yaml")
-
+    _save_bundle(tmp_path, "mean_pool")
+    _write_predictions(tmp_path / "predictions_test.parquet", ["s0"])
     feature_store = MagicMock()
     feature_store.rank = 2
 
-    dataset = MagicMock()
-
-    # Skipped up front by registry name (the old "meanpool" spelling never matched, so
-    # the run fell through to a model rebuild that failed on a missing checkpoint).
     import logging
 
     with caplog.at_level(logging.INFO, logger="soma.heatmaps"):
-        save_attention(tmp_path, dataset, feature_store)
+        save_attention(tmp_path, feature_store)
     assert any("mean_pool produces no tile attention" in r.getMessage() for r in caplog.records)
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
-    assert not list((tmp_path / "attention").glob("*.npz"))
+    assert not list((tmp_path / "attention").rglob("*.npz"))
+
+
+def test_save_attention_scores_each_fold_bundle_over_its_predicted_samples(tmp_path):
+    """Each sample of a fold's predictions file gets the attention of the fold's bundle."""
+    import torch
+
+    from soma.data import from_arrays
+
+    for fold in range(2):
+        _save_bundle(tmp_path / f"fold_{fold}", "abmil")
+        _write_predictions(tmp_path / f"fold_{fold}" / "predictions_test.parquet", [f"s{fold}"])
+    source = from_arrays({"s0": torch.randn(3, 4), "s1": torch.randn(5, 4)})
+
+    save_attention(tmp_path, source)
+
+    for fold, tiles in ((0, 3), (1, 5)):
+        saved = np.load(tmp_path / f"fold_{fold}" / "attention" / "test" / f"s{fold}.npz")["attention"]
+        assert saved.shape == (tiles,) and np.isclose(saved.sum(), 1.0)
 
 
 def test_save_attention_skips_slide_level_features(tmp_path):
     """Slide-level features have no tile attention — skipped early."""
-    from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, save_config
-
-    config = PipelineConfig(
-        dataset_csv=tmp_path / "dataset.csv",
-        splits_csv=tmp_path / "splits.csv",
-        output_root=tmp_path / "out",
-        dataset_type="slide",
-        aggregator=AggregatorConfig(name="abmil"),
-        task=TaskConfig(name="binary_classification", params={"num_classes": 2}),
-    )
-    save_config(config, tmp_path / "config.yaml")
-
     feature_store = MagicMock()
     feature_store.rank = 1
-
-    dataset = MagicMock()
-    save_attention(tmp_path, dataset, feature_store)
+    save_attention(tmp_path, feature_store)
     assert not list((tmp_path / "attention").glob("*.npz"))
 
 

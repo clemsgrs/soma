@@ -1,14 +1,15 @@
 """Attention heatmap generation for MIL models.
 
 Two-phase design:
-  1. save_attention()   — run inference on test samples, persist attention
-                          scores as .npz files (no WSI access needed).
+  1. save_attention()   — load each fold's bundle (``soma.load``), score the samples
+                          of its predictions files and persist attention scores as
+                          .npz files (no WSI access needed).
   2. render_heatmaps()  — read attention .npz + coordinates + WSI thumbnail,
                           produce PNG overlays (no model/GPU needed).
 
-Use generate_heatmaps() to run both phases in sequence. During a run, the
-:class:`SaveAttention` predict callback writes the same ``.npz`` files from the
-test-split ``soma.predict`` pass instead of phase 1.
+Use generate_heatmaps() to run both phases in sequence; ``Pipeline.run`` does once every
+fold is done. In a notebook, the :class:`SaveAttention` predict callback writes the same
+``.npz`` files from a ``soma.predict`` pass instead of phase 1.
 
 Supported aggregators: ABMIL, CLAM-SB, CLAM-MB, DSMIL.
 HIPT (hierarchical features), TransMIL, MeanPool, and MaxPool are skipped.
@@ -45,15 +46,12 @@ _NO_ATTENTION_AGGREGATORS = {"transmil", "mean_pool", "max_pool"}
 # ---------------------------------------------------------------------------
 
 
-def save_attention(
-    run_dir: Path | str,
-    dataset: LegacySamples,
-    feature_store: CachedSetSource,
-) -> None:
-    """Run inference on test samples and persist per-tile attention scores.
+def save_attention(run_dir: Path | str, feature_store: CachedSetSource) -> None:
+    """Score every fold's bundle over its predicted samples and persist tile attention.
 
-    For each fold directory in *run_dir*, loads ``best_model.pt`` and the
-    run's ``config.yaml``, then writes one ``.npz`` file per sample of each
+    For each fold directory in *run_dir*, loads ``bundle/`` with :func:`soma.load` (the
+    fitted feature adaptor rides in its weights, so attention is scored on the features
+    the model was trained on) and writes one ``.npz`` file per sample of each
     ``predictions_<split>.parquet`` to ``fold_N/attention/<split>/<sample_id>.npz``.
 
     The stored array has key ``"attention"`` with shape:
@@ -63,89 +61,39 @@ def save_attention(
 
     Args:
         run_dir: Root run directory containing fold sub-directories.
-        dataset: LegacySamples used to reconstruct the task head (label map).
         feature_store: Feature store used to load tile embeddings.
     """
-    from soma.config import load_config
-    from soma.aggregators.registry import aggregator_registry
-    from soma.tasks.classification import BranchAwareClassificationHead
-    from soma.tasks.registry import task_registry
-    from soma.training.feature_adaptor import (
-        build_feature_adaptor,
-        feature_adaptor_output_dim,
-    )
-    from soma.training.model import MILModel
+    from soma.learn import load
 
     run_dir = Path(run_dir)
-    config = load_config(run_dir / "config.yaml")
-
     if feature_store.rank == 1 or feature_store.rank == 3:
         logger.info("save_attention: skipping — slide-level or hierarchical features have no tile attention")
         return
 
-    aggregator_cfg = config.aggregator
-    if aggregator_cfg is None:
-        logger.info("save_attention: skipping — no aggregator configured")
-        return
-
-    agg_name = aggregator_cfg.name
-    if agg_name in _NO_ATTENTION_AGGREGATORS:
-        logger.info("save_attention: skipping — %s produces no tile attention", agg_name)
-        return
-
-    task_cfg = config.task
-    evaluation_cfg = config.evaluation
-    task_cls = task_registry.get(task_cfg.name)
-    task_params = {**task_cls.auto_params(dataset.records), **task_cfg.params, "metrics": evaluation_cfg.metrics}
-    # ``loss`` selects the training objective (pipeline-level), not a head kwarg; the
-    # pipeline strips it before constructing the head and so must this reconstruction.
-    task_params.pop("loss", None)
-    feature_dim = feature_store.feature_dim
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    flat_layout = (run_dir / "best_model.pt").is_file()
+    flat_layout = (run_dir / "bundle").is_dir()
     fold_dirs = [run_dir] if flat_layout else sorted(run_dir.glob("fold_*"))
 
     for fold_dir in fold_dirs:
-        checkpoint_path = fold_dir / "best_model.pt"
+        bundle_path = fold_dir / "bundle"
         prediction_files = _prediction_files_for_fold(fold_dir)
-        if not checkpoint_path.is_file():
-            logger.warning("save_attention: no checkpoint found at %s, skipping fold", checkpoint_path)
+        if not bundle_path.is_dir():
+            logger.warning("save_attention: no bundle found at %s, skipping fold", bundle_path)
             continue
         if not prediction_files:
             logger.warning("save_attention: no predictions files found in %s, skipping fold", fold_dir)
             continue
 
-        # Reconstruct model. Rebuild the (unfitted) adaptor first so the checkpoint's
-        # fitted buffers have somewhere to load into — attention must be scored on the
-        # same transformed features the model was trained on (issue #283) — and so the
-        # aggregator below is built against the *rewired* width when a projection is
-        # active (issue #284), which is what the checkpoint's shapes assume.
-        feature_adaptor = build_feature_adaptor(
-            config.normalization,
-            config.projection,
-            num_features=feature_dim,
-            encoder_identity=config.encoder.name if config.encoder is not None else "",
-        )
-        adapted_dim = feature_adaptor_output_dim(
-            feature_adaptor, num_features=feature_dim
-        )
-        aggregator_cls = aggregator_registry.get(agg_name)
-        agg = aggregator_cls(input_dim=adapted_dim, **aggregator_cfg.params)
-        if agg_name == "clam_mb" and task_cfg.name == "multiclass_classification":
-            head = BranchAwareClassificationHead(input_dim=agg.output_dim, **task_params)
-        else:
-            head = task_cls(input_dim=agg.output_dim, **task_params)
-        model = MILModel(
-            aggregator=agg,
-            task_head=head,
-            feature_adaptor=feature_adaptor,
-        )
-
-        checkpoint = torch.load(checkpoint_path, weights_only=True, map_location=device)
-        model.load_state_dict(checkpoint["model_state_dict"])
+        model = load(bundle_path).model
+        aggregator = getattr(model, "aggregator", None)
+        if aggregator is None:
+            logger.info("save_attention: skipping — the model has no aggregator")
+            return
+        agg_name = aggregator_name(aggregator)
+        if agg_name in _NO_ATTENTION_AGGREGATORS:
+            logger.info("save_attention: skipping — %s produces no tile attention", agg_name)
+            return
         model.to(device)
-        model.eval()
 
         with torch.inference_mode():
             for split_name, predictions_path in prediction_files:
@@ -339,21 +287,20 @@ def generate_heatmaps(
     heatmap_config: HeatmapConfig,
     seg_downsample: int,
 ) -> None:
-    """Run attention extraction then heatmap rendering.
+    """Run attention extraction over the fold bundles, then heatmap rendering.
 
     Equivalent to calling :func:`save_attention` followed by
-    :func:`render_heatmaps`. Use this when both steps are needed
-    in one call (e.g. from ``Pipeline.run()``).
+    :func:`render_heatmaps`; ``Pipeline.run()`` calls it once every fold is done.
 
     Args:
         run_dir: Root run directory containing fold sub-directories.
-        dataset: LegacySamples for resolving WSI paths and label map.
+        dataset: LegacySamples for resolving WSI paths.
         feature_store: Feature store for loading features and coordinates.
         tiling_dir: Run-local tiling directory containing process_list.csv.
         heatmap_config: Rendering parameters.
         seg_downsample: Downsample factor for the WSI thumbnail.
     """
-    save_attention(run_dir, dataset, feature_store)
+    save_attention(run_dir, feature_store)
     render_heatmaps(run_dir, dataset, tiling_dir, heatmap_config, seg_downsample)
 
 

@@ -278,7 +278,7 @@ def run_external_inference(
         "selected_recipe": selected_recipe,
         "roi_sidecar": str(Path(roi_sidecar)),
         "checkpoints": [
-            {"fold": fold, "path": str(path), "sha256": sha256_file(path)}
+            {"fold": fold, "path": str(path), "sha256": sha256_file(path / "weights.safetensors")}
             for fold, path in enumerate(checkpoints)
         ],
         "roi_decisions": decisions,

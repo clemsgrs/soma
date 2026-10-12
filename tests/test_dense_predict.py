@@ -257,7 +257,7 @@ def test_predict_image_no_resample_within_tolerance(tmp_path):
     assert out.applied_scale is None and out.native_spacing_um == 0.51
 
 
-# --- the slide2vec boundary: live_encoder + build_dense_models ------------------------
+# --- the slide2vec boundary: live_encoder; fold bundles -----------------------------
 
 
 class _Kit:
@@ -330,27 +330,47 @@ def test_live_encoder_requests_the_indexed_cuda_device(monkeypatch):
     assert requested["device"] == "cuda:2"
 
 
-def test_build_dense_models_loads_fold_checkpoints_over_one_stage(tmp_path):
-    from soma.decoders.registry import build_decoder_for_grid
-    from soma.dense.predict import build_dense_models
+def _fold_bundles(tmp_path, *, folds: int = 2):
+    """One bundle per fold of a model trained on cached grids (no encoder stage)."""
+    import pandas as pd
+
+    import soma
+    from soma.learn import DenseLearner, FitResult
+    from soma.pipeline.build import build_grid_model
 
     stage = FakeEncoder(target_size=TILE, patch_size=PATCH)
-    paths = []
-    for fold in range(2):
+    bundles = []
+    for fold in range(folds):
         torch.manual_seed(fold)
-        decoder = build_decoder_for_grid(
-            "linear", {}, geometry=stage.geometry, input_dim=stage.feature_dim, num_classes=3
+        model = build_grid_model(
+            feature_dim=stage.feature_dim,
+            decoder={"name": "linear", "params": {}},
+            head={"name": "segmentation", "params": {"num_classes": 3, "geometry": stage.geometry}},
         )
-        trained = DenseModel(decoder, SegmentationHead(num_classes=3, geometry=stage.geometry))
-        path = tmp_path / f"fold_{fold}.pt"
-        torch.save({"model_state_dict": trained.state_dict()}, path)
-        paths.append(path)
+        fit = FitResult(DenseLearner(model), pd.DataFrame(), 0, ("loss", 0.0), None, 0)
+        path = soma.save(fit, tmp_path / f"fold_{fold}" / "bundle", preprocessing={"spacing_um": 0.5})
+        bundles.append(soma.load(path))
+    return stage, bundles
 
-    models = build_dense_models(
-        stage, decoder_name="linear", decoder_params={}, num_classes=3, ckpt_paths=paths, device="cpu"
-    )
-    assert len(models) == 2 and all(m.encoder is stage for m in models)
+
+def test_from_bundles_ensembles_the_fold_bundles_over_one_stage(tmp_path):
+    stage, bundles = _fold_bundles(tmp_path)
+
+    predictor = SlidingWindowSegmentationPredictor.from_bundles(bundles, encoder=stage, device="cpu")
+
+    assert len(predictor.models) == 2 and all(m.encoder is stage for m in predictor.models)
+    assert predictor.spacing_um == 0.5  # the bundles' recorded read spacing
     # Each fold's own weights were loaded.
-    assert not torch.equal(next(models[0].decoder.parameters()), next(models[1].decoder.parameters()))
-    out = _predictor(models).predict_array(_painted(64, 64), overlap=0.0)
+    first, second = (next(m.decoder.parameters()) for m in predictor.models)
+    assert not torch.equal(first, second)
+    out = predictor.predict_array(_painted(64, 64), overlap=0.0)
     assert out.labels.shape == (64, 64)
+
+
+def test_from_bundles_needs_the_stage_for_bundles_trained_on_cached_grids(tmp_path):
+    _, bundles = _fold_bundles(tmp_path, folds=1)
+    with pytest.raises(ValueError, match="encoder="):
+        SlidingWindowSegmentationPredictor.from_bundles(bundles)
+    other = FakeEncoder(target_size=32, patch_size=PATCH)
+    with pytest.raises(ValueError, match="frame"):
+        SlidingWindowSegmentationPredictor.from_bundles(bundles, encoder=other)

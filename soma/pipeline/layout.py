@@ -1,4 +1,11 @@
-"""Managed experiment output layout helpers."""
+"""The managed run layout: where a run writes, what it records, and when it may resume.
+
+Absorbs the former ``soma.output_layout`` (experiment identity, run metadata, run index,
+test-identity registry) and ``soma.provenance`` (git state of the soma checkout), and
+adds the pieces :class:`~soma.pipeline.Pipeline` composes: :class:`RunRecorder` (the
+run's status lifecycle), the config and manifest resume drift guards, the fold
+directory layout and the fold-completeness rule (``metrics.json`` + ``bundle/``).
+"""
 
 from __future__ import annotations
 
@@ -6,8 +13,10 @@ import csv
 import hashlib
 import io
 import json
+import logging
 import os
 import socket
+import subprocess
 import sys
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
@@ -18,8 +27,73 @@ from typing import Any
 import yaml
 
 from soma.atomic_io import atomic_write_text
-from soma.provenance import soma_git_state
-from soma.config import task_config_dict, PipelineConfig
+from soma.config import PipelineConfig, config_yaml_dict, save_config, task_config_dict
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Git provenance of the soma code that produced a run or a recorded benchmark row
+# ---------------------------------------------------------------------------
+#
+# Resolved from the installed package directory, never from the working directory: a run
+# launched from some project folder must record the soma checkout it imported, and a
+# wheel install (site-packages, no checkout) records nothing rather than the state of
+# whatever repository happens to enclose the environment.
+
+
+@dataclass(frozen=True)
+class GitState:
+    sha: str | None
+    dirty: bool | None
+
+    @property
+    def short(self) -> str | None:
+        return self.sha[:7] if self.sha else None
+
+
+def _soma_package_dir() -> Path:
+    import soma
+
+    return Path(soma.__file__).resolve().parent
+
+
+def _git(repo: Path, *args: str) -> str | None:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return result.stdout.strip()
+
+
+def soma_git_state() -> GitState:
+    """``GitState`` of the checkout the imported ``soma`` package lives in.
+
+    ``sha`` is the full ``HEAD`` commit; ``dirty`` is ``True`` when *tracked* files under
+    the checkout have modifications (untracked scratch such as run outputs does not
+    count). Both are ``None`` when the package is not inside a git checkout that owns
+    it — a wheel install, or a package directory copied out of its repository.
+    """
+    package_dir = _soma_package_dir()
+    toplevel = _git(package_dir, "rev-parse", "--show-toplevel")
+    if not toplevel:
+        return GitState(sha=None, dirty=None)
+    # The checkout must be soma's own: an environment created inside an unrelated
+    # repository would otherwise stamp that repository's commit onto soma runs.
+    try:
+        package_dir.relative_to(Path(toplevel).resolve())
+    except ValueError:
+        return GitState(sha=None, dirty=None)
+    sha = _git(package_dir, "rev-parse", "HEAD")
+    if not sha:
+        return GitState(sha=None, dirty=None)
+    status = _git(package_dir, "status", "--porcelain", "--untracked-files=no")
+    return GitState(sha=sha, dirty=None if status is None else bool(status))
 
 
 _SEMANTIC_IDENTITY_EXCLUDED_PATH_COLUMN_ALLOWLIST = frozenset(
@@ -742,3 +816,261 @@ def register_test_result(
         json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8"
     )
     return TestResultDecision(test_digest=test_digest, skipped=False, prior=prior)
+
+
+# ---------------------------------------------------------------------------
+# Opening a run: layout, resume drift guards, recorded config, artifact mirror
+# ---------------------------------------------------------------------------
+
+
+def open_run(config: PipelineConfig, *, num_folds: int):
+    """Create (or reopen) the run directory a config writes to.
+
+    Restores completed folds from the artifact mirror, resolves the managed layout,
+    writes the experiment metadata, refuses a resume whose config or manifests drifted,
+    records the config and returns ``(layout, mirror)``; ``mirror`` is ``None`` without
+    ``run.mirror_root``.
+    """
+    from soma.pipeline.mirror import ArtifactMirror, restore_run_from_mirror
+
+    restored_run_id = restore_run_from_mirror(config, num_folds=num_folds)
+    layout = resolve_managed_output_paths(config, run_id=restored_run_id)
+    for directory in (
+        layout.output_root,
+        layout.experiment_dir,
+        layout.experiment_dir / "runs",
+        layout.run_dir,
+        layout.index_dir,
+    ):
+        directory.mkdir(parents=True, exist_ok=True)
+    write_experiment_metadata(layout.experiment_dir, layout.experiment)
+    # Runs before save_config overwrites the record it compares against.
+    guard_resume_config_drift(layout.run_dir, config)
+    save_config(config, layout.run_dir / "config.yaml")
+    mirror = None
+    if config.mirror_root is not None:
+        mirror = ArtifactMirror(
+            run_dir=layout.run_dir,
+            mirror_run_dir=Path(config.mirror_root) / layout.run_dir.relative_to(layout.output_root),
+        )
+        mirror.retry_pending()
+    return layout, mirror
+
+
+def guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
+    """Refuse to resume into a run dir whose saved config differs from the current one.
+
+    Only a resume (``resume``/``run_id`` set) that lands on an existing ``config.yaml``
+    is checked — a fresh run, or a pinned run id naming a not-yet-created dir, has
+    nothing to compare against. The comparison is over the persisted YAML form
+    (:func:`config_yaml_dict`, which omits the ``resume``/``run_id`` directives), so an
+    otherwise-identical relaunch passes while a changed seed, split file, encoder, or
+    eval protocol is caught before it silently mixes incompatible folds (issue #244)."""
+    if not (config.resume or config.run_id):
+        return
+    saved_path = run_dir / "config.yaml"
+    if not saved_path.is_file():
+        return
+    saved = yaml.safe_load(saved_path.read_text(encoding="utf-8")) or {}
+    # Round-trip the current config through YAML so both sides are the same primitive
+    # shapes (tuples→lists, Paths→str) and compare cleanly.
+    current = yaml.safe_load(yaml.safe_dump(config_yaml_dict(config)))
+    # Shared-storage routing is operational: a resume may repoint a pending spool without
+    # changing the training recipe that produced its checkpoint.
+    for payload in (saved, current):
+        run = payload.get("run")
+        if isinstance(run, dict):
+            run.pop("mirror_root", None)
+    if saved == current:
+        guard_resume_manifest_drift(run_dir, config)
+        return
+    differing = sorted(
+        key for key in set(saved) | set(current) if saved.get(key) != current.get(key)
+    )
+    raise ValueError(
+        f"Refusing to resume run '{run_dir.name}': its saved config.yaml differs from the "
+        f"current config (differing top-level sections: {differing}). Resuming would mix "
+        "folds trained under different recipes. Start a fresh run, or reconcile the config "
+        "to match the existing run."
+    )
+
+
+def guard_resume_manifest_drift(run_dir: Path, config: PipelineConfig) -> None:
+    """Refuse to resume when the train/tune manifest *content* changed under the same paths.
+
+    ``config.yaml`` only records the dataset/splits file paths. The run's ``run.yaml``
+    carries the ``experiment_id`` minted from the train+tune slice content, so recompute
+    that identity for the current files and compare: an edited label or reshuffled fold
+    with unchanged paths is caught here rather than mixing folds trained on different data.
+    """
+    run_yaml = run_dir / "run.yaml"
+    if not run_yaml.is_file():
+        return
+    saved = yaml.safe_load(run_yaml.read_text(encoding="utf-8")) or {}
+    saved_experiment_id = saved.get("experiment_id")
+    if not saved_experiment_id:
+        return
+    current_experiment_id = build_experiment_spec(config).experiment_id
+    if saved_experiment_id == current_experiment_id:
+        return
+    raise ValueError(
+        f"Refusing to resume run '{run_dir.name}': the train/tune content of "
+        f"{config.dataset_csv} / {config.splits_csv} differs from what the run was trained "
+        f"on (experiment identity {str(saved_experiment_id)[:12]} → "
+        f"{current_experiment_id[:12]}). Resuming would mix folds trained on different "
+        "data. Start a fresh run, or restore the original manifests."
+    )
+
+
+class RunRecorder:
+    """Context manager that tracks run metadata lifecycle (running → completed/failed).
+
+    On enter: writes initial "running" metadata and appends to the per-run index.
+    On success: call ``complete(summary_metrics)`` (or ``partial(pending_folds)``) then
+    exit normally. On exception: writes "failed" metadata and (if no prior successful run
+    exists) advances the latest pointer before re-raising.
+    """
+
+    def __init__(self, layout: ManagedOutputPaths, config: PipelineConfig) -> None:
+        self._layout = layout
+        self._config = config
+        self._metadata: RunMetadata | None = None
+        self._summary_metrics: dict[str, float] | None = None
+        self._pending_folds: tuple[int, ...] = ()
+
+    def __enter__(self) -> "RunRecorder":
+        layout = self._layout
+        self._metadata = create_run_metadata(
+            config=self._config,
+            experiment=layout.experiment,
+            run_dir=layout.run_dir,
+            run_id=layout.run_id,
+            status="running",
+            started_at=datetime.now().astimezone().isoformat(),
+        )
+        write_run_metadata(layout.run_dir, self._metadata)
+        self._write_indexes(self._metadata)
+        return self
+
+    def complete(self, summary_metrics: dict[str, float]) -> None:
+        self._summary_metrics = summary_metrics
+
+    def partial(self, pending_folds: tuple[int, ...]) -> None:
+        """This launch trained its ``run.folds`` share; other folds are still pending."""
+        self._pending_folds = pending_folds
+
+    def with_identity(self, result):
+        """``result`` (a ``PipelineResult``) with the manifest checksums the run's
+        metadata files record."""
+        experiment = self._layout.experiment
+        return replace(
+            result,
+            dataset_checksum=experiment.dataset_checksum,
+            splits_checksum=experiment.splits_checksum,
+            test_checksum=self._metadata.test_checksum,
+        )
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
+        layout = self._layout
+        if exc_type is not None:
+            metadata = self._metadata.with_updates(
+                status="failed",
+                finished_at=datetime.now().astimezone().isoformat(),
+                error=str(exc_val),
+            )
+            write_run_metadata(layout.run_dir, metadata)
+            self._write_indexes(metadata)
+            if not has_successful_run(layout.experiment_dir):
+                update_latest_pointer(layout.experiment_dir, layout.run_dir)
+        elif self._pending_folds:
+            # Not "completed": the leaderboard ranks completed runs, and this one has no
+            # summary yet. The latest pointer stays where it was for the same reason.
+            metadata = self._metadata.with_updates(
+                status="partial",
+                finished_at=datetime.now().astimezone().isoformat(),
+            )
+            write_run_metadata(layout.run_dir, metadata)
+            self._write_indexes(metadata)
+        else:
+            metadata = self._metadata.with_updates(
+                status="completed",
+                finished_at=datetime.now().astimezone().isoformat(),
+                summary_metrics=self._summary_metrics or {},
+            )
+            write_run_metadata(layout.run_dir, metadata)
+            self._write_indexes(metadata)
+            update_latest_pointer(layout.experiment_dir, layout.run_dir)
+        return False
+
+    def _write_indexes(self, metadata: RunMetadata) -> None:
+        # Each run touches ONLY its own dir + the append-friendly per-run index. The
+        # experiment-level projection is not written here: it was an unlocked
+        # read-modify-rewrite of a shared CSV that silently lost rows when concurrent
+        # sweep runs finished together (ADR 0003). The leaderboard rebuilds that
+        # projection on demand by scanning the self-describing run dirs.
+        update_run_index(self._layout.index_dir / "runs.csv", metadata)
+
+
+# ---------------------------------------------------------------------------
+# Fold layout and fold-level resume
+# ---------------------------------------------------------------------------
+
+#: Where a fold's model lands (``soma.save``); with ``metrics.json`` it marks the fold done.
+BUNDLE_DIRNAME = "bundle"
+
+
+def fold_dir(run_dir: Path, fold: int, num_folds: int) -> Path:
+    """A single fold owns ``run_dir`` directly; multi-fold runs get ``fold_N/`` subdirs."""
+    return Path(run_dir) if num_folds == 1 else Path(run_dir) / f"fold_{fold}"
+
+
+def fold_is_complete(directory: Path) -> bool:
+    """A fold is complete when its ``metrics.json`` and its bundle both exist.
+
+    Resume is fold-level (ADR 0016): a fold missing either restarts from epoch 0.
+    """
+    directory = Path(directory)
+    return (directory / "metrics.json").is_file() and (directory / BUNDLE_DIRNAME).is_dir()
+
+
+def reject_undeclared_fold_dirs(run_dir: Path, num_folds: int) -> None:
+    """Refuse a run dir holding ``fold_*`` dirs beyond what the current splits declare.
+
+    Such a dir comes from a previous launch with a different split file; folding its
+    ``metrics.json`` into the summary would silently mix two protocols."""
+    stray = sorted(
+        path.name
+        for path in Path(run_dir).glob("fold_*")
+        if path.is_dir()
+        and path.name[len("fold_"):].isdigit()
+        and int(path.name[len("fold_"):]) >= num_folds
+    )
+    if stray:
+        raise ValueError(
+            f"Run dir {run_dir} holds fold dir(s) {stray} that the current splits do not "
+            f"declare ({num_folds} fold(s)). They were written under a different split "
+            "file; start a fresh run or remove them before resuming."
+        )
+
+
+def source_identity(source: object) -> dict[str, Any]:
+    """What a feature source is, never where it lives.
+
+    A source reading a soma feature cache is identified by the cache's own record
+    (``cache_metadata.json``: cache key, artifact kind, encoder, feature type, dtype and
+    the slide2vec feature identity); any other source by its type.
+    """
+    cls = type(source)
+    identity: dict[str, Any] = {"type": f"{cls.__module__}.{cls.__qualname__}"}
+    feature_dir = getattr(source, "feature_dir", None)
+    if feature_dir is None:
+        return identity
+    feature_dir = Path(feature_dir)
+    for directory in (feature_dir, *list(feature_dir.parents)[:2]):
+        record_path = directory / "cache_metadata.json"
+        if record_path.is_file():
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+            keys = ("cache_key", "artifact_kind", "encoder_name", "feature_type", "dtype", "feature_identity")
+            identity.update({key: record[key] for key in keys if key in record})
+            break
+    return identity

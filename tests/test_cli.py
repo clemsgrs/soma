@@ -118,6 +118,69 @@ def test_set_malformed_pair_exits(tmp_path: Path, capsys):
     assert "key=value" in capsys.readouterr().err
 
 
+# --- --feature-dir ---
+
+
+def _source_for(config_args: list[str]):
+    """Run main() with Pipeline patched; return the ``source`` it was constructed with."""
+    with patch("soma.cli.Pipeline") as MockPipeline:
+        from soma.cli import main
+
+        main(config_args)
+    return MockPipeline.call_args.kwargs["source"]
+
+
+def test_feature_dir_attaches_a_cached_set_source(tmp_path: Path):
+    import torch
+
+    from soma.data import CachedSetSource
+
+    config_path = _make_valid_config(tmp_path)
+    features = tmp_path / "features"
+    features.mkdir()
+    torch.save(torch.randn(3, 4), features / "s0.pt")
+
+    source = _source_for([str(config_path), "--feature-dir", str(features)])
+
+    assert isinstance(source, CachedSetSource) and source.feature_dir == features
+    assert _source_for([str(config_path)]) is None
+
+
+def test_feature_dir_attaches_a_cached_grid_source_for_a_dense_task(tmp_path: Path):
+    from soma.config import DecoderConfig
+    from soma.dense import CachedGridSource
+
+    config_path = tmp_path / "config.yaml"
+    save_config(
+        PipelineConfig(
+            dataset_csv="data/dataset.csv",
+            splits_csv="data/splits.csv",
+            output_root="runs",
+            dataset_type="segmentation",
+            decoder=DecoderConfig(name="lightweight_conv"),
+            task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+        ),
+        config_path,
+    )
+    grids = tmp_path / "grids"
+    grids.mkdir()
+
+    source = _source_for([str(config_path), f"--feature-dir={grids}"])
+
+    assert isinstance(source, CachedGridSource)
+    assert source.provenance.to_dict()["kind"] == "dense_cache"
+
+
+def test_feature_dir_must_be_a_directory(tmp_path: Path, capsys):
+    config_path = _make_valid_config(tmp_path)
+    from soma.cli import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main([str(config_path), "--feature-dir", str(tmp_path / "missing")])
+    assert exc_info.value.code == 1
+    assert "--feature-dir" in capsys.readouterr().err
+
+
 # --- Error cases ---
 
 

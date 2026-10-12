@@ -7,7 +7,7 @@ import shutil
 
 import pytest
 
-from soma.artifact_mirror import ArtifactMirror, _resume_recipe
+from soma.pipeline.mirror import ArtifactMirror, _resume_recipe
 
 
 def test_resume_recipe_treats_other_evaluation_settings_as_recipe() -> None:
@@ -24,7 +24,8 @@ def test_completed_fold_is_published_directly_with_verified_manifest(
     fold_dir.mkdir(parents=True)
     (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
     (fold_dir / "metrics.json").write_text('{"dice": 0.75}', encoding="utf-8")
-    (fold_dir / "best_model.pt").write_bytes(b"selected-checkpoint")
+    (fold_dir / "bundle").mkdir()
+    (fold_dir / "bundle" / "weights.safetensors").write_bytes(b"selected-checkpoint")
     mirror_run_dir = tmp_path / "shared" / "run"
 
     ArtifactMirror(
@@ -38,7 +39,7 @@ def test_completed_fold_is_published_directly_with_verified_manifest(
         "kind": "fold",
         "fold": 0,
         "files": {
-            "best_model.pt": {
+            "bundle/weights.safetensors": {
                 "sha256": (
                     "411a6035c7d6e222474a08b93c7f4f75"
                     "d5ce6263652a1787c2e852242b8438a4"
@@ -61,7 +62,7 @@ def test_completed_fold_is_published_directly_with_verified_manifest(
             },
         },
     }
-    assert (bundle / "best_model.pt").read_bytes() == b"selected-checkpoint"
+    assert (bundle / "bundle" / "weights.safetensors").read_bytes() == b"selected-checkpoint"
     assert not (run_dir / "recovery").exists()
 
 
@@ -70,6 +71,8 @@ def _completed_run(tmp_path: Path) -> tuple[Path, Path, ArtifactMirror]:
     run_dir.mkdir(parents=True)
     (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
     (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
+    (run_dir / "bundle").mkdir()
+    (run_dir / "bundle" / "weights.safetensors").write_bytes(b"selected-checkpoint")
     mirror_run_dir = tmp_path / "shared" / "run"
     return (
         run_dir,
@@ -94,7 +97,7 @@ def test_outage_does_not_interrupt_fold_completion(
 ) -> None:
     run_dir, mirror_run_dir, mirror = _completed_run(tmp_path)
     monkeypatch.setattr(
-        "soma.artifact_mirror.shutil.copy2",
+        "soma.pipeline.mirror.shutil.copy2",
         _shared_storage_outage(mirror_run_dir),
     )
     mirror.fold_completed(fold=0, fold_dir=run_dir)
@@ -109,7 +112,7 @@ def test_retry_publishes_a_completed_fold_after_an_outage(
 ) -> None:
     run_dir, mirror_run_dir, mirror = _completed_run(tmp_path)
     monkeypatch.setattr(
-        "soma.artifact_mirror.shutil.copy2",
+        "soma.pipeline.mirror.shutil.copy2",
         _shared_storage_outage(mirror_run_dir),
     )
     mirror.fold_completed(fold=0, fold_dir=run_dir)
@@ -131,7 +134,7 @@ def test_retry_does_not_rehash_an_already_published_fold(
         rehashed.append(path)
         return ""
 
-    monkeypatch.setattr("soma.artifact_mirror._sha256", record_rehash)
+    monkeypatch.setattr("soma.pipeline.mirror._sha256", record_rehash)
     mirror.retry_pending()
 
     assert rehashed == []
@@ -153,10 +156,19 @@ def test_interrupted_publish_never_exposes_a_completed_fold(
             raise OSError("interrupted before atomic publication")
         return real_replace(source, target, *args, **kwargs)
 
-    monkeypatch.setattr("soma.artifact_mirror.os.replace", interrupt_final_swap)
+    monkeypatch.setattr("soma.pipeline.mirror.os.replace", interrupt_final_swap)
     ArtifactMirror(
         run_dir=run_dir, mirror_run_dir=mirror_run_dir
     ).fold_completed(fold=0, fold_dir=run_dir)
 
     assert not destination.exists()
     assert not list(destination.parent.glob(".fold_0.tmp.*"))
+
+
+def test_retry_publishes_only_folds_whose_bundle_was_written(tmp_path: Path) -> None:
+    """A fold is complete when its metrics.json and its bundle exist (ADR 0016): a crash
+    between the two leaves a fold the mirror must not publish as done."""
+    run_dir, mirror_run_dir, mirror = _completed_run(tmp_path)
+    shutil.rmtree(run_dir / "bundle")
+    mirror.retry_pending()
+    assert not (mirror_run_dir / "recovery" / "folds" / "fold_0").exists()

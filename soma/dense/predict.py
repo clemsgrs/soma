@@ -28,6 +28,8 @@ WSI-scale streaming (level-0 windowed reads + slide-mask stitching) is out of sc
 
 The models are :class:`~soma.training.model.DenseModel` models with a frozen encoder stage
 (:func:`soma.extract.live_encoder`); fold models sharing one stage encode each tile once.
+A finished run's fold ensemble is its bundles: :meth:`SlidingWindowSegmentationPredictor.from_bundles`
+takes the list ``[soma.load(p) for p in fold_bundles]``.
 """
 
 from __future__ import annotations
@@ -35,19 +37,18 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Sequence
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from soma.dense.geometry import DenseGridGeometry
-from soma.dense.reader import CLASS_SCHEME_KEYS, read_image_at_spacing
+from soma.dense.reader import read_image_at_spacing
 from soma.dense.sliding import cover_origins
 
 __all__ = [
     "PredictionResult",
     "SlidingWindowSegmentationPredictor",
-    "build_dense_models",
 ]
 
 _FLAT_SUFFIXES = {".png", ".jpg", ".jpeg"}
@@ -162,6 +163,54 @@ class SlidingWindowSegmentationPredictor:
             spacing_um=spacing_um,
             backend=backend,
             tolerance=tolerance,
+        )
+
+    @classmethod
+    def from_bundles(
+        cls,
+        bundles: Sequence,
+        *,
+        encoder=None,
+        spacing_um: float | None = None,
+        backend: str = "auto",
+        tolerance: float = 0.05,
+        device: str | torch.device | None = None,
+    ) -> "SlidingWindowSegmentationPredictor":
+        """Build the fold ensemble from loaded bundles (:func:`soma.load`, one per fold).
+
+        A bundle trained live carries its frozen encoder stage (bundles loaded together
+        share one stage). A bundle trained on cached grids has none, so ``encoder`` — the
+        stage that extracted those grids, e.g. :func:`soma.pipeline.build.live_encoder_for`
+        of the run's config — is put in front of its adaptor, decoder and head; its frame
+        must match the one the bundle was trained on. ``spacing_um`` defaults to the read
+        spacing the bundles record.
+        """
+        from soma.training.model import DenseModel
+
+        if not bundles:
+            raise ValueError("SlidingWindowSegmentationPredictor needs at least one bundle")
+        if device is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        models = []
+        for bundle in bundles:
+            model = bundle.model
+            if model.encoder is None:
+                if encoder is None:
+                    raise ValueError(
+                        "this bundle was trained on cached grids and carries no encoder stage; "
+                        "pass encoder= (the stage that extracted them)"
+                    )
+                if encoder.geometry.layout != model.head.geometry.layout:
+                    raise ValueError(
+                        f"encoder frame {encoder.geometry.layout} differs from the frame the "
+                        f"bundle was trained on, {model.head.geometry.layout}"
+                    )
+                model = DenseModel(model.decoder, model.head, encoder=encoder, adaptor=model.adaptor)
+            models.append(model.to(device).eval())
+        if spacing_um is None:
+            spacing_um = bundles[0].preprocessing.get("spacing_um")
+        return cls.from_encoder(
+            models[0].encoder, models, spacing_um=spacing_um, backend=backend, tolerance=tolerance
         )
 
     @torch.inference_mode()
@@ -301,7 +350,7 @@ class SlidingWindowSegmentationPredictor:
 
         ``pixels`` are the batch's raw uint8 tiles, which a model with an image-prior
         decoder reads as its side input. Fold models sharing one encoder stage (the
-        multi-fold case built by :func:`build_dense_models`) run the expensive encoder
+        multi-fold case built by :meth:`from_bundles`) run the expensive encoder
         forward **once** and every fold's adaptor + decoder + head on the shared grid;
         otherwise each model encodes the batch itself.
         """
@@ -366,71 +415,3 @@ def _resize_rgb(arr: np.ndarray, size: tuple[int, int], *, interpolation: str) -
     new_h, new_w = size
     out = resize_array(arr, (new_w, new_h), interpolation=interpolation)  # (width, height)
     return np.ascontiguousarray(out.astype(np.uint8))
-
-
-def build_dense_models(
-    encoder,
-    *,
-    decoder_name: str,
-    decoder_params: dict | None,
-    num_classes: int,
-    ckpt_paths: Sequence[str | Path],
-    normalization=None,
-    projection=None,
-    encoder_identity: str = "",
-    task_name: str = "segmentation",
-    task_params: Mapping[str, object] | None = None,
-    device: str | torch.device | None = None,
-):
-    """Reconstruct trained :class:`~soma.training.model.DenseModel` models over one frozen
-    encoder stage (``soma.extract.live_encoder``), one per checkpoint (the fold ensemble).
-
-    Each model gets the registered decoder (``num_upsample_blocks`` derived from the
-    stage's geometry when the decoder takes it), the parameter-free head registered under
-    ``task_name`` (built with ``task_params``; class-scheme keys resolve into
-    ``num_classes``), and the run's feature adaptor rebuilt **unfitted** from
-    ``normalization`` / ``projection`` (the checkpoint's buffers are the fitted state; the
-    decoder is sized from the adaptor's output width). The checkpoint's ``decoder.*`` /
-    ``adaptor.*`` state loads strictly. Returns the eval-mode models; they share
-    ``encoder``, so :class:`SlidingWindowSegmentationPredictor` encodes each tile once.
-    """
-    from soma.decoders.registry import build_decoder_for_grid
-    from soma.tasks.registry import task_registry
-    from soma.training.feature_adaptor import (
-        build_feature_adaptor,
-        feature_adaptor_output_dim,
-    )
-    from soma.training.model import DenseModel
-
-    ckpt_paths = [Path(p) for p in ckpt_paths]
-    if not ckpt_paths:
-        raise ValueError("build_dense_models needs at least one checkpoint")
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    head_cls = task_registry.get(task_name)
-    head_params = {
-        key: value
-        for key, value in dict(task_params or {}).items()
-        if key not in CLASS_SCHEME_KEYS
-    }
-    models = []
-    for ckpt in ckpt_paths:
-        adaptor = build_feature_adaptor(
-            normalization,
-            projection,
-            num_features=encoder.feature_dim,
-            encoder_identity=encoder_identity,
-        )
-        decoder = build_decoder_for_grid(
-            decoder_name,
-            decoder_params,
-            geometry=encoder.geometry,
-            input_dim=feature_adaptor_output_dim(adaptor, num_features=encoder.feature_dim),
-            num_classes=num_classes,
-        )
-        head = head_cls(num_classes=num_classes, geometry=encoder.geometry, **head_params)
-        model = DenseModel(decoder, head, encoder=encoder, adaptor=adaptor)
-        state = torch.load(ckpt, weights_only=True, map_location=device)["model_state_dict"]
-        model.load_state_dict(state)  # decoder.* (+ adaptor buffers); stage and head are parameter-free
-        models.append(model.to(device).eval())
-    return models

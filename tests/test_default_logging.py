@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from unittest.mock import patch
 
+from soma.data import CachedSetSource
 from soma import (
 
     AggregatorConfig,
@@ -85,9 +86,9 @@ def test_pipeline_run_prints_the_fold_summary_to_stderr_once_without_logging_set
     config, feature_dir = _slide_config(tmp_path)
 
     with no_logging_setup(), patch(
-        "soma.output_layout.make_run_id", return_value=FIXED_RUN_ID
+        "soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID
     ):
-        Pipeline(config, feature_dir=feature_dir).run()
+        Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
     err = capsys.readouterr().err
     assert err.count("Fold 0: train=6 tune=1 test=1") == 1
@@ -116,7 +117,7 @@ def test_a_caller_logging_setup_made_first_is_left_alone(tmp_path: Path, capsys)
 
     with no_logging_setup():
         logging.basicConfig(stream=caller_stream, level=logging.INFO, format="%(message)s")
-        Pipeline(config, feature_dir=feature_dir)
+        Pipeline(config, source=CachedSetSource(feature_dir))
         soma_handlers = list(logging.getLogger("soma").handlers)
         logging.getLogger("soma.pipeline").info("fold summary")
 
@@ -130,7 +131,7 @@ def test_constructing_several_pipelines_prints_each_record_once(tmp_path: Path, 
 
     with no_logging_setup():
         for _ in range(3):
-            Pipeline(config, feature_dir=feature_dir)
+            Pipeline(config, source=CachedSetSource(feature_dir))
         logging.getLogger("soma.pipeline").info("fold summary")
 
     assert capsys.readouterr().err.count("fold summary") == 1
@@ -142,7 +143,7 @@ def test_a_caller_logging_setup_made_after_soma_does_not_duplicate_records(
     config, feature_dir = _slide_config(tmp_path)
 
     with no_logging_setup():
-        Pipeline(config, feature_dir=feature_dir)
+        Pipeline(config, source=CachedSetSource(feature_dir))
         logging.basicConfig(level=logging.INFO, format="caller: %(message)s")
         logging.getLogger("soma.pipeline").info("fold summary")
 
@@ -159,7 +160,7 @@ def test_the_soma_cli_prints_info_logs(tmp_path: Path, capsys):
     class LoggingPipeline:
         """Stands in for the real run: it only logs, so the CLI alone owns the setup."""
 
-        def __init__(self, config):
+        def __init__(self, config, *, source=None):
             pass
 
         def run(self):
@@ -178,7 +179,7 @@ def test_an_explicit_debug_level_on_the_soma_logger_reaches_the_default_handler(
 
     with no_logging_setup():
         logging.getLogger("soma").setLevel(logging.DEBUG)
-        Pipeline(config, feature_dir=feature_dir)
+        Pipeline(config, source=CachedSetSource(feature_dir))
         logging.getLogger("soma.cache").debug("set before construction")
         logging.getLogger("soma").setLevel(logging.INFO)
         logging.getLogger("soma.cache").debug("hidden at info")
@@ -196,7 +197,7 @@ def test_a_caller_root_level_set_without_a_handler_is_kept(tmp_path: Path, capsy
 
     with no_logging_setup():
         logging.getLogger().setLevel(logging.ERROR)
-        Pipeline(config, feature_dir=feature_dir)
+        Pipeline(config, source=CachedSetSource(feature_dir))
         logging.getLogger("soma.pipeline").info("fold summary")
         logging.getLogger("soma.pipeline").warning("a warning")
         logging.getLogger("soma.pipeline").error("an error")
@@ -214,7 +215,7 @@ def test_records_still_print_when_soma_does_not_propagate_to_a_later_root_setup(
 
     with no_logging_setup():
         logging.getLogger("soma").propagate = False
-        Pipeline(config, feature_dir=feature_dir)
+        Pipeline(config, source=CachedSetSource(feature_dir))
         logging.basicConfig(level=logging.INFO, format="caller: %(message)s")
         logging.getLogger("soma.pipeline").error("an error")
 
@@ -230,7 +231,7 @@ def test_a_caller_handler_added_to_soma_after_soma_does_not_duplicate_records(
     caller_stream = io.StringIO()
 
     with no_logging_setup():
-        Pipeline(config, feature_dir=feature_dir)
+        Pipeline(config, source=CachedSetSource(feature_dir))
         caller_handler = logging.StreamHandler(caller_stream)
         caller_handler.setFormatter(logging.Formatter("caller: %(message)s"))
         logging.getLogger("soma").addHandler(caller_handler)

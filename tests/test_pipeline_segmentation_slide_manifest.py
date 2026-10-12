@@ -754,9 +754,8 @@ def test_slide_manifest_deferred_combos_raise(tmp_path: Path, overrides, match):
     from dataclasses import replace
 
     cfg = replace(cfg, **overrides)
-    pipeline = Pipeline(cfg)
     with pytest.raises(NotImplementedError, match=match):
-        pipeline._get_feature_source_context(run_dir=tmp_path / "out" / "run")
+        _attach(Pipeline(cfg), tmp_path / "out" / "run")
 
 
 def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path, monkeypatch):
@@ -895,8 +894,21 @@ def _launch(
     cfg = _config(tmp_path, manifest, splits, masks=None)
     if not cache_enabled:
         cfg = replace(cfg, cache=CacheConfig(enabled=False))
-    pipeline = Pipeline(cfg)
-    return pipeline._get_feature_source_context(run_dir=tmp_path / "out" / run_name)
+    return _attach(Pipeline(cfg), tmp_path / "out" / run_name)
+
+
+def _attach(pipeline, run_dir: Path):
+    """Build the run's feature source as ``Pipeline.run`` does (extraction included)."""
+    from soma.pipeline.build import attach_source
+
+    return attach_source(
+        pipeline.config,
+        source=pipeline.source,
+        dataset=pipeline.dataset,
+        splits=pipeline.splits,
+        image_manifest=pipeline.image_manifest,
+        run_dir=run_dir,
+    )
 
 
 def _roi_csv_bytes(tmp_path: Path, run_name: str) -> bytes:

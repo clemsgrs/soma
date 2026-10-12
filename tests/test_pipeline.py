@@ -1,9 +1,8 @@
-"""Tests for soma.pipeline — train_one_fold, train, and Pipeline orchestrator."""
+"""Tests for soma.pipeline — the ``Pipeline`` orchestrator and its run panels."""
 
 from __future__ import annotations
 
 import json
-import logging
 from pathlib import Path
 from unittest.mock import patch
 import csv
@@ -26,53 +25,21 @@ from soma.config import (
     TaskConfig,
     TrainingConfig,
 )
-from soma.data import FoldSplit
-from soma.data._legacy import LegacySamples, legacy_samples_from_csv, legacy_folds_from_csv
-from soma.evaluation import Evaluation, Predictions
+from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+from soma.evaluation import Predictions
 from soma.data import CachedSetSource
-from soma.output_layout import (
+from soma.pipeline.layout import (
     build_experiment_spec,
     read_test_results,
 )
-from soma.output_layout import test_identity_digest as compute_test_digest
-from soma.pipeline import (
-    FoldResult,
-    Pipeline,
-    PipelineResult,
-    _aggregate_fold_metrics,
-    _build_completed_run_panel,
-    train,
-    train_one_fold,
-)
-from soma.training.collate import BagBatch
-from soma.learn import FitResult
+from soma.pipeline.layout import test_identity_digest as compute_test_digest
+from soma.pipeline import Pipeline, PipelineResult
+from soma.pipeline.console import build_completed_run_panel
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def evaluated(monkeypatch) -> list[SimpleNamespace]:
-    """Every ``soma.evaluate`` call of a fold, in call order: tune first, then each test
-    split. Each entry holds the predictions and targets the split was scored on."""
-    import soma.evaluation
-
-    calls: list[SimpleNamespace] = []
-    original = soma.evaluation.evaluate
-
-    def spying(predictions, targets, *args, **kwargs):
-        result = original(predictions, targets, *args, **kwargs)
-        calls.append(SimpleNamespace(predictions=predictions, targets=targets, evaluation=result))
-        return result
-
-    monkeypatch.setattr(soma.evaluation, "evaluate", spying)
-    return calls
-
-
-def _evaluation(metrics: dict[str, float]) -> Evaluation:
-    return Evaluation(metrics=metrics, task_family="binary_classification", num_samples=0)
 
 
 D = 16
@@ -120,62 +87,6 @@ def _setup_synthetic_data(tmp_path: Path) -> tuple[Path, Path, Path]:
     ).to_csv(splits_csv, index=False)
 
     # Feature files
-    feature_dir = tmp_path / "features"
-    feature_dir.mkdir()
-    torch.manual_seed(42)
-    for i in range(NUM_SAMPLES):
-        n_tiles = 5 + i
-        torch.save(torch.randn(n_tiles, D), feature_dir / f"s{i}.pt")
-
-    return dataset_csv, splits_csv, feature_dir
-
-
-def _setup_patient_leakage_data(tmp_path: Path) -> tuple[LegacySamples, Path, CachedSetSource]:
-    dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {
-            "sample_id": ["s1", "s2", "s3", "s4"],
-            "image_path": ["/slides/s1.svs", "/slides/s2.svs", "/slides/s3.svs", "/slides/s4.svs"],
-            "label": [0, 0, 1, 1],
-            "patient_id": ["p1", "p1", "p2", "p2"],
-        }
-    ).to_csv(dataset_csv, index=False)
-    splits_csv = tmp_path / "splits.csv"
-    pd.DataFrame(
-        {
-            "fold": [0, 0, 0, 0],
-            "sample_id": ["s1", "s2", "s3", "s4"],
-            "split": ["train", "test", "train", "tune"],
-        }
-    ).to_csv(splits_csv, index=False)
-    feature_dir = tmp_path / "features"
-    feature_dir.mkdir()
-    for sample_id in ["s1", "s2", "s3", "s4"]:
-        torch.save(torch.randn(2, D), feature_dir / f"{sample_id}.pt")
-    dataset = legacy_samples_from_csv(dataset_csv)
-    return dataset, splits_csv, CachedSetSource(feature_dir)
-
-
-def _setup_train_test_only_data(tmp_path: Path) -> tuple[Path, Path, Path]:
-    """Create dataset.csv, splits.csv, and feature files with no tune split."""
-    dataset_csv = tmp_path / "dataset.csv"
-    pd.DataFrame(
-        {
-            "sample_id": [f"s{i}" for i in range(NUM_SAMPLES)],
-            "image_path": [f"/slides/s{i}.svs" for i in range(NUM_SAMPLES)],
-            "label": ["tumor" if i % 2 == 0 else "normal" for i in range(NUM_SAMPLES)],
-        }
-    ).to_csv(dataset_csv, index=False)
-
-    splits_csv = tmp_path / "splits.csv"
-    pd.DataFrame(
-        {
-            "fold": [0] * NUM_SAMPLES,
-            "sample_id": [f"s{i}" for i in range(NUM_SAMPLES)],
-            "split": ["train"] * 6 + ["test"] * 2,
-        }
-    ).to_csv(splits_csv, index=False)
-
     feature_dir = tmp_path / "features"
     feature_dir.mkdir()
     torch.manual_seed(42)
@@ -265,940 +176,13 @@ def _setup_hierarchical_data(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 
 # ---------------------------------------------------------------------------
-# _make_loaders DataLoader wiring (Phase 2.2)
+# The completed-run panel
 # ---------------------------------------------------------------------------
 
 
-class TestMakeLoaders:
-    """``_make_loaders`` must forward TrainingConfig DataLoader knobs."""
-
-    def _build_inputs(self, tmp_path: Path):
-        import functools
-
-        from soma.pipeline import _make_loaders
-        from soma.tasks.classification import categorical_label_map
-        from soma.training.bag_dataset import BagDataset
-        from soma.training.collate import bag_collate_fn
-
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        store = CachedSetSource(feature_dir)
-        train_records = [dataset.samples[sid] for sid in ["s0", "s1"]]
-        tune_records = [dataset.samples[sid] for sid in ["s2"]]
-        test_records = {"test": [dataset.samples[sid] for sid in ["s3"]]}
-        label_map = categorical_label_map(dataset.records)
-        target_fn = lambda rec: {"label": label_map[rec.label]}  # noqa: E731
-        collate = functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
-        return _make_loaders, BagDataset, collate, train_records, tune_records, test_records, store, target_fn
-
-    def test_forwards_num_workers_and_pin_memory(self, tmp_path: Path):
-        (
-            _make_loaders,
-            BagDataset,
-            collate,
-            train_records,
-            tune_records,
-            test_records,
-            store,
-            target_fn,
-        ) = self._build_inputs(tmp_path)
-
-        training = TrainingConfig(num_workers=2, pin_memory=False, persistent_workers=False, batch_size=1)
-        train_loader, tune_loader, test_loaders = _make_loaders(
-            BagDataset, collate,
-            train_records, tune_records, test_records,
-            training, store, target_fn,
-        )
-
-        for loader in (train_loader, tune_loader, *test_loaders.values()):
-            assert loader.num_workers == 2
-            assert loader.pin_memory is False
-            assert loader.persistent_workers is False
-
-    def test_persistent_workers_auto_disabled_when_zero_workers(self, tmp_path: Path):
-        (
-            _make_loaders,
-            BagDataset,
-            collate,
-            train_records,
-            tune_records,
-            test_records,
-            store,
-            target_fn,
-        ) = self._build_inputs(tmp_path)
-
-        training = TrainingConfig(num_workers=0, persistent_workers=True, batch_size=1)
-        train_loader, _, _ = _make_loaders(
-            BagDataset, collate,
-            train_records, tune_records, test_records,
-            training, store, target_fn,
-        )
-
-        # persistent_workers=True is invalid with num_workers=0; the helper
-        # must auto-downgrade to False.
-        assert train_loader.persistent_workers is False
-
-
-# ---------------------------------------------------------------------------
-# train_one_fold (Layer 1 — standalone)
-# ---------------------------------------------------------------------------
-
-
-class TestTrainOneFold:
-    def test_returns_fold_result(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, learning_rate=1e-3, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold_0",
-        )
-
-        assert isinstance(result, FoldResult)
-        assert result.fold == 0
-        assert result.train_result is not None
-        assert isinstance(result.tune_evaluation, Evaluation)
-        assert set(result.test_evaluations) == {"test"}
-
-    def test_ignores_samples_without_features(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
-    ):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        (feature_dir / "s5.pt").unlink()
-        _write_feature_manifest(
-            feature_dir,
-            {
-                "s0": "success",
-                "s1": "success",
-                "s2": "success",
-                "s3": "success",
-                "s4": "success",
-                "s5": "empty",
-                "s6": "success",
-                "s7": "success",
-            },
-        )
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        fold_dir = tmp_path / "fold_missing_feature"
-
-        caplog.set_level(logging.INFO, logger="soma.pipeline")
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=fold_dir,
-        )
-
-        assert isinstance(result, FoldResult)
-        assert (fold_dir / "best_model.pt").exists()
-        messages = [record.getMessage() for record in caplog.records]
-        assert any(
-            message == "Fold 0: train=5 tune=1 test=1 | train empty dropped=1"
-            for message in messages
-        )
-        # Dropping an empty-feature sample is routine, not a warning. (The one-sample
-        # tune split does draw the cohort's class-coverage warning, which is expected.)
-        assert not any(
-            record.levelno >= logging.WARNING and record.name == "soma.pipeline"
-            for record in caplog.records
-        )
-
-    def test_errors_when_expected_feature_is_missing(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        (feature_dir / "s5.pt").unlink()
-        _write_feature_manifest(
-            feature_dir,
-            {
-                "s0": "success",
-                "s1": "success",
-                "s2": "success",
-                "s3": "success",
-                "s4": "success",
-                "s5": "success",
-                "s6": "success",
-                "s7": "success",
-            },
-        )
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        with pytest.raises(ValueError, match="s5"):
-            train_one_fold(
-                feature_store=store,
-                dataset=dataset,
-                fold_split=splits.folds[0],
-                aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="binary_classification"),
-                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-                fold_dir=tmp_path / "fold_missing_feature",
-            )
-
-    def test_requires_tune_split_by_default_when_missing(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        with pytest.raises(ValueError, match="no tuning samples"):
-            train_one_fold(
-                feature_store=store,
-                dataset=dataset,
-                fold_split=splits.folds[0],
-                aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="binary_classification"),
-                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-                fold_dir=tmp_path / "fold_missing_tune",
-            )
-
-    def test_allow_missing_tune_uses_train_split_as_tune_with_warning(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, evaluated
-    ):
-        dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        caplog.set_level(logging.WARNING, logger="soma.pipeline")
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(
-                epochs=2,
-                patience=10,
-                batch_size=2,
-                allow_missing_tune=True,
-            ),
-            fold_dir=tmp_path / "fold_allow_missing_tune",
-        )
-
-        assert evaluated[0].predictions.sample_ids == [f"s{i}" for i in range(6)]
-        assert result.tune_evaluation.metrics["num_samples"] == 6
-        assert any(
-            record.levelno == logging.WARNING
-            and record.getMessage()
-            == "Run has no tuning samples with available features; using train split as tune because allow_missing_tune=True"
-            for record in caplog.records
-        )
-
-    def test_tune_is_test_uses_single_test_split_as_tune(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, evaluated
-    ):
-        dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        caplog.set_level(logging.WARNING, logger="soma.pipeline")
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(
-                epochs=2,
-                patience=10,
-                batch_size=2,
-                tune_is_test=True,
-            ),
-            fold_dir=tmp_path / "fold_tune_is_test",
-        )
-
-        tune, test = evaluated
-        assert tune.predictions.sample_ids == ["s6", "s7"]
-        assert test.predictions.sample_ids == ["s6", "s7"]
-        assert result.tune_evaluation.metrics["num_samples"] == 2
-        assert any(
-            record.levelno == logging.WARNING
-            and record.getMessage()
-            == "Run uses test split 'test' as tune because tune_is_test=True; "
-            "checkpoint selection and test reporting use the same samples"
-            for record in caplog.records
-        )
-
-    def test_tune_is_test_synthesizes_test_from_tune_when_no_test_split(
-        self, tmp_path: Path, caplog: pytest.LogCaptureFixture, evaluated
-    ):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        # Rewrite splits as train/tune only (no test split).
-        splits_df = pd.read_csv(splits_csv)
-        splits_df["split"] = ["train"] * 6 + ["tune", "tune"]
-        splits_df.to_csv(splits_csv, index=False)
-
-        dataset = legacy_samples_from_csv(dataset_csv)
-        caplog.set_level(logging.WARNING, logger="soma.data.cohort")
-        splits = legacy_folds_from_csv(splits_csv, dataset, tune_is_test=True)
-        store = CachedSetSource(feature_dir)
-
-        fold_split = splits.folds[0]
-        assert fold_split.test_from_tune is True
-        assert any(
-            record.levelno == logging.WARNING
-            and "reusing the tune split for test reporting" in record.getMessage()
-            for record in caplog.records
-        )
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=fold_split,
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(
-                epochs=2,
-                patience=10,
-                batch_size=2,
-                tune_is_test=True,
-            ),
-            fold_dir=tmp_path / "fold_tune_is_test_no_test_split",
-        )
-
-        # The synthesized "test" split covers the same samples as tune.
-        tune, test = evaluated
-        assert set(result.test_evaluations) == {"test"}
-        assert tune.predictions.sample_ids == ["s6", "s7"]
-        assert test.predictions.sample_ids == ["s6", "s7"]
-
-    def test_tune_is_test_requires_single_test_split(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_train_test_only_data(tmp_path)
-        splits_df = pd.read_csv(splits_csv)
-        splits_df.loc[splits_df["sample_id"] == "s7", "split"] = "test_external"
-        splits_df.to_csv(splits_csv, index=False)
-
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        with pytest.raises(ValueError, match="requires exactly one test split"):
-            train_one_fold(
-                feature_store=store,
-                dataset=dataset,
-                fold_split=splits.folds[0],
-                aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="binary_classification"),
-                training=TrainingConfig(
-                    epochs=2,
-                    patience=10,
-                    batch_size=2,
-                    tune_is_test=True,
-                ),
-                fold_dir=tmp_path / "fold_tune_is_test_multiple_tests",
-            )
-
-    def test_saves_checkpoint(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        fold_dir = tmp_path / "fold_0"
-
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=fold_dir,
-        )
-
-        assert (fold_dir / "best_model.pt").exists()
-
-    def test_saves_metrics_json(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        fold_dir = tmp_path / "fold_0"
-
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=fold_dir,
-        )
-
-        metrics_path = fold_dir / "metrics.json"
-        assert metrics_path.exists()
-        metrics = json.loads(metrics_path.read_text())
-        assert "test" in metrics
-        assert "auroc" in metrics["test"]
-
-    def test_saves_test_predictions_parquet(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        fold_dir = tmp_path / "fold_0"
-
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=fold_dir,
-        )
-
-        predictions = Predictions.from_parquet(fold_dir / "predictions_test.parquet")
-        assert predictions.task_family == "binary_classification"
-        assert predictions.sample_ids == list(splits.folds[0].tests["test"])
-        # Targets come from the cohort, never from the predictions file.
-        assert list(predictions.frame.columns) == [
-            "sample_id",
-            "prob_0",
-            "prob_1",
-            "predicted_label",
-            "is_placeholder",
-        ]
-        assert not (fold_dir / "predictions_test.csv").exists()
-
-    def test_empty_tune_and_test_samples_use_deterministic_baselines(
-        self, tmp_path: Path, evaluated
-    ):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        for sample_id in ("s6", "s7"):
-            (feature_dir / f"{sample_id}.pt").unlink()
-        _write_feature_manifest(
-            feature_dir,
-            {
-                "s0": "success",
-                "s1": "success",
-                "s2": "success",
-                "s3": "success",
-                "s4": "success",
-                "s5": "success",
-                "s6": "empty",
-                "s7": "empty",
-            },
-        )
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        fold_dir = tmp_path / "fold_empty_eval"
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=fold_dir,
-        )
-
-        # The train split is balanced, so the baseline is the 50/50 class prior.
-        for call, sample_id in zip(evaluated, ("s6", "s7"), strict=True):
-            frame = call.predictions.frame
-            assert frame["sample_id"].tolist() == [sample_id]
-            assert frame[["prob_0", "prob_1"]].values.tolist() == [[0.5, 0.5]]
-            assert frame["predicted_label"].tolist() == [0]
-            assert frame["is_placeholder"].tolist() == [True]
-        assert result.tune_evaluation.metrics["coverage"] == 0.0
-        assert result.test_evaluations["test"].metrics["coverage"] == 0.0
-
-        metrics = json.loads((fold_dir / "metrics.json").read_text())
-        assert metrics["tune"]["coverage"] == 0.0
-        assert metrics["test"]["coverage"] == 0.0
-        assert metrics["tune"]["num_samples"] == 1
-        assert metrics["tune"]["num_real_samples"] == 0
-        assert metrics["tune"]["num_placeholder_samples"] == 1
-        assert metrics["test"]["num_samples"] == 1
-        assert metrics["test"]["num_real_samples"] == 0
-        assert metrics["test"]["num_placeholder_samples"] == 1
-
-        preds_df = Predictions.from_parquet(fold_dir / "predictions_test.parquet").frame
-        assert preds_df["sample_id"].tolist() == ["s7"]
-        assert preds_df["is_placeholder"].tolist() == [True]
-
-    def test_saves_attention_npz_when_heatmaps_enabled(self, tmp_path: Path):
-        """With heatmaps.enabled, attention .npz files should be written during the test pass."""
-        from soma.config import HeatmapConfig
-
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        fold_dir = tmp_path / "fold_0"
-
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="abmil"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=1, patience=10, batch_size=1),
-            fold_dir=fold_dir,
-            heatmaps=HeatmapConfig(enabled=True),
-        )
-
-        attention_dir = fold_dir / "attention" / "test"
-        assert attention_dir.is_dir(), "attention/test/ dir should be created"
-        npz_files = list(attention_dir.glob("*.npz"))
-        assert len(npz_files) > 0, "at least one attention .npz should be saved"
-        # Verify shape: (N,) for single-branch ABMIL
-        data = np.load(npz_files[0])
-        assert "attention" in data
-        assert data["attention"].ndim == 1
-
-    def test_saved_attention_is_trimmed_to_valid_tiles(self, tmp_path: Path):
-        """Padded batch positions must not leak into saved attention arrays."""
-        from soma.heatmaps import SaveAttention
-        from soma.learn import PredictOutput
-
-        batch = BagBatch(
-            features=torch.zeros(2, 4, D),
-            mask=torch.tensor([[True, True, True, False], [True, True, True, True]]),
-            targets={"label": torch.tensor([0, 1], dtype=torch.long)},
-            sample_ids=("s0", "s1"),
-        )
-        output = PredictOutput(
-            columns={},
-            raw=SimpleNamespace(
-                tile_attention=torch.tensor([[0.1, 0.2, 0.3, 0.4], [0.4, 0.3, 0.2, 0.1]])
-            ),
-        )
-        callback = SaveAttention(tmp_path / "attention")
-        callback.on_predict_start(SimpleNamespace(model=SimpleNamespace(aggregator=None)))
-        callback.on_predict_batch(batch, output)
-
-        assert np.load(tmp_path / "attention" / "s0.npz")["attention"].shape == (3,)
-        assert np.load(tmp_path / "attention" / "s1.npz")["attention"].shape == (4,)
-
-    def test_no_attention_dir_when_heatmaps_disabled(self, tmp_path: Path):
-        """Without heatmaps enabled, no attention/ directory should be written."""
-        from soma.config import HeatmapConfig
-
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        fold_dir = tmp_path / "fold_0"
-
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="abmil"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=1, patience=10, batch_size=1),
-            fold_dir=fold_dir,
-            heatmaps=HeatmapConfig(enabled=False),
-        )
-
-        assert not (fold_dir / "attention").exists()
-
-    def test_num_classes_auto_inferred(self, tmp_path: Path):
-        """num_classes should be auto-inferred from dataset labels."""
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),  # no num_classes specified
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold_0",
-        )
-
-        # Should have 2-class probabilities (tumor/normal)
-        predictions = Predictions.from_parquet(tmp_path / "fold_0" / "predictions_test.parquet")
-        assert predictions.probability_columns == ["prob_0", "prob_1"]
-
-    def test_num_classes_above_the_label_vocabulary_is_refused_before_training(
-        self, tmp_path: Path
-    ):
-        """A configured num_classes wider than the observed labels has no name for its
-        extra probability column; it is refused when the head is built, not after training."""
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        fold_dir = tmp_path / "fold_0"
-
-        with pytest.raises(ValueError, match="task.params.label_map"):
-            train_one_fold(
-                feature_store=CachedSetSource(feature_dir),
-                dataset=dataset,
-                fold_split=splits.folds[0],
-                aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="multiclass_classification", params={"num_classes": 3}),
-                training=TrainingConfig(epochs=1, patience=10, batch_size=2),
-                fold_dir=fold_dir,
-            )
-
-        assert not (fold_dir / "best_model.pt").exists()
-
-
-    def test_slide_level_features_no_aggregator(self, tmp_path: Path):
-        """train_one_fold with 1-D features and aggregator=None uses EmbeddingModel."""
-        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-
-        # Slide-level: one (D,) tensor per sample
-        slide_dir = tmp_path / "slide_feats"
-        slide_dir.mkdir()
-        for i in range(NUM_SAMPLES):
-            torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
-        store = CachedSetSource(slide_dir)
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=None,
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold_slide",
-        )
-
-        assert isinstance(result, FoldResult)
-        assert result.test_evaluations["test"] is not None
-        assert "auroc" in result.test_evaluations["test"].metrics
-
-    def test_slide_level_features_can_omit_aggregator(self, tmp_path: Path):
-        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-
-        slide_dir = tmp_path / "slide_feats"
-        slide_dir.mkdir()
-        for i in range(NUM_SAMPLES):
-            torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
-        store = CachedSetSource(slide_dir)
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold_slide_omitted",
-        )
-
-        assert isinstance(result, FoldResult)
-        assert "auroc" in result.test_evaluations["test"].metrics
-
-    def test_slide_level_features_with_aggregator_raises(self, tmp_path: Path):
-        dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        slide_dir = tmp_path / "slide_feats"
-        slide_dir.mkdir()
-        for i in range(NUM_SAMPLES):
-            torch.save(torch.randn(D), slide_dir / f"s{i}.pt")
-        store = CachedSetSource(slide_dir)
-
-        with pytest.raises(ValueError, match="aggregator must be None"):
-            train_one_fold(
-                feature_store=store,
-                dataset=dataset,
-                fold_split=splits.folds[0],
-                aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="binary_classification"),
-                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-                fold_dir=tmp_path / "fold_slide",
-            )
-
-    def test_hierarchical_features_use_hipt(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            aggregator=AggregatorConfig(
-                name="hipt",
-                params={
-                    "embed_dim_region": 12,
-                    "embed_dim_slide": 12,
-                    "num_heads": 2,
-                    "dropout": 0.0,
-                },
-            ),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold_hier",
-            preprocessing=PreprocessingConfig(
-                requested_tile_size_px=224,
-                requested_spacing_um=0.5,
-                requested_region_size_px=448,
-                region_tile_multiple=2,
-            ),
-        )
-
-        assert isinstance(result, FoldResult)
-        assert store.rank == 3
-        assert (tmp_path / "fold_hier" / "best_model.pt").exists()
-
-    def test_hierarchical_features_reject_non_hipt_aggregator(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        with pytest.raises(ValueError, match="hierarchical features require the hipt aggregator"):
-            train_one_fold(
-                feature_store=store,
-                dataset=dataset,
-                fold_split=splits.folds[0],
-                aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="binary_classification"),
-                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-                fold_dir=tmp_path / "fold_hier_error",
-                preprocessing=PreprocessingConfig(
-                    requested_tile_size_px=224,
-                    requested_spacing_um=0.5,
-                    requested_region_size_px=448,
-                    region_tile_multiple=2,
-                ),
-            )
-
-
-# ---------------------------------------------------------------------------
-# train (Layer 1 — all folds)
-# ---------------------------------------------------------------------------
-
-
-class TestTrain:
-    def test_slide_level_train_rejects_patient_leakage_when_patient_ids_present(self, tmp_path: Path):
-        dataset, splits_csv, _store = _setup_patient_leakage_data(tmp_path)
-
-        # Leakage is a data-contract violation: the folds cannot even be built.
-        with pytest.raises(ValueError, match="Leakage in fold"):
-            legacy_folds_from_csv(splits_csv, dataset)
-
-    def test_single_fold_returns_pipeline_result(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        result = train(
-            feature_store=store,
-            dataset=dataset,
-            splits=splits,
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            run_dir=tmp_path / "output",
-        )
-
-        assert isinstance(result, PipelineResult)
-        assert len(result.fold_results) == 1
-        assert result.fold_results[0].fold == 0
-
-    def test_multi_fold(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        run_dir = tmp_path / "output"
-
-        result = train(
-            feature_store=store,
-            dataset=dataset,
-            splits=splits,
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            run_dir=run_dir,
-        )
-
-        assert len(result.fold_results) == 2
-        assert result.fold_results[0].fold == 0
-        assert result.fold_results[1].fold == 1
-        assert "test/auroc_mean" in result.summary
-        assert "test/auroc_std" in result.summary
-
-    def test_saves_summary_json(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        run_dir = tmp_path / "output"
-
-        train(
-            feature_store=store,
-            dataset=dataset,
-            splits=splits,
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            run_dir=run_dir,
-        )
-
-        summary = json.loads((run_dir / "summary.json").read_text())
-        assert "test/auroc" in summary
-
-    def test_holdout_test_reports_tune_only(self, tmp_path: Path):
-        """evaluation.holdout_test skips all test work and reports tune (classification).
-
-        summary.json carries tune (so the run is rankable in a selection sweep) and no
-        test entries; the fold's metrics.json is tune-only and no test predictions land.
-        """
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        run_dir = tmp_path / "output"
-
-        result = train(
-            feature_store=store,
-            dataset=dataset,
-            splits=splits,
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            evaluation=EvalConfig(holdout_test=True),
-            run_dir=run_dir,
-        )
-
-        # No test split evaluated anywhere; tune still reported.
-        assert result.fold_results[0].test_evaluations == {}
-        assert result.fold_results[0].tune_evaluation.metrics
-
-        # summary.json carries tune only — rankable, no test leakage.
-        summary = json.loads((run_dir / "summary.json").read_text())
-        assert any(key.startswith("tune/") for key in summary)
-        assert not any(key.startswith("test") for key in summary)
-
-        # Per-fold (== run_dir for a single fold) metrics.json is tune-only; no test file.
-        metrics = json.loads((run_dir / "metrics.json").read_text())
-        assert list(metrics.keys()) == ["tune"]
-        assert not (run_dir / "predictions_test.parquet").exists()
-
-    def test_saves_summary_json_with_coverage_aggregates(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        for sample_id in ("s6", "s7"):
-            (feature_dir / f"{sample_id}.pt").unlink()
-        _write_feature_manifest(
-            feature_dir,
-            {
-                "s0": "success",
-                "s1": "success",
-                "s2": "success",
-                "s3": "success",
-                "s4": "success",
-                "s5": "success",
-                "s6": "empty",
-                "s7": "empty",
-            },
-        )
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        run_dir = tmp_path / "output"
-
-        train(
-            feature_store=store,
-            dataset=dataset,
-            splits=splits,
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            run_dir=run_dir,
-        )
-
-        summary = json.loads((run_dir / "summary.json").read_text())
-        assert "test/coverage" in summary
-        assert "test/num_samples" in summary
-        assert "test/num_real_samples" in summary
-        assert "test/num_placeholder_samples" in summary
-
-    def test_aggregate_fold_metrics_handles_inconsistent_test_split_names(self):
-        train_result = FitResult(
-            learner=None,
-            history=pd.DataFrame(),
-            selected_epoch=0,
-            selection_monitor=("loss", 0.1),
-            checkpoint_path=Path("best_model.pt"),
-            optimizer_steps=0,
-        )
-        fold_results = [
-            FoldResult(
-                fold=0,
-                train_result=train_result,
-                tune_evaluation=_evaluation({}),
-                test_evaluations={"test": _evaluation({"auroc": 0.8})},
-            ),
-            FoldResult(
-                fold=1,
-                train_result=train_result,
-                tune_evaluation=_evaluation({}),
-                test_evaluations={"test_external": _evaluation({"auroc": 0.7})},
-            ),
-        ]
-
-        summary = _aggregate_fold_metrics(fold_results)
-
-        assert summary["test/auroc_mean"] == pytest.approx(0.8)
-        assert summary["test_external/auroc_mean"] == pytest.approx(0.7)
-
-    def test_aggregate_fold_metrics_include_tune_single_fold(self):
-        """holdout_test runs have no test splits: include_tune surfaces tune so the
-        summary is non-empty and rankable. Default (False) stays test-only."""
-        fold_results = [
-            FoldResult(
-                fold=0,
-                train_result=None,
-                tune_evaluation=_evaluation({"auroc": 0.9}),
-                test_evaluations={},
-            )
-        ]
-
-        assert _aggregate_fold_metrics(fold_results) == {}
-        assert _aggregate_fold_metrics(fold_results, include_tune=True) == {"tune/auroc": 0.9}
-
-    def test_aggregate_fold_metrics_include_tune_multi_fold(self):
-        fold_results = [
-            FoldResult(
-                fold=0,
-                train_result=None,
-                tune_evaluation=_evaluation({"auroc": 0.8}),
-                test_evaluations={},
-            ),
-            FoldResult(
-                fold=1,
-                train_result=None,
-                tune_evaluation=_evaluation({"auroc": 1.0}),
-                test_evaluations={},
-            ),
-        ]
-
-        summary = _aggregate_fold_metrics(fold_results, include_tune=True)
-        assert summary["tune/auroc_mean"] == pytest.approx(0.9)
-        assert summary["tune/auroc_std"] == pytest.approx(0.1 * 2**0.5)  # sample std
-
+class TestCompletedRunPanel:
     def test_completed_run_panel_includes_coverage_summary(self):
-        panel = _build_completed_run_panel(
+        panel = build_completed_run_panel(
             summary_metrics={
                 "test/auroc_mean": 0.75,
                 "test/auroc_std": 0.02,
@@ -1218,7 +202,7 @@ class TestTrain:
         assert "placeholder=1" in rendered
 
     def test_completed_run_panel_includes_single_fold_coverage_summary(self):
-        panel = _build_completed_run_panel(
+        panel = build_completed_run_panel(
             summary_metrics={
                 "test/auroc": 0.75,
                 "test/coverage": 0.9,
@@ -1235,27 +219,6 @@ class TestTrain:
         assert "auroc=0.7500" in rendered
         assert "90.0% (9/10)" in rendered
         assert "placeholder=1" in rendered
-
-    def test_fold_subdirectories(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        run_dir = tmp_path / "output"
-
-        train(
-            feature_store=store,
-            dataset=dataset,
-            splits=splits,
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            run_dir=run_dir,
-        )
-
-        assert (run_dir / "fold_0" / "best_model.pt").exists()
-        assert (run_dir / "fold_1" / "best_model.pt").exists()
-
 
 # ---------------------------------------------------------------------------
 # Pipeline (Layer 2 — orchestrator)
@@ -1278,14 +241,18 @@ class TestPipeline:
                     min_coverage={"tumor": 0.5},
                 )
             ),
+            aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
         )
+        source = CachedSetSource(feature_dir)
 
-        context = Pipeline(config, feature_dir=feature_dir)._get_feature_source_context(
-            run_dir=tmp_path / "run"
-        )
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=source).run()
 
-        assert context.feature_store.feature_dir == feature_dir
+        # A pooled masks config trains on the supplied features; nothing is extracted.
+        assert "test/auroc" in result.summary
+        assert not (_expected_run_dir(config) / "features").exists()
 
     def test_run_single_fold(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1300,8 +267,8 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        pipeline = Pipeline(config, feature_dir=feature_dir)
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+        pipeline = Pipeline(config, source=CachedSetSource(feature_dir))
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = pipeline.run()
 
         assert isinstance(result, PipelineResult)
@@ -1325,8 +292,8 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         run_dir = _expected_run_dir(config)
         experiment = json.loads(
@@ -1364,12 +331,13 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert (_expected_run_dir(config) / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "bundle" / "weights.safetensors").is_file()
+        assert not (_expected_run_dir(config) / "best_model.pt").exists()
 
     def test_run_saves_config_yaml(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1384,8 +352,8 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         assert (_expected_run_dir(config) / "config.yaml").exists()
 
@@ -1402,8 +370,8 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         summary_path = _expected_run_dir(config) / "summary.json"
         assert summary_path.exists()
@@ -1467,10 +435,10 @@ class TestPipeline:
 
         run_a = "2026-04-09_16-22-10__local"
         run_b = "2026-04-09_16-23-10__local"
-        with patch("soma.output_layout.make_run_id", return_value=run_a):
-            result_a = Pipeline(config_a, feature_dir=feature_dir).run()
-        with patch("soma.output_layout.make_run_id", return_value=run_b):
-            result_b = Pipeline(config_b, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=run_a):
+            result_a = Pipeline(config_a, source=CachedSetSource(feature_dir)).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=run_b):
+            result_b = Pipeline(config_b, source=CachedSetSource(feature_dir)).run()
 
         # Both runs land under ONE experiment dir; each records its own test identity.
         assert result_a.run_dir.parent == result_b.run_dir.parent
@@ -1483,14 +451,14 @@ class TestPipeline:
 
         # Re-scoring the SAME test set into the SAME run dir is refused (loud skip) — the
         # test splits are held out so the prior result is not clobbered.
-        with patch("soma.output_layout.make_run_id", return_value=run_a):
-            result_a_again = Pipeline(config_a, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=run_a):
+            result_a_again = Pipeline(config_a, source=CachedSetSource(feature_dir)).run()
         assert result_a_again.fold_results[0].test_evaluations == {}
 
         # overwrite_test re-scores it.
-        with patch("soma.output_layout.make_run_id", return_value=run_a):
+        with patch("soma.pipeline.layout.make_run_id", return_value=run_a):
             result_a_over = Pipeline(
-                _config("sA", overwrite_test=True), feature_dir=feature_dir
+                _config("sA", overwrite_test=True), source=CachedSetSource(feature_dir)
             ).run()
         assert "test" in result_a_over.fold_results[0].test_evaluations
 
@@ -1522,8 +490,8 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         summary = json.loads((_expected_run_dir(config) / "summary.json").read_text())
         assert "test/coverage" in summary
@@ -1544,12 +512,12 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         assert len(result.fold_results) == 2
-        assert (_expected_run_dir(config) / "fold_0" / "best_model.pt").exists()
-        assert (_expected_run_dir(config) / "fold_1" / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "fold_0" / "bundle").is_dir()
+        assert (_expected_run_dir(config) / "fold_1" / "bundle").is_dir()
 
         summary = json.loads((_expected_run_dir(config) / "summary.json").read_text())
         assert "test/auroc_mean" in summary
@@ -1576,8 +544,8 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=slide_feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(slide_feature_dir)).run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
@@ -1603,8 +571,8 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=slide_feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(slide_feature_dir)).run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
@@ -1638,12 +606,13 @@ class TestPipeline:
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         assert isinstance(result, PipelineResult)
         assert len(result.fold_results) == 1
-        assert (_expected_run_dir(config) / "best_model.pt").exists()
+        assert (_expected_run_dir(config) / "bundle" / "weights.safetensors").is_file()
+        assert not (_expected_run_dir(config) / "best_model.pt").exists()
         assert "auroc" in result.fold_results[0].test_evaluations["test"].metrics
 
     def test_resolve_preprocessing_populates_hipt_geometry(self, tmp_path: Path):
@@ -1696,7 +665,7 @@ class TestPipeline:
         )
 
         with patch("soma.extraction.FeatureExtractor.extract", new=_fake_extract):
-            with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
                 result = Pipeline(config).run()
 
         assert isinstance(result, PipelineResult)
@@ -1719,8 +688,8 @@ class TestPipeline:
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
         with pytest.raises(ValueError, match="aggregator must be None"):
-            with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-                Pipeline(config, feature_dir=slide_feature_dir).run()
+            with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+                Pipeline(config, source=CachedSetSource(slide_feature_dir)).run()
 
         run_dir = _expected_run_dir(config)
         latest = run_dir.parents[1] / "latest"
@@ -1940,7 +909,7 @@ class TestPipeline:
             autospec=True,
             side_effect=_fake_populate_slide_cache,
         ) as populate_slide_cache:
-            with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
                 Pipeline(slide_config).run()
             assert populate_slide_cache.called
 
@@ -1958,8 +927,34 @@ class TestPipeline:
             "_populate_tile_cache",
             side_effect=AssertionError("tile extraction should be reused"),
         ):
-            with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
+            with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
                 Pipeline(tile_config).run()
+
+    def test_fold_bundle_records_the_feature_source_identity_not_its_path(self, tmp_path: Path):
+        import soma
+
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        (feature_dir / "cache_metadata.json").write_text(
+            json.dumps({"cache_key": "abc123", "artifact_kind": "tile", "encoder_name": "uni2"})
+        )
+        config = PipelineConfig(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=tmp_path / "output",
+            dataset_type="slide",
+            aggregator=AggregatorConfig(name="mean_pool"),
+            task=TaskConfig(name="binary_classification"),
+            training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
+        )
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
+
+        bundle = soma.load(result.run_dir / "bundle")
+        source = bundle.provenance["feature_source"]
+        assert source["cache_key"] == "abc123" and source["encoder_name"] == "uni2"
+        assert str(tmp_path) not in json.dumps(bundle.provenance)
+        assert (bundle.provenance["fold"], bundle.provenance["run_id"]) == (0, FIXED_RUN_ID)
+        assert bundle.preprocessing["classes"] == ["normal", "tumor"]
 
     def test_dataset_and_splits_properties(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1970,7 +965,7 @@ class TestPipeline:
             dataset_type="slide",
             task=TaskConfig(name="binary_classification"),
         )
-        pipeline = Pipeline(config, feature_dir=feature_dir)
+        pipeline = Pipeline(config, source=CachedSetSource(feature_dir))
 
         from soma.tasks.classification import categorical_label_map
 
@@ -1989,8 +984,8 @@ class TestPipeline:
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
 
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         experiment_dir = result.run_dir.parents[1]
         experiment_yaml = experiment_dir / "experiment.yaml"
@@ -2008,7 +1003,7 @@ class TestPipeline:
         # Append-only index: one line per status change (running -> completed) …
         assert [row["status"] for row in raw_rows] == ["running", "completed"]
         # … and one row per run_id for readers.
-        from soma.output_layout import read_run_index
+        from soma.pipeline.layout import read_run_index
 
         rows = read_run_index(runs_index)
         assert rows == [
@@ -2093,216 +1088,53 @@ def _write_patient_feature_manifest(feature_dir: Path, statuses: dict[str, str])
     pd.DataFrame(rows).to_csv(feature_dir / "process_list.csv", index=False)
 
 
-class TestPatientPipeline:
-    def test_train_one_fold_returns_fold_result_and_saves_checkpoint(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-        fold_dir = tmp_path / "fold_0"
+def test_patient_run_scores_patients_and_fills_a_tileless_tune_patient(tmp_path: Path):
+    """``dataset_type: patient`` through ``Pipeline``: predictions are keyed by patient id,
+    and a tune patient the feature manifest records as empty is scored by the baseline."""
+    dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
+    (feature_dir / "p2.pt").unlink()
+    _write_patient_feature_manifest(feature_dir, {"p0": "success", "p1": "success", "p2": "empty", "p3": "success"})
+    config = PipelineConfig(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        output_root=tmp_path / "output",
+        dataset_type="patient",
+        task=TaskConfig(name="binary_classification"),
+        training=TrainingConfig(epochs=2, patience=10, batch_size=2, pin_memory=False),
+    )
+    with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+        result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            dataset_type="patient",
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=fold_dir,
-        )
+    run_dir = _expected_run_dir(config)
+    assert Predictions.from_parquet(run_dir / "predictions_test.parquet").sample_ids == ["p3"]
+    metrics = json.loads((run_dir / "metrics.json").read_text())
+    assert metrics["tune"]["coverage"] == pytest.approx(0.0)
+    assert metrics["tune"]["num_placeholder_samples"] == 1
+    assert (run_dir / "bundle" / "weights.safetensors").is_file()
+    assert result.summary["test/num_samples"] == 1
 
-        assert isinstance(result, FoldResult)
-        assert result.fold == 0
-        assert set(result.test_evaluations) == {"test"}
-        assert (fold_dir / "best_model.pt").exists()
 
-    def test_tune_is_test_reports_tune_as_test_patient_level(self, tmp_path: Path, evaluated):
-        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        # Rewrite the test split as tune: train/tune only, no held-out test.
-        splits_df = pd.read_csv(splits_csv)
-        splits_df.loc[splits_df["split"] == "test", "split"] = "tune"
-        splits_df.to_csv(splits_csv, index=False)
+def test_patient_leakage_is_refused_when_the_folds_are_built(tmp_path: Path):
+    dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)
+    dataset = legacy_samples_from_csv(dataset_csv)
 
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset, tune_is_test=True)
-        store = CachedSetSource(feature_dir)
+    # s0 belongs to p0 but is put in test; the other p0 slide (s1) stays in train
+    bad_splits = []
+    for sid in dataset.sample_ids:
+        pid = dataset.samples[sid].patient_id
+        if sid == "s0":
+            split = "test"
+        elif pid in ("p0", "p1"):
+            split = "train"
+        elif pid == "p2":
+            split = "tune"
+        else:
+            split = "test"
+        bad_splits.append({"fold": 0, "sample_id": sid, "split": split})
 
-        fold_split = splits.folds[0]
-        assert fold_split.test_from_tune is True
-        # No leakage flagged even though test patients == tune patients (checked at construction).
+    splits_csv = tmp_path / "bad_splits.csv"
+    pd.DataFrame(bad_splits).to_csv(splits_csv, index=False)
 
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=fold_split,
-            dataset_type="patient",
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(
-                epochs=2,
-                patience=10,
-                batch_size=2,
-                tune_is_test=True,
-            ),
-            fold_dir=tmp_path / "fold_tune_is_test_patient",
-        )
-
-        tune, test = evaluated
-        assert set(tune.predictions.sample_ids) == {"p2", "p3"}
-        assert set(test.predictions.sample_ids) == {"p2", "p3"}
-
-    def test_train_one_fold_predictions_keyed_by_patient_id(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            dataset_type="patient",
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold_0",
-        )
-
-        predictions = Predictions.from_parquet(tmp_path / "fold_0" / "predictions_test.parquet")
-        assert predictions.sample_ids == ["p3"]
-
-    def test_train_one_fold_patient_features_fail_fast_when_missing(self, tmp_path: Path):
-        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        (feature_dir / "p2.pt").unlink()
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        with pytest.raises(ValueError, match="patient"):
-            train_one_fold(
-                feature_store=store,
-                dataset=dataset,
-                fold_split=splits.folds[0],
-                dataset_type="patient",
-                task=TaskConfig(name="binary_classification"),
-                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-                fold_dir=tmp_path / "fold_0",
-            )
-
-    def test_train_one_fold_patient_empty_tune_uses_placeholder_fallback(
-        self, tmp_path: Path, evaluated
-    ):
-        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        (feature_dir / "p2.pt").unlink()
-        _write_patient_feature_manifest(
-            feature_dir,
-            {
-                "p0": "success",
-                "p1": "success",
-                "p2": "empty",
-                "p3": "success",
-            },
-        )
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        store = CachedSetSource(feature_dir)
-
-        result = train_one_fold(
-            feature_store=store,
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            dataset_type="patient",
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold_0",
-        )
-
-        tune = evaluated[0].predictions.frame
-        assert tune["sample_id"].tolist() == ["p2"]
-        assert tune["is_placeholder"].tolist() == [True]
-        assert result.tune_evaluation.metrics["coverage"] == pytest.approx(0.0)
-
-    def test_patient_predictions_break_down_by_patient_metadata(self, tmp_path: Path):
-        from soma.config import SubgroupConfig
-
-        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        dataset_df = pd.read_csv(dataset_csv)
-        dataset_df["site"] = [
-            "site_a" if patient_id in {"p0", "p2"} else "site_b"
-            for patient_id in dataset_df["patient_id"]
-        ]
-        dataset_df.to_csv(dataset_csv, index=False)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-        fold_dir = tmp_path / "fold_0"
-
-        result = train_one_fold(
-            feature_store=CachedSetSource(feature_dir),
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            dataset_type="patient",
-            task=TaskConfig(name="binary_classification"),
-            evaluation=EvalConfig(metrics=["accuracy"], subgroups=SubgroupConfig(columns=["site"])),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=fold_dir,
-        )
-
-        written = json.loads((fold_dir / "subgroup_metrics_test.json").read_text())
-        assert written == result.test_evaluations["test"].subgroups
-        # The only test patient (p3) is a site_b patient: one group, too small to score.
-        assert written == {"metrics": {"site": {}}, "stats": {"site": {}}}
-
-    def test_patient_subgroup_metadata_follows_the_collapsed_cohort(
-        self, tmp_path: Path, evaluated
-    ):
-        from soma.config import SubgroupConfig
-        from soma.data import Cohort
-
-        dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
-        dataset_df = pd.read_csv(dataset_csv)
-        # The test patient p3's slides disagree on site; the splits list them reversed.
-        dataset_df["site"] = ["site_a"] * 7 + ["site_b"]
-        dataset_df.to_csv(dataset_csv, index=False)
-        splits_df = pd.read_csv(splits_csv)
-        splits_df.iloc[[6, 7]] = splits_df.iloc[[7, 6]].to_numpy()
-        splits_df.to_csv(splits_csv, index=False)
-        dataset = legacy_samples_from_csv(dataset_csv)
-        splits = legacy_folds_from_csv(splits_csv, dataset)
-
-        train_one_fold(
-            feature_store=CachedSetSource(feature_dir),
-            dataset=dataset,
-            fold_split=splits.folds[0],
-            dataset_type="patient",
-            task=TaskConfig(name="binary_classification"),
-            evaluation=EvalConfig(metrics=["accuracy"], subgroups=SubgroupConfig(columns=["site"])),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-            fold_dir=tmp_path / "fold_0",
-        )
-
-        collapsed = Cohort.from_csv(dataset_csv, splits_csv).collapse("patient_id")
-        expected = collapsed.targets("test")["site"]
-        assert evaluated[1].targets["site"].to_dict() == expected.to_dict() == {"p3": "site_a"}
-
-    def test_train_detects_patient_leakage(self, tmp_path: Path):
-        dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)
-        dataset = legacy_samples_from_csv(dataset_csv)
-
-        # s0 belongs to p0 but is put in test; the other p0 slide (s1) stays in train
-        bad_splits = []
-        for sid in dataset.sample_ids:
-            pid = dataset.samples[sid].patient_id
-            if sid == "s0":
-                split = "test"
-            elif pid in ("p0", "p1"):
-                split = "train"
-            elif pid == "p2":
-                split = "tune"
-            else:
-                split = "test"
-            bad_splits.append({"fold": 0, "sample_id": sid, "split": split})
-
-        splits_csv = tmp_path / "bad_splits.csv"
-        pd.DataFrame(bad_splits).to_csv(splits_csv, index=False)
-
-        # Leakage is a data-contract violation: the folds cannot even be built.
-        with pytest.raises(ValueError, match="p0"):
-            legacy_folds_from_csv(splits_csv, dataset, unit="patient_id")
+    # Leakage is a data-contract violation: the folds cannot even be built.
+    with pytest.raises(ValueError, match="p0"):
+        legacy_folds_from_csv(splits_csv, dataset, unit="patient_id")

@@ -7,7 +7,8 @@ Covers the four moving parts of resume:
 * **disk aggregation** — ``summary.json`` is rebuilt from every fold's ``metrics.json``
   on disk, so folds skipped this session still count (the correctness fix);
 * **fold-skip guard + end-to-end resume** — a relaunch into the same run dir skips
-  folds that already wrote ``metrics.json`` and the resumed summary aggregates all folds;
+  complete folds (``metrics.json`` and ``bundle/``, ADR 0016), restarts the others from
+  epoch 0, and the resumed summary aggregates all folds;
 * **config-drift guard** — resuming into a run dir whose saved config differs is refused.
 """
 
@@ -33,15 +34,12 @@ from soma.config import (
     TrainingConfig,
     save_config,
 )
-from soma.output_layout import (
+from soma.pipeline.layout import (
     latest_existing_run_id,
     resolve_managed_output_paths,
 )
-from soma.pipeline import (
-    _aggregate_fold_metrics,
-    _aggregate_fold_metrics_from_disk,
-    _guard_resume_config_drift,
-)
+from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk
+from soma.pipeline.layout import guard_resume_config_drift
 
 
 def _write_csv(path: Path, text: str) -> Path:
@@ -139,7 +137,7 @@ def test_from_disk_aggregates_every_fold_present(tmp_path: Path):
     _write_metrics(tmp_path / "fold_0", tune={"auroc": 0.6}, test={"auroc": 0.8})
     _write_metrics(tmp_path / "fold_1", tune={"auroc": 0.7}, test={"auroc": 0.6})
 
-    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=False, include_tune=False, num_folds=2)
+    summary = aggregate_fold_metrics_from_disk(tmp_path, single_fold=False, include_tune=False, num_folds=2)
 
     # Mean over BOTH folds (0.8, 0.6) — not just the one that ran this session.
     assert summary["test/auroc_mean"] == pytest.approx(0.7)
@@ -149,40 +147,14 @@ def test_from_disk_aggregates_every_fold_present(tmp_path: Path):
 
 def test_from_disk_single_fold_reads_run_dir_metrics(tmp_path: Path):
     _write_metrics(tmp_path, tune={"auroc": 0.9}, test={"auroc": 0.85})
-    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=True, include_tune=False, num_folds=1)
+    summary = aggregate_fold_metrics_from_disk(tmp_path, single_fold=True, include_tune=False, num_folds=1)
     assert summary == {"test/auroc": 0.85}
 
 
 def test_from_disk_include_tune_surfaces_tune(tmp_path: Path):
     _write_metrics(tmp_path, tune={"auroc": 0.9}, test={"auroc": 0.85})
-    summary = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=True, include_tune=True, num_folds=1)
+    summary = aggregate_fold_metrics_from_disk(tmp_path, single_fold=True, include_tune=True, num_folds=1)
     assert summary == {"tune/auroc": 0.9, "test/auroc": 0.85}
-
-
-def test_from_disk_matches_in_memory_aggregation(tmp_path: Path):
-    from soma.evaluation import Evaluation
-    from soma.pipeline import FoldResult
-
-    per_fold = [
-        {"tune": {"auroc": 0.6}, "test": {"auroc": 0.8}},
-        {"tune": {"auroc": 0.7}, "test": {"auroc": 0.6}},
-    ]
-    for i, m in enumerate(per_fold):
-        _write_metrics(tmp_path / f"fold_{i}", tune=m["tune"], test=m["test"])
-    fold_results = [
-        FoldResult(
-            fold=i,
-            train_result=None,
-            tune_evaluation=Evaluation(metrics=m["tune"], task_family="binary_classification", num_samples=0),
-            test_evaluations={
-                "test": Evaluation(metrics=m["test"], task_family="binary_classification", num_samples=0)
-            },
-        )
-        for i, m in enumerate(per_fold)
-    ]
-    disk = _aggregate_fold_metrics_from_disk(tmp_path, single_fold=False, include_tune=False, num_folds=2)
-    in_memory = _aggregate_fold_metrics(fold_results, include_tune=False)
-    assert disk == in_memory
 
 
 # --------------------------------------------------------------------------- #
@@ -195,7 +167,7 @@ def test_drift_guard_noop_when_not_resuming(tmp_path: Path):
     save_config(_make_config(tmp_path), run_dir / "config.yaml")
     # Different config, but resume/run_id unset → guard must not fire.
     changed = _make_config(tmp_path, training=TrainingConfig(seed=999))
-    _guard_resume_config_drift(run_dir, changed)  # no raise
+    guard_resume_config_drift(run_dir, changed)  # no raise
 
 
 def test_drift_guard_passes_on_identical_config(tmp_path: Path):
@@ -203,7 +175,7 @@ def test_drift_guard_passes_on_identical_config(tmp_path: Path):
     cfg = _make_config(tmp_path)
     save_config(cfg, run_dir / "config.yaml")
     # Adding the resume directive alone is not drift (it is not serialized).
-    _guard_resume_config_drift(run_dir, replace(cfg, resume=True))  # no raise
+    guard_resume_config_drift(run_dir, replace(cfg, resume=True))  # no raise
 
 
 def test_drift_guard_refuses_changed_config(tmp_path: Path):
@@ -211,12 +183,12 @@ def test_drift_guard_refuses_changed_config(tmp_path: Path):
     save_config(_make_config(tmp_path, training=TrainingConfig(seed=7)), run_dir / "config.yaml")
     changed = _make_config(tmp_path, training=TrainingConfig(seed=42), resume=True)
     with pytest.raises(ValueError, match="Refusing to resume"):
-        _guard_resume_config_drift(run_dir, changed)
+        guard_resume_config_drift(run_dir, changed)
 
 
 def test_drift_guard_noop_when_no_saved_config(tmp_path: Path):
     # A pinned run id naming a not-yet-created dir has nothing to compare.
-    _guard_resume_config_drift(tmp_path / "fresh", _make_config(tmp_path, run_id="fresh"))
+    guard_resume_config_drift(tmp_path / "fresh", _make_config(tmp_path, run_id="fresh"))
 
 
 def test_drift_guard_allows_changing_operational_mirror_root(tmp_path: Path):
@@ -230,7 +202,7 @@ def test_drift_guard_allows_changing_operational_mirror_root(tmp_path: Path):
         resume=True,
     )
 
-    _guard_resume_config_drift(run_dir, resumed)
+    guard_resume_config_drift(run_dir, resumed)
 
 
 def test_drift_guard_refuses_unknown_evaluation_settings(tmp_path: Path) -> None:
@@ -244,7 +216,7 @@ def test_drift_guard_refuses_unknown_evaluation_settings(tmp_path: Path) -> None
     resumed = replace(original, resume=True)
 
     with pytest.raises(ValueError, match="evaluation"):
-        _guard_resume_config_drift(run_dir, resumed)
+        guard_resume_config_drift(run_dir, resumed)
 
 
 # --------------------------------------------------------------------------- #
@@ -252,50 +224,54 @@ def test_drift_guard_refuses_unknown_evaluation_settings(tmp_path: Path) -> None
 # --------------------------------------------------------------------------- #
 
 
-def test_resume_skips_completed_fold_and_summary_covers_all_folds(tmp_path: Path):
-    pytest.importorskip("torch")
-    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-    from soma.data import CachedSetSource
-    from soma.pipeline import train
+def _multifold_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
     from tests.test_pipeline import _setup_multifold_data
 
     dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-    dataset = legacy_samples_from_csv(dataset_csv)
-    splits = legacy_folds_from_csv(splits_csv, dataset)
-    store = CachedSetSource(feature_dir)
-    run_dir = tmp_path / "output"
-    # test_digest + run_id mirror the production Pipeline.run() call so the resume also
-    # exercises the #247 test-clobber guard (a resume must keep scoring its own test set).
-    kwargs = dict(
-        feature_store=store,
-        dataset=dataset,
-        splits=splits,
+    (tmp_path / "feature_dir.txt").write_text(str(feature_dir))
+    defaults = dict(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        output_root=tmp_path / "output",
+        dataset_type="slide",
         aggregator=AggregatorConfig(name="mean_pool"),
         task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-        run_dir=run_dir,
-        test_digest="test-identity-abc",
+        training=TrainingConfig(epochs=2, patience=10, batch_size=2, pin_memory=False),
         run_id="2026-07-08_10-00-00__local",
     )
+    defaults.update(overrides)
+    return PipelineConfig(**defaults)
 
-    # Single-shot 2-fold run, then simulate an interruption after fold 0.
-    train(**kwargs)
-    assert (run_dir / "fold_0" / "metrics.json").exists()
-    assert (run_dir / "fold_1" / "metrics.json").exists()
+
+def _run(tmp_path: Path, config: PipelineConfig):
+    from soma.data import CachedSetSource
+    from soma.pipeline import Pipeline
+
+    feature_dir = Path((tmp_path / "feature_dir.txt").read_text())
+    return Pipeline(config, source=CachedSetSource(feature_dir)).run()
+
+
+def test_resume_skips_completed_folds_and_restarts_a_fold_without_its_bundle(tmp_path: Path):
+    pytest.importorskip("torch")
+    config = _multifold_pipeline_config(tmp_path)
+    run_dir = _run(tmp_path, config).run_dir
+    for fold in (0, 1):
+        assert (run_dir / f"fold_{fold}" / "metrics.json").is_file()
+        assert (run_dir / f"fold_{fold}" / "bundle").is_dir()
     fold0_metrics = run_dir / "fold_0" / "metrics.json"
     fold0_mtime = fold0_metrics.stat().st_mtime_ns
-    shutil.rmtree(run_dir / "fold_1")
+    # A crash between fold 1's metrics and its bundle: the fold is not complete.
+    shutil.rmtree(run_dir / "fold_1" / "bundle")
     (run_dir / "summary.json").unlink()
 
-    # Resume into the same run dir.
-    resumed = train(**kwargs)
+    resumed = _run(tmp_path, replace(config, resume=True))
 
     # Fold 0 was skipped (its metrics.json is byte-for-byte untouched)…
     assert fold0_metrics.stat().st_mtime_ns == fold0_mtime
-    # …only the missing fold retrained, so the in-memory result holds fold 1 alone…
+    # …only fold 1 retrained, from epoch 0, so the in-memory result holds it alone…
     assert [fr.fold for fr in resumed.fold_results] == [1]
-    # …yet fold 1 is back on disk, WITH test metrics (the clobber guard didn't skip
-    # scoring on resume)…
+    assert (run_dir / "fold_1" / "bundle" / "weights.safetensors").is_file()
+    # …WITH test metrics (the #247 clobber guard does not skip scoring on resume)…
     fold1_metrics = json.loads((run_dir / "fold_1" / "metrics.json").read_text())
     assert "test" in fold1_metrics and "auroc" in fold1_metrics["test"]
     # …and the summary aggregates BOTH folds.
@@ -304,10 +280,7 @@ def test_resume_skips_completed_fold_and_summary_covers_all_folds(tmp_path: Path
         json.loads((run_dir / f"fold_{i}" / "metrics.json").read_text())["test"]["auroc"]
         for i in (0, 1)
     ]
-    # Mean over the finite folds (a tiny synthetic test split can make AUROC nan).
-    assert summary["test/auroc_mean"] == pytest.approx(
-        float(np.nanmean(disk_aurocs)), nan_ok=True
-    )
+    assert summary["test/auroc_mean"] == pytest.approx(float(np.nanmean(disk_aurocs)), nan_ok=True)
 
 
 def test_from_disk_ignores_nothing_but_rejects_undeclared_fold_dirs(tmp_path: Path):
@@ -317,7 +290,7 @@ def test_from_disk_ignores_nothing_but_rejects_undeclared_fold_dirs(tmp_path: Pa
     _write_metrics(tmp_path / "fold_2", tune={"auroc": 0.5}, test={"auroc": 0.4})
 
     with pytest.raises(ValueError, match=r"fold_2.*do not declare"):
-        _aggregate_fold_metrics_from_disk(
+        aggregate_fold_metrics_from_disk(
             tmp_path, single_fold=False, include_tune=False, num_folds=2
         )
 
@@ -325,7 +298,7 @@ def test_from_disk_ignores_nothing_but_rejects_undeclared_fold_dirs(tmp_path: Pa
 def test_from_disk_reads_only_declared_folds_in_order(tmp_path: Path):
     _write_metrics(tmp_path / "fold_0", tune={"auroc": 0.9}, test={"auroc": 0.8})
     _write_metrics(tmp_path / "fold_1", tune={"auroc": 0.7}, test={"auroc": 0.6})
-    summary = _aggregate_fold_metrics_from_disk(
+    summary = aggregate_fold_metrics_from_disk(
         tmp_path, single_fold=False, include_tune=False, num_folds=3
     )
     # fold_2 is declared but not yet on disk (pending): mean over the two present.
@@ -337,17 +310,17 @@ def test_drift_guard_refuses_changed_manifest_content_under_same_paths(tmp_path:
     cfg = _make_config(tmp_path)
     save_config(cfg, run_dir / "config.yaml")
     # The run recorded the identity minted from the original train/tune content.
-    from soma.output_layout import build_experiment_spec
+    from soma.pipeline.layout import build_experiment_spec
 
     (run_dir / "run.yaml").write_text(
         yaml.safe_dump({"experiment_id": build_experiment_spec(cfg).experiment_id})
     )
-    _guard_resume_config_drift(run_dir, replace(cfg, resume=True))  # unchanged: passes
+    guard_resume_config_drift(run_dir, replace(cfg, resume=True))  # unchanged: passes
 
     # Same paths, different label -> different train/tune content.
     Path(cfg.dataset_csv).write_text("sample_id,image_path,label\ns0,/slides/s0.svs,normal\n")
     with pytest.raises(ValueError, match="train/tune content"):
-        _guard_resume_config_drift(run_dir, replace(cfg, resume=True))
+        guard_resume_config_drift(run_dir, replace(cfg, resume=True))
 
 
 # --- run.folds: launches that split the folds of one run between them ----------------
@@ -376,35 +349,13 @@ def test_folds_directive_needs_a_shared_run_dir(tmp_path: Path):
         _make_config(tmp_path, folds=(0,))
 
 
-def _multifold_train_kwargs(tmp_path: Path) -> dict:
-    from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
-    from soma.data import CachedSetSource
-    from tests.test_pipeline import _setup_multifold_data
-
-    dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
-    dataset = legacy_samples_from_csv(dataset_csv)
-    return dict(
-        feature_store=CachedSetSource(feature_dir),
-        dataset=dataset,
-        splits=legacy_folds_from_csv(splits_csv, dataset),
-        aggregator=AggregatorConfig(name="mean_pool"),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=2, patience=10, batch_size=2),
-        run_dir=tmp_path / "output",
-        test_digest="test-identity-abc",
-        run_id="shared-run",
-    )
-
-
 def test_launches_that_split_the_folds_match_a_single_launch(tmp_path: Path):
     pytest.importorskip("torch")
-    from soma.pipeline import train
-
-    kwargs = _multifold_train_kwargs(tmp_path)
-    run_dir = kwargs["run_dir"]
+    config = _multifold_pipeline_config(tmp_path, run_id="shared-run")
 
     # The launch given fold 1 trains it alone and writes no summary: fold 0 is pending.
-    first = train(**kwargs, folds=[1])
+    first = _run(tmp_path, replace(config, folds=(1,)))
+    run_dir = first.run_dir
     assert [fr.fold for fr in first.fold_results] == [1]
     assert first.pending_folds == (0,) and first.summary == {}
     assert not (run_dir / "fold_0").exists()
@@ -412,20 +363,19 @@ def test_launches_that_split_the_folds_match_a_single_launch(tmp_path: Path):
     fold1_mtime = (run_dir / "fold_1" / "metrics.json").stat().st_mtime_ns
 
     # The launch given fold 0 finds every fold complete afterwards, so it summarizes both.
-    second = train(**kwargs, folds=[0])
+    second = _run(tmp_path, replace(config, folds=(0,)))
     assert [fr.fold for fr in second.fold_results] == [0]
     assert second.pending_folds == ()
     assert (run_dir / "fold_1" / "metrics.json").stat().st_mtime_ns == fold1_mtime
     split_summary = json.loads((run_dir / "summary.json").read_text())
 
     # Folds seed independently, so splitting them changes nothing about the result.
-    single = train(**{**kwargs, "run_dir": tmp_path / "single"})
+    single = _run(tmp_path, replace(config, run_id="single-run"))
     assert split_summary == pytest.approx(single.summary, nan_ok=True)
 
 
 def test_folds_outside_the_splits_are_refused(tmp_path: Path):
     pytest.importorskip("torch")
-    from soma.pipeline import train
-
+    config = _multifold_pipeline_config(tmp_path, run_id="shared-run", folds=(2,))
     with pytest.raises(ValueError, match="run.folds"):
-        train(**_multifold_train_kwargs(tmp_path), folds=[2])
+        _run(tmp_path, config)

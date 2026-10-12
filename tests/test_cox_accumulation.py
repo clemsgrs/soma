@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 import torch
 
+from soma.data import CachedSetSource
 from soma.aggregators.registry import aggregator_registry
 from soma.config import (
     AggregatorConfig,
@@ -362,8 +363,8 @@ class TestMILCoxEndToEnd:
             task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 2}),
             training=TrainingConfig(epochs=2, patience=10, batch_size=1),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
         assert isinstance(result, PipelineResult)
         report = result.fold_results[0].test_evaluations["test"]
         assert "c_index" in report.metrics
@@ -382,8 +383,8 @@ class TestMILCoxEndToEnd:
             task=TaskConfig(name="survival", params={"loss": "cox"}),  # padded mode
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
         assert isinstance(result, PipelineResult)
         assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics
 
@@ -412,7 +413,7 @@ class TestMILCoxEndToEnd:
             task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 2}),
             training=TrainingConfig(epochs=1, patience=10, batch_size=1),
         )
-        with patch("soma.output_layout.make_run_id", return_value=FIXED_RUN_ID):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+        with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+            result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
         assert isinstance(result, PipelineResult)
         assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics

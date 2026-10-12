@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from soma.data import CachedSetSource
 from soma.tasks.registry import task_family_of, task_registry
 from soma.tasks.segmentation import SegmentationHead
 
@@ -89,7 +90,7 @@ def test_registered_survival_subclass_still_validates_the_dataset(tmp_path, monk
         ),
     )
     with pytest.raises(ValueError, match="event"):
-        Pipeline(config, feature_dir=features).run()
+        Pipeline(config, source=CachedSetSource(features)).run()
 
 
 def test_registered_cox_head_rejects_wrong_window_batch_size(tmp_path, monkeypatch):
@@ -116,7 +117,7 @@ def test_registered_cox_head_rejects_wrong_window_batch_size(tmp_path, monkeypat
 
 def test_clam_mb_keeps_a_registered_branch_aware_subclass():
     """A user subclass of the branch-aware head survives the clam_mb swap."""
-    from soma.pipeline import _bag_head_class
+    from soma.pipeline.build import _bag_head_class
     from soma.tasks.classification import (
         BranchAwareClassificationHead,
         MulticlassClassificationHead,
@@ -189,4 +190,4 @@ def test_clam_mb_rejects_custom_heads_without_branch_representations(tmp_path, m
         training=TrainingConfig(epochs=1, batch_size=2, num_workers=0, seed=0),
     )
     with pytest.raises(ValueError, match="BranchAwareClassificationHead"):
-        Pipeline(config, feature_dir=features).run()
+        Pipeline(config, source=CachedSetSource(features)).run()

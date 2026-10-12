@@ -11,7 +11,7 @@ import pytest
 
 from soma.atomic_io import atomic_write_json, atomic_write_text
 from soma.evaluation.summary import sample_std, summarize_values
-from soma.pipeline import _summarize_fold_metric_dicts
+from soma.pipeline.aggregate import summarize_fold_metric_dicts
 
 
 class TestSampleStd:
@@ -46,7 +46,7 @@ class TestFoldSummary:
             {"test": {"auroc": float("nan"), "accuracy": 0.7}},
             {"test": {"auroc": 0.6, "accuracy": 0.8}},
         ]
-        summary = _summarize_fold_metric_dicts(per_fold, include_tune=False)
+        summary = summarize_fold_metric_dicts(per_fold, include_tune=False)
         assert summary["test/auroc_mean"] == pytest.approx(0.7)
         assert summary["test/auroc_std"] == pytest.approx(np.std([0.8, 0.6], ddof=1))
         assert summary["test/auroc_nan_folds"] == 1

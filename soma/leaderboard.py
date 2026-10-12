@@ -57,7 +57,7 @@ _AXIS_ALIASES: dict[str, str] = {
 }
 
 # Summary keys that are provenance bookkeeping, not a rankable metric (mirror the run
-# panel's primary-metric detection in soma/pipeline.py).
+# panel's primary-metric detection in soma/pipeline/console.py).
 _BOOKKEEPING_KEYS = {
     "coverage",
     "num_samples",
@@ -213,7 +213,7 @@ def select_ranking_split(summary: dict[str, float]) -> str:
 def run_primary_metric(summary: dict[str, float], split: str) -> str | None:
     """The run's stamped primary metric on ``split`` (first non-bookkeeping metric).
 
-    Mirrors the run-summary panel in ``soma/pipeline.py``: the first metric key under the
+    Mirrors the run-summary panel in ``soma/pipeline/console.py``: the first metric key under the
     split prefix that is not a ``_std`` companion nor a provenance bookkeeping field.
     """
     prefix = f"{split}/"

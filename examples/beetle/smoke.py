@@ -23,7 +23,7 @@ from examples.beetle.select_arm import select_development_arm
 from soma.config import load_config
 from soma.data import AnnotationManifest, LabelMapSource, build_label_remap
 from soma.dense.geometry import compute_dense_geometry
-from soma.dense.store import dense_grid_metadata, write_dense_grid
+from soma.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid
 from soma.pipeline import Pipeline
 
 
@@ -152,7 +152,7 @@ def run_offline_smoke(output_dir: str | Path) -> Path:
         # Cached grids need no encoder device, and masking availability before Pipeline
         # resolves the decoder device prevents accidental CUDA use and false provenance.
         with patch.object(torch.cuda, "is_available", return_value=False):
-            result = Pipeline(config, feature_dir=feature_dir).run()
+            result = Pipeline(config, source=CachedGridSource(feature_dir)).run()
         run_dir = result.run_dir
         mirrored_run = config.mirror_root / run_dir.relative_to(config.output_root)
         targets = LabelMapSource.from_manifests(

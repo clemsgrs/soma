@@ -70,7 +70,25 @@ def _parse_set_overrides(pairs: list[str]) -> dict[str, Any]:
     return overrides
 
 
-def _run_config_path(config_path: Path, overrides: dict[str, Any] | None = None) -> None:
+def _cached_source(config, feature_dir: Path):
+    """The cached source a ``--feature-dir`` holds: grids for a dense task, else features."""
+    from soma.data import CachedSetSource
+    from soma.dense import CachedGridSource, DenseSourceProvenance
+    from soma.pipeline.build import extraction_shape
+
+    if extraction_shape(config.dataset_type) == "grid":
+        return CachedGridSource(
+            feature_dir,
+            provenance=DenseSourceProvenance(
+                kind="dense_cache", feature_dir=feature_dir, dataset_csv=config.dataset_csv
+            ),
+        )
+    return CachedSetSource(feature_dir)
+
+
+def _run_config_path(
+    config_path: Path, overrides: dict[str, Any] | None = None, feature_dir: Path | None = None
+) -> None:
     if not config_path.exists():
         print(f"Error: config file not found: {config_path}", file=sys.stderr)
         sys.exit(1)
@@ -81,7 +99,11 @@ def _run_config_path(config_path: Path, overrides: dict[str, Any] | None = None)
         print(f"Error: failed to load config from {config_path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
-    Pipeline(config).run()
+    if feature_dir is not None and not feature_dir.is_dir():
+        print(f"Error: --feature-dir is not a directory: {feature_dir}", file=sys.stderr)
+        sys.exit(1)
+    source = _cached_source(config, feature_dir) if feature_dir is not None else None
+    Pipeline(config, source=source).run()
 
 
 def _print_table(title: str, values: list[str]) -> None:
@@ -920,7 +942,7 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
 
 
 def _cmd_compact_index(args: argparse.Namespace) -> int:
-    from soma.output_layout import compact_run_index
+    from soma.pipeline.layout import compact_run_index
 
     path = Path(args.path)
     if path.is_dir():
@@ -948,7 +970,7 @@ def _build_compact_index_parser() -> argparse.ArgumentParser:
 
 def _print_top_level_help() -> None:
     print(
-        "usage: soma CONFIG\n"
+        "usage: soma CONFIG [--set KEY=VALUE ...] [--feature-dir DIR]\n"
         "       soma list {encoders,aggregators,decoders,tasks,benchmarks} [--level {tile,slide,patient}]\n"
         "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
@@ -957,7 +979,7 @@ def _print_top_level_help() -> None:
         "       soma compact-index OUTPUT_ROOT\n"
         "\n"
         "commands:\n"
-        "  CONFIG       run a pipeline from a YAML config file\n"
+        "  CONFIG       run a pipeline from a YAML config file (--feature-dir: on cached features)\n"
         "  list         list public model/component/benchmark registries\n"
         "  prepare-croma  acquire and decode the pinned PathoROB tile sources\n"
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
@@ -1064,29 +1086,37 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(2)
 
     set_pairs: list[str] = []
+    feature_dir: Path | None = None
     rest = args[1:]
     i = 0
     while i < len(rest):
         token = rest[i]
-        if token == "--set":
+        if token in {"--set", "--feature-dir"}:
             if i + 1 >= len(rest):
-                print("Error: --set requires a key=value argument", file=sys.stderr)
+                expected = "a key=value argument" if token == "--set" else "a directory"
+                print(f"Error: {token} requires {expected}", file=sys.stderr)
                 sys.exit(2)
-            set_pairs.append(rest[i + 1])
+            if token == "--set":
+                set_pairs.append(rest[i + 1])
+            else:
+                feature_dir = Path(rest[i + 1])
             i += 2
         elif token.startswith("--set="):
             set_pairs.append(token[len("--set="):])
             i += 1
+        elif token.startswith("--feature-dir="):
+            feature_dir = Path(token[len("--feature-dir="):])
+            i += 1
         else:
             print(
                 f"Error: unexpected argument {token!r} "
-                "(expected one config path and optional --set key=value)",
+                "(expected one config path, optional --set key=value and --feature-dir DIR)",
                 file=sys.stderr,
             )
             sys.exit(2)
 
     overrides = _parse_set_overrides(set_pairs) if set_pairs else None
-    _run_config_path(Path(config_path), overrides)
+    _run_config_path(Path(config_path), overrides, feature_dir)
 
 
 if __name__ == "__main__":
