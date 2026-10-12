@@ -481,6 +481,25 @@ def test_integer_threshold_keys_are_class_indices_even_with_decimal_class_names(
         predictions.with_threshold({"1": 0.3, "3": 0.7})
 
 
+def test_point_predictions_with_numpy_classes_round_trip(tmp_path):
+    from soma.evaluation import PointPredictions
+
+    frame = pd.DataFrame({"sample_id": ["s"], "x": [1.0], "y": [2.0], "class": [1], "score": [0.9]})
+    # NumPy class names (np.unique(labels)) are written as plain JSON scalars.
+    PointPredictions(frame, classes=np.array([0, 1]), sample_ids=["s"], match_distance_px=3.0).to_parquet(
+        tmp_path / "points.parquet"
+    )
+    assert PointPredictions.from_parquet(tmp_path / "points.parquet").classes == (0, 1)
+
+
+def test_label_map_predictions_with_numpy_classes_round_trip(tmp_path):
+    from soma.evaluation import LabelMapPredictions
+
+    maps = {"s": np.array([[0, 1], [1, 0]], dtype=np.uint8)}
+    LabelMapPredictions(maps, classes=np.array([0, 1])).save(tmp_path / "maps")
+    assert LabelMapPredictions.load(tmp_path / "maps").classes == (0, 1)
+
+
 class _LabelMaps:
     """A minimal label-map target source."""
 

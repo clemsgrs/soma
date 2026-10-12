@@ -28,6 +28,8 @@ import numpy as np
 import pandas as pd
 import torch
 
+from soma.evaluation.predictions import _jsonable
+
 __all__ = [
     "LabelMapPredictions",
     "PointPredictions",
@@ -93,7 +95,7 @@ class PointPredictions:
         unknown = set(frame["sample_id"]) - set(self._sample_ids)
         if unknown:
             raise ValueError(f"{len(unknown)} detection row(s) name samples outside sample_ids: {_ids(unknown)}")
-        self._classes = tuple(classes)
+        self._classes = tuple(_jsonable(c) for c in classes)
         bad = frame["class"][(frame["class"] < 0) | (frame["class"] >= len(self._classes))]
         if len(bad):
             raise ValueError(f"class index(es) {sorted(set(bad))} outside the {len(self._classes)} classes")
@@ -275,7 +277,7 @@ class LabelMapPredictions:
                 raise ValueError(f"label map for '{sample_id}' holds values outside uint8")
             maps[str(sample_id)] = np.ascontiguousarray(array.astype(np.uint8))
         self._maps = maps
-        self._classes = tuple(classes)
+        self._classes = tuple(_jsonable(c) for c in classes)
         self._ignore_index = int(ignore_index)
         self._geometry = geometry
 
