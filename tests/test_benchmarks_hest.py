@@ -95,6 +95,52 @@ def test_run_refuses_a_fold_selection_before_extracting(tmp_path, monkeypatch):
     assert not (tmp_path / "runs").exists()
 
 
+def test_run_refuses_a_drifted_resume_before_rewriting_the_run(tmp_path, monkeypatch):
+    # Seed is outside experiment identity, so resuming a pinned run with another seed lands
+    # on the same run dir; like Pipeline.train, the runner must refuse rather than
+    # overwrite its config.yaml and refit every fold.
+    import yaml
+    from dataclasses import replace
+
+    (tmp_path / "dataset.csv").write_text(
+        "sample_id,image_path,target_index,spacing_at_level_0\n"
+        "a,a.png,0,0.5\nb,b.png,1,0.5\n"
+    )
+    (tmp_path / "splits.csv").write_text("sample_id,split\na,train\nb,test\n")
+    benchmark = get_benchmark("hest/IDC")
+    calls = []
+    monkeypatch.setattr(
+        type(benchmark),
+        "_run_folds",
+        lambda self, config, run_dir: calls.append(config.training.seed) or {"test/mean_pearson": 0.5},
+    )
+
+    def config_for(seed):
+        config = benchmark.build_config(
+            encoder="uni2",
+            dataset_csv=tmp_path / "dataset.csv",
+            splits_csv=tmp_path / "splits.csv",
+            output_root=tmp_path / "runs",
+            seed=seed,
+        )
+        return replace(config, run_id="pinned")
+
+    benchmark.run(config_for(0))
+    (run_dir,) = (tmp_path / "runs").glob("experiments/*/runs/pinned")
+    saved = (run_dir / "config.yaml").read_text()
+    run_yaml = (run_dir / "run.yaml").read_text()
+
+    with pytest.raises(ValueError, match="Refusing to resume run 'pinned'"):
+        benchmark.run(config_for(1))
+    assert calls == [0]
+    assert (run_dir / "config.yaml").read_text() == saved
+    assert (run_dir / "run.yaml").read_text() == run_yaml
+    assert yaml.safe_load(saved)["run"]["seed"] == 0
+
+    benchmark.run(config_for(0))  # an identical relaunch still runs
+    assert calls == [0, 0]
+
+
 def test_build_config_defaults_to_uni2(tmp_path):
     config = get_benchmark("hest/IDC").build_config(
         dataset_csv=tmp_path / "dataset.csv",

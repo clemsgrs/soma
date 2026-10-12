@@ -243,16 +243,21 @@ class HestBenchmark:
         returns the summary. Like a ``Pipeline`` run it writes ``experiment.json`` and a
         ``run.yaml`` that tracks the run's status, so ``soma leaderboard`` and
         ``soma reproduce --from-run-dir`` can read the run. ``run.folds`` is refused: the
-        closed-form probe fits every fold in one launch.
+        closed-form probe fits every fold in one launch. A resume onto an existing run
+        whose saved config differs is refused before anything is written.
         """
         if config.folds is not None:
             raise ValueError("the HEST runner fits every fold in one launch; run.folds is not supported")
         from soma.config import save_config
         from soma.output_layout import resolve_managed_output_paths, write_experiment_metadata
-        from soma.pipeline import _RunRecorder
+        from soma.pipeline import _RunRecorder, _guard_resume_config_drift
 
         layout = resolve_managed_output_paths(config)
         run_dir = layout.run_dir
+        # Like Pipeline.train: a resume (resume/run_id) onto a run saved under another
+        # config (e.g. a changed seed, outside experiment identity) is refused before any
+        # write, instead of silently replacing that run's config and fold outputs.
+        _guard_resume_config_drift(run_dir, config)
         run_dir.mkdir(parents=True, exist_ok=True)
         write_experiment_metadata(layout.experiment_dir, layout.experiment)
         save_config(config, run_dir / "config.yaml")

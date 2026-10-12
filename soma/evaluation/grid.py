@@ -520,7 +520,7 @@ def _resolve_grid_metrics(metrics, family: str) -> list[tuple[str, Callable, dic
         not isinstance(metrics, str) and len(metrics) == 0
     ):
         metrics = DEFAULT_METRICS[family]
-    elif isinstance(metrics, (str, Mapping)) or callable(metrics):
+    elif isinstance(metrics, (str, Mapping)):
         metrics = [metrics]
     resolved = []
     for entry in metrics:

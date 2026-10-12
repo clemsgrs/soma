@@ -362,7 +362,8 @@ class PointSource:
     ``class_remap`` (annotated point id -> class index, from ``task.params.classes``) folds
     the dataset's ids onto class indices; ids in ``drop`` are removed (absent from the
     supervision, so a prediction there is a false positive). Without ``class_remap`` the
-    files already hold class indices.
+    files already hold class indices. Points on an ignored (255) pixel of the ignore
+    raster are not supervision: :meth:`load` drops them before any class id is checked.
     """
 
     target_kind = "points"
@@ -435,6 +436,7 @@ class PointSource:
         return dict(self._entries)
 
     def load(self, sample_id: str) -> Points:
+        from soma.detection.encode import IGNORE_VALUE, points_on_valid
         from soma.detection.io import read_ignore_mask, read_points
 
         entry = self._entries.get(sample_id)
@@ -447,11 +449,13 @@ class PointSource:
             )
         except ValueError as error:
             raise ValueError(f"detection sample '{sample_id}': {error}") from error
-        xy, classes = self._remap(
-            sample_id,
-            np.asarray(xy, dtype=np.float64).reshape(-1, 2),
-            np.asarray(classes, dtype=np.int64).reshape(-1),
-        )
+        xy = np.asarray(xy, dtype=np.float64).reshape(-1, 2)
+        classes = np.asarray(classes, dtype=np.int64).reshape(-1)
+        if ignore_mask is not None and xy.shape[0]:
+            # Ignored-region points carry no supervision, so their class ids are never checked.
+            supervised = ~points_on_valid(xy, np.asarray(ignore_mask) == IGNORE_VALUE)
+            xy, classes = xy[supervised], classes[supervised]
+        xy, classes = self._remap(sample_id, xy, classes)
         return Points(
             xy=torch.as_tensor(np.asarray(xy, dtype=np.float64)).reshape(-1, 2),
             classes=torch.as_tensor(np.asarray(classes, dtype=np.int64)).reshape(-1),
