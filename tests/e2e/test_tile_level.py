@@ -42,7 +42,9 @@ def test_tile_classification_is_learned(tmp_path, encoder_name, encoded_images, 
 
 def test_tile_multi_output_regression_is_learned(tmp_path, encoder_name, new_artifact):
     """``task.params.num_outputs`` makes the cohort carry ``value_<k>`` targets: two
-    outputs, each a function of the tile's colour, scored by ``mean_pearson``."""
+    outputs, each a function of the tile's colour, scored by ``mean_pearson``. An unused
+    ``value_2`` manifest column stays metadata: neither the head nor the baseline that
+    fills feature-less samples reads it as a third output."""
     import numpy as np
     import pandas as pd
     from PIL import Image
@@ -53,6 +55,7 @@ def test_tile_multi_output_regression_is_learned(tmp_path, encoder_name, new_art
     colour = np.stack([np.asarray(Image.open(path), dtype=np.float64).mean(axis=(0, 1)) for path in frame["image_path"]])
     frame["value_0"] = np.round(colour[:, 0] / 25.5, 4)
     frame["value_1"] = np.round(10.0 - colour[:, 1] / 25.5, 4)
+    frame["value_2"] = 1.0
     frame.to_csv(dataset_csv, index=False)
     config = {
         "run": {"output_root": str(tmp_path / "runs"), "seed": 0},

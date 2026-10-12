@@ -273,6 +273,28 @@ def test_a_scalar_regression_baseline_ignores_value_like_metadata_columns():
     assert baseline.predict(["x"]).frame["predicted_value"].iloc[0] == 1.5
 
 
+def test_a_multi_output_regression_baseline_keeps_to_the_heads_target_keys():
+    from soma.data import Cohort
+    from soma.tasks.regression import RegressionHead
+
+    records = pd.DataFrame(
+        {
+            "sample_id": IDS,
+            "value_0": [1.0, 2.0, 6.0, 7.0],
+            "value_1": [0.0, 0.0, 1.0, 1.0],
+            "value_2": [5.0, 5.0, 5.0, 5.0],  # an unused manifest column, kept as metadata
+            "split": ["train", "train", "tune", "test"],
+        }
+    )
+    head = RegressionHead(input_dim=4, num_outputs=2)
+    cohort = Cohort.from_frames(records, targets=list(head.target_keys), dtypes=dict(head.target_schema))
+
+    baseline = Baseline.fit(cohort.targets("train"), task_family="regression", target_keys=head.target_keys)
+
+    assert baseline.prediction_columns == ("value_0", "value_1")
+    assert baseline.predict(["x"]).frame[["value_0", "value_1"]].iloc[0].tolist() == [1.5, 0.0]
+
+
 # --- compare ----------------------------------------------------------------------- #
 
 

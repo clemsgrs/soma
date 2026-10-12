@@ -62,11 +62,14 @@ class Baseline:
         *,
         task_family: str,
         classes: Sequence[Any] | None = None,
+        target_keys: Sequence[str] | None = None,
     ) -> "Baseline":
         """Fit on the training split's targets (e.g. ``cohort.targets("train")``).
 
         ``classes`` names the raw label of each class index, as on
         :class:`~soma.evaluation.Predictions`; without it labels must be class indices.
+        ``target_keys`` (a head's ``target_keys``) names a regression's outputs; without
+        it they are read from the frame's columns.
         """
         if len(train_targets) == 0:
             raise ValueError("Baseline.fit needs at least one training target")
@@ -89,17 +92,19 @@ class Baseline:
                 }
                 columns = family_prediction_columns(task_family)
         elif task_family == "regression":
-            # A targets frame carries metadata columns too, so a present ``value`` decides
-            # the scalar case before any ``value_<k>``-named column is read as an output.
-            if "value" in train_targets.columns:
+            # A targets frame carries metadata columns too, so the head's declared keys
+            # name the outputs when given; otherwise a present ``value`` decides the scalar
+            # case before any ``value_<k>``-named column is read as an output.
+            keys = list(train_targets.columns if target_keys is None else target_keys)
+            if "value" in keys:
                 values = {"predicted_value": float(np.mean(train_targets["value"].to_numpy(dtype=float)))}
                 columns = family_prediction_columns(task_family)
             else:
-                outputs = _output_columns(train_targets.columns)
+                outputs = _output_columns(keys)
                 if not outputs:
                     raise ValueError(
                         "a regression baseline needs a 'value' column or 'value_<k>' columns; "
-                        f"got {list(train_targets.columns)}"
+                        f"got {keys}"
                     )
                 values = {c: float(np.mean(train_targets[c].to_numpy(dtype=float))) for c in outputs}
                 columns = tuple(outputs)

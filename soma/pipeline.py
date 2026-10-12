@@ -1180,7 +1180,10 @@ def train_one_fold(
     # Samples without features are scored with the training split's baseline (class
     # prior / mean / constant risk), flagged as placeholders.
     baseline = _verbs.Baseline.fit(
-        targets_frame(train_records), task_family=task_family, classes=head.classes
+        targets_frame(train_records),
+        task_family=task_family,
+        classes=head.classes,
+        target_keys=head.target_keys,
     )
 
     # Train; the learner comes back in its selected state (Checkpoint restores it).

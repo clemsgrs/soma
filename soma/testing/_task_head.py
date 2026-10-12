@@ -172,9 +172,10 @@ def check_task_head(head, batch: Any, *, tolerance: float = 1e-6) -> None:
     encoded target tensors ``compute_metrics`` reads) and ``sample_ids`` — a
     :class:`~soma.training.sample_dataset.SampleBatch` does. Asserts: ``to_columns``
     emits exactly ``prediction_columns``, one numeric value per sample; a
-    :class:`~soma.evaluation.Baseline` fitted on the batch's targets yields the same
-    columns; and :func:`~soma.evaluate` on the predictions read back from parquet agrees
-    with ``compute_metrics`` within ``tolerance`` on every metric the head reports.
+    :class:`~soma.evaluation.Baseline` fitted on the batch's targets and the head's
+    ``target_keys`` (as the pipeline fits it) yields the same columns; and
+    :func:`~soma.evaluate` on the predictions read back from parquet agrees with
+    ``compute_metrics`` within ``tolerance`` on every metric the head reports.
 
     Grid heads (``target_kind``): ``batch`` is a :class:`~soma.learn.GridBatch` whose
     ``features`` are decoder logits and whose ``targets`` hold the raw supervision
@@ -219,7 +220,9 @@ def check_task_head(head, batch: Any, *, tolerance: float = 1e-6) -> None:
 
     targets = _targets_frame(head, batch.targets, sample_ids)
     try:
-        baseline = Baseline.fit(targets, task_family=head.task_family, classes=head.classes)
+        baseline = Baseline.fit(
+            targets, task_family=head.task_family, classes=head.classes, target_keys=head.target_keys
+        )
         placeholders = baseline.predict(sample_ids)
     except Exception as error:  # noqa: BLE001
         raise ConformanceError("Baseline", f"raised {error!r}") from error
