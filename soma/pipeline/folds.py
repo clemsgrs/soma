@@ -85,6 +85,7 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup) -> FoldResult:
     evaluations: dict[str, Evaluation] = {}
     for split in loaders.splits:  # 8
         predictions = predict(split)
+        del predicted[split.name]  # only the loop holds it now: released once written
         scored = predictions if threshold is None else predictions.with_threshold(threshold)
         evaluations[split.name] = _verbs.evaluate(
             scored, split.targets, metrics=setup.metrics(head), subgroups=split.subgroups
