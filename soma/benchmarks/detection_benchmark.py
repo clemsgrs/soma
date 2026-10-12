@@ -57,7 +57,7 @@ from soma.benchmarks.registry import (
 )
 from soma.config import PipelineConfig, load_config
 from soma.curation.manifest import CuratedManifest
-from soma.benchmarks.froc import patch_area_mm2, score_monkey_froc
+from soma.benchmarks.froc import MNL_CLASS_NAME, patch_area_mm2, score_monkey_froc
 from soma.detection.matching import detection_counts, match_assignment, reduce_f1
 from soma.benchmarks.midog_f1 import midog_f1
 
@@ -149,7 +149,7 @@ class DatasetSpec:
     """A dataset's fixed recipe knobs: native spacing, native metric, and match geometry.
 
     ``metric_name`` is the *unpooled* metric a :class:`Cell` records for this dataset
-    (OCELOT ``mean_f1``, MIDOG ``f1``, MONKEY ``mean_froc``). ``match_um`` holds the
+    (OCELOT ``mean_f1``, MIDOG ``f1``, MONKEY ``froc_inflammatory``). ``match_um`` holds the
     per-class matching margins in µm; the native scorer converts them to point-frame pixels
     via ``spacing_um`` at score time. ``match_method`` is the matcher the native metric uses
     (Hungarian one-to-one for MIDOG, greedy-by-confidence for OCELOT/MONKEY). ``tolerance``
@@ -207,7 +207,7 @@ DATASETS: dict[str, DatasetSpec] = {
     "monkey": DatasetSpec(
         name="monkey",
         spacing_um=0.24199951445730394,
-        metric_name="mean_froc",
+        metric_name="froc_inflammatory",
         num_classes=2,
         match_um=(4.0, 5.0),
         match_method="greedy",
@@ -573,13 +573,24 @@ def _score_midog_points(samples: Sequence[SamplePrediction], spec: DatasetSpec) 
 
 
 def _score_monkey_points(samples: Sequence[SamplePrediction], spec: DatasetSpec) -> dict[str, float]:
-    """MONKEY-native mean FROC over persisted points (per-class 4/5 µm margins, per-mm² sweep)."""
+    """MONKEY-native FROCs over persisted points, one per final-leaderboard column.
+
+    ``froc_inflammatory`` is the merged lymphocyte + monocyte FROC (5 µm margin) the
+    challenge ranks by (Track 1); ``froc_lymphocytes`` / ``froc_monocytes`` are the per-class
+    columns (4 / 5 µm). ``mean_froc`` (their average, the Track-2 analogue) is kept for the
+    class-averaged reference row. All use the per-mm² FP sweep of :func:`score_monkey_froc`.
+    """
     pred_xy, pred_score, pred_class, gt_xy, gt_class, area = _per_image_arrays(samples)
     out = score_monkey_froc(
         pred_xy, pred_class, pred_score, gt_xy, gt_class, area,
         spacing_um=float(spec.spacing_um), match_um=spec.match_um,
     )
-    return {"mean_froc": float(out["mean_froc"])}
+    return {
+        "froc_inflammatory": float(out[MNL_CLASS_NAME].score),
+        "froc_lymphocytes": float(out["lymphocytes"].score),
+        "froc_monocytes": float(out["monocytes"].score),
+        "mean_froc": float(out["mean_froc"]),
+    }
 
 
 _POINT_SCORERS = {
@@ -1298,7 +1309,7 @@ class DetectionDatasetBenchmark:
     ``curate(raw_root, out_dir)`` / ``build_config(encoder=...)`` / ``expected(**axes)`` /
     ``score(run_dir)`` surface delegates to :class:`DetectionBenchmark` with the dataset
     bound. ``primary_metric`` is the dataset's native metric (MIDOG ``f1``, MONKEY
-    ``mean_froc``); OCELOT keeps its own standalone ``ocelot`` benchmark.
+    ``froc_inflammatory``); OCELOT keeps its own standalone ``ocelot`` benchmark.
     """
 
     canonical_seeds = DEFAULT_SEEDS
