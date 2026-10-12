@@ -13,7 +13,7 @@ import torch
 from torch import Tensor, nn
 
 from soma.learn.grid import GridBatch
-from soma.learn.learner import Learner, PredictOutput, StepOutput, _move, learner_registry
+from soma.learn.learner import Learner, LearnerParams, PredictOutput, StepOutput, _move, learner_registry
 
 __all__ = ["DenseLearner"]
 
@@ -88,4 +88,4 @@ class DenseLearner(Learner):
         return PredictOutput(columns=columns, raw=output)
 
 
-learner_registry.register("dense", DenseLearner)
+learner_registry.register("dense", DenseLearner, params=LearnerParams)

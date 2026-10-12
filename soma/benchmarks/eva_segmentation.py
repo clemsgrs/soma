@@ -97,9 +97,10 @@ from soma.curation.eva_segmentation import (
 from soma.curation.manifest import CuratedManifest
 from soma.decoders.base import Decoder
 from soma.decoders.registry import decoder_registry
+from soma.params import NoParams
 from soma.tasks.dense_metrics import _validate_dense_shapes
 from soma.tasks.registry import task_registry
-from soma.tasks.segmentation import SegmentationHead
+from soma.tasks.segmentation import SegmentationHead, SegmentationParams
 
 # --- Protocol constants (eva online segmentation configs) -----------------------------
 MAX_STEPS = 2000
@@ -326,19 +327,21 @@ if OFFLINE_DECODER_NAME not in decoder_registry:
     decoder_registry.register(
         OFFLINE_DECODER_NAME,
         EvaConvMSDecoder,
+        params=NoParams,
         metadata={"description": "EVA ConvDecoderMS, the offline-config decoder (benchmark-private)"},
     )
 if DECODER_NAME not in decoder_registry:
     decoder_registry.register(
         DECODER_NAME,
         EvaConvWithImageDecoder,
+        params=NoParams,
         metadata={
             "description": "EVA ConvDecoderWithImage, the leaderboard's online decoder "
             "(benchmark-private, eva/consep + eva/monusac)"
         },
     )
 if HEAD_NAME not in task_registry:
-    task_registry.register(HEAD_NAME, EvaSegmentationHead)
+    task_registry.register(HEAD_NAME, EvaSegmentationHead, params=SegmentationParams)
 
 
 # --- Datasets -------------------------------------------------------------------------

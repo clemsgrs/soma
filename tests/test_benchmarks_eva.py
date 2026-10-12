@@ -18,7 +18,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from soma.benchmarks import Benchmark, get_benchmark, list_benchmarks
+from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva
 from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 
@@ -38,7 +38,7 @@ def _write_splits(tmp_path: Path, n_train: int, n_test: int = 3) -> Path:
 
 
 def test_eva_subbenchmarks_registered():
-    names = list_benchmarks()
+    names = sorted(benchmark_registry.list())
     for dataset in EVA_DATASETS:
         name = f"eva/{dataset}"
         assert name in names, f"{name} not registered"

@@ -7,23 +7,34 @@ from soma.tasks.registry import task_registry
 from soma.tasks.classification import (
     BinaryClassificationHead,
     BranchAwareClassificationHead,
+    ClassificationParams,
     MulticlassClassificationHead,
+    infer_label_map,
 )
-from soma.tasks.detection import DetectionHead
+from soma.tasks.detection import DetectionHead, DetectionParams
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
-from soma.tasks.regression import RegressionHead
-from soma.tasks.segmentation import SegmentationHead, load_mask
-from soma.tasks.survival import CoxSurvivalHead, SurvivalHead, resolve_survival_head
-
-
-def list_task_heads() -> list[str]:
-    """Return registered task-head names in a stable order."""
-    return sorted(task_registry.list())
+from soma.tasks.regression import RegressionHead, RegressionParams
+from soma.tasks.segmentation import SegmentationHead, SegmentationParams, load_mask
+from soma.tasks.survival import (
+    CoxSurvivalHead,
+    CoxSurvivalParams,
+    SurvivalHead,
+    SurvivalParams,
+    infer_num_bins,
+    resolve_survival_head,
+)
 
 __all__ = [
     "TaskHead",
     "task_registry",
-    "list_task_heads",
+    "ClassificationParams",
+    "CoxSurvivalParams",
+    "DetectionParams",
+    "RegressionParams",
+    "SegmentationParams",
+    "SurvivalParams",
+    "infer_label_map",
+    "infer_num_bins",
     "BinaryClassificationHead",
     "MulticlassClassificationHead",
     "BranchAwareClassificationHead",

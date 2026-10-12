@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 import torch
 
-from soma.aggregators import aggregator_registry, list_aggregators
+from soma import components
+from soma.aggregators import aggregator_registry
 from soma.decoders.registry import decoder_registry
 from soma.dense.geometry import compute_dense_geometry
 from soma.learn import Budget, DenseLearner, GridBatch, MILLearner
@@ -55,13 +56,13 @@ def _mil_learner(name: str) -> tuple[MILLearner, object]:
     return learner, batch
 
 
-@pytest.mark.parametrize("name", list_aggregators())
+@pytest.mark.parametrize("name", [entry["name"] for entry in components("aggregators")])
 def test_mil_learner_conforms_for_every_aggregator(name):
     learner, batch = _mil_learner(name)
     check_learner(learner, batch, budget=BUDGET)
 
 
-@pytest.mark.parametrize("name", list_aggregators())
+@pytest.mark.parametrize("name", [entry["name"] for entry in components("aggregators")])
 def test_mil_learner_conforms_for_every_aggregator_under_bf16_autocast(name):
     """``Trainer(precision="bf16")`` wraps the steps in autocast with fp32 bag features.
 

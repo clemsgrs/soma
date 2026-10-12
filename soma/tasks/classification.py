@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -9,13 +10,14 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_metrics, resolve_metrics
+from soma.params import check_positive, check_probability
 from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
 
-    from soma.data import SampleRecord
+    from soma.data import Cohort, SampleRecord
 
 
 def categorical_label_map(records: "Sequence[SampleRecord]") -> dict[str | int, int]:
@@ -28,8 +30,27 @@ def categorical_label_map(records: "Sequence[SampleRecord]") -> dict[str | int, 
     return {label: idx for idx, label in enumerate(classes)}
 
 
-def _categorical_auto_params(records: "Sequence[SampleRecord]") -> dict[str, Any]:
-    label_map = categorical_label_map(records)
+@dataclass
+class ClassificationParams:
+    """The params of the categorical heads (binary, multiclass, branch-aware, ordinal).
+
+    ``num_classes`` and ``label_map`` left unset are inferred from the cohort's labels
+    (:func:`infer_label_map`); ``input_dim`` comes from the model and ``metrics`` from
+    the evaluation section.
+    """
+
+    num_classes: int | None = None
+    label_map: dict[str | int, int] | None = None
+    dropout: float = 0.0
+
+    def __post_init__(self) -> None:
+        check_positive("num_classes", self.num_classes, integer=True, optional=True)
+        check_probability("dropout", self.dropout, below_one=True)
+
+
+def infer_label_map(cohort: "Cohort", params: "Mapping[str, Any]") -> dict[str, Any]:
+    """``num_classes`` and the sorted raw-label -> index ``label_map`` of the cohort."""
+    label_map = categorical_label_map(cohort.records)
     return {"num_classes": len(label_map), "label_map": label_map}
 
 
@@ -92,10 +113,6 @@ class BinaryClassificationHead(TaskHead):
         self._label_map = label_map
         self.metrics = resolve_metrics("binary_classification", metrics or [])
 
-    @classmethod
-    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
-        return _categorical_auto_params(records)
-
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return _extract_categorical_target(self._label_map, record)
 
@@ -122,7 +139,7 @@ class BinaryClassificationHead(TaskHead):
         return compute_metrics("binary_classification", self.metrics, y_true, preds, y_prob=probs)
 
 
-task_registry.register("binary_classification", BinaryClassificationHead)
+task_registry.register("binary_classification", BinaryClassificationHead, params=ClassificationParams, infer=infer_label_map)
 
 
 class MulticlassClassificationHead(TaskHead):
@@ -160,10 +177,6 @@ class MulticlassClassificationHead(TaskHead):
         self._label_map = label_map
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
 
-    @classmethod
-    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
-        return _categorical_auto_params(records)
-
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return _extract_categorical_target(self._label_map, record)
 
@@ -192,7 +205,7 @@ class MulticlassClassificationHead(TaskHead):
         )
 
 
-task_registry.register("multiclass_classification", MulticlassClassificationHead)
+task_registry.register("multiclass_classification", MulticlassClassificationHead, params=ClassificationParams, infer=infer_label_map)
 
 
 class BranchAwareClassificationHead(TaskHead):
@@ -229,10 +242,6 @@ class BranchAwareClassificationHead(TaskHead):
         self.num_classes = num_classes
         self._label_map = label_map
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
-
-    @classmethod
-    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
-        return _categorical_auto_params(records)
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return _extract_categorical_target(self._label_map, record)
@@ -271,4 +280,4 @@ class BranchAwareClassificationHead(TaskHead):
         )
 
 
-task_registry.register("branch_aware_classification", BranchAwareClassificationHead)
+task_registry.register("branch_aware_classification", BranchAwareClassificationHead, params=ClassificationParams, infer=infer_label_map)

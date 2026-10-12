@@ -23,6 +23,7 @@ from soma.data._legacy import legacy_samples_from_csv
 from soma.evaluation import Predictions
 from soma.evaluation.metrics import compute_survival_metrics
 from soma.pipeline import Pipeline, PipelineResult
+from soma.tasks.registry import task_registry
 from soma.tasks.survival import (
     CoxSurvivalHead,
     SurvivalHead,
@@ -181,9 +182,9 @@ class TestCoxSurvivalHead:
         with pytest.raises(ValueError, match="breslow"):
             CoxSurvivalHead(input_dim=8, ties="efron")
 
-    def test_auto_params_empty(self):
-        # No binning -> nothing to infer from the dataset.
-        assert CoxSurvivalHead.auto_params(object()) == {}
+    def test_infers_nothing(self):
+        # No binning -> nothing to infer from the cohort.
+        assert task_registry.infer("cox_survival", object(), {}) == {}
 
     def test_gradient_flows(self):
         head = CoxSurvivalHead(input_dim=8)

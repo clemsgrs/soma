@@ -13,10 +13,13 @@ model, and the decoder is deliberately small. Two are registered to make the
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from torch import Tensor, nn
 
 from soma.decoders.base import Decoder
 from soma.decoders.registry import decoder_registry
+from soma.params import NoParams, check_non_negative, check_positive, check_probability
 
 
 def _group_norm(channels: int, num_groups: int) -> nn.GroupNorm:
@@ -114,5 +117,22 @@ class LightweightConvDecoder(Decoder):
         return self._num_classes
 
 
-decoder_registry.register("linear", LinearDecoder)
-decoder_registry.register("lightweight_conv", LightweightConvDecoder)
+@dataclass
+class LightweightConvParams:
+    """:class:`LightweightConvDecoder`'s params (``input_dim`` and ``num_classes`` come
+    from the run). A run derives ``num_upsample_blocks`` from the grid geometry unless it is set."""
+
+    hidden_dim: int = 256
+    num_upsample_blocks: int = 2
+    num_groups: int = 32
+    dropout: float = 0.0
+
+    def __post_init__(self) -> None:
+        check_positive("hidden_dim", self.hidden_dim, integer=True)
+        check_positive("num_groups", self.num_groups, integer=True)
+        check_non_negative("num_upsample_blocks", self.num_upsample_blocks, integer=True)
+        check_probability("dropout", self.dropout, below_one=True)
+
+
+decoder_registry.register("linear", LinearDecoder, params=NoParams)
+decoder_registry.register("lightweight_conv", LightweightConvDecoder, params=LightweightConvParams)

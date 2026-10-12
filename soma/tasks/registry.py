@@ -2,11 +2,12 @@
 
 from soma.registry import Registry
 
-task_registry = Registry("tasks", bundled_module="soma.benchmarks")
+#: The task-head registry: the ``heads`` domain of :func:`soma.components`.
+task_registry = Registry("heads", bundled_module="soma.benchmarks")
 
 
 def task_head_class(name: str) -> type:
-    """Return the head class registered as ``name``.
+    """Return the head class ``name`` names: a registry key or a dotted import path.
 
     Raises ``ValueError`` with the registered names when ``name`` is unknown.
     """
@@ -15,7 +16,7 @@ def task_head_class(name: str) -> type:
     import soma.tasks  # noqa: F401
 
     try:
-        return task_registry.get(name)
+        return task_registry.resolve(name)
     except KeyError as exc:
         raise ValueError(f"Unknown task head {name!r}: {exc.args[0]}") from None
 

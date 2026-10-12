@@ -238,3 +238,57 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
             ),
             "epochs": deepcopy([self._epochs[epoch] for epoch in sorted(self._epochs)]),
         }
+
+
+class UniformRoiBatchSampler(SegmentationRoiBatchSampler):
+    """The ``uniform`` ROI batch strategy: each ROI at most once per epoch, in a seeded
+    random order. ``draws_per_epoch=None`` rounds the ROIs down to whole effective
+    optimization batches."""
+
+    def __init__(
+        self,
+        *,
+        sample_ids: Sequence[str],
+        class_pixel_counts: Sequence[Sequence[int]],
+        batch_size: int,
+        draws_per_epoch: int | None = None,
+        gradient_accumulation: int = 1,
+        seed: int = 0,
+    ) -> None:
+        super().__init__(
+            sample_ids=sample_ids,
+            class_pixel_counts=class_pixel_counts,
+            batch_size=batch_size,
+            draws_per_epoch=draws_per_epoch,
+            strategy="uniform",
+            gradient_accumulation=gradient_accumulation,
+            seed=seed,
+        )
+
+
+class ClassConditionedRoiBatchSampler(SegmentationRoiBatchSampler):
+    """The ``class_conditioned`` ROI batch strategy: each draw requests a class (by
+    ``class_request_ratios``, uniform by default) and picks an ROI in proportion to its
+    pixels of that class."""
+
+    def __init__(
+        self,
+        *,
+        sample_ids: Sequence[str],
+        class_pixel_counts: Sequence[Sequence[int]],
+        batch_size: int,
+        draws_per_epoch: int | None = None,
+        class_request_ratios: Sequence[float] | None = None,
+        gradient_accumulation: int = 1,
+        seed: int = 0,
+    ) -> None:
+        super().__init__(
+            sample_ids=sample_ids,
+            class_pixel_counts=class_pixel_counts,
+            batch_size=batch_size,
+            draws_per_epoch=draws_per_epoch,
+            strategy="class_conditioned",
+            class_request_ratios=class_request_ratios,
+            gradient_accumulation=gradient_accumulation,
+            seed=seed,
+        )

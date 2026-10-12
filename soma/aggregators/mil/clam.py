@@ -6,6 +6,8 @@ while preserving soma's aggregator + task-head architecture.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -13,6 +15,7 @@ from torch import Tensor, nn
 from soma.aggregators.base import Aggregator, AggregatorOutput, require_label
 from soma.aggregators.mil.losses import SmoothTop1SVM
 from soma.aggregators.registry import aggregator_registry
+from soma.params import check_choice, check_positive, check_probability
 
 
 class AttnNet(nn.Module):
@@ -487,5 +490,40 @@ class CLAM_MB(_CLAMBase):
         return M
 
 
-aggregator_registry.register("clam_sb", CLAM_SB)
-aggregator_registry.register("clam_mb", CLAM_MB)
+@dataclass
+class CLAMMBParams:
+    """:class:`CLAM_MB`'s params (``input_dim`` comes from the features)."""
+
+    hidden_dim: int = 512
+    attn_dim: int = 256
+    gated: bool = True
+    dropout: float = 0.0
+    k_sample: int = 8
+    n_classes: int = 2
+    inst_loss: str = "ce"
+    use_negative_class_instance_loss: bool = False
+    bag_weight: float = 0.7
+
+    def __post_init__(self) -> None:
+        for name in ("hidden_dim", "attn_dim", "k_sample", "n_classes"):
+            check_positive(name, getattr(self, name), integer=True)
+        check_probability("dropout", self.dropout)
+        check_choice("inst_loss", self.inst_loss, ("ce", "svm"))
+
+
+@dataclass
+class CLAMSBParams(CLAMMBParams):
+    """:class:`CLAM_SB`'s params: CLAM-MB's plus the instance-loss mode and weights."""
+
+    instance_loss_mode: str | None = None
+    low_attention_weight: float = 0.1
+    topk_target_weight: float = 1.0
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.instance_loss_mode is not None:
+            check_choice("instance_loss_mode", self.instance_loss_mode, _CLAMBase._VALID_INSTANCE_LOSS_MODES)
+
+
+aggregator_registry.register("clam_sb", CLAM_SB, params=CLAMSBParams)
+aggregator_registry.register("clam_mb", CLAM_MB, params=CLAMMBParams)

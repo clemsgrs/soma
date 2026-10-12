@@ -61,7 +61,7 @@ soma config.yaml
 python -m soma config.yaml
 ```
 
-soma merges the file with its bundled defaults. Start with the [task examples](examples/README.md) or the [CLI reference](https://clemsgrs.github.io/soma/cli.html). `soma list encoders` (and `aggregators`, `decoders`, `tasks`, `benchmarks`) prints the registered components.
+soma merges the file with its bundled defaults. Start with the [task examples](examples/README.md) or the [CLI reference](https://clemsgrs.github.io/soma/cli.html). `soma list` prints the component kinds and `soma list aggregators` (or `encoders`, `heads`, `decoders`, `benchmarks`, ...) prints one kind's registered components with their params.
 
 ## Explore
 

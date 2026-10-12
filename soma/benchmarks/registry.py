@@ -33,6 +33,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from soma.config import PipelineConfig
 from soma.curation.manifest import CuratedManifest
+from soma.registry import Registry, signature_params
 
 # The fixed, non-key columns every reference table MUST carry, in canonical order.
 _REFERENCE_VALUE_COLUMNS = ("metric", "expected", "tolerance", "source")
@@ -202,26 +203,25 @@ def get_ranking_metrics(benchmark: Benchmark) -> tuple[str, ...]:
 
 # --- registry ------------------------------------------------------------------------
 
-_REGISTRY: dict[str, Benchmark] = {}
+#: The ``benchmarks`` domain of :func:`soma.components`. An entry is the benchmark object;
+#: its params are the keyword axes of its ``build_config`` (encoder, paths, ...).
+benchmark_registry = Registry("benchmarks")
 
 
 def register_benchmark(benchmark: Benchmark) -> None:
-    """Register a benchmark under its ``name`` (last registration wins on re-import)."""
-    _REGISTRY[benchmark.name] = benchmark
+    """Register a benchmark under its ``name``; its params mirror ``build_config``'s axes."""
+    params = signature_params(
+        benchmark.build_config, name=f"{type(benchmark).__name__}Params"
+    )
+    benchmark_registry.register(benchmark.name, benchmark, params=params)
 
 
 def get_benchmark(name: str) -> Benchmark:
     """Look up a registered benchmark by name (fail-fast with the known names)."""
-    try:
-        return _REGISTRY[name]
-    except KeyError:
-        known = ", ".join(sorted(_REGISTRY)) or "(none registered)"
-        raise KeyError(f"Unknown benchmark {name!r}; registered: {known}.") from None
-
-
-def list_benchmarks() -> list[str]:
-    """All registered benchmark names, sorted."""
-    return sorted(_REGISTRY)
+    if name not in benchmark_registry:
+        known = ", ".join(sorted(benchmark_registry.list())) or "(none registered)"
+        raise KeyError(f"Unknown benchmark {name!r}; registered: {known}.")
+    return benchmark_registry.get(name)
 
 
 # --- reference tables ----------------------------------------------------------------

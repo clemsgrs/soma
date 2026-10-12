@@ -1290,7 +1290,7 @@ def keyed_benchmark():
     try:
         yield bench
     finally:
-        registry_mod._REGISTRY.pop(bench.name, None)
+        registry_mod.benchmark_registry._entries.pop(bench.name, None)
 
 
 @pytest.fixture()
@@ -1300,7 +1300,7 @@ def multi_metric_benchmark():
     try:
         yield benchmark
     finally:
-        registry_mod._REGISTRY.pop(benchmark.name, None)
+        registry_mod.benchmark_registry._entries.pop(benchmark.name, None)
 
 
 def test_keyed_reference_joins_on_varied_axis_with_pass_fail(tmp_path: Path, keyed_benchmark):

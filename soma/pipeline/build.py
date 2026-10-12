@@ -188,6 +188,7 @@ class RunInputs:
     preprocessing: PreprocessingConfig
     evaluation: EvalConfig
     source: Any
+    cohort: Cohort
     dataset: LegacySamples
     splits: LegacyFolds
     run_id: str
@@ -290,7 +291,9 @@ def build_set_model(
     elif kind == "mil":
         if aggregator is None:
             raise ValueError("a MIL model needs an aggregator section")
-        agg = aggregator_registry.resolve(aggregator["name"])(input_dim=width, **aggregator["params"])
+        name = aggregator["name"]
+        params = aggregator_registry.validate(name, aggregator["params"])
+        agg = aggregator_registry.resolve(name)(input_dim=width, **params)
         model = MILModel(
             aggregator=agg,
             task_head=head_cls(input_dim=agg.output_dim, **head["params"]),
@@ -881,9 +884,9 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
                 f"Available: {sorted(sample.metadata)}"
             )
 
-    task_cls = task_registry.get(task.name)
-    # Validate survival columns before auto_params reads them, so a missing/malformed
-    # column raises a clear message instead of a cryptic KeyError.
+    task_cls = task_registry.resolve(task.name)
+    # Validate survival columns before the head's infer hook reads them, so a
+    # missing/malformed column raises a clear message instead of a cryptic KeyError.
     if task_cls.task_family == "survival":
         from soma.tasks.survival import resolve_survival_task, validate_survival_dataset
 
@@ -891,7 +894,11 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
         validate_survival_dataset(
             dataset.records, dataset_type, loss=survival_loss, num_bins=task.params.get("num_bins")
         )
-    task_params = {**task_cls.auto_params(dataset.records), **task.params, "metrics": evaluation.metrics}
+    # The cohort decides what the config leaves unset (class count, label map, survival
+    # bins); explicit task.params win.
+    head_name = _component_name(task_registry, task.name, task_cls)
+    inferred = task_registry.infer(head_name, inputs.cohort, task.params)
+    task_params = {**inferred, **task.params, "metrics": evaluation.metrics}
     task_params.pop("loss", None)
     task_family = task_cls.task_family
 
@@ -1088,7 +1095,7 @@ def _segmentation_head_spec(inputs: RunInputs, geometry) -> dict[str, Any]:
     section (a user subclass with its own loss keeps its class)."""
     config, preprocessing = inputs.config, inputs.preprocessing
     task, masks = config.task, config.preprocessing.masks
-    head_cls = task_registry.get(task.name)
+    head_cls = task_registry.resolve(task.name)
     num_classes, class_names, label_remap = resolve_class_scheme(task.params, annotation_rasters=masks is not None)
     seg_params = {key: value for key, value in task.params.items() if key not in CLASS_SCHEME_KEYS}
     mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
@@ -1140,18 +1147,20 @@ def _resolve_segmentation_roi_population(
 
 def _segmentation_roi_batch_sampler(records, population, *, training: TrainingConfig, fold: int):
     """The explicit cached-grid training-batch contract, when requested."""
-    from soma.learn.roi_sampler import SegmentationRoiBatchSampler
+    from soma.learn.samplers import sampler_registry
 
     sample_ids = [record.sample_id for record in records]
-    return SegmentationRoiBatchSampler(
+    params: dict[str, Any] = {"draws_per_epoch": training.roi_draws_per_epoch}
+    if training.class_request_ratios is not None:
+        params["class_request_ratios"] = training.class_request_ratios
+    strategy = training.roi_batch_sampling
+    return sampler_registry.get(strategy)(
         sample_ids=sample_ids,
         class_pixel_counts=population.subset(sample_ids).class_pixel_counts,
         batch_size=training.batch_size,
         gradient_accumulation=training.gradient_accumulation,
-        draws_per_epoch=training.roi_draws_per_epoch,
-        strategy=training.roi_batch_sampling,
-        class_request_ratios=training.class_request_ratios,
         seed=training.seed + fold,
+        **sampler_registry.validate(strategy, params),
     )
 
 
@@ -1441,7 +1450,7 @@ def _detection_head_spec(inputs: RunInputs, geometry, records, sample_ids):
             "dataset_type='detection' requires task.params.match_distance (the F1 "
             "matching distance δ, in µm)."
         )
-    head_cls = task_registry.get(task.name)
+    head_cls = task_registry.resolve(task.name)
     spec = {
         "name": _component_name(task_registry, task.name, head_cls),
         "params": {
@@ -1497,7 +1506,7 @@ def resolve_task_class(config: PipelineConfig):
     """The registered head class a config trains (survival resolves its loss variant)."""
     if config.task is None:
         return None
-    task_cls = task_registry.get(config.task.name)
+    task_cls = task_registry.resolve(config.task.name)
     if task_cls.task_family == "survival":
         from soma.tasks.survival import resolve_survival_task
 

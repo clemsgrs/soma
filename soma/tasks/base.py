@@ -59,9 +59,11 @@ class TaskHead(ABC, nn.Module):
     Maps an aggregated slide representation to task-specific predictions.
 
     Subclasses must implement forward, compute_loss, postprocess,
-    compute_metrics, and extract_targets, and should set target_dtypes and
-    auto_params appropriately. ``prediction_columns`` / ``to_columns`` declare what
-    :func:`soma.predict` writes; the base implementation covers soma's set families.
+    compute_metrics, and extract_targets, and should set target_dtypes. Values decided
+    by the cohort (class counts, label maps, survival bins) come from the ``infer`` hook
+    the head is registered with (ADR 0018). ``prediction_columns`` / ``to_columns``
+    declare what :func:`soma.predict` writes; the base implementation covers soma's set
+    families.
 
     The head owns its target contract: ``target_dtypes`` declares the keys it
     consumes (and their tensor dtypes), ``extract_targets`` maps a
@@ -240,19 +242,3 @@ class TaskHead(ABC, nn.Module):
             f"{type(self).__name__} (task family {family!r}) declares no set-shape "
             "prediction columns; override prediction_columns and to_columns"
         )
-
-    @classmethod
-    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
-        """Return parameters to auto-inject from the cohort's records during instantiation.
-
-        The pipeline merges these with user-provided task.params before calling
-        the constructor. Override to inject cohort-derived values such as
-        num_classes for classification.
-
-        Args:
-            records: The records of the current run (``cohort.records``).
-
-        Returns:
-            Dict of keyword arguments to pass to __init__.
-        """
-        return {}

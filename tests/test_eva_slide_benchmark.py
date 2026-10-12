@@ -13,9 +13,9 @@ import torch
 import torch.nn.functional as F
 
 from soma.aggregators.registry import aggregator_registry
-from soma.benchmarks import Benchmark, get_benchmark, list_benchmarks
+from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva_slide as slide
-from soma.tasks.registry import task_family_of
+from soma.tasks.registry import task_family_of, task_registry
 from tests import eva_reference as eva
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 )
 def test_slide_subbenchmarks_join_the_eva_family(dataset, head):
     bench = get_benchmark(f"eva/{dataset}")
-    assert f"eva/{dataset}" in list_benchmarks()
+    assert f"eva/{dataset}" in sorted(benchmark_registry.list())
     assert isinstance(bench, Benchmark)
     assert bench.primary_metric == "test/balanced_accuracy"
     assert bench.canonical_seeds == tuple(range(20))
@@ -213,9 +213,10 @@ def test_multiclass_head_is_cross_entropy_over_class_indices():
         head.extract_targets(_record(6))
 
 
-def test_multiclass_auto_params_reads_the_class_indices():
+def test_multiclass_infer_reads_the_class_indices():
     records = [_record(label) for label in (0, 3, 2)]
-    assert slide.EvaMILMulticlassHead.auto_params(records) == {"num_classes": 4}
+    cohort = SimpleNamespace(records=records)
+    assert task_registry.infer(slide.MULTICLASS_HEAD_NAME, cohort, {}) == {"num_classes": 4}
 
 
 def test_binary_head_refuses_a_non_binary_label():

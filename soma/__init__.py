@@ -28,8 +28,7 @@ from soma.config import (
     TrainingConfig,
     HeatmapConfig,
 )
-from soma.encoders import list_models
-from soma.aggregators import list_aggregators
+from soma.discovery import components, register
 from soma.data import (
     AnnotationManifest,
     CachedLabelMapSource,
@@ -53,7 +52,6 @@ from soma.data import (
     group_by,
     require_coverage,
 )
-from soma.decoders import list_decoders
 from soma.evaluation import (
     Baseline,
     Evaluation,
@@ -105,7 +103,6 @@ from soma.training.model import (
 )
 from soma.training.sample_dataset import SampleBatch, SampleDataset, sample_collate_fn
 from soma.training.seed import seed_everything
-from soma.tasks import list_task_heads
 
 __all__ = [
     "__version__",
@@ -129,10 +126,9 @@ __all__ = [
     "TaskConfig",
     "TrainingConfig",
     "HeatmapConfig",
-    "list_models",
-    "list_aggregators",
-    "list_decoders",
-    "list_task_heads",
+    # Discovery
+    "components",
+    "register",
     # Data
     "AnnotationManifest",
     "Cohort",

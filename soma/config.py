@@ -1477,6 +1477,7 @@ class PipelineConfig:
     folds: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
+        self._name_registered_components_by_key()
         if self.folds is not None:
             if not self.folds or len(set(self.folds)) != len(self.folds) or min(self.folds) < 0:
                 raise ValueError(
@@ -1895,21 +1896,51 @@ class PipelineConfig:
         if self.aggregator is not None:
             from soma.aggregators.registry import aggregator_registry
 
-            if self.aggregator.name not in aggregator_registry:
+            try:
+                aggregator_registry.resolve(self.aggregator.name)
+            except KeyError as exc:
                 available = ", ".join(sorted(aggregator_registry.list())) or "(none)"
                 raise ValueError(
                     f"Unknown aggregator name '{self.aggregator.name}'. "
                     f"Available aggregators: {available}"
-                )
+                ) from exc
         if self.decoder is not None:
             from soma.decoders.registry import decoder_registry
 
-            if self.decoder.name not in decoder_registry:
+            try:
+                decoder_registry.resolve(self.decoder.name)
+            except KeyError as exc:
                 available = ", ".join(sorted(decoder_registry.list())) or "(none)"
                 raise ValueError(
                     f"Unknown decoder name '{self.decoder.name}'. "
                     f"Available decoders: {available}"
-                )
+                ) from exc
+
+    def _name_registered_components_by_key(self) -> None:
+        """Store a dotted path naming a registered class as that entry's key.
+
+        Such a path is that entry, so the name-keyed checks and routing (the survival
+        ``loss`` selector, ``clam_mb``'s branch-aware head, ``hipt``'s hierarchy) must see
+        the key. An unregistered dotted path stays as written.
+        """
+        dotted = [
+            attribute
+            for attribute in ("task", "aggregator", "decoder")
+            if getattr(self, attribute) is not None and "." in getattr(self, attribute).name
+        ]
+        if not dotted:
+            return
+        import soma.tasks  # noqa: F401 - registers the built-in heads
+        from soma.aggregators.registry import aggregator_registry
+        from soma.decoders.registry import decoder_registry
+        from soma.tasks.registry import task_registry
+
+        registries = {"task": task_registry, "aggregator": aggregator_registry, "decoder": decoder_registry}
+        for attribute in dotted:
+            component = getattr(self, attribute)
+            key = registries[attribute].key_of(component.name)
+            if key != component.name:
+                object.__setattr__(self, attribute, replace(component, name=key))
 
 
 # --- YAML serialization ---

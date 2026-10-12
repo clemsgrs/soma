@@ -9,11 +9,19 @@ from typing import Any
 import torch
 from torch import Tensor, nn
 
-from soma.learn.learner import Learner, PredictOutput, StepOutput, learner_registry
+from soma.learn.learner import Learner, LearnerParams, PredictOutput, StepOutput, learner_registry
 from soma.training.collate import CoxWindowBatch
 from soma.training.model import MILModelOutput
 
-__all__ = ["MILLearner"]
+__all__ = ["MILLearner", "MILLearnerParams"]
+
+
+@dataclasses.dataclass
+class MILLearnerParams(LearnerParams):
+    """:class:`MILLearner`'s params: :class:`~soma.learn.learner.LearnerParams` plus an
+    optional ``(predictions, targets) -> Tensor`` loss replacing the head's."""
+
+    loss: Callable[[Tensor, dict[str, Tensor]], Tensor] | None = None
 
 
 class MILLearner(Learner):
@@ -125,4 +133,4 @@ class MILLearner(Learner):
         return {"loss": loss, **{k: float(v) for k, v in metrics.items()}}
 
 
-learner_registry.register("mil", MILLearner)
+learner_registry.register("mil", MILLearner, params=MILLearnerParams)

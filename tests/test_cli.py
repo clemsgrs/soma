@@ -241,62 +241,63 @@ def test_run_subcommand_is_rejected(tmp_path: Path, capsys):
     assert "pass the config path directly" in captured.err
 
 
-def test_list_encoders_uses_level_filter_and_prints_results(capsys):
+def _rows(out: str) -> list[list[str]]:
+    """The cells of each table row ``soma list`` printed."""
+    return [[cell.strip() for cell in line.split("│")[1:-1]] for line in out.splitlines() if line.startswith("│")]
+
+
+def test_list_without_a_kind_prints_the_kinds(capsys):
+    from soma import components
     from soma.cli import main
 
-    with patch("soma.cli.list_models", return_value=["alpha", "beta"]) as mock_list_models:
-        main(["list", "encoders", "--level", "tile"])
+    main(["list"])
 
-    mock_list_models.assert_called_once_with(level="tile")
-    out = capsys.readouterr().out
-    assert "Encoders" in out
-    assert "tile" in out
-    assert "alpha" in out
-    assert "beta" in out
+    names = [row[0] for row in _rows(capsys.readouterr().out)]
+    assert names == components()
 
 
-def test_list_aggregators_prints_results(capsys):
+def test_list_a_kind_prints_its_components_and_params(capsys):
     from soma.cli import main
 
-    with patch("soma.cli.list_aggregators", return_value=["abmil", "clam_sb"]) as mock_list_aggregators:
-        main(["list", "aggregators"])
+    main(["list", "aggregators"])
 
-    mock_list_aggregators.assert_called_once_with()
     out = capsys.readouterr().out
     assert "Aggregators" in out
-    assert "abmil" in out
-    assert "clam_sb" in out
+    rows = {row[0]: row[1] for row in _rows(out) if row[0]}
+    assert {"abmil", "clam_sb", "mean_pool", "transmil"} <= set(rows)
+    assert "hidden_dim=128" in rows["abmil"]
 
 
-def test_list_tasks_prints_results(capsys):
+def test_list_heads_prints_the_registered_heads(capsys):
     from soma.cli import main
 
-    with patch("soma.cli.list_task_heads", return_value=["binary_classification"]) as mock_list_task_heads:
-        main(["list", "tasks"])
+    main(["list", "heads"])
 
-    mock_list_task_heads.assert_called_once_with()
-    out = capsys.readouterr().out
-    assert "Task Heads" in out
-    assert "binary_classification" in out
+    names = [row[0] for row in _rows(capsys.readouterr().out)]
+    assert {"binary_classification", "segmentation", "survival", "cox_survival"} <= set(names)
 
 
-@pytest.mark.parametrize(
-    ("kind", "helper", "title", "values"),
-    [
-        ("decoders", "list_decoders", "Decoders", ["linear", "lightweight_conv"]),
-    ],
-)
-def test_list_dense_registries_prints_results(kind, helper, title, values, capsys):
+def test_list_encoders_filters_by_level(capsys):
+    from soma import components
     from soma.cli import main
 
-    with patch(f"soma.cli.{helper}", return_value=values) as mock_helper:
-        main(["list", kind])
+    main(["list", "encoders", "--level", "slide"])
 
-    mock_helper.assert_called_once_with()
     out = capsys.readouterr().out
-    assert title in out
-    for value in values:
-        assert value in out
+    assert "Encoders (slide)" in out
+    printed = {row[0] for row in _rows(out) if row[0]}
+    expected = {entry["name"] for entry in components("encoders") if entry["level"] == "slide"}
+    assert printed == expected
+
+
+def test_list_level_applies_to_encoders_only(capsys):
+    from soma.cli import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["list", "aggregators", "--level", "tile"])
+
+    assert exc_info.value.code == 2
+    assert "encoders only" in capsys.readouterr().err
 
 
 def test_list_help_prints_structured_block(capsys):

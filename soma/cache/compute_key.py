@@ -31,7 +31,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from soma.config import EncoderConfig, PreprocessingConfig
-from soma.encoders import encoder_registry
+from slide2vec.encoders.registry import encoder_registry
 from soma.encoders.validation import resolve_preprocessing_config
 from soma.cache.keys import (
     build_hierarchical_cache_key,

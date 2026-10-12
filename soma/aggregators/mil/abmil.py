@@ -4,11 +4,29 @@ ABMIL — Attention-Based Multiple Instance Learning (Ilse et al., 2018).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from torch import Tensor, nn
 
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.mil.attention_pool import AttentionPool
 from soma.aggregators.registry import aggregator_registry
+from soma.params import check_choice, check_positive, check_probability
+
+
+@dataclass
+class ABMILParams:
+    """:class:`ABMIL`'s params (``input_dim`` comes from the features)."""
+
+    hidden_dim: int = 128
+    activation: str = "tanh"
+    gated: bool = True
+    dropout: float = 0.25
+
+    def __post_init__(self) -> None:
+        check_positive("hidden_dim", self.hidden_dim, integer=True)
+        check_choice("activation", self.activation, ("tanh", "relu", "gelu"))
+        check_probability("dropout", self.dropout)
 
 
 class ABMIL(Aggregator):
@@ -54,4 +72,4 @@ class ABMIL(Aggregator):
         return self._input_dim
 
 
-aggregator_registry.register("abmil", ABMIL)
+aggregator_registry.register("abmil", ABMIL, params=ABMILParams)

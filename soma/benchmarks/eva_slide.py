@@ -89,9 +89,9 @@ from soma.tasks.base import TaskHead
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping
 
-    from soma.data import SampleRecord
+    from soma.data import Cohort, SampleRecord
 
 # --- Protocol constants (eva offline slide-level classification configs) --------------
 EPOCHS = 100
@@ -249,11 +249,6 @@ class EvaMILMulticlassHead(TaskHead):
         self.mlp = _eva_mlp(input_dim, self.num_classes)
         self.metrics = resolve_metrics("multiclass_classification", metrics or [])
 
-    @classmethod
-    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
-        # The labels are class indices; the benchmark config pins num_classes anyway.
-        return {"num_classes": max(int(r.targets["label"]) for r in records) + 1}
-
     def extract_targets(self, record: "SampleRecord") -> dict[str, int]:
         return _class_index(record, self.num_classes)
 
@@ -279,19 +274,50 @@ class EvaMILMulticlassHead(TaskHead):
         )
 
 
+@dataclass
+class EvaABMILParams:
+    """:class:`EvaABMIL`'s params (``input_dim`` comes from the features)."""
+
+    projected_dim: int = 128
+    hidden_dim: int = 128
+
+
+@dataclass
+class EvaMILBinaryParams:
+    """:class:`EvaMILBinaryHead`'s params."""
+
+    num_classes: int = 2
+
+
+@dataclass
+class EvaMILMulticlassParams:
+    """:class:`EvaMILMulticlassHead`'s params; ``num_classes`` left unset is inferred."""
+
+    num_classes: int | None = None
+
+
+def infer_class_count(cohort: "Cohort", params: "Mapping[str, Any]") -> dict[str, Any]:
+    """``num_classes``: the largest class index plus one (the labels are class indices;
+    the benchmark config pins ``num_classes`` anyway)."""
+    return {"num_classes": max(int(record.targets["label"]) for record in cohort.records) + 1}
+
+
 if AGGREGATOR_NAME not in aggregator_registry:
     aggregator_registry.register(
         AGGREGATOR_NAME,
         EvaABMIL,
+        params=EvaABMILParams,
         metadata={
             "description": "EVA ABMIL bag encoder: Linear(D->128) + gated attention "
             "(benchmark-private, eva/camelyon16_small + eva/panda_small)"
         },
     )
 if BINARY_HEAD_NAME not in task_registry:
-    task_registry.register(BINARY_HEAD_NAME, EvaMILBinaryHead)
+    task_registry.register(BINARY_HEAD_NAME, EvaMILBinaryHead, params=EvaMILBinaryParams)
 if MULTICLASS_HEAD_NAME not in task_registry:
-    task_registry.register(MULTICLASS_HEAD_NAME, EvaMILMulticlassHead)
+    task_registry.register(
+        MULTICLASS_HEAD_NAME, EvaMILMulticlassHead, params=EvaMILMulticlassParams, infer=infer_class_count
+    )
 
 
 # --- Datasets -------------------------------------------------------------------------

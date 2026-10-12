@@ -1,4 +1,4 @@
-"""Generate the CLI guide page from public soma metadata."""
+"""Generate the CLI guide page from public soma metadata (:func:`soma.components`)."""
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
     if sibling.exists():
         sys.path.insert(0, str(sibling))
 
+from soma import components
 from soma.benchmarks import (
     expected_rows,
     get_benchmark,
-    list_benchmarks,
     load_results,
     reproduction_report,
 )
@@ -64,8 +64,14 @@ def _strip_comment_blocks(text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", "\n".join(keep))
 
 
+def _benchmark_family(family: str) -> list:
+    """The registered members ``family/<dataset>`` of a benchmark family, sorted by name."""
+    return [get_benchmark(entry["name"]) for entry in components("benchmarks") if entry["name"].startswith(f"{family}/")]
+
+
 def build_cli_rst() -> str:
     config_reference = _default_config_yaml_block()
+    kinds = ", ".join(f"``{kind}``" for kind in components())
     body = (
         dedent(
         """\
@@ -114,22 +120,13 @@ def build_cli_rst() -> str:
            Run a full pipeline from the given YAML config file, optionally on
            pre-extracted features.
 
-        ``soma list encoders [--level {tile,slide,patient}]``
-           List all registered encoder presets. ``--level`` narrows results to
-           ``tile``, ``slide``, or ``patient`` encoders.
-
-        ``soma list aggregators``
-           List all registered MIL aggregator presets.
-
-        ``soma list decoders``
-           List all registered dense decoder presets.
-
-        ``soma list tasks``
-           List all registered task-head presets.
-
-        ``soma list benchmarks``
-           List all registered foundation-model benchmarks — the names
-           ``soma reproduce`` and ``soma leaderboard`` accept.
+        ``soma list [KIND] [--level {tile,slide,patient}]``
+           Without ``KIND``, list the component kinds: __KINDS__.
+           With a ``KIND``, list its registered components and the default of
+           each of their params; ``soma list benchmarks`` prints the names
+           ``soma reproduce`` and ``soma leaderboard`` accept. ``--level``
+           narrows the encoders to ``tile``, ``slide``, or ``patient``.
+           :func:`soma.components` returns the same listing in Python.
 
         ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]``
            Score saved predictions against the targets in ``dataset.csv``,
@@ -191,6 +188,7 @@ def build_cli_rst() -> str:
 
         """
         )
+        .replace("__KINDS__", kinds)
         + config_reference
         + "\n\n"
         + dedent(
@@ -534,7 +532,7 @@ def build_ocelot_benchmark_rst() -> str:
 
 def build_eva_benchmark_rst() -> str:
     """Generate the EVA benchmark page from the registered ``eva/<dataset>`` family."""
-    members = [get_benchmark(n) for n in list_benchmarks() if n.startswith("eva/")]
+    members = _benchmark_family("eva")
     family = [b for b in members if b.facet.fixed.get("protocol") == "eva-linear-probe"]
     seg_family = [b for b in members if b.facet.fixed.get("protocol") == "eva-segmentation-decoder"]
     slide_family = [b for b in members if b.facet.fixed.get("protocol") == "eva-slide-abmil"]
@@ -870,7 +868,7 @@ def build_hest_benchmark_rst() -> str:
     registered task appears automatically. The page documents the shared protocol, scoped
     data download, reproduction commands, and recorded results.
     """
-    family = [get_benchmark(n) for n in list_benchmarks() if n.startswith("hest/")]
+    family = _benchmark_family("hest")
     head = family[0]  # protocol constants are shared across the family
     seeds = ", ".join(str(s) for s in head.canonical_seeds)
     alpha = ridge_alpha(50)  # 50 highly-variable genes per HEST task
@@ -1067,7 +1065,7 @@ def build_croma_benchmark_rst() -> str:
     :func:`reproduction_report` / :func:`load_results`) or from the registered benchmark's
     declared constants — no hand-typed values.
     """
-    family = [get_benchmark(n) for n in list_benchmarks() if n.startswith("croma/")]
+    family = _benchmark_family("croma")
     head = family[0]
     policy = head.resolvability
     cohort_list = ", ".join(f"``{b.name}``" for b in family[:-1]) + f", and ``{family[-1].name}``"

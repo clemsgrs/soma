@@ -10,6 +10,8 @@ The two-tier mechanism:
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
@@ -17,6 +19,7 @@ from torch import Tensor, nn
 from soma.aggregators.base import Aggregator, AggregatorOutput, require_label
 from soma.aggregators.mil.attention_pool import AttentionPool
 from soma.aggregators.registry import aggregator_registry
+from soma.params import check_choice, check_positive, check_probability
 from soma.tasks.base import TaskHead
 
 
@@ -299,4 +302,22 @@ class DTFDMIL(Aggregator):
         return per_bag.mean()
 
 
-aggregator_registry.register("dtfdmil", DTFDMIL)
+@dataclass
+class DTFDMILParams:
+    """:class:`DTFDMIL`'s params (``input_dim`` comes from the features)."""
+
+    embed_dim: int = 512
+    hidden_dim: int = 128
+    n_groups: int = 8
+    distill_mode: str = "maxmin"
+    instances_per_group: int = 1
+    dropout: float = 0.25
+
+    def __post_init__(self) -> None:
+        for name in ("embed_dim", "hidden_dim", "n_groups", "instances_per_group"):
+            check_positive(name, getattr(self, name), integer=True)
+        check_choice("distill_mode", self.distill_mode, ("maxmin", "max", "afs"))
+        check_probability("dropout", self.dropout)
+
+
+aggregator_registry.register("dtfdmil", DTFDMIL, params=DTFDMILParams)

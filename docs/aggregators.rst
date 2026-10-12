@@ -123,4 +123,5 @@ The shared base classes are :class:`soma.aggregators.base.Aggregator` and
 .. autoclass:: soma.aggregators.base.AggregatorOutput
    :members:
 
-``soma.list_aggregators()`` lists the registered names.
+``soma.components("aggregators")`` lists the registered aggregators with their
+params and defaults.

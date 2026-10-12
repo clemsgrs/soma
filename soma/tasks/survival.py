@@ -10,6 +10,7 @@ function. See ``survival-design.md`` for the full design.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from numbers import Integral
 from typing import TYPE_CHECKING, Any
 
@@ -17,22 +18,52 @@ import torch
 from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_survival_metrics, resolve_metrics
+from soma.params import check_choice, check_positive, check_probability
 from soma.tasks.base import TaskHead, build_input_dropout
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from soma.data import SampleRecord
+    from soma.data import Cohort, SampleRecord
 
 # Matches the HIPT reference clamp; guards log() against saturated hazards.
 _EPS = 1e-7
 
 
-def _infer_num_bins(records: "Sequence[SampleRecord]") -> int:
-    """Number of discrete time bins = max bin index + 1 over the records."""
-    bins = [int(record.targets["bin"]) for record in records]
-    return max(bins) + 1
+@dataclass
+class SurvivalParams:
+    """:class:`SurvivalHead`'s params; ``num_bins`` left unset is inferred from the
+    cohort's ``bin`` targets (:func:`infer_num_bins`)."""
+
+    num_bins: int | None = None
+    alpha: float = 0.15
+    dropout: float = 0.0
+
+    def __post_init__(self) -> None:
+        check_positive("num_bins", self.num_bins, integer=True, optional=True)
+        check_probability("dropout", self.dropout, below_one=True)
+
+
+def infer_num_bins(cohort: "Cohort", params: Mapping[str, Any]) -> dict[str, Any]:
+    """``num_bins``: the cohort's largest ``bin`` index plus one."""
+    return {"num_bins": max(int(record.targets["bin"]) for record in cohort.records) + 1}
+
+
+@dataclass
+class CoxSurvivalParams:
+    """:class:`CoxSurvivalHead`'s params."""
+
+    ties: str = "breslow"
+    min_events_per_window: int = 1
+    cox_window: int = 1
+    dropout: float = 0.0
+
+    def __post_init__(self) -> None:
+        check_choice("ties", self.ties, ("breslow",))
+        check_positive("min_events_per_window", self.min_events_per_window, integer=True)
+        check_positive("cox_window", self.cox_window, integer=True)
+        check_probability("dropout", self.dropout, below_one=True)
 
 
 def survival_nll_loss(
@@ -180,10 +211,6 @@ class SurvivalHead(TaskHead):
         self.num_bins = num_bins
         self.alpha = alpha
         self.metrics = resolve_metrics("survival", metrics or [])
-
-    @classmethod
-    def auto_params(cls, records: "Sequence[SampleRecord]") -> dict[str, Any]:
-        return {"num_bins": _infer_num_bins(records)}
 
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
         return {
@@ -346,7 +373,7 @@ def resolve_survival_task(
     subclasses keep their class and inherit the objective of their base.
     """
     builtin_head = resolve_survival_head(task_params.get("loss", "nll"))
-    head_cls = builtin_head if task_name == "survival" else task_registry.get(task_name)
+    head_cls = builtin_head if task_name == "survival" else task_registry.resolve(task_name)
     loss = "cox" if issubclass(head_cls, CoxSurvivalHead) else "nll"
     return head_cls, loss
 
@@ -432,4 +459,5 @@ def validate_survival_dataset(
                 )
 
 
-task_registry.register("survival", SurvivalHead)
+task_registry.register("survival", SurvivalHead, params=SurvivalParams, infer=infer_num_bins)
+task_registry.register("cox_survival", CoxSurvivalHead, params=CoxSurvivalParams)

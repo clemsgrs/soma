@@ -82,7 +82,7 @@ def test_compute_cache_key_slide_prism_matches_soma_resolver():
         execution_signature,
     )
     from soma.encoders.validation import resolve_preprocessing_config
-    from soma.encoders import encoder_registry
+    from slide2vec.encoders.registry import encoder_registry
     from slide2vec.encoders.registry import resolve_encoder_output
 
     preprocessing = PreprocessingConfig(

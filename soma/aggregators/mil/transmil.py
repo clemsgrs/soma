@@ -7,6 +7,8 @@ in TaskHead, making TransMIL composable with any task.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from math import ceil, sqrt
 
 import torch
@@ -15,6 +17,7 @@ from torch import Tensor, nn
 from soma.aggregators.base import Aggregator, AggregatorOutput
 from soma.aggregators.mil.nystrom import NystromTransformerLayer
 from soma.aggregators.registry import aggregator_registry
+from soma.params import check_positive, check_probability
 
 
 class PPEG(nn.Module):
@@ -192,4 +195,26 @@ class TransMIL(Aggregator):
         return self._att_dim
 
 
-aggregator_registry.register("transmil", TransMIL)
+@dataclass
+class TransMILParams:
+    """:class:`TransMIL`'s params (``input_dim`` comes from the features); ``None``
+    landmarks is ``att_dim // 2``."""
+
+    att_dim: int = 512
+    n_layers: int = 2
+    n_heads: int = 4
+    n_landmarks: int | None = None
+    pinv_iterations: int = 6
+    dropout: float = 0.0
+    use_mlp: bool = False
+
+    def __post_init__(self) -> None:
+        for name in ("att_dim", "n_heads", "pinv_iterations"):
+            check_positive(name, getattr(self, name), integer=True)
+        check_positive("n_landmarks", self.n_landmarks, integer=True, optional=True)
+        if isinstance(self.n_layers, bool) or not isinstance(self.n_layers, int) or self.n_layers < 2:
+            raise ValueError(f"n_layers must be at least 2, got {self.n_layers}")
+        check_probability("dropout", self.dropout)
+
+
+aggregator_registry.register("transmil", TransMIL, params=TransMILParams)

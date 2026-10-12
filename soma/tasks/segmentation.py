@@ -11,6 +11,7 @@ target-resolution logits — no chance of three divergent resize paths.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -21,6 +22,7 @@ from torch import Tensor
 from soma.dense.reader import accepted_mask_values
 from soma.dense.reader import load_mask as load_mask
 from soma.evaluation.metrics import resolve_metrics
+from soma.params import check_non_negative, check_positive
 from soma.tasks.base import TaskHead, as_grid_geometry
 from soma.tasks.dense_metrics import (
     dense_confusion_counts,
@@ -34,6 +36,30 @@ if TYPE_CHECKING:
     from soma.data import SampleRecord
     from soma.dense.geometry import DenseGridGeometry
     from soma.evaluation.grid import LabelMapPredictions
+
+
+@dataclass
+class SegmentationParams:
+    """:class:`SegmentationHead`'s loss params. ``num_classes`` (and the class names and
+    label remap) follow from the task's class scheme; ``geometry`` from the grid source;
+    the spacing and mask-read backends from preprocessing; ``metrics`` from evaluation."""
+
+    num_classes: int | None = None
+    ignore_index: int = 255
+    dice_weight: float = 1.0
+    class_weights: list[float] | None = None
+    ce_gamma: float = 0.0
+    tversky_alpha: float = 0.5
+    tversky_beta: float = 0.5
+    tversky_gamma: float = 1.0
+
+    def __post_init__(self) -> None:
+        check_positive("num_classes", self.num_classes, integer=True, optional=True)
+        for weight in self.class_weights or ():
+            check_non_negative("class_weights", weight)
+        for name in ("ce_gamma", "tversky_alpha", "tversky_beta"):
+            check_non_negative(name, getattr(self, name))
+        check_positive("tversky_gamma", self.tversky_gamma)
 
 
 class SegmentationHead(TaskHead):
@@ -361,4 +387,4 @@ class SegmentationHead(TaskHead):
         )
 
 
-task_registry.register("segmentation", SegmentationHead)
+task_registry.register("segmentation", SegmentationHead, params=SegmentationParams)
