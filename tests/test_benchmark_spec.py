@@ -232,6 +232,51 @@ def test_run_benchmark_spec_runs_canonical_seeds_with_shared_cache_and_aggregate
     }
 
 
+def test_run_benchmark_spec_frees_each_seeds_pipeline_before_the_next_seed_starts(
+    tmp_path, monkeypatch
+):
+    # A live segmentation seed holds the frozen encoder (GBs of GPU memory) inside a
+    # reference cycle; if the loop leaves it to the cyclic GC, seeds pile up encoders
+    # until one runs out of GPU memory. Each seed must start with the last one freed.
+    import gc
+    import weakref
+
+    spec = BenchmarkSpec(
+        name="fmtf/example",
+        canonical_seeds=(0, 1, 2),
+        primary_metric="metric/a",
+        build_config=lambda **kwargs: kwargs,
+        score=lambda run_dir: {"metric/a": 1.0},
+    )
+    previous: list[weakref.ref] = []
+    alive_at_start: list[bool] = []
+
+    class CyclicPipeline:
+        def __init__(self, config):
+            alive_at_start.append(bool(previous) and previous[-1]() is not None)
+            self.config = config
+            self.cycle = self
+
+        def run(self):
+            previous.append(weakref.ref(self))
+            return _pipeline_result(self.config["output_root"])
+
+    monkeypatch.setattr(run_mod, "_pipeline_cls", lambda: CyclicPipeline)
+    gc.disable()
+    try:
+        run_benchmark_spec(
+            spec,
+            dataset_csv=tmp_path / "dataset.csv",
+            splits_csv=tmp_path / "splits.csv",
+            encoder="fmtf-encoder",
+            output_root=tmp_path / "evidence",
+        )
+    finally:
+        gc.enable()
+
+    assert alive_at_start == [False, False, False]
+
+
 def test_run_benchmark_spec_uses_exact_explicit_seed_and_cache_root(tmp_path, monkeypatch):
     built: list[dict] = []
 

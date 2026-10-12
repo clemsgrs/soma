@@ -833,6 +833,10 @@ def run_benchmark_spec(
     pipeline_cls = _pipeline_cls()
 
     for seed in selected_seeds:
+        # Free the previous seed's pipeline before building the next, as in
+        # ``_reproduce_one``: a live segmentation run holds its frozen encoder inside a
+        # reference cycle, which only the cyclic GC reclaims.
+        gc.collect()
         seed_root = output_root / f"seed_{seed}"
         seed_roots.append(seed_root)
         config = spec.build_config(
