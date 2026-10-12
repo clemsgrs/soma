@@ -344,6 +344,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         "benchmarking.rst": (
             "eva-patch-classification-benchmark",
             "ocelot-detection-benchmark",
+            "detection-annotation-efficiency",
             "hest-gene-expression-benchmark",
             "croma-robustness-benchmark",
             "benchmark-in-house-encoder",

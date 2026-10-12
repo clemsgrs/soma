@@ -799,7 +799,7 @@ def full_references(
     """Per-encoder full-data references from the headline sweep.
 
     ``sweep`` reads the per-replicate ``metrics.json`` cells; ``report`` reads the
-    ``ranking_report.json`` cells (mean/std, e.g. the recorded OCELOT ranking); ``auto``
+    ``ranking_report.json`` cells (mean/std); ``auto``
     prefers ``sweep`` when at least one scored cell exists for the dataset; ``train`` reads
     the ``n = full`` rung the efficiency phase itself trained (``efficiency_out_root``).
     """
