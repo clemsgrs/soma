@@ -20,7 +20,9 @@ from soma.cache import (
     resolve_roi_sampling_cache,
     write_roi_sampling_coords,
 )
-from soma.config import MasksConfig, PreprocessingConfig, SamplingConfig
+import slide2vec
+
+from tests.extraction_configs import annotation_masks, extraction
 from soma.data._legacy import legacy_samples_from_csv
 from soma.dense.reader import write_mask_crop
 
@@ -52,16 +54,13 @@ def _make_manifest(
 def _preprocessing(
     *,
     tile_size: int = 512,
+    tumor_coverage: float = 0.1,
     colors: dict[str, list[int] | None] | None = None,
-) -> PreprocessingConfig:
-    return PreprocessingConfig(
-        requested_tile_size_px=tile_size,
-        masks=MasksConfig(
-            pixel_mapping={"background": 0, "tumor": 1},
-            min_coverage={"tumor": 0.1},
-            colors=colors,
-        ),
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+) -> slide2vec.PreprocessingConfig:
+    return extraction(
+        0.5,
+        tile_size,
+        masks=annotation_masks({"background": 0, "tumor": 1}, {"tumor": tumor_coverage}, colors=colors),
     )
 
 
@@ -199,7 +198,7 @@ def test_metadata_mismatch_raises_hard_error(tmp_path: Path):
         preprocessing=preprocessing,
     )
     tampered = json.loads(resolution.metadata_path.read_text(encoding="utf-8"))
-    tampered["preprocessing"]["requested_tile_size_px"] = 224
+    tampered["preprocessing"]["tiling"]["requested_tile_size_px"] = 224
     resolution.metadata_path.write_text(json.dumps(tampered), encoding="utf-8")
 
     with pytest.raises(ValueError, match="metadata mismatch"):
@@ -251,35 +250,23 @@ def test_sampling_determining_knob_changes_the_directory_key(tmp_path: Path):
     assert key_512 != key_256
 
 
-def test_native_spacing_policy_changes_the_directory_key_without_busting_strict():
-    from soma.cache import preprocessing_signature
+def test_the_spacing_policy_changes_the_directory_key():
+    from soma.cache import roi_sampling_signature
 
-    strict = _preprocessing()
-    native = PreprocessingConfig(
-        requested_tile_size_px=512,
-        spacing_policy="native_if_coarser",
-        masks=strict.masks,
-        sampling=strict.sampling,
+    preprocessing = _preprocessing()
+
+    assert roi_sampling_signature(preprocessing)["spacing_policy"] == "strict"
+    assert roi_sampling_signature(preprocessing, spacing_policy="native_if_coarser")["spacing_policy"] == (
+        "native_if_coarser"
     )
-
-    assert "spacing_policy" not in preprocessing_signature(strict)
-    assert preprocessing_signature(native)["spacing_policy"] == "native_if_coarser"
-    assert build_roi_sampling_cache_key(preprocessing=strict) == "951f3d2cc58d3c5f"
-    assert build_roi_sampling_cache_key(preprocessing=strict) != build_roi_sampling_cache_key(
-        preprocessing=native
+    assert build_roi_sampling_cache_key(preprocessing=preprocessing) != build_roi_sampling_cache_key(
+        preprocessing=preprocessing, spacing_policy="native_if_coarser"
     )
 
 
 def test_min_coverage_change_changes_the_directory_key(tmp_path: Path):
     base = _preprocessing()
-    changed = PreprocessingConfig(
-        requested_tile_size_px=512,
-        masks=MasksConfig(
-            pixel_mapping={"background": 0, "tumor": 1},
-            min_coverage={"tumor": 0.5},
-        ),
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-    )
+    changed = _preprocessing(tumor_coverage=0.5)
     assert build_roi_sampling_cache_key(preprocessing=base) != build_roi_sampling_cache_key(
         preprocessing=changed
     )
@@ -288,7 +275,7 @@ def test_min_coverage_change_changes_the_directory_key(tmp_path: Path):
 def test_mask_preview_colors_change_neither_key_nor_stems(tmp_path: Path):
     dataset = _make_manifest(tmp_path)
     plain = _preprocessing(colors=None)
-    colored = _preprocessing(colors={"tumor": [255, 0, 0]})
+    colored = _preprocessing(colors={"background": None, "tumor": [255, 0, 0]})
     assert build_roi_sampling_cache_key(preprocessing=plain) == build_roi_sampling_cache_key(
         preprocessing=colored
     )
@@ -310,12 +297,13 @@ def test_mask_preview_colors_change_neither_key_nor_stems(tmp_path: Path):
     assert reloaded.complete is True
 
 
-def test_key_payload_is_exactly_kind_plus_preprocessing_no_schema_version(tmp_path: Path):
-    """The roi_sampling key hashes {artifact_kind, preprocessing} and nothing else.
+def test_key_payload_is_exactly_kind_plus_sampling_signature_no_schema_version(tmp_path: Path):
+    """The roi_sampling key hashes {artifact_kind, preprocessing, spacing_policy} and
+    nothing else.
 
     In particular no SCHEMA_VERSION (the #364 scoping decision) and no engine version:
-    the key must equal a hash of the two-field payload recomputed here from the public
-    preprocessing signature.
+    the key must equal a hash of the payload recomputed here from the public preprocessing
+    signature.
     """
     import hashlib
 
@@ -325,6 +313,7 @@ def test_key_payload_is_exactly_kind_plus_preprocessing_no_schema_version(tmp_pa
     payload = {
         "artifact_kind": "roi_sampling",
         "preprocessing": preprocessing_signature(preprocessing),
+        "spacing_policy": "strict",
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     expected = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]

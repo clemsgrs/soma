@@ -2,7 +2,7 @@
 
 This module chooses already-extracted ROI dataset items for decoder training.  It
 does not create ROI coordinates; that preprocessing concern lives in
-``PreprocessingConfig.sampling``.
+the annotation sampling of ``preprocessing.masks``.
 """
 
 from __future__ import annotations

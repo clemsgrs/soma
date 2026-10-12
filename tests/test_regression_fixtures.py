@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
+import slide2vec
+from hs2p import FilterConfig
+
+from soma.config import CacheConfig
+from tests.extraction_configs import extraction
 from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
 
@@ -41,17 +45,12 @@ def _build_dataset(tmp_path: Path) -> Dataset:
     return legacy_samples_from_csv(dataset_csv)
 
 
-def _regression_preprocessing() -> PreprocessingConfig:
-    return PreprocessingConfig(
-        backend="openslide",
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        tolerance=0.07,
-        min_coverage={"tissue": 0.1},
-        overlap=0.0,
-        seg_downsample=64,
-        ref_tile_size_px=224,
-        a_t=4,
+def _regression_preprocessing() -> slide2vec.PreprocessingConfig:
+    return extraction(
+        0.5,
+        224,
+        tiling_fields={"backend": "openslide", "tolerance": 0.07},
+        filter=FilterConfig(ref_tile_size=224, a_t=4),
     )
 
 
@@ -76,7 +75,7 @@ def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
     dataset = _build_dataset(tmp_path)
     extractor = FeatureExtractor(
         dataset,
-        EncoderConfig(name="prism"),
+        "prism",
         preprocessing=_regression_preprocessing(),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,

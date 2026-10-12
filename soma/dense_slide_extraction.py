@@ -1,10 +1,10 @@
 """Slide-manifest dense extraction: slides + annotation masks → cached ROI grids.
 
 The slide-region counterpart of soma's internal dense given-image engine
-(which reads *pre-cropped* tile images). Here the dataset rows are **whole slides** plus a
-``masks:``/``sampling:`` config; soma:
+(which reads *pre-cropped* tile images). Here the dataset rows are **whole slides** plus an
+annotation vocabulary in hs2p's ``MaskSamplingConfig``; soma:
 
-1. runs **hs2p annotation sampling** (``tile_slide(sampling=…)``, ``merged`` output mode) per
+1. runs **hs2p annotation sampling** (``tile_slide(masks=…)``, ``merged`` output mode) per
    slide to get ROI coordinates (the union of tiles passing any class threshold);
 2. asks **slide2vec** to encode each ROI region into a dense ``(d, gh, gw)`` grid
    (:meth:`slide2vec.Model.embed_regions_dense` — region reads, the encoder's
@@ -33,10 +33,9 @@ from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
-from slide2vec import DenseOptions, Model, SlideRegions
+from slide2vec import DenseOptions, ExecutionOptions, Model, PreprocessingConfig, SlideRegions
 
 from soma.atomic_io import atomic_write_text
 from soma.cache import (
@@ -46,99 +45,54 @@ from soma.cache import (
     resolve_cache_root,
     resolve_dense_cache,
     resolve_cache_dtype,
+    roi_sampling_signature,
 )
-from soma.config import (
-    CacheConfig,
-    EncoderConfig,
-    ExecutionConfig,
-    MasksConfig,
-    PreprocessingConfig,
-    SamplingConfig,
-    canonical_pixel_mapping,
-)
+from soma.config import CacheConfig, EncoderLeaf
 from soma.dense import CachedGridSource, normalize_hw
-from soma.slide2vec_adapter import build_execution_options
+from soma.slide2vec_adapter import execution_options
+from soma.spacing import resolve_effective_spacing_um
 
 if TYPE_CHECKING:
     from soma.data._legacy import LegacyRecord, LegacySamples
 
 logger = logging.getLogger(__name__)
 
-# soma SamplingConfig → hs2p coordinate-selection strategy strings.
-_STRATEGY_MAP = {"joint": "joint_sampling", "independent": "independent_sampling"}
-
-
-def _build_tiling_config(preprocessing: PreprocessingConfig, sampling: SamplingConfig):
-    """The composed hs2p ``TilingConfig`` for slide-manifest ROI sampling (ADR 0009).
-
-    The geometry comes from the one composition soma has, so this seam cannot drift from the
-    pooled one or from the cache key. Only the sampling strategy is restated, because the
-    caller resolves it (a manifest run may sample under a strategy the config leaves unset).
-
-    soma's ``preprocessing.min_coverage`` is the tissue threshold in hs2p's own masks-shaped
-    form; the per-class sampling map still flows separately through
-    ``resolve_sampling_spec``, and this tiling-level entry only feeds
-    the result's binary ``min_tissue_fraction`` provenance.
-    """
-    return replace(
-        preprocessing.tiling_config(),
-        independent_sampling=(sampling.strategy == "independent"),
+def effective_spacing_um(
+    preprocessing: PreprocessingConfig, spacing_at_level_0: float | None, *, spacing_policy: str
+) -> float:
+    """The spacing one slide is read at: the requested one, or its native spacing when the
+    policy allows it and the slide is coarser (see :func:`soma.spacing.resolve_effective_spacing_um`)."""
+    tiling = preprocessing.tiling
+    return resolve_effective_spacing_um(
+        requested_spacing_um=tiling.requested_spacing_um,
+        spacing_at_level_0=spacing_at_level_0,
+        tolerance=tiling.tolerance,
+        policy=spacing_policy,
     )
-
-
-def sampling_signature(
-    masks: MasksConfig, sampling: SamplingConfig, preprocessing: PreprocessingConfig
-) -> dict:
-    """Canonical signature of the sampling spec, for the dense cache key.
-
-    Different ``min_coverage``/strategy/spacing/tile-size ⇒ different ROIs ⇒ a distinct
-    cache, even when two specs happen to yield colliding coordinates.
-    """
-    signature = {
-        "pixel_mapping": canonical_pixel_mapping(masks.pixel_mapping),
-        "min_coverage": dict(masks.min_coverage),
-        "colors": (
-            None
-            if masks.colors is None
-            else {k: (None if v is None else list(v)) for k, v in masks.colors.items()}
-        ),
-        "strategy": str(sampling.strategy),
-        "output_mode": str(sampling.output_mode),
-        "spacing_um": float(preprocessing.requested_spacing_um),
-        "tile_size_px": list(
-            normalize_hw(int(preprocessing.requested_tile_size_px), name="tile_size_px")
-        ),
-        "overlap": float(preprocessing.overlap),
-    }
-    if preprocessing.spacing_policy != "strict":
-        # Preserve legacy strict cache identities; only the opt-in behavior
-        # needs an additional discriminator.
-        signature["spacing_policy"] = str(preprocessing.spacing_policy)
-    return signature
 
 
 def sample_slide_rois(
     dataset: "LegacySamples",
     *,
-    masks: MasksConfig,
-    sampling: SamplingConfig,
     preprocessing: PreprocessingConfig,
+    spacing_policy: str = "strict",
     sample_ids: Collection[str] | None = None,
 ) -> dict[str, list[tuple[int, int]]]:
     """Run hs2p annotation sampling per slide; return level-0 ROI coords by slide id.
 
-    ``sample_ids`` restricts sampling to that subset of the manifest's slides (manifest
-    order preserved) — the roi_sampling cache's partial-miss path samples only the
-    missing slides without touching the hits. ``None`` (the default) samples every slide.
+    hs2p tiles each slide's annotation raster with ``preprocessing.tiling`` (read at the
+    slide's effective spacing) and ``preprocessing.masks``. ``sample_ids`` restricts
+    sampling to that subset of the manifest's slides (manifest order preserved) — the
+    roi_sampling cache's partial-miss path samples only the missing slides without
+    touching the hits. ``None`` (the default) samples every slide.
     """
     from hs2p import SlideSpec, tile_slide
-    from hs2p.configs.resolvers import resolve_sampling_spec
-    from hs2p.wsi.types import CoordinateOutputMode
 
-    if sampling.output_mode != "merged":
+    masks = preprocessing.masks
+    if masks.output_mode != "merged":
         raise ValueError(
             f"slide-manifest dense extraction supports output_mode='merged' only, got "
-            f"{sampling.output_mode!r} (per_annotation extraction is deferred — soma #86)."
+            f"{masks.output_mode!r} (per_annotation extraction is deferred — soma #86)."
         )
     wanted: set[str] | None = None
     if sample_ids is not None:
@@ -146,7 +100,6 @@ def sample_slide_rois(
         unknown = sorted(wanted - set(dataset.samples))
         if unknown:
             raise ValueError(f"sample_ids not in the slide manifest: {unknown}")
-    strategy = _STRATEGY_MAP[sampling.strategy]
 
     coords_by_slide: dict[str, list[tuple[int, int]]] = {}
     for sid, record in dataset.samples.items():
@@ -156,13 +109,11 @@ def sample_slide_rois(
             raise ValueError(
                 f"slide '{sid}' has no label_mask_path; a slide-manifest row needs one."
             )
-        effective_preprocessing = replace(
-            preprocessing,
-            requested_spacing_um=preprocessing.effective_spacing_um(record.spacing_at_level_0),
-        )
-        tiling = _build_tiling_config(effective_preprocessing, sampling)
-        spec = resolve_sampling_spec(
-            SimpleNamespace(tiling=SimpleNamespace(masks=masks)), tiling=tiling,
+        tiling = replace(
+            preprocessing.tiling,
+            requested_spacing_um=effective_spacing_um(
+                preprocessing, record.spacing_at_level_0, spacing_policy=spacing_policy
+            ),
         )
         # The annotation raster drives ROI sampling (per-class coverage), so it is the
         # sampling mask hs2p sees here.
@@ -174,9 +125,7 @@ def sample_slide_rois(
                 spacing_at_level_0=record.spacing_at_level_0,
             ),
             tiling=tiling,
-            sampling=spec,
-            selection_strategy=strategy,
-            output_mode=CoordinateOutputMode.MERGED,
+            masks=masks,
         )
         # MERGED collapses to a {None: merged} dict (one result per slide).
         merged = result[None] if isinstance(result, dict) else result
@@ -248,7 +197,6 @@ def write_roi_mask_crops(
     records: Sequence["LegacyRecord"],
     *,
     spacing_um_by_sample_id: Mapping[str, float],
-    masks: MasksConfig,
     preprocessing: PreprocessingConfig,
 ) -> None:
     """Write each ROI's mask crop to its ``label_mask_crop_path``.
@@ -261,9 +209,10 @@ def write_roi_mask_crops(
     """
     from soma.dense.reader import read_mask_regions_within_slide, write_mask_crop
 
-    if preprocessing.requested_tile_size_px is None:
-        raise ValueError("Writing ROI mask crops requires preprocessing.requested_tile_size_px.")
-    height, width = normalize_hw(int(preprocessing.requested_tile_size_px), name="tile_size_px")
+    tiling = preprocessing.tiling
+    if tiling is None:
+        raise ValueError("Writing ROI mask crops requires a resolved preprocessing.tiling.")
+    height, width = normalize_hw(int(tiling.requested_tile_size_px), name="tile_size_px")
     by_slide: dict[tuple, list] = defaultdict(list)
     for record in records:
         if record.region is None or record.label_mask_crop_path is None:
@@ -284,10 +233,10 @@ def write_roi_mask_crops(
                 ],
                 size=(width, height),
                 reference_path=image_path,
-                reference_backend=preprocessing.backend,
+                reference_backend=tiling.backend,
                 spacing_at_level_0=spacing_at_level_0,
-                pixel_mapping=masks.pixel_mapping,
-                backend=preprocessing.mask_backend,
+                pixel_mapping=preprocessing.masks.pixel_mapping,
+                backend=tiling.mask_backend,
             )
             # strict: exhausts the reader, which closes the raster.
             for record, crop in zip(slide_records, crops, strict=True):
@@ -320,40 +269,22 @@ class _SlideRegionExtractor:
     def __init__(
         self,
         roi_dataset: "LegacySamples",
-        encoder: EncoderConfig,
+        encoder: EncoderLeaf,
         *,
-        masks: MasksConfig,
-        sampling: SamplingConfig,
         preprocessing: PreprocessingConfig,
-        execution: ExecutionConfig = ExecutionConfig(),
+        dense: DenseOptions,
+        spacing_policy: str = "strict",
+        execution: ExecutionOptions | None = None,
         cache: CacheConfig | None = None,
     ) -> None:
         self._dataset = roi_dataset
         self._encoder = encoder
-        self._masks = masks
-        self._sampling = sampling
         self._preprocessing = preprocessing
-        self._execution = execution
+        self._dense = dense
+        self._spacing_policy = spacing_policy
+        self._execution = execution if execution is not None else ExecutionOptions()
         self._cache = cache or CacheConfig(enabled=False)
-        self._target_size = normalize_hw(
-            int(preprocessing.requested_tile_size_px), name="target_size"
-        )
-        self._spacing_um = float(preprocessing.requested_spacing_um)
-        self._pad_mode = "reflect"
-        # Encoder-window knobs (design §5): window_size=None ⇒ one whole-region forward;
-        # a smaller window slides the encoder over patch-aligned windows of each padded ROI
-        # and blends the grids. Both are delegated to slide2vec's unified dense primitive
-        # (the same path the pre-cropped dense extractor uses). Sliding is required for
-        # encoders that only accept their native input size (e.g. phikon at 224).
-        self._window_size = preprocessing.dense_window_size
-        self._overlap = float(preprocessing.dense_window_overlap)
-        self._feature_kind = preprocessing.feature_kind or "patch_features"
-        if self._feature_kind == "cls_attention":
-            self._attention_blocks = tuple(preprocessing.attention.blocks)
-            self._attention_include_registers = bool(preprocessing.attention.include_registers)
-        else:
-            self._attention_blocks = (-1,)
-            self._attention_include_registers = False
+        self._target_size = normalize_hw(int(dense.target_size), name="target_size")
 
     def _payload_stems(self) -> dict[str, str]:
         """ROI id → its path inside ``dense_embeddings/``, as ``<slide_id>/<x>_<y>``.
@@ -381,8 +312,6 @@ class _SlideRegionExtractor:
     def run(self, feature_dir: str | Path) -> CachedGridSource:
         from slide2vec.encoders.registry import resolve_patch_size
 
-        dense_input_mode = "whole" if self._window_size is None else "sliding_window"
-
         feature_dir = Path(feature_dir).resolve()
         feature_dir.mkdir(parents=True, exist_ok=True)
         payload_stems = self._payload_stems()
@@ -394,14 +323,14 @@ class _SlideRegionExtractor:
         # runtime encoder.patch_size in slide2vec (and re-asserted by load_model), so the
         # cache key is byte-identical to the pre-change key.
         patch_size = resolve_patch_size(self._encoder.name)
-        signature = sampling_signature(self._masks, self._sampling, self._preprocessing)
+        signature = roi_sampling_signature(self._preprocessing, spacing_policy=self._spacing_policy)
 
         # Resolve the grid storage dtype from the shared cache.dtype umbrella (#164):
         # None ⇒ follow the encoder's resolved compute precision (override, else registry
         # recommendation); 'fp16'/'fp32' force it. Same resolver as the pooled path, so
         # the key never aliases an fp16 cache with an fp32 one.
         dense_dtype = resolve_cache_dtype(
-            self._cache.dtype, self._encoder, encoder_name=self._encoder.name
+            self._cache.dtype, self._execution, encoder_name=self._encoder.name
         )
         logger.info("Dense grid storage dtype resolved to %s", dense_dtype)
 
@@ -415,17 +344,9 @@ class _SlideRegionExtractor:
                 cache_root=cache_root,
                 dataset=self._dataset,
                 tile_encoder_name=self._encoder.name,
-                target_size=self._target_size,
                 patch_size=patch_size,
-                pad_mode=self._pad_mode,
-                execution=self._encoder,
-                preprocessing=self._preprocessing,
-                dense_input_mode=dense_input_mode,
-                window_size=self._window_size,
-                overlap=self._overlap,
-                feature_kind=self._feature_kind,
-                attention_blocks=self._attention_blocks,
-                attention_include_registers=self._attention_include_registers,
+                dense=self._dense,
+                execution=self._execution,
                 dtype=dense_dtype,
                 sampling_signature=signature,
                 validate_payloads=self._cache.validate_payloads,
@@ -433,7 +354,7 @@ class _SlideRegionExtractor:
                 extraction_geometry=dense_extraction_geometry(
                     encoder_name=self._encoder.name,
                     target_size_px=self._target_size,
-                    window_size=self._window_size,
+                    window_size=self._dense.window_size,
                 ),
             )
             if cache_resolution.complete:
@@ -479,16 +400,11 @@ class _SlideRegionExtractor:
             return CachedGridSource(out_root, payload_stems=payload_stems)
 
         # Cache miss (or cache disabled): extraction needs the encoder, so load it now.
-        model = Model.from_preset(
-            self._encoder.name,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-        )
-        execution = build_execution_options(
-            self._encoder,
-            execution=self._execution,
+        model = Model.from_preset(self._encoder.name, **self._encoder.params)
+        execution = execution_options(
+            self._execution,
             encoder_name=self._encoder.name,
             output_dir=out_root,
-            num_gpus=self._execution.num_gpus,
             save_tile_embeddings=True,
             # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved value,
             # so the on-disk grid is cast to exactly the dtype folded into the cache key
@@ -497,7 +413,9 @@ class _SlideRegionExtractor:
         )
         regions_by_effective_spacing: dict[float, list[SlideRegions]] = defaultdict(list)
         for slide_id, coords in coords_by_slide.items():
-            effective_spacing = self._preprocessing.effective_spacing_um(spacing_by_slide[slide_id])
+            effective_spacing = effective_spacing_um(
+                self._preprocessing, spacing_by_slide[slide_id], spacing_policy=self._spacing_policy
+            )
             regions_by_effective_spacing[effective_spacing].append(
                 SlideRegions(
                     sample_id=slide_id,
@@ -509,21 +427,8 @@ class _SlideRegionExtractor:
 
         artifacts = []
         for effective_spacing, regions in regions_by_effective_spacing.items():
-            dense = DenseOptions(
-                spacing_um=effective_spacing,
-                target_size=int(self._target_size[0]),
-                tolerance=float(self._preprocessing.tolerance),
-                backend=self._preprocessing.backend,
-                pad_mode=self._pad_mode,
-                # window_size=None ⇒ one whole-region forward; a smaller window slides the
-                # encoder over patch-aligned windows of each padded ROI and blends the grids.
-                # Sliding is required for encoders that only accept their native input size.
-                window_size=self._window_size,
-                overlap=self._overlap,
-                feature_kind=self._feature_kind,
-                attention_blocks=self._attention_blocks,
-                attention_include_registers=self._attention_include_registers,
-            )
+            # A slide read at its native spacing (native_if_coarser) is encoded at it too.
+            dense = replace(self._dense, spacing_um=float(effective_spacing))
             artifacts.extend(
                 model.embed_regions_dense(
                     regions,

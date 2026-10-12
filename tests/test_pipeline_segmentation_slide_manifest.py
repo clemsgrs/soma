@@ -22,19 +22,18 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+import slide2vec
+
 from soma.config import (
     CacheConfig,
     DecoderConfig,
-    EncoderConfig,
     EvalConfig,
-    ExecutionConfig,
-    MasksConfig,
+    FeaturesConfig,
     PipelineConfig,
-    PreprocessingConfig,
-    SamplingConfig,
     TaskConfig,
     TrainingConfig,
 )
+from tests.extraction_configs import annotation_masks, extraction
 
 NUM_CLASSES = 2
 # A patch-16 encoder that accepts a variable encoder input, so the tiny 32 px fixtures
@@ -46,6 +45,16 @@ PATCH = 16
 GRID = TARGET // PATCH  # 2
 FEATURE_DIM = 4
 PIXEL_MAPPING = {"background": 0, "tumor": 1}
+#: hs2p's MaskSamplingConfig holds every label's raw values as a tuple.
+HELD_PIXEL_MAPPING = {"background": (0,), "tumor": (1,)}
+
+
+def _roi_extraction(*, min_cov: float = 0.0, **tiling_fields) -> slide2vec.PreprocessingConfig:
+    """slide2vec's extraction for slide-manifest ROIs: TARGET px at 0.5 µm/px over the
+    {background, tumor} annotation vocabulary."""
+    return extraction(
+        0.5, TARGET, masks=annotation_masks(PIXEL_MAPPING, {"tumor": min_cov}), tiling_fields=tiling_fields
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -255,21 +264,23 @@ def _config(
     manifest: Path,
     splits: Path,
     *,
-    masks: MasksConfig | None,
     min_cov: float = 0.0,
+    kind: str = "cached",
+    spacing_policy: str = "strict",
+    cache: CacheConfig | None = None,
+    **tiling_fields,
 ):
     return PipelineConfig(
         dataset_csv=manifest,
         splits_csv=splits,
         output_root=root / "out",
         dataset_type="segmentation",
-        encoder=__import__("soma.config", fromlist=["EncoderConfig"]).EncoderConfig(name=ENCODER),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=TARGET,
-            requested_spacing_um=0.5,
-            masks=masks
-            or MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": min_cov}),
-            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        features=FeaturesConfig(
+            kind=kind,
+            encoder=ENCODER,
+            extraction=_roi_extraction(min_cov=min_cov, **tiling_fields),
+            spacing_policy=spacing_policy,
+            cache=cache if cache is not None else CacheConfig(),
         ),
         decoder=DecoderConfig(name="lightweight_conv"),
         task=TaskConfig(
@@ -278,6 +289,35 @@ def _config(
         training=TrainingConfig(epochs=1, batch_size=2),
         evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
     )
+
+
+# --------------------------------------------------------------------------- #
+# The input mode: inferred from the cohort, not from a masks block (ADR 0019).
+# --------------------------------------------------------------------------- #
+
+
+def test_the_slide_manifest_mode_is_inferred_from_the_cohorts_label_mask_path_column(tmp_path: Path):
+    """A segmentation cohort with a ``label_mask_path`` column whose masks declare an
+    annotation vocabulary samples ROIs from whole slides; a pre-cropped cohort carries
+    the same column but keeps hs2p's binary tissue vocabulary, so it is read as tiles."""
+    from dataclasses import replace
+
+    from soma.pipeline.build import extraction_unit
+
+    manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
+    annotated = _config(tmp_path, manifest, splits)
+    pre_cropped = replace(
+        annotated,
+        features=replace(annotated.features, extraction=extraction(0.5, TARGET)),
+        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+    )
+
+    assert extraction_unit(annotated) == "slide"
+    assert extraction_unit(pre_cropped) == "tile"
+
+    points_only = tmp_path / "points.csv"
+    points_only.write_text("sample_id,image_path,points_path\ns0,/fake/s0.tif,/fake/s0.csv\n")
+    assert extraction_unit(replace(annotated, dataset_csv=points_only)) == "tile"
 
 
 # --------------------------------------------------------------------------- #
@@ -290,7 +330,7 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
 
     mask_reads = _patch_extraction(monkeypatch)
     manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
-    pipeline = Pipeline(_config(tmp_path, manifest, splits, masks=None))
+    pipeline = Pipeline(_config(tmp_path, manifest, splits))
     result = pipeline.run()
 
     # Each slide's annotation raster is opened once, at ROI sampling, aligned to its own
@@ -299,7 +339,7 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
     assert sorted(str(read["reference_path"]) for read in mask_reads) == [
         f"/fake/{sid}.tif" for sid in ["s0", "s1", "s2", "s3"]
     ]
-    assert all(read["pixel_mapping"] == PIXEL_MAPPING for read in mask_reads)
+    assert all(read["pixel_mapping"] == HELD_PIXEL_MAPPING for read in mask_reads)
     assert all(
         read["regions"] == [((0, 0), 0.5), ((TARGET, 0), 0.5)] for read in mask_reads
     )
@@ -364,7 +404,7 @@ def test_slide_manifest_overlays_read_each_roi_window(tmp_path: Path, monkeypatc
 
     monkeypatch.setattr(reader_mod, "read_image_region_at_spacing", _window)
     manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
-    Pipeline(_config(tmp_path, manifest, splits, masks=None)).run()
+    Pipeline(_config(tmp_path, manifest, splits)).run()
 
     (overlays,) = (tmp_path / "out").rglob("overlays/test")
     for kind in ("pred", "gt"):
@@ -381,8 +421,6 @@ def test_slide_manifest_overlays_read_each_roi_window(tmp_path: Path, monkeypatc
 def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
     tmp_path: Path, monkeypatch
 ):
-    from dataclasses import replace
-
     from soma.pipeline import Pipeline
 
     _patch_extraction(monkeypatch)
@@ -409,15 +447,13 @@ def test_slide_manifest_pipeline_reads_coarse_masks_at_native_grid_spacing(
         return np.zeros((size[1], size[0]), dtype=np.uint8)
 
     _patch_mask_regions(monkeypatch, _fake_mask)
-    config = _config(tmp_path, manifest, splits, masks=None)
-    config = replace(
-        config,
-        preprocessing=replace(
-            config.preprocessing,
-            spacing_policy="native_if_coarser",
-            backend="auto",
-            mask_backend="openslide",
-        ),
+    config = _config(
+        tmp_path,
+        manifest,
+        splits,
+        spacing_policy="native_if_coarser",
+        backend="auto",
+        mask_backend="openslide",
     )
 
     Pipeline(config).run()
@@ -505,13 +541,8 @@ def test_slide_source_spacing_survives_roi_derivation_and_reaches_slide2vec(
     model = _patch_dense_model(monkeypatch)
     FeatureExtractor(
         roi_dataset,
-        EncoderConfig(name=ENCODER),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=TARGET,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        ),
+        ENCODER,
+        preprocessing=_roi_extraction(),
         output_root=tmp_path / "extraction",
         shape="grid",
     ).extract()
@@ -531,14 +562,9 @@ def test_slide_manifest_dense_extraction_forwards_num_gpus(tmp_path: Path, monke
     model = _patch_dense_model(monkeypatch)
     FeatureExtractor(
         legacy_samples_from_csv(manifest),
-        EncoderConfig(name=ENCODER),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=TARGET,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        ),
-        execution=ExecutionConfig(num_gpus=2),
+        ENCODER,
+        preprocessing=_roi_extraction(),
+        execution=slide2vec.ExecutionOptions(num_gpus=2),
         output_root=tmp_path / "extraction",
         shape="grid",
     ).extract()
@@ -561,15 +587,9 @@ def test_slide_manifest_dense_extraction_groups_sources_by_effective_spacing(
     model = _patch_dense_model(monkeypatch)
     FeatureExtractor(
         legacy_samples_from_csv(manifest),
-        EncoderConfig(name=ENCODER),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=TARGET,
-            requested_spacing_um=0.5,
-            tolerance=0.05,
-            spacing_policy="native_if_coarser",
-            masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        ),
+        ENCODER,
+        preprocessing=_roi_extraction(tolerance=0.05),
+        spacing_policy="native_if_coarser",
         output_root=tmp_path / "extraction",
         shape="grid",
     ).extract()
@@ -604,15 +624,7 @@ def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypa
         }
 
     monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
-    coords = sample_slide_rois(
-        legacy_samples_from_csv(manifest),
-        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=TARGET,
-            requested_spacing_um=0.5,
-        ),
-    )
+    coords = sample_slide_rois(legacy_samples_from_csv(manifest), preprocessing=_roi_extraction())
 
     assert coords == {"s0": [(0, 0)]}
     assert captured[0].spacing_at_level_0 == 0.25
@@ -644,14 +656,8 @@ def test_slide_sampling_uses_native_spacing_only_for_coarser_sources(tmp_path: P
     monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
     sample_slide_rois(
         legacy_samples_from_csv(manifest),
-        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=TARGET,
-            requested_spacing_um=0.5,
-            tolerance=0.05,
-            spacing_policy="native_if_coarser",
-        ),
+        preprocessing=_roi_extraction(tolerance=0.05),
+        spacing_policy="native_if_coarser",
     )
 
     assert observed == [("ordinary", 0.5), ("coarse", 0.657476464)]
@@ -662,77 +668,38 @@ def test_slide_sampling_uses_native_spacing_only_for_coarser_sources(tmp_path: P
 # --------------------------------------------------------------------------- #
 
 
-def test_distinct_sampling_specs_yield_distinct_cache_keys():
+def _roi_dense_key(signature) -> str:
     from soma.cache.keys import build_dense_cache_key
-    from soma.config import EncoderConfig
-    from soma.dense_slide_extraction import sampling_signature
 
-    enc = EncoderConfig(name=ENCODER)
-    pre = PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5)
-    masks_a = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.1})
-    masks_b = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.5})
-    sampling = SamplingConfig(strategy="joint", output_mode="merged")
+    return build_dense_cache_key(
+        tile_encoder_name=ENCODER,
+        patch_size=(PATCH, PATCH),
+        dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=TARGET),
+        execution=None,
+        sampling_signature=signature,
+    )
 
-    def _key(sig):
-        return build_dense_cache_key(
-            tile_encoder_name=ENCODER,
-            target_size=(TARGET, TARGET),
-            patch_size=(PATCH, PATCH),
-            pad_mode="reflect",
-            execution=enc,
-            preprocessing=pre,
-            window_size=None,
-            overlap=0.0,
-            sampling_signature=sig,
-        )
 
-    sig_a = sampling_signature(masks_a, sampling, pre)
-    sig_b = sampling_signature(masks_b, sampling, pre)
-    assert _key(sig_a) != _key(sig_b)  # distinct min_coverage ⇒ distinct cache
-    assert _key(sig_a) == _key(sampling_signature(masks_a, sampling, pre))  # stable
+def test_distinct_sampling_specs_yield_distinct_cache_keys():
+    from soma.cache import roi_sampling_signature
+
+    sig_a = roi_sampling_signature(_roi_extraction(min_cov=0.1))
+    sig_b = roi_sampling_signature(_roi_extraction(min_cov=0.5))
+    assert _roi_dense_key(sig_a) != _roi_dense_key(sig_b)  # distinct min_coverage ⇒ distinct cache
+    assert _roi_dense_key(sig_a) == _roi_dense_key(roi_sampling_signature(_roi_extraction(min_cov=0.1)))
     # Absent (pre-cropped tiles) differs from any sampled key, and is itself stable.
-    assert _key(None) != _key(sig_a)
-    assert _key(None) == _key(None)
+    assert _roi_dense_key(None) != _roi_dense_key(sig_a)
+    assert _roi_dense_key(None) == _roi_dense_key(None)
 
 
 def test_spacing_policy_changes_sampling_cache_key():
-    from soma.cache.keys import build_dense_cache_key
-    from soma.config import EncoderConfig
-    from soma.dense_slide_extraction import sampling_signature
+    from soma.cache import roi_sampling_signature
 
-    enc = EncoderConfig(name=ENCODER)
-    strict = PreprocessingConfig(
-        requested_tile_size_px=TARGET,
-        requested_spacing_um=0.5,
-        spacing_policy="strict",
-    )
-    native = PreprocessingConfig(
-        requested_tile_size_px=TARGET,
-        requested_spacing_um=0.5,
-        spacing_policy="native_if_coarser",
-    )
-    masks = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.1})
-    sampling = SamplingConfig(strategy="joint", output_mode="merged")
+    strict = roi_sampling_signature(_roi_extraction(min_cov=0.1), spacing_policy="strict")
+    native = roi_sampling_signature(_roi_extraction(min_cov=0.1), spacing_policy="native_if_coarser")
 
-    def _key(preprocessing):
-        return build_dense_cache_key(
-            tile_encoder_name=ENCODER,
-            target_size=(TARGET, TARGET),
-            patch_size=(PATCH, PATCH),
-            pad_mode="reflect",
-            execution=enc,
-            preprocessing=preprocessing,
-            window_size=None,
-            overlap=0.0,
-            sampling_signature=sampling_signature(masks, sampling, preprocessing),
-        )
-
-    strict_signature = sampling_signature(masks, sampling, strict)
-    native_signature = sampling_signature(masks, sampling, native)
-
-    assert "spacing_policy" not in strict_signature
-    assert native_signature["spacing_policy"] == "native_if_coarser"
-    assert _key(strict) != _key(native)
+    assert native["spacing_policy"] == "native_if_coarser"
+    assert _roi_dense_key(strict) != _roi_dense_key(native)
 
 
 # --------------------------------------------------------------------------- #
@@ -743,17 +710,14 @@ def test_spacing_policy_changes_sampling_cache_key():
 @pytest.mark.parametrize(
     "overrides,match",
     [
-        ({"feature_mode": "live"}, "Live"),
+        ({"kind": "live"}, "Live"),
     ],
 )
 def test_slide_manifest_deferred_combos_raise(tmp_path: Path, overrides, match):
     from soma.pipeline import Pipeline
 
     manifest, splits = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
-    cfg = _config(tmp_path, manifest, splits, masks=None)
-    from dataclasses import replace
-
-    cfg = replace(cfg, **overrides)
+    cfg = _config(tmp_path, manifest, splits, **overrides)
     with pytest.raises(NotImplementedError, match=match):
         _attach(Pipeline(cfg), tmp_path / "out" / "run")
 
@@ -784,15 +748,10 @@ def test_slide_manifest_declares_the_sliding_window_to_slide2vec(tmp_path: Path,
     WINDOW = 16  # < TARGET (32) -> genuine sliding
     extractor = FeatureExtractor(
         dataset,
-        EncoderConfig(name=ENCODER, batch_size=2),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=TARGET,
-            requested_spacing_um=0.5,
-            dense_window_size=WINDOW,
-            dense_window_overlap=0.5,
-            masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        ),
+        ENCODER,
+        preprocessing=_roi_extraction(),
+        dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=TARGET, window_size=WINDOW, overlap=0.5),
+        execution=slide2vec.ExecutionOptions(batch_size=2),
         output_root=tmp_path / "extraction",
         shape="grid",
     )
@@ -829,13 +788,8 @@ def test_slide_manifest_grids_are_namespaced_per_slide(tmp_path: Path, monkeypat
     store = (
         FeatureExtractor(
             dataset,
-            EncoderConfig(name=ENCODER),
-            preprocessing=PreprocessingConfig(
-                requested_tile_size_px=TARGET,
-                requested_spacing_um=0.5,
-                masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-                sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-            ),
+            ENCODER,
+            preprocessing=_roi_extraction(),
             output_root=tmp_path / "extraction",
             shape="grid",
         )
@@ -864,7 +818,7 @@ class _CountingSampler:
         self.calls: list[list[str]] = []
         self._coords_for = coords_for or _coords_for
 
-    def __call__(self, dataset, *, masks, sampling, preprocessing, sample_ids=None):
+    def __call__(self, dataset, *, preprocessing, spacing_policy="strict", sample_ids=None):
         ids = list(dataset.sample_ids) if sample_ids is None else [str(s) for s in sample_ids]
         self.calls.append(sorted(ids))
         return {sid: self._coords_for(sid) for sid in ids}
@@ -886,14 +840,9 @@ def _launch(
     cache_enabled: bool = True,
 ):
     """Drive the context builder as one launch (a fresh Pipeline, its own run dir)."""
-    from dataclasses import replace
-
-    from soma.config import CacheConfig
     from soma.pipeline import Pipeline
 
-    cfg = _config(tmp_path, manifest, splits, masks=None)
-    if not cache_enabled:
-        cfg = replace(cfg, cache=CacheConfig(enabled=False))
+    cfg = _config(tmp_path, manifest, splits, cache=CacheConfig(enabled=cache_enabled))
     return _attach(Pipeline(cfg), tmp_path / "out" / run_name)
 
 
@@ -1091,11 +1040,7 @@ def test_sample_slide_rois_filter_samples_only_requested_slides(tmp_path: Path, 
         }
 
     monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
-    common = dict(
-        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET, requested_spacing_um=0.5),
-    )
+    common = dict(preprocessing=_roi_extraction())
     dataset = legacy_samples_from_csv(manifest)
 
     coords = sample_slide_rois(dataset, sample_ids=["s2", "s0"], **common)
@@ -1133,13 +1078,9 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
     def _make_extractor():
         return FeatureExtractor(
             dataset,
-            EncoderConfig(name=ENCODER, batch_size=2),
-            preprocessing=PreprocessingConfig(
-                requested_tile_size_px=TARGET,
-                requested_spacing_um=0.5,
-                masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-                sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-            ),
+            ENCODER,
+            preprocessing=_roi_extraction(),
+            execution=slide2vec.ExecutionOptions(batch_size=2),
             cache=CacheConfig(enabled=True),
             output_root=tmp_path / "extraction",
             shape="grid",
@@ -1200,7 +1141,7 @@ def test_pipeline_preserves_roi_fields_of_a_persisted_roi_manifest(tmp_path: Pat
     splits.write_text(
         "sample_id,split,fold\ns0__x0_y0,train,0\ns0__x32_y0,tune,0\ns1__x0_y0,test,0\n"
     )
-    pipeline = Pipeline(_config(tmp_path, manifest, splits, masks=None))
+    pipeline = Pipeline(_config(tmp_path, manifest, splits))
 
     first, second = (pipeline.dataset.samples[sid] for sid in ("s0__x0_y0", "s0__x32_y0"))
     assert (first.region, first.slide_id, first.label_mask_crop_path) == ((0, 0), "s0", None)

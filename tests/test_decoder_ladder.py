@@ -91,12 +91,13 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
         CacheConfig,
         DecoderConfig,
         EvalConfig,
+        FeaturesConfig,
         PipelineConfig,
-        PreprocessingConfig,
         TaskConfig,
         TrainingConfig,
     )
     from soma.pipeline import Pipeline
+    from tests.extraction_configs import extraction
 
     ids = ["s0", "s1", "s2", "s3"]
     m1 = _write_member(tmp_path / "enc_a", ids, feature_dim=4, patch=4)
@@ -131,8 +132,11 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
         training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
         decoder=DecoderConfig(name="heavy_conv", params={"hidden_dim": 32}),
         evaluation=EvalConfig(metrics=["mean_f1"]),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
-        cache=CacheConfig(enabled=False),
+        features=FeaturesConfig(
+            encoder=None,
+            extraction=extraction(SPACING, TARGET),
+            cache=CacheConfig(enabled=False),
+        ),
     )
     result = Pipeline(config, source=composite).run().fold_results[0]
     assert "mean_f1" in result.test_evaluations["test"].metrics

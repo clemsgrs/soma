@@ -123,7 +123,7 @@ jobs:
           fetch-depth: 0
 
       # The PRISM regression checks one thing: the uncached WSI -> slide-feature
-      # path (FeatureExtractor with EncoderConfig(name="prism")) still matches the
+      # path (FeatureExtractor with the "prism" encoder) still matches the
       # slide2vec ground truth. On PRs it runs only when the diff touches a path
       # below; push to main and workflow_dispatch always run it, to catch anything
       # this list misses right after merge. Should this check become required,
@@ -157,7 +157,7 @@ jobs:
             'soma/cache/*'                       # cache keys/io/tile artifact metadata, used even with the cache off
             'soma/atomic_io.py'                  # writes the config and cache metadata files on this path
             'soma/_logging.py'                   # FeatureExtractor sets up default logging on every run
-            'soma/config.py'                     # EncoderConfig/PreprocessingConfig/CacheConfig the test builds
+            'soma/config.py'                     # EncoderLeaf/CacheConfig the test builds
             'soma/dataset.py'                    # Dataset/SampleRecord the slides are read through
             'soma/spacing.py'                    # effective spacing resolution used by config
             'tests/conftest.py'                  # shared pytest setup the regression runs under

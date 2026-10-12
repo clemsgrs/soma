@@ -91,9 +91,9 @@ def test_config_transcribes_the_eva_offline_protocol(dataset, target_mpp, head, 
         encoder="virchow2", dataset_csv="d.csv", splits_csv="s.csv", output_root="out", seed=7
     )
     assert config.dataset_type == "slide"
-    assert config.preprocessing.requested_spacing_um == target_mpp
-    assert config.preprocessing.requested_tile_size_px == 224
-    assert config.encoder.output_variant == "cls"  # virchow2 CLS-only, as EVA
+    assert config.features.extraction.tiling.requested_spacing_um == target_mpp
+    assert config.features.extraction.tiling.requested_tile_size_px == 224
+    assert config.features.encoder.output_variant == "cls"  # virchow2 CLS-only, as EVA
     assert config.aggregator.name == "eva_abmil" and config.aggregator.params == {}
     assert config.task.name == head and dict(config.task.params) == task_params
     training = config.training
@@ -118,7 +118,7 @@ def test_config_transcribes_the_eva_offline_protocol(dataset, target_mpp, head, 
 
 def test_uni2_keeps_its_default_output():
     config = get_benchmark("eva/panda_small").build_config(encoder="uni2")
-    assert config.encoder.output_variant is None
+    assert config.features.encoder.output_variant is None
 
 
 # --- ABMIL oracle -----------------------------------------------------------------------

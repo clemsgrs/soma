@@ -86,8 +86,8 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
     assert config.decoder.name == "eva_conv_with_image" and config.decoder.params == {}
     assert config.task.name == "eva_segmentation"
     assert config.task.params == {"num_classes": 5}
-    assert config.preprocessing.requested_tile_size_px == 224
-    assert config.preprocessing.feature_kind == "patch_features_prenorm"  # EVA's timm tap
+    assert config.features.extraction.tiling.requested_tile_size_px == 224
+    assert config.features.dense.feature_kind == "patch_features_prenorm"  # EVA's timm tap
     assert config.evaluation.metrics[0] == "foreground_mean_dice"
     training = config.training
     assert training.optimizer == "adamw"
@@ -104,10 +104,10 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
     assert training.monitor == "foreground_mean_dice" and training.monitor_mode == "max"
     assert training.tune_is_test is True
     assert training.seed == 3
-    assert config.encoder.output_variant is None
+    assert config.features.encoder.output_variant is None
     assert config.tags == ["eva", "consep", "uni2", "segmentation"]
     # CoNSeP's online transforms are deterministic: the cached grids are EVA's samples.
-    assert config.feature_mode == "cached"
+    assert config.features.kind == "cached"
     assert config.augmentation is None
 
 
@@ -117,7 +117,7 @@ def test_monusac_config_ignores_the_ambiguous_class(tmp_path: Path):
     )
     assert config.task.params == {"num_classes": 5, "ignore_index": 5}
     assert config.training.patience == 100
-    assert config.encoder.name == "uni2"  # DEFAULT_ENCODER shared with the family
+    assert config.features.encoder.name == "uni2"  # DEFAULT_ENCODER shared with the family
 
 
 def test_monusac_config_random_resized_crops_whole_train_images_live(tmp_path: Path):
@@ -126,7 +126,7 @@ def test_monusac_config_random_resized_crops_whole_train_images_live(tmp_path: P
     config = get_benchmark("eva/monusac").build_config(
         dataset_csv=tmp_path / "d.csv", splits_csv=tmp_path / "s.csv", output_root=tmp_path
     )
-    assert config.feature_mode == "live"
+    assert config.features.kind == "live"
     assert config.augmentation == {"name": "segmentation", "params": {"crop_scale": [0.08, 1.0]}}
 
 
@@ -140,7 +140,7 @@ def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):
         overrides={"cache": {"enabled": True, "root_dir": str(tmp_path / "cache")}},
     )
     assert config.training.max_steps == 5 and config.training.patience == 1
-    assert str(config.cache.root_dir) == str(tmp_path / "cache")
+    assert str(config.features.cache.root_dir) == str(tmp_path / "cache")
 
 
 def test_saved_benchmark_config_loads_in_a_fresh_process(tmp_path: Path):

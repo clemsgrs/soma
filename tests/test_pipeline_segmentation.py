@@ -116,11 +116,11 @@ def _run_pipeline(
     training: TrainingConfig,
     evaluation: EvalConfig | None = None,
     splits_csv: Path | None = None,
-    preprocessing=None,
+    dense=None,
 ):
     """One ``Pipeline`` run over the cached grids ``_build_dense_run`` wrote in ``root``
     (the feature cache off, so run-level artefacts live in the run dir)."""
-    from soma.config import CacheConfig, PipelineConfig, PreprocessingConfig
+    from soma.config import CacheConfig, FeaturesConfig, PipelineConfig
     from soma.pipeline import Pipeline
 
     config = PipelineConfig(
@@ -132,8 +132,7 @@ def _run_pipeline(
         task=task,
         training=replace(training, pin_memory=False),
         evaluation=evaluation or EvalConfig(metrics=["mean_dice"]),
-        preprocessing=preprocessing or PreprocessingConfig(),
-        cache=CacheConfig(enabled=False),
+        features=FeaturesConfig(dense=dense, cache=CacheConfig(enabled=False)),
     )
     return Pipeline(config, source=CachedGridSource(root / "dense")).run()
 
@@ -428,7 +427,7 @@ def test_segmentation_run_requires_num_classes(tmp_path: Path):
 def test_segmentation_run_rejects_mask_grid_spacing_mismatch(tmp_path: Path):
     # Grids extracted at 0.5 µm/px under a config requesting 1.0: the features come from
     # another configuration. The fold must fail loud, not train.
-    from soma.config import PreprocessingConfig
+    from slide2vec import DenseOptions
 
     _build_dense_run(tmp_path, ["s0", "s1", "s2", "s3"], grid_spacing_um=0.5)
     with pytest.raises(ValueError, match="does not match"):
@@ -436,7 +435,7 @@ def test_segmentation_run_rejects_mask_grid_spacing_mismatch(tmp_path: Path):
             tmp_path,
             task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
             training=TrainingConfig(epochs=1, batch_size=2),
-            preprocessing=PreprocessingConfig(requested_spacing_um=1.0),
+            dense=DenseOptions(spacing_um=1.0, target_size=TARGET),
         )
 
 

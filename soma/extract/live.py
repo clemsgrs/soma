@@ -109,7 +109,6 @@ def live_encoder(
     """
     from slide2vec import DenseImageOptions, ExecutionOptions, Model
 
-    from soma.config import EncoderConfig
     from soma.dense.sliding import describe_dense_mode
     from soma.encoders.validation import resolve_encoder_precision
 
@@ -121,10 +120,7 @@ def live_encoder(
         allow_non_recommended_settings=allow_non_recommended_settings,
         device=device,
     )
-    resolved_precision = resolve_encoder_precision(
-        EncoderConfig(name=encoder, precision=precision, output_variant=output_variant),
-        encoder_name=encoder,
-    )
+    resolved_precision = resolve_encoder_precision(precision, encoder_name=encoder)
     logger.info("Live dense mode: %s", describe_dense_mode(window, float(overlap)))
     attention = feature_kind == "cls_attention"
     dense = DenseImageOptions(

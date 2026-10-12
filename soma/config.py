@@ -3,6 +3,11 @@
 These dataclasses form the public configuration surface used by the pipeline,
 the CLI, and the docs. Keep the field names stable and document any new field
 here so the Sphinx reference stays accurate.
+
+The extraction surface is held, not mirrored (ADR 0019): :class:`FeaturesConfig` holds
+slide2vec's ``PreprocessingConfig`` (which composes hs2p's tiling, segmentation, filter,
+preview and mask-sampling configs), ``ExecutionOptions`` and ``DenseOptions`` as given.
+soma owns only what is soma's: the feature kind, the encoder leaf and the cache policy.
 """
 
 from __future__ import annotations
@@ -16,33 +21,16 @@ import math
 from numbers import Integral, Real
 from typing import Any, Literal
 
+import slide2vec
 import yaml
 
 from soma.atomic_io import atomic_write_text
-from soma.spacing import resolve_effective_spacing_um
-from hs2p import PreviewConfig
-from hs2p.configs import TilingConfig
 
 from soma.tasks.registry import task_family_of, task_head_class
-
-#: ``preprocessing.feature_kind`` values; ``None`` is auto (cross-defaulted from the
-#: trainable component). The two ``patch_features*`` kinds are the ViT patch-token grid
-#: after / before the backbone's final norm; ``cls_attention`` is per-head CLS attention.
-VALID_FEATURE_KINDS = frozenset({None, "patch_features", "patch_features_prenorm", "cls_attention"})
 
 
 RoiBatchSamplingStrategy = Literal["uniform", "class_conditioned"]
 ROI_BATCH_SAMPLING_STRATEGIES = frozenset({"uniform", "class_conditioned"})
-
-
-def _default_preview_config() -> PreviewConfig:
-    return PreviewConfig(
-        save_mask_preview=True,
-        save_tiling_preview=True,
-        downsample=32,
-        tissue_contour_color=(37, 94, 59),
-        mask_overlay_alpha=0.5,
-    )
 
 
 @lru_cache(maxsize=1)
@@ -148,115 +136,11 @@ def _layout_to_config_dict(data: dict[str, Any]) -> dict[str, Any]:
     return layout
 
 
-def _encoder_member_from_dict(member: dict[str, Any]) -> "EncoderMemberConfig":
-    """Build one composite member, rebuilding its nested ``attention`` sub-config."""
-    member = dict(member)
-    attention_data = dict(member.pop("attention", {}))
-    return EncoderMemberConfig(**member, attention=AttentionConfig(**attention_data))
-
-
-def _composite_from_dict(data: dict[str, Any]) -> "CompositeConfig":
-    """Build a :class:`CompositeConfig` from the ``composite:`` mapping."""
-    data = dict(data)
-    members = data.pop("encoders", None)
-    if not members or not isinstance(members, list):
-        raise TypeError("composite.encoders must be a non-empty list of encoder mappings")
-    grid_size = data.pop("concat_grid_size", None)
-    if isinstance(grid_size, list):
-        grid_size = tuple(grid_size)
-    concat_resolution = data.pop("concat_resolution", None)
-    if data:
-        raise ValueError(
-            "Config section 'composite' uses unsupported keys: "
-            + ", ".join(sorted(str(key) for key in data))
-        )
-    return CompositeConfig(
-        encoders=[_encoder_member_from_dict(member) for member in members],
-        concat_resolution=concat_resolution,
-        concat_grid_size=grid_size,
-    )
-
-
-def _normalize_label_mapping(entries: Any, *, field_name: str) -> Any:
-    """Normalize a class→value mapping, tolerating hs2p's list-of-single-entry-mapping YAML
-    style (``[{background: 0}, {tumor: 1}]``) so an hs2p ``masks`` block pastes in unchanged."""
-    if entries is None or isinstance(entries, dict):
-        return entries
-    if isinstance(entries, (list, tuple)):
-        merged: dict[str, Any] = {}
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise TypeError(
-                    f"masks.{field_name} must be a mapping or a list of single-entry mappings"
-                )
-            merged.update(entry)
-        return merged
-    raise TypeError(f"masks.{field_name} must be a mapping or a list of single-entry mappings")
-
-
-def _pixel_values(label: str, entry: Any) -> list[int]:
-    """One ``pixel_mapping`` entry (a raw value or a list of them) as validated integers."""
-    values = list(entry) if isinstance(entry, (list, tuple)) else [entry]
-    if not values:
-        raise ValueError(f"masks.pixel_mapping[{label!r}] lists no raw values.")
-    for value in values:
-        if isinstance(value, bool) or not isinstance(value, Integral) or not 0 <= value <= 255:
-            raise ValueError(
-                f"masks.pixel_mapping[{label!r}] raw values must be integers in [0, 255], "
-                f"got {value!r}."
-            )
-    return [int(value) for value in values]
-
-
-def canonical_pixel_mapping(pixel_mapping: dict[str, Any]) -> dict[str, Any]:
-    """``pixel_mapping`` with each list entry sorted, for cache identity.
-
-    Listing order does not change what is sampled, so ``[2, 1]`` keys like ``[1, 2]``;
-    scalars are untouched, which keeps scalar-only keys byte-stable.
-    """
-    return {
-        label: sorted(entry) if isinstance(entry, list) else entry
-        for label, entry in pixel_mapping.items()
-    }
-
-
-def _masks_from_dict(data: dict[str, Any]) -> "MasksConfig":
-    data = dict(data)
-    pixel_mapping = _normalize_label_mapping(data.pop("pixel_mapping", None), field_name="pixel_mapping")
-    min_coverage = _normalize_label_mapping(data.pop("min_coverage", None), field_name="min_coverage")
-    colors = _normalize_label_mapping(data.pop("colors", None), field_name="colors")
-    if data:
-        raise ValueError(
-            "Config section 'masks' uses unsupported keys: "
-            + ", ".join(sorted(str(key) for key in data))
-            + ". Supported: pixel_mapping, min_coverage, colors."
-        )
-    if pixel_mapping is None:
-        raise ValueError("masks.pixel_mapping is required (class name → mask pixel value).")
-    return MasksConfig(
-        pixel_mapping={str(k): v for k, v in pixel_mapping.items()},
-        min_coverage={str(k): float(v) for k, v in (min_coverage or {}).items()},
-        colors=(
-            {str(k): (list(v) if v is not None else None) for k, v in colors.items()}
-            if colors is not None
-            else None
-        ),
-    )
-
-
 def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
+    from soma._legacy_layout import features_from_layout
+
     run_data = data.get("run", {})
     data_data = data.get("data", {})
-    preprocessing_data = dict(data.get("preprocessing", {}))
-    preview_data = dict(preprocessing_data.pop("preview", {}))
-    attention_data = dict(preprocessing_data.pop("attention", {}))
-    # masks/sampling are nested under preprocessing (#109).
-    masks_data = preprocessing_data.pop("masks", None)
-    sampling_data = preprocessing_data.pop("sampling", None)
-    tissue_contour_color = preview_data.get("tissue_contour_color")
-    if isinstance(tissue_contour_color, list):
-        preview_data["tissue_contour_color"] = tuple(tissue_contour_color)
-
     reporting_data = data.get("reports", {})
     heatmap_data = reporting_data.get("heatmaps")
     training_data = dict(data.get("training", {}))
@@ -268,21 +152,7 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
         splits_csv=data_data["splits_csv"],
         output_root=run_data["output_root"],
         dataset_type=data_data["dataset_type"],
-        feature_mode=data_data.get("feature_mode", "cached"),
-        preprocessing=PreprocessingConfig(
-            **preprocessing_data,
-            attention=AttentionConfig(**attention_data),
-            preview=PreviewConfig(**preview_data),
-            masks=_masks_from_dict(masks_data) if masks_data else None,
-            sampling=SamplingConfig(**sampling_data) if sampling_data else None,
-        ),
-        execution=ExecutionConfig(**data.get("execution", {})),
-        cache=CacheConfig(**data.get("cache", {})),
-        # Truthiness (like aggregation/decoder below): a blank/omitted `encoder:` is no
-        # encoder, not an empty EncoderConfig — and with the neutral default there is no
-        # name to fall back on.
-        encoder=EncoderConfig(**data["encoder"]) if data.get("encoder") else None,
-        composite=_composite_from_dict(data["composite"]) if data.get("composite") else None,
+        features=features_from_layout(data),
         aggregator=AggregatorConfig(**data["aggregation"]) if data.get("aggregation") else None,
         decoder=DecoderConfig(**data["decoder"]) if data.get("decoder") else None,
         task=_load_task_config(data),
@@ -311,357 +181,6 @@ def _layout_to_pipeline_config(data: dict[str, Any]) -> PipelineConfig:
             else None
         ),
     )
-
-
-@dataclass(frozen=True)
-class AttentionConfig:
-    """Which frozen-encoder self-attention to extract (``feature_kind='cls_attention'``).
-
-    The attention-map segmentation path (re-impl of arXiv:2602.18747) treats a ViT's
-    per-head prefix-token self-attention as a dense ``(K, gh, gw)`` feature grid. These
-    knobs select *which* attention:
-
-    * ``blocks`` — which transformer blocks' attention to capture (negative indexes
-      from the end; ``(-1,)`` = last block, the paper's choice). Multiple blocks are
-      concatenated along the channel axis in the listed order.
-    * ``include_registers`` — also keep the register-token query rows (Darcet et al.)
-      as extra channels, not just the CLS row. No-op for models without registers.
-
-    Per-head is always preserved (head specialization is the signal); channels are
-    ordered ``[block][cls, reg…][head]`` and that order is recorded in the grid sidecar.
-    """
-
-    blocks: tuple[int, ...] = (-1,)
-    include_registers: bool = False
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "blocks", tuple(int(b) for b in self.blocks))
-        if not self.blocks:
-            raise ValueError("attention.blocks must list at least one block index")
-
-
-@dataclass(frozen=True)
-class PreprocessingConfig:
-    """Whole-slide preprocessing, tiling, and geometry settings.
-
-    The preprocessing backend controls tissue segmentation and tile
-    extraction. ``requested_spacing_um`` and ``requested_tile_size_px`` are
-    the primary scale-selection knobs. ``requested_region_size_px`` and
-    ``region_tile_multiple`` describe HIPT-style hierarchical region geometry.
-    ``sam2_device`` and ``sam2_num_workers`` tune SAM2 tissue-segmentation
-    execution when the backend supports that path.
-    """
-
-    backend: str = "auto"
-    # Reader used to decode annotation/tissue mask rasters. hs2p 4.3.0 made mask decoding
-    # authoritative — there is no silent fallback to another reader — so a mask its slide's
-    # backend cannot decode needs this knob to be fixable from a config (ADR 0009).
-    mask_backend: str = "auto"
-    requested_tile_size_px: int | None = None
-    requested_spacing_um: float | None = None
-    # Handling for sources coarser than requested; see the preprocessing guide.
-    spacing_policy: str = "strict"
-    requested_region_size_px: int | None = None
-    region_tile_multiple: int | None = None
-    read_tile_size_px: int | None = None
-    read_region_size_px: int | None = None
-    tissue_method: str | None = None
-    # Tissue coverage threshold expressed as a masks-shaped map (mirrors hs2p's
-    # ``TilingConfig.min_coverage``); ``min_coverage["tissue"]`` is the minimum tissue
-    # fraction to keep a tile. The single source of truth for the threshold across both the
-    # pooled and dense seams — there is no separate scalar. (The per-class segmentation
-    # coverage map lives on the top-level ``MasksConfig.min_coverage``, a distinct block.)
-    min_coverage: dict[str, float] = field(default_factory=lambda: {"tissue": 0.1})
-    overlap: float = 0.0
-    seg_downsample: int = 64
-    sam2_device: str = "cpu"
-    sam2_num_workers: int | None = None
-    tolerance: float = 0.05
-    ref_tile_size_px: int | None = None
-    a_t: int = 4
-    tissue_mask_tissue_value: int = 1
-    # Dense (segmentation) encoder-window knobs (design §5, window-as-knob). These are
-    # NOT the tiling ``overlap`` above: they control how the padded supervision tile
-    # reaches the frozen encoder. ``dense_window_size=None`` ⇒ ``whole`` (one padded
-    # forward); a smaller window slides the encoder over patch-aligned windows and
-    # blends the token grids over ``dense_window_overlap``.
-    dense_window_size: int | None = None
-    dense_window_overlap: float = 0.0
-    # What the dense encoder emits per tile. ``patch_features`` = the ViT patch-token grid
-    # (the default for segmentation and detection when left ``None``); ``cls_attention`` =
-    # per-head prefix-token self-attention as a ``(K, gh, gw)`` grid.
-    # ``patch_features_prenorm`` is the same patch grid tapped before the backbone's final
-    # norm (timm's ``features_only`` tap; timm ViT encoders only) — what decoders trained
-    # on timm feature backbones expect (the EVA segmentation benchmarks).
-    # ``attention`` selects which blocks / whether to keep register rows for cls_attention.
-    feature_kind: str | None = None
-    attention: AttentionConfig = field(default_factory=AttentionConfig)
-    preview: PreviewConfig = field(default_factory=_default_preview_config)
-    # Segmentation slide-manifest ingestion (design — segmentation ingestion §5/§8; #109).
-    # ``masks``/``sampling`` are a tiling/preprocessing concern (annotation-based tile
-    # selection mirrors slide2vec's own PreprocessingConfig), so they nest here rather than
-    # at the top level. The presence of ``masks`` selects the slide-manifest input mode
-    # (slides + annotation masks → soma-sampled ROIs). Cross-field rules (segmentation-only,
-    # ``sampling`` requires ``masks``, ``per_annotation`` deferred) live on PipelineConfig.
-    masks: MasksConfig | None = None
-    sampling: SamplingConfig | None = None
-
-    def __post_init__(self) -> None:
-        if self.spacing_policy not in {"strict", "native_if_coarser"}:
-            raise ValueError(
-                "spacing_policy must be 'strict' or 'native_if_coarser', got "
-                f"{self.spacing_policy!r}"
-            )
-        if self.feature_kind not in VALID_FEATURE_KINDS:
-            raise ValueError(
-                f"Invalid feature_kind {self.feature_kind!r}; must be 'patch_features', "
-                "'patch_features_prenorm', 'cls_attention', or None (auto)."
-            )
-        if self.dense_window_size is not None and int(self.dense_window_size) <= 0:
-            raise ValueError(
-                f"dense_window_size must be a positive int or None, got {self.dense_window_size!r}"
-            )
-        if not (0.0 <= float(self.dense_window_overlap) < 1.0):
-            raise ValueError(
-                f"dense_window_overlap must be in [0, 1), got {self.dense_window_overlap!r}"
-            )
-        if self.dense_window_size is None and float(self.dense_window_overlap) != 0.0:
-            raise ValueError(
-                "dense_window_overlap requires dense_window_size — overlap is meaningless "
-                "for the 'whole' path (no windows). Set dense_window_size or clear the overlap."
-            )
-        coverage = {str(k): float(v) for k, v in self.min_coverage.items()}
-        for label, frac in coverage.items():
-            if not 0.0 <= frac <= 1.0:
-                raise ValueError(
-                    f"preprocessing.min_coverage['{label}'] must be in [0, 1], got {frac!r}."
-                )
-        object.__setattr__(self, "min_coverage", coverage)
-
-    def tiling_values(self) -> dict[str, Any]:
-        """soma's value for every hs2p ``TilingConfig`` field, ``None`` where unresolved.
-
-        The single place soma states the geometry mapping (ADR 0009). :meth:`tiling_config`
-        constructs from it and the cache signature keys on it, so the two cannot disagree,
-        and a field hs2p adds cannot enter one without the other. Coverage is checked
-        against ``TilingConfig``'s own fields below: a new upstream knob raises here rather
-        than becoming a setting soma users silently cannot reach.
-        """
-        values: dict[str, Any] = {
-            "requested_spacing_um": (
-                None if self.requested_spacing_um is None else float(self.requested_spacing_um)
-            ),
-            "requested_tile_size_px": (
-                None if self.requested_tile_size_px is None else int(self.requested_tile_size_px)
-            ),
-            "tolerance": float(self.tolerance),
-            "overlap": float(self.overlap),
-            "min_coverage": {k: float(self.min_coverage[k]) for k in sorted(self.min_coverage)},
-            "backend": str(self.backend),
-            "mask_backend": str(self.mask_backend),
-            "independent_sampling": self.independent_sampling,
-        }
-        # hs2p echoes what was *asked for* into these before auto-resolution; they restate
-        # backend/mask_backend rather than adding geometry, so soma neither sets them nor
-        # keys on them.
-        provenance = {"requested_backend", "requested_mask_backend"}
-        unmapped = set(TilingConfig.__dataclass_fields__) - set(values) - provenance
-        if unmapped:
-            raise RuntimeError(
-                f"hs2p TilingConfig field(s) {sorted(unmapped)} are not mapped by soma's "
-                "PreprocessingConfig. Add them to the config surface and to tiling_values() "
-                "(ADR 0009), or name them provenance if they only echo another field."
-            )
-        return values
-
-    def tiling_config(self) -> TilingConfig:
-        """The hs2p ``TilingConfig`` this preprocessing resolves to (ADR 0009).
-
-        Composition happens here, at resolve time, not at config-parse time: hs2p requires
-        a spacing and a tile size, and soma leaves both ``None`` until the encoder supplies
-        them. One construction serves the pooled adapter, the slide-manifest ROI sampler and
-        the cache signature, so those three cannot drift apart.
-        """
-        if self.requested_tile_size_px is None:
-            raise ValueError(
-                "requested_tile_size_px must be resolved before extraction — set it "
-                "explicitly or use an encoder that advertises a tile size."
-            )
-        if self.requested_spacing_um is None:
-            raise ValueError(
-                "requested_spacing_um must be resolved before extraction — set it "
-                "explicitly or use an encoder advertising a single supported spacing."
-            )
-        return TilingConfig(**self.tiling_values())
-
-    def effective_spacing_um(self, spacing_at_level_0: float | None) -> float:
-        """Resolve the spacing this sample may be read at without synthesizing pixels."""
-        if self.requested_spacing_um is None:
-            raise ValueError(
-                "requested_spacing_um must be resolved before selecting an effective spacing"
-            )
-        return resolve_effective_spacing_um(
-            requested_spacing_um=self.requested_spacing_um,
-            spacing_at_level_0=spacing_at_level_0,
-            tolerance=self.tolerance,
-            policy=self.spacing_policy,
-        )
-
-    @property
-    def independent_sampling(self) -> bool:
-        """Whether tile coordinates are sampled per class rather than on one shared grid.
-
-        Tissue-only runs keep the upstream default (``True``); an annotation ``masks`` block
-        derives it from ``sampling.strategy``, defaulting to ``joint``. Stated once here
-        because it reaches hs2p, slide2vec and the cache key by three different routes.
-        """
-        if self.masks is None:
-            return True
-        return self.sampling is not None and self.sampling.strategy == "independent"
-
-    @property
-    def requested_backend(self) -> str:
-        """Backend requested by config before runtime auto-resolution."""
-        return self.backend
-
-    @property
-    def has_hierarchical_geometry(self) -> bool:
-        return self.region_tile_multiple is not None or self.requested_region_size_px is not None
-
-
-@dataclass(frozen=True)
-class ExecutionConfig:
-    """Runtime execution settings for preprocessing and feature extraction.
-
-    ``num_workers_per_gpu`` is the CPU DataLoader budget for each GPU rank.
-    ``None`` means auto-size the per-rank worker count from the available CPU
-    budget and the resolved GPU count.
-    """
-
-    num_gpus: int | None = None
-    num_workers_per_gpu: int | None = None
-    num_preprocessing_workers: int | None = None
-    prefetch_factor: int | None = None
-    precision: str | None = None
-
-
-@dataclass(frozen=True)
-class EncoderConfig:
-    """Foundation-model encoder selection and model-adjacent settings.
-
-    ``name`` selects the encoder preset. ``output_variant`` exposes
-    preset-specific feature variants when the encoder supports them.
-    ``allow_non_recommended_settings`` permits non-default settings, including
-    exact off-preset pooled sizes, while retaining encoder capability checks.
-    """
-
-    name: str
-    precision: str | None = None
-    batch_size: int = 32
-    adaptive_batching: bool = False
-    output_variant: str | None = None
-    allow_non_recommended_settings: bool = False
-    save_tile_features: bool = False
-
-
-@dataclass(frozen=True)
-class EncoderMemberConfig:
-    """One member of a multi-encoder composite (``composite.encoders`` list, design §7).
-
-    Each member carries its *own* extraction spec — ``name``, ``feature_kind``, and
-    ``attention`` knobs — so the heterogeneous paper setup (different FMs, some attention,
-    some embedding) needs no special-casing. Members are extracted into independent caches
-    and concatenated at load time.
-
-    ``feature_kind`` is ``None`` (auto) by default and resolves to ``patch_features`` at
-    config finalization, mirroring the single-encoder default. An explicit value wins.
-
-    ``member_norm`` (``{none, l2, layernorm}``) is the per-member normalization applied at
-    load time **before concat** (after the resample), so one large-magnitude encoder does
-    not dominate the decoder. ``None`` (auto) defaults by the resolved ``feature_kind``:
-    ``l2`` for ``patch_features`` (raw tokens differ wildly in norm), ``none`` for
-    ``cls_attention`` (already bounded/comparable — keeps the pixel-classifier path
-    byte-identical).
-
-    ``dense_window_size`` / ``dense_window_overlap`` are the **per-member** sliding-window
-    knobs for dense extraction: encoders that lack ``dynamic_img_size`` (e.g. CONCH at its
-    native 448, H0-mini at 224) must slide their native window over the supervision tile,
-    and different members need different windows. ``None`` falls back to the run's shared
-    ``preprocessing.dense_window_size`` / ``dense_window_overlap``.
-    """
-
-    name: str
-    feature_kind: str | None = None
-    member_norm: str | None = None
-    attention: AttentionConfig = field(default_factory=AttentionConfig)
-    output_variant: str | None = None
-    precision: str | None = None
-    batch_size: int = 32
-    adaptive_batching: bool = False
-    allow_non_recommended_settings: bool = False
-    dense_window_size: int | None = None
-    dense_window_overlap: float | None = None
-
-    def __post_init__(self) -> None:
-        if self.feature_kind not in VALID_FEATURE_KINDS:
-            raise ValueError(
-                f"EncoderMemberConfig.feature_kind must be 'patch_features', "
-                f"'patch_features_prenorm', 'cls_attention', or None (auto), got "
-                f"{self.feature_kind!r}."
-            )
-        if self.member_norm not in {None, "none", "l2", "layernorm"}:
-            raise ValueError(
-                f"EncoderMemberConfig.member_norm must be 'none', 'l2', 'layernorm', or "
-                f"None (auto), got {self.member_norm!r}."
-            )
-
-
-@dataclass(frozen=True)
-class CompositeConfig:
-    """Multi-encoder composite block (design §7 Angle 5).
-
-    Concatenates several frozen encoders' dense grids into one ``(Σd_i, ·, ·)`` feature
-    grid. ``encoders`` lists the members (extracted into independent caches); the two
-    knobs control how their grids are combined at load time:
-
-    - ``concat_resolution`` (``{grid, target}``): ``grid`` resamples each member's native
-      token grid to a common ``(h, w)`` and concatenates there (the trained decoder /
-      detection consume token grids); ``target`` upsamples every member to the mask
-      ``target_size`` first. ``None`` (auto) resolves to ``grid``.
-    - ``concat_grid_size``: the common ``(h, w)`` for ``grid`` mode. ``None`` defaults to
-      the largest member grid (finest available token resolution). Ignored in ``target``
-      mode.
-    """
-
-    encoders: list[EncoderMemberConfig]
-    concat_resolution: str | None = None
-    concat_grid_size: tuple[int, int] | None = None
-
-    @property
-    def label(self) -> str:
-        """The composite's identity as one name: member names joined with ``+``.
-
-        Stands in for ``encoder.name`` wherever a run is keyed by its encoder (cell dirs,
-        prediction records, leaderboard rows). ``+`` never appears in a registered encoder
-        name, so a label is unambiguous and path-safe.
-        """
-        return "+".join(m.name for m in self.encoders)
-
-    def __post_init__(self) -> None:
-        if not self.encoders:
-            raise ValueError("composite.encoders must list at least one member encoder.")
-        if self.concat_resolution not in {None, "grid", "target"}:
-            raise ValueError(
-                f"composite.concat_resolution must be 'grid', 'target', or None (auto), "
-                f"got {self.concat_resolution!r}."
-            )
-        if self.concat_grid_size is not None:
-            h, w = self.concat_grid_size
-            object.__setattr__(self, "concat_grid_size", (int(h), int(w)))
-            if int(h) <= 0 or int(w) <= 0:
-                raise ValueError(
-                    f"composite.concat_grid_size must be positive, got {self.concat_grid_size}."
-                )
 
 
 _ON_IDENTITY_MISMATCH = ("error", "reextract")
@@ -697,6 +216,117 @@ class CacheConfig:
                 f"cache.on_identity_mismatch must be one of {list(_ON_IDENTITY_MISMATCH)}, "
                 f"got {self.on_identity_mismatch!r}"
             )
+
+
+@dataclass(frozen=True)
+class EncoderLeaf:
+    """The ``{name, params}`` leaf naming the frozen encoder (ADR 0019).
+
+    ``name`` is a slide2vec encoder, or ``composite`` for several of them concatenated.
+    ``params`` are slide2vec's ``Model.from_preset`` keywords (``output_variant``,
+    ``allow_non_recommended_settings``), or the composite's members
+    (:class:`soma.encoders.CompositeParams`); the ``encoders`` registry validates them.
+    """
+
+    name: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def output_variant(self) -> str | None:
+        return self.params.get("output_variant")
+
+    @property
+    def allow_non_recommended_settings(self) -> bool:
+        return bool(self.params.get("allow_non_recommended_settings", False))
+
+
+_FEATURE_KINDS = ("cached", "live")
+_SPACING_POLICIES = ("strict", "native_if_coarser")
+
+
+def is_annotation_sampling(masks: Any) -> bool:
+    """Whether an hs2p ``MaskSamplingConfig`` samples annotations rather than tissue.
+
+    hs2p's own test: the shipped ``{background, tissue}`` vocabulary sampling only
+    ``tissue`` is binary tissue tiling; any other vocabulary or sampled set samples
+    annotations.
+    """
+    from hs2p.configs.resolvers import is_binary_tissue_tiling
+
+    return not is_binary_tissue_tiling(masks)
+
+
+@dataclass(frozen=True)
+class FeaturesConfig:
+    """Where a run's features come from (ADR 0019).
+
+    soma owns ``kind``, ``encoder``, ``cache`` and ``spacing_policy``. ``extraction``,
+    ``execution`` and ``dense`` are slide2vec's ``PreprocessingConfig`` (composing hs2p's
+    tiling, segmentation, filter, preview and mask-sampling configs), ``ExecutionOptions``
+    and ``DenseOptions``, held as given.
+
+    * ``kind``: ``cached`` extracts once into the feature cache; ``live`` re-encodes
+      the (augmented) pixels every step, for the grid shape.
+    * ``encoder``: a slide2vec encoder or ``composite`` (a name is accepted for a leaf
+      without params).
+    * ``extraction``: what slide2vec tiles and how. ``tiling=None`` takes the spacing
+      and tile size from the encoder preset when the features are extracted.
+    * ``execution``: batch size, precision, GPUs and workers. ``precision=None`` takes
+      the encoder's recommendation.
+    * ``dense``: the grid shape's read and encode recipe; ``None`` reads at the resolved
+      tiling's spacing and tile size with slide2vec's dense defaults.
+    * ``spacing_policy``: how a grid run applies the requested spacing to each sample:
+      ``strict`` reads every sample at it, ``native_if_coarser`` reads a sample whose
+      level 0 is coarser than requested at its native spacing.
+    """
+
+    kind: str = "cached"
+    encoder: EncoderLeaf | None = None
+    extraction: slide2vec.PreprocessingConfig = field(default_factory=slide2vec.PreprocessingConfig)
+    execution: slide2vec.ExecutionOptions = field(default_factory=slide2vec.ExecutionOptions)
+    dense: slide2vec.DenseOptions | None = None
+    cache: CacheConfig = field(default_factory=CacheConfig)
+    spacing_policy: str = "strict"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.encoder, str):
+            object.__setattr__(self, "encoder", EncoderLeaf(name=self.encoder))
+        if self.kind not in _FEATURE_KINDS:
+            raise ValueError(f"features.kind must be one of {list(_FEATURE_KINDS)}, got {self.kind!r}")
+        if self.spacing_policy not in _SPACING_POLICIES:
+            raise ValueError(
+                f"spacing_policy must be one of {list(_SPACING_POLICIES)}, got {self.spacing_policy!r}"
+            )
+        for name, expected in (
+            ("extraction", slide2vec.PreprocessingConfig),
+            ("execution", slide2vec.ExecutionOptions),
+            ("cache", CacheConfig),
+        ):
+            if not isinstance(getattr(self, name), expected):
+                raise TypeError(
+                    f"features.{name} must be a {expected.__module__}.{expected.__qualname__}, "
+                    f"got {type(getattr(self, name)).__name__}"
+                )
+        if self.dense is not None and not isinstance(self.dense, slide2vec.DenseOptions):
+            raise TypeError(
+                f"features.dense must be a slide2vec.DenseOptions or None, got {type(self.dense).__name__}"
+            )
+        if self.encoder is not None:
+            if not isinstance(self.encoder, EncoderLeaf):
+                raise TypeError(f"features.encoder must be an EncoderLeaf, got {type(self.encoder).__name__}")
+            from soma.encoders import encoder_registry
+
+            if self.encoder.name not in encoder_registry:
+                available = ", ".join(sorted(encoder_registry.list())) or "(none)"
+                raise ValueError(
+                    f"Unknown encoder name '{self.encoder.name}'. Available encoders: {available}"
+                )
+            encoder_registry.validate(self.encoder.name, self.encoder.params)
+
+    @property
+    def is_composite(self) -> bool:
+        """Whether the encoder is soma's ``composite`` of several encoders."""
+        return self.encoder is not None and self.encoder.name == "composite"
 
 
 _NORMALIZATION_METHODS = ("none", "zscore", "l2", "layernorm")
@@ -923,121 +553,6 @@ class DecoderConfig:
 
     name: str
     params: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class MasksConfig:
-    """Annotation-mask label vocabulary governing which tiles / ROIs are sampled.
-
-    Mirrors hs2p's ``masks`` config 1:1 and is forwarded untouched into hs2p annotation
-    sampling (design — segmentation ingestion §5/§8). Its presence selects the slide-manifest
-    input mode: ``dataset.csv`` rows are ``(sample_id, image_path (WSI), label_mask_path (annotation
-    WSI))`` and soma samples ROIs from each slide, instead of the pre-cropped tile manifest.
-
-    * ``pixel_mapping`` — label name → raw mask value, or a list of raw values sampled as
-      one label whose coverage is their sum. Values are integers in ``[0, 255]``, each
-      listed under one label only. No label name is reserved. It only selects samples:
-      the classes a segmentation model predicts are ``task.params.classes`` / ``ignore``
-      (see :func:`soma.dense.reader.resolve_class_scheme`), independent of these labels.
-    * ``min_coverage`` — per-class minimum tile coverage (in ``[0, 1]``) to sample a tile;
-      keys must be a subset of ``pixel_mapping``.
-    * ``colors`` — optional class → ``[r, g, b]`` (or ``None``) overlay color for mask previews;
-      keys must be a subset of ``pixel_mapping``.
-    """
-
-    pixel_mapping: dict[str, int | list[int]]
-    min_coverage: dict[str, float] = field(default_factory=dict)
-    colors: dict[str, list[int] | None] | None = None
-
-    def __post_init__(self) -> None:
-        if not self.pixel_mapping:
-            raise ValueError("masks.pixel_mapping is required and must be non-empty.")
-        owners: dict[int, str] = {}
-        for label, entry in self.pixel_mapping.items():
-            values = _pixel_values(label, entry)
-            for index, value in enumerate(values):
-                if value in values[:index]:
-                    raise ValueError(
-                        f"masks.pixel_mapping[{label!r}] lists raw value {value} twice."
-                    )
-                if value in owners:
-                    raise ValueError(
-                        "masks.pixel_mapping must use unique pixel values: "
-                        f"{owners[value]!r} and {label!r} both list raw value {value}."
-                    )
-                owners[value] = label
-        # Scalars stay scalars and lists stay lists: hs2p receives the entries as written.
-        object.__setattr__(
-            self,
-            "pixel_mapping",
-            {
-                label: (
-                    [int(value) for value in entry]
-                    if isinstance(entry, (list, tuple))
-                    else int(entry)
-                )
-                for label, entry in self.pixel_mapping.items()
-            },
-        )
-        unknown = sorted(set(self.min_coverage) - set(self.pixel_mapping))
-        if unknown:
-            raise ValueError(
-                "masks.min_coverage references labels absent from pixel_mapping: "
-                + ", ".join(unknown)
-            )
-        for label, frac in self.min_coverage.items():
-            if not 0.0 <= float(frac) <= 1.0:
-                raise ValueError(
-                    f"masks.min_coverage['{label}'] must be in [0, 1], got {frac!r}."
-                )
-        if self.colors is not None:
-            unexpected = sorted(set(self.colors) - set(self.pixel_mapping))
-            if unexpected:
-                raise ValueError(
-                    "masks.colors references labels absent from pixel_mapping: "
-                    + ", ".join(unexpected)
-                )
-            for label, color in self.colors.items():
-                if color is None:
-                    continue
-                if (
-                    not isinstance(color, (list, tuple))
-                    or len(color) != 3
-                    or any(not isinstance(c, int) or isinstance(c, bool) or c < 0 or c > 255 for c in color)
-                ):
-                    raise ValueError(
-                        f"masks.colors['{label}'] must be None or a length-3 RGB list of "
-                        f"ints in [0, 255], got {color!r}."
-                    )
-
-
-@dataclass(frozen=True)
-class SamplingConfig:
-    """ROI sampling strategy for the segmentation slide-manifest mode (sibling of ``masks``).
-
-    * ``strategy`` — ``joint`` (tile the union of all classes, then keep tiles passing any
-      class's ``min_coverage``) or ``independent`` (one sampling pass per class).
-    * ``output_mode`` — ``merged`` (one merged coordinate set per slide: the union of tiles
-      passing any active class threshold, collapsed to a single per-slide result; each tile is
-      encoded once with its full multi-class mask attached downstream — the dense-segmentation
-      contract) or ``per_annotation`` (one set per ``(slide, class)``). Forwarded into hs2p
-      ``CoordinateOutputMode`` by the segmentation pipeline. ``per_annotation`` feature
-      extraction is deferred (soma issue #86).
-    """
-
-    strategy: str = "joint"
-    output_mode: str = "merged"
-
-    def __post_init__(self) -> None:
-        if self.strategy not in {"joint", "independent"}:
-            raise ValueError(
-                f"sampling.strategy must be 'joint' or 'independent', got {self.strategy!r}."
-            )
-        if self.output_mode not in {"merged", "per_annotation"}:
-            raise ValueError(
-                f"sampling.output_mode must be 'merged' or 'per_annotation', got "
-                f"{self.output_mode!r}."
-            )
 
 
 @dataclass(frozen=True)
@@ -1412,12 +927,10 @@ class PipelineConfig:
             patch-level classification, and ``"patient"`` means
             patient-level aggregation. ``aggregator`` must be ``None`` unless
             ``dataset_type`` is ``"slide"``.
-        preprocessing: Whole-slide preprocessing and tiling settings.
-        execution: Runtime execution settings for preprocessing and feature
-            extraction.
-        cache: Shared cache policy.
-        encoder: Foundation-model encoder configuration, or ``None`` for
-            workflows that do not need one.
+        features: Where the features come from (:class:`FeaturesConfig`): the
+            encoder, slide2vec's extraction and execution settings held as given, the
+            dense recipe of a grid run and the cache policy. Its ``encoder`` may be
+            ``None`` when the run is handed its features.
         aggregator: MIL aggregator configuration for slide-level bag
             learning, or ``None`` for tile/patient pipelines.
         task: Task-head configuration. Exactly one of ``task`` and
@@ -1452,12 +965,7 @@ class PipelineConfig:
     splits_csv: str | Path
     output_root: str | Path
     dataset_type: str
-    feature_mode: str = "cached"
-    preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
-    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
-    cache: CacheConfig = field(default_factory=CacheConfig)
-    encoder: EncoderConfig | None = None
-    composite: CompositeConfig | None = None
+    features: FeaturesConfig = field(default_factory=FeaturesConfig)
     aggregator: AggregatorConfig | None = None
     decoder: DecoderConfig | None = None
     task: TaskConfig | None = None
@@ -1517,7 +1025,7 @@ class PipelineConfig:
             )
         if self.training.roi_batch_sampling is not None and not (
             self.dataset_type == "segmentation"
-            and self.feature_mode == "cached"
+            and self.features.kind == "cached"
             and self.decoder is not None
         ):
             raise ValueError(
@@ -1533,16 +1041,9 @@ class PipelineConfig:
                     "representation v1 is deterministic and requires run.seed=0; "
                     f"got {self.training.seed!r}. Repeated launches are attempts, not seeds."
                 )
-            if self.feature_mode != "cached":
+            if self.features.kind != "cached":
                 raise ValueError("representation v1 requires data.feature_mode='cached'.")
-            if any(
-                component is not None
-                for component in (
-                    self.aggregator,
-                    self.decoder,
-                    self.composite,
-                )
-            ):
+            if self.aggregator is not None or self.decoder is not None or self.features.is_composite:
                 raise ValueError(
                     "representation v1 does not use aggregation, decoder or composite task "
                     "components."
@@ -1556,16 +1057,6 @@ class PipelineConfig:
                     "representation v1 requires normalization.method='none', "
                     "projection.method='none', and augmentation disabled."
                 )
-            if self.encoder is not None:
-                from slide2vec.encoders.registry import encoder_registry
-
-                try:
-                    encoder_registry.info(self.encoder.name)
-                except KeyError as exc:
-                    available = ", ".join(sorted(encoder_registry.names())) or "(none)"
-                    raise ValueError(
-                        f"Unknown encoder name '{self.encoder.name}'. Available encoders: {available}"
-                    ) from exc
             return
         if self.dataset_type == "tile" and self.aggregator is not None:
             raise ValueError(
@@ -1597,20 +1088,14 @@ class PipelineConfig:
             # a bad scheme fails at config load, not after extraction. A bare num_classes
             # (masks already hold class indices) stays the pipeline's to require.
             task_params = self.task.params
-            annotation_rasters = self.preprocessing.masks is not None
+            masks = self.features.extraction.masks
+            annotation_rasters = is_annotation_sampling(masks)
             if annotation_rasters or "classes" in task_params or "ignore" in task_params:
                 from soma.dense.reader import check_classes_declared, resolve_class_scheme
 
                 resolve_class_scheme(task_params, annotation_rasters=annotation_rasters)
                 if annotation_rasters:
-                    check_classes_declared(task_params, self.preprocessing.masks.pixel_mapping)
-            # A decoder consumes the patch-feature grid unless the user names another kind.
-            if self.preprocessing.feature_kind is None:
-                object.__setattr__(
-                    self,
-                    "preprocessing",
-                    replace(self.preprocessing, feature_kind="patch_features"),
-                )
+                    check_classes_declared(task_params, masks.pixel_mapping)
         elif self.dataset_type == "detection":
             # Detection-v1 reuses the segmentation dense front half: a decoder regresses a
             # per-class peak heatmap that the DetectionHead turns into points (design §6).
@@ -1635,13 +1120,6 @@ class PipelineConfig:
                 from soma.class_scheme import resolve_classes
 
                 resolve_classes(self.task.params, excluded_key="drop", subject="detection")
-            # Detection consumes the ViT patch-token grid (same as the seg decoder path).
-            if self.preprocessing.feature_kind is None:
-                object.__setattr__(
-                    self,
-                    "preprocessing",
-                    replace(self.preprocessing, feature_kind="patch_features"),
-                )
             if "score_threshold" in self.task.params:
                 raise ValueError(
                     "task.params.score_threshold was removed: the head emits every peak "
@@ -1663,49 +1141,29 @@ class PipelineConfig:
                     f"decoder must be None for dataset_type={self.dataset_type!r} — "
                     "decoders are only used for dataset_type='segmentation' or 'detection'."
                 )
-        # preprocessing.masks/preprocessing.sampling are the segmentation slide-manifest
-        # ingestion mode (design — segmentation ingestion §5/§8; relocated under
-        # preprocessing in #109). The presence of masks selects slide-manifest input
-        # (slides + annotation masks → soma-sampled ROIs); both only apply to segmentation.
-        masks = self.preprocessing.masks
-        sampling = self.preprocessing.sampling
-        # A masks block drives annotation-based tile selection. For 'segmentation' it is the
-        # slide-manifest ingestion mode (slides + masks → soma-sampled ROIs); for 'slide' it
-        # restricts the merged MIL bag to the selected compartment(s) (#110); for 'patient' it
-        # restricts every slide's merged bag the same way (tiling/selection identical to
-        # 'slide'), and patient-level aggregation then consumes those restricted slide bags
-        # (#111). All forward the block into slide2vec's annotation sampling. Tile/detection
-        # have no annotation-sampling step, so a masks block there is a config error.
+        # An annotation vocabulary in hs2p's masks drives annotation-based tile selection.
+        # For 'segmentation' over a slide manifest it samples the ROIs; for 'slide' it
+        # restricts the merged MIL bag to the selected compartment(s) (#110); for 'patient'
+        # it restricts every slide's merged bag the same way (#111). Tile and detection runs
+        # have no annotation-sampling step, so an annotation vocabulary there is an error.
+        masks = self.features.extraction.masks
         _masks_dataset_types = {"slide", "patient", "segmentation"}
-        if masks is not None and self.dataset_type not in _masks_dataset_types:
-            raise ValueError(
-                "masks: (annotation-based tile selection) is only valid for "
-                f"dataset_type in {sorted(_masks_dataset_types)}, got "
-                f"dataset_type={self.dataset_type!r}."
-            )
-        if sampling is not None and masks is None:
-            raise ValueError(
-                "sampling: requires a masks: block — it configures how ROIs are sampled from "
-                "the annotation masks. Add masks: or drop sampling:."
-            )
-        if (
-            masks is not None
-            and sampling is not None
-            and sampling.output_mode == "per_annotation"
-        ):
-            raise ValueError(
-                "sampling.output_mode='per_annotation' is not yet supported for feature "
-                "extraction (deferred — see soma issue #86). Use 'merged' (one tile encoded "
-                "once with its full multi-class mask attached downstream)."
-            )
-        # feature_mode / augmentation (the live re-encode segmentation path, §13.B).
-        # `cached` reads pre-extracted dense grids; `live` re-encodes augmented tiles
-        # through the frozen encoder every step. Fail loud rather than silently no-op.
-        if self.feature_mode not in {"cached", "live"}:
-            raise ValueError(
-                f"Invalid feature_mode {self.feature_mode!r}; must be 'cached' or 'live'."
-            )
-        if self.feature_mode == "live" and self.dataset_type not in {"segmentation", "detection"}:
+        if is_annotation_sampling(masks):
+            if self.dataset_type not in _masks_dataset_types:
+                raise ValueError(
+                    "extraction.masks samples annotations (annotation-based tile selection), "
+                    f"which is only valid for dataset_type in {sorted(_masks_dataset_types)}, "
+                    f"got dataset_type={self.dataset_type!r}."
+                )
+            if masks.output_mode == "per_annotation":
+                raise ValueError(
+                    "extraction.masks.output_mode='per_annotation' is not yet supported for "
+                    "feature extraction (deferred, see soma issue #86). Use 'merged' (one tile "
+                    "encoded once with its full multi-class mask attached downstream)."
+                )
+        # The live path re-encodes augmented tiles through the frozen encoder every step;
+        # it serves the grid shape only. Fail loud rather than silently no-op.
+        if self.features.kind == "live" and self.dataset_type not in {"segmentation", "detection"}:
             raise ValueError(
                 "feature_mode='live' re-encodes tiles for the grid shape (dataset_type "
                 f"'segmentation' or 'detection'), got dataset_type={self.dataset_type!r}."
@@ -1713,12 +1171,12 @@ class PipelineConfig:
         validate_feature_adaptor_compatibility(
             self.normalization,
             self.projection,
-            feature_mode=self.feature_mode,
+            feature_mode=self.features.kind,
             dataset_type=self.dataset_type,
-            has_composite=self.composite is not None,
+            has_composite=self.features.is_composite,
         )
         if self.augmentation is not None:
-            if self.feature_mode != "live":
+            if self.features.kind != "live":
                 raise ValueError(
                     "augmentation requires feature_mode='live' — cached dense grids cannot "
                     "be augmented (the features are frozen). Set feature_mode='live' or clear "
@@ -1834,65 +1292,21 @@ class PipelineConfig:
                 f"task {self.task.name!r}. Available metrics: {available}; use 'loss' "
                 "to monitor the tune loss."
             )
-        # Fail fast on unknown encoder / aggregator names — catching these at
-        # config construction avoids burning hours of preprocessing before the
-        # pipeline would otherwise crash at component-build time.
-        if self.encoder is not None and self.composite is not None:
-            raise ValueError(
-                "Set 'encoder' (single) XOR 'composite' (multi-encoder composite), not both."
-            )
-        if self.composite is not None:
+        # Fail fast on unknown aggregator / decoder names (the encoder leaf is checked by
+        # FeaturesConfig): catching these at config construction avoids burning hours of
+        # preprocessing before the pipeline would otherwise crash at component-build time.
+        if self.features.is_composite:
             if self.dataset_type not in {"segmentation", "detection"}:
                 raise ValueError(
-                    "Multi-encoder 'composite:' (composite concat) is only supported for "
-                    f"dataset_type in {{'segmentation', 'detection'}}, got {self.dataset_type!r}."
+                    "The composite encoder (several encoders concatenated) is only supported "
+                    f"for dataset_type in {{'segmentation', 'detection'}}, got {self.dataset_type!r}."
                 )
-            if self.feature_mode != "cached":
+            if self.features.kind != "cached":
                 raise ValueError(
-                    "'composite:' is cached-only — live multi-encoder (N resident backbones, "
-                    "for live augmentation) is a deferred increment; set feature_mode='cached'."
+                    "The composite encoder is cached-only: live multi-encoder (N resident "
+                    "backbones, for live augmentation) is a deferred increment; set "
+                    "feature_mode='cached'."
                 )
-            # Default each member's feature_kind + member_norm and the concat_resolution,
-            # mirroring the single-encoder preprocessing.feature_kind default above.
-            consumer_kind = "patch_features"
-            resolved_members = []
-            for member in self.composite.encoders:
-                fk = member.feature_kind or consumer_kind
-                norm = member.member_norm or ("none" if fk == "cls_attention" else "l2")
-                resolved_members.append(replace(member, feature_kind=fk, member_norm=norm))
-            concat_resolution = self.composite.concat_resolution or "grid"
-            object.__setattr__(
-                self,
-                "composite",
-                replace(
-                    self.composite,
-                    encoders=resolved_members,
-                    concat_resolution=concat_resolution,
-                ),
-            )
-        if self.encoder is not None:
-            from slide2vec.encoders.registry import encoder_registry
-
-            try:
-                encoder_registry.info(self.encoder.name)
-            except KeyError as exc:
-                available = ", ".join(sorted(encoder_registry.names())) or "(none)"
-                raise ValueError(
-                    f"Unknown encoder name '{self.encoder.name}'. "
-                    f"Available encoders: {available}"
-                ) from exc
-        if self.composite is not None:
-            from slide2vec.encoders.registry import encoder_registry
-
-            for member in self.composite.encoders:
-                try:
-                    encoder_registry.info(member.name)
-                except KeyError as exc:
-                    available = ", ".join(sorted(encoder_registry.names())) or "(none)"
-                    raise ValueError(
-                        f"Unknown encoder name '{member.name}' in 'composite.encoders'. "
-                        f"Available encoders: {available}"
-                    ) from exc
         if self.aggregator is not None:
             from soma.aggregators.registry import aggregator_registry
 
@@ -1959,6 +1373,8 @@ def _normalize_yaml_value(obj: Any) -> Any:
 
 def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
     """Convert a PipelineConfig into the canonical nested YAML layout."""
+    from soma._legacy_layout import features_to_layout
+
     data = {
         "run": {
             "output_root": _normalize_yaml_value(config.output_root),
@@ -1970,11 +1386,7 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             "dataset_csv": _normalize_yaml_value(config.dataset_csv),
             "splits_csv": _normalize_yaml_value(config.splits_csv),
             "dataset_type": config.dataset_type,
-            "feature_mode": config.feature_mode,
         },
-        "preprocessing": _normalize_yaml_value(asdict(config.preprocessing)),
-        "execution": _normalize_yaml_value(asdict(config.execution)),
-        "cache": _normalize_yaml_value(asdict(config.cache)),
         "task": (
             _normalize_yaml_value(task_config_dict(config.task))
             if config.task is not None
@@ -1997,11 +1409,9 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             "heatmaps": _normalize_yaml_value(asdict(config.heatmaps)),
         },
     }
-    data["encoder"] = (
-        _normalize_yaml_value(asdict(config.encoder))
-        if config.encoder is not None
-        else None
-    )
+    features = features_to_layout(config.features)
+    data["data"]["feature_mode"] = features.pop("feature_mode")
+    data.update(_normalize_yaml_value(features))
     data["aggregation"] = (
         _normalize_yaml_value(asdict(config.aggregator))
         if config.aggregator is not None
@@ -2010,11 +1420,6 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
     data["decoder"] = (
         _normalize_yaml_value(asdict(config.decoder))
         if config.decoder is not None
-        else None
-    )
-    data["composite"] = (
-        _normalize_yaml_value(asdict(config.composite))
-        if config.composite is not None
         else None
     )
     if config.representation is not None:
@@ -2032,6 +1437,23 @@ def config_yaml_dict(config: PipelineConfig) -> dict[str, Any]:
     original launch or a resume of it.
     """
     return _deep_merge_dicts(_load_default_config_data(), _config_to_layout_dict(config))
+
+
+#: ``ExecutionOptions`` fields slide2vec resolves for the machine when it is built: the
+#: GPU count and the CPU-capped preprocessing workers. A saved ``config.yaml`` records the
+#: resolved values; they are operational, not part of a run's recipe.
+_MACHINE_RESOLVED_EXECUTION_FIELDS = ("num_gpus", "num_preprocessing_workers")
+
+
+def without_machine_resolved_fields(payload: dict[str, Any]) -> dict[str, Any]:
+    """A ``config.yaml`` payload without the execution fields resolved for the machine,
+    for comparing two runs' recipes (the resume drift guards)."""
+    stripped = copy.deepcopy(payload)
+    execution = stripped.get("execution")
+    if isinstance(execution, dict):
+        for name in _MACHINE_RESOLVED_EXECUTION_FIELDS:
+            execution.pop(name, None)
+    return stripped
 
 
 def save_config(config: PipelineConfig, path: Path | str) -> None:

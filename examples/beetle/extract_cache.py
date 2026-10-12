@@ -14,7 +14,7 @@ from soma import FeatureExtractor
 from soma.config import load_config
 from soma.data._legacy import legacy_samples_from_csv
 from soma.pipeline.build import extraction_shape, extraction_unit
-from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 
 def _sha256(path: Path) -> str:
@@ -37,18 +37,21 @@ def extract_verified_cache(
 
     config = load_config(config_path)
     dataset = legacy_samples_from_csv(config.dataset_csv)
-    if config.encoder is None:
+    features = config.features
+    if features.encoder is None:
         raise ValueError("BEETLE extraction requires a single encoder configuration.")
-    cache = config.cache
+    cache = features.cache
     if cache.root_dir is None:
         cache = replace(cache, root_dir=Path(config.output_root) / "feature_cache")
     extraction = FeatureExtractor(
         dataset,
-        config.encoder,
+        features.encoder,
         resolve_pipeline_preprocessing(config),
         shape=extraction_shape(config.dataset_type),
         unit=extraction_unit(config),
-        execution=config.execution,
+        dense=resolve_pipeline_dense(config),
+        spacing_policy=features.spacing_policy,
+        execution=features.execution,
         cache=cache,
         output_root=work_dir,
     ).extract()

@@ -8,8 +8,7 @@ import yaml
 
 from soma.config import (
     AggregatorConfig,
-    CacheConfig,
-    EncoderConfig,
+    FeaturesConfig,
     PipelineConfig,
     TaskConfig,
     TrainingConfig,
@@ -23,8 +22,7 @@ def _make_valid_config(tmp_path: Path) -> Path:
         splits_csv="data/splits.csv",
         output_root="runs",
         dataset_type="slide",
-        cache=CacheConfig(),
-        encoder=EncoderConfig(name="uni2"),
+        features=FeaturesConfig(encoder="uni2"),
         aggregator=AggregatorConfig(name="abmil"),
         task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(epochs=5),
@@ -44,7 +42,7 @@ def test_run_shorthand_passes_config_and_runs_pipeline(tmp_path: Path):
     MockPipeline.assert_called_once()
     MockPipeline.return_value.run.assert_called_once()
     config_arg = MockPipeline.call_args[0][0]
-    assert config_arg.encoder.name == "uni2"
+    assert config_arg.features.encoder.name == "uni2"
     assert config_arg.task.name == "binary_classification"
 
 
@@ -63,7 +61,7 @@ def _run_with_args(config_args: list[str]):
 def test_set_override_repoints_scalar(tmp_path: Path):
     config_path = _make_valid_config(tmp_path)
     config_arg = _run_with_args([str(config_path), "--set", "encoder.name=phikon"])
-    assert config_arg.encoder.name == "phikon"
+    assert config_arg.features.encoder.name == "phikon"
 
 
 def test_set_override_parses_value_type(tmp_path: Path):
@@ -87,7 +85,7 @@ def test_multiple_set_overrides(tmp_path: Path):
     config_arg = _run_with_args(
         [str(config_path), "--set", "encoder.name=phikon", "--set", "run.output_root=/out"]
     )
-    assert config_arg.encoder.name == "phikon"
+    assert config_arg.features.encoder.name == "phikon"
     assert str(config_arg.output_root) == "/out"
 
 

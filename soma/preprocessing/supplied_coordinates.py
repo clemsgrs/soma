@@ -23,7 +23,9 @@ import pandas as pd
 from hs2p.artifacts import load_tiling_result
 from hs2p.tiling.io import normalize_artifact_path
 
-from soma.config import PreprocessingConfig
+from slide2vec import PreprocessingConfig
+
+from soma.config import is_annotation_sampling
 from soma.data._legacy import LegacySamples, LegacyRecord
 
 logger = logging.getLogger(__name__)
@@ -75,11 +77,11 @@ def coordinates_digest(coordinates_path: Path, *, sample_id: str) -> str:
 
 
 def _check_supported(preprocessing: PreprocessingConfig) -> None:
-    if preprocessing.masks is not None:
+    if is_annotation_sampling(preprocessing.masks):
         raise ValueError(
             "Supplied coordinates (manifest column 'coordinates_path') cannot be combined with "
-            "preprocessing.masks: the masks block selects tiles, and the supplied artifacts "
-            "already fix them. Remove one of the two."
+            "annotation sampling (preprocessing.masks): the masks select tiles, and the "
+            "supplied artifacts already fix them. Remove one of the two."
         )
     if preprocessing.region_tile_multiple is not None:
         raise ValueError(
@@ -166,15 +168,16 @@ def _load_checked(
             "Declare the same level-0 spacing in both, or regenerate the artifact."
         )
     mismatches = []
-    if float(result.requested_spacing_um) != float(preprocessing.requested_spacing_um):
+    tiling = preprocessing.tiling
+    if float(result.requested_spacing_um) != float(tiling.requested_spacing_um):
         mismatches.append(
             f"requested_spacing_um {float(result.requested_spacing_um)} "
-            f"(preprocessing: {float(preprocessing.requested_spacing_um)})"
+            f"(preprocessing: {float(tiling.requested_spacing_um)})"
         )
-    if int(result.requested_tile_size_px) != int(preprocessing.requested_tile_size_px):
+    if int(result.requested_tile_size_px) != int(tiling.requested_tile_size_px):
         mismatches.append(
             f"requested_tile_size_px {int(result.requested_tile_size_px)} "
-            f"(preprocessing: {int(preprocessing.requested_tile_size_px)})"
+            f"(preprocessing: {int(tiling.requested_tile_size_px)})"
         )
     if mismatches:
         raise ValueError(

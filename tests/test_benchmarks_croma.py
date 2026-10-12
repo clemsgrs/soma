@@ -70,8 +70,8 @@ def test_croma_config_materializes_the_fixed_protocol(tmp_path, monkeypatch):
         alpha=0.10,
     )
     assert config.training.seed == 0
-    assert config.encoder.name == "uni2"
-    assert config.encoder.output_variant == "default"
+    assert config.features.encoder.name == "uni2"
+    assert config.features.encoder.output_variant == "default"
 
 
 def test_croma_facet_materializes_the_fixed_protocol():
@@ -115,7 +115,7 @@ def test_croma_validates_panel_pins(tmp_path, monkeypatch):
     panel = benchmark.build_config(encoder="uni2", output_root=tmp_path / "panel")
 
     assert validations == [("uni2",)]  # scoped to the requested encoder only
-    assert panel.encoder.output_variant == "default"
+    assert panel.features.encoder.output_variant == "default"
 
 
 def test_croma_keeps_encoders_outside_the_panel_runnable(tmp_path, monkeypatch):
@@ -130,8 +130,8 @@ def test_croma_keeps_encoders_outside_the_panel_runnable(tmp_path, monkeypatch):
     )
 
     assert validations == []
-    assert outside.encoder.name == "isight"
-    assert outside.encoder.output_variant is None
+    assert outside.features.encoder.name == "isight"
+    assert outside.features.encoder.output_variant is None
 
 
 def test_croma_reference_has_one_external_row_per_cohort_encoder_metric():

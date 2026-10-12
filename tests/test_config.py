@@ -1,39 +1,310 @@
 """Tests for soma.config — frozen dataclass configurations."""
 
-from dataclasses import FrozenInstanceError, fields, replace
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
+import slide2vec
 import yaml
+from hs2p import (
+    DEFAULT_MASK_SAMPLING,
+    FilterConfig,
+    MaskSamplingConfig,
+    SegmentationConfig,
+    TilingConfig,
+)
 
+import soma
+import soma.config
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
     DecoderConfig,
-    EncoderConfig,
+    EncoderLeaf,
     EvalConfig,
-    ExecutionConfig,
-    MasksConfig,
+    FeaturesConfig,
     NormalizationConfig,
     PipelineConfig,
-    PreprocessingConfig,
     ProjectionConfig,
-    SamplingConfig,
     SubgroupConfig,
     TaskConfig,
     TrainingConfig,
     load_config,
     save_config,
 )
+from soma.spacing import resolve_effective_spacing_um
+
+
+def _write_yaml(tmp_path: Path, data: dict, name: str = "config.yaml") -> Path:
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+# --- The extraction surface: slide2vec / hs2p dataclasses held as given (ADR 0019) ---
+
+_MIRRORED_CLASSES = (
+    "PreprocessingConfig",
+    "EncoderConfig",
+    "EncoderMemberConfig",
+    "CompositeConfig",
+    "ExecutionConfig",
+    "MasksConfig",
+    "SamplingConfig",
+    "AttentionConfig",
+    "PreviewConfig",
+)
+
+_ANNOTATED_SEGMENTATION_YAML = {
+    "data": {
+        "dataset_csv": "slides.csv",
+        "splits_csv": "splits.csv",
+        "dataset_type": "segmentation",
+        "feature_mode": "cached",
+    },
+    "preprocessing": {
+        "mask_backend": "openslide",
+        "requested_tile_size_px": 512,
+        "requested_spacing_um": 0.5,
+        "spacing_policy": "native_if_coarser",
+        "tolerance": 0.1,
+        "dense_window_size": 224,
+        "dense_window_overlap": 0.5,
+        "masks": {
+            "pixel_mapping": {"background": 0, "tumor": 1, "necrosis": 2},
+            "min_coverage": {"tumor": 0.05, "necrosis": 0.05},
+        },
+        "sampling": {"strategy": "joint", "output_mode": "merged"},
+    },
+    "execution": {"precision": "fp16"},
+    "cache": {"dtype": "fp16"},
+    "encoder": {
+        "name": "virchow2",
+        "batch_size": 8,
+        "adaptive_batching": True,
+        "output_variant": "cls",
+    },
+    "decoder": {"name": "lightweight_conv"},
+    "task": {"name": "segmentation", "params": {"classes": {"tumor": [1], "necrosis": [2]}, "ignore": [0]}},
+}
+
+
+def test_the_mirrored_extraction_classes_are_gone():
+    for name in _MIRRORED_CLASSES:
+        assert not hasattr(soma.config, name), name
+        assert not hasattr(soma, name), name
+
+
+def test_yaml_extraction_blocks_load_into_the_upstream_dataclasses(tmp_path: Path):
+    """The YAML blocks are read into slide2vec's PreprocessingConfig (holding hs2p's
+    tiling, segmentation, filter and mask-sampling configs), ExecutionOptions and
+    DenseOptions; soma keeps only the kind, the encoder leaf and the cache."""
+    features = load_config(_write_yaml(tmp_path, _ANNOTATED_SEGMENTATION_YAML)).features
+
+    assert features.kind == "cached"
+    assert features.encoder == EncoderLeaf(name="virchow2", params={"output_variant": "cls"})
+    extraction = features.extraction
+    assert isinstance(extraction, slide2vec.PreprocessingConfig)
+    assert extraction.tiling == TilingConfig(
+        requested_spacing_um=0.5,
+        requested_tile_size_px=512,
+        tolerance=0.1,
+        overlap=0.0,
+        mask_backend="openslide",
+    )
+    assert extraction.segmentation == SegmentationConfig(method="hsv", downsample=64)
+    # No filter stated: slide2vec's default (hs2p's filter at the tile size) applies.
+    assert extraction.filter is None
+    assert extraction.masks == MaskSamplingConfig(
+        pixel_mapping={"background": 0, "tumor": 1, "necrosis": 2},
+        min_coverage={"tumor": 0.05, "necrosis": 0.05},
+        output_mode="merged",
+        strategy="joint",
+    )
+    assert extraction.adaptive_batching is True
+    assert features.dense == slide2vec.DenseOptions(
+        spacing_um=0.5, target_size=512, tolerance=0.1, window_size=224, overlap=0.5
+    )
+    assert isinstance(features.execution, slide2vec.ExecutionOptions)
+    assert (features.execution.precision, features.execution.batch_size) == ("fp16", 8)
+    assert features.spacing_policy == "native_if_coarser"
+    assert features.cache.dtype == "fp16"
+
+
+def test_a_tissue_run_holds_hs2p_binary_tissue_masks_at_its_threshold(tmp_path: Path):
+    data = {
+        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "slide"},
+        "preprocessing": {"requested_spacing_um": 0.5, "requested_tile_size_px": 224, "min_coverage": {"tissue": 0.3}},
+        "encoder": {"name": "uni2"},
+    }
+    masks = load_config(_write_yaml(tmp_path, data)).features.extraction.masks
+
+    assert masks == replace(DEFAULT_MASK_SAMPLING, min_coverage={"tissue": 0.3})
+
+
+def test_a_missing_spacing_or_tile_size_is_completed_from_the_encoder(tmp_path: Path):
+    """hs2p's TilingConfig is all or nothing, so the encoder fills what the YAML leaves
+    out and the YAML's own tiling values are kept."""
+    from slide2vec.encoders.registry import resolve_preprocessing_defaults
+
+    data = {
+        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "slide"},
+        "preprocessing": {"overlap": 0.25, "backend": "openslide"},
+        "encoder": {"name": "uni2"},
+    }
+    tiling = load_config(_write_yaml(tmp_path, data)).features.extraction.tiling
+
+    defaults = resolve_preprocessing_defaults("uni2")
+    assert tiling == TilingConfig(
+        requested_spacing_um=defaults["spacing_um"],
+        requested_tile_size_px=defaults["tile_size_px"],
+        tolerance=0.05,
+        overlap=0.25,
+        backend="openslide",
+    )
+
+
+def test_a_stated_filter_is_held_at_the_tile_size(tmp_path: Path):
+    data = {
+        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "slide"},
+        "preprocessing": {"requested_spacing_um": 0.5, "requested_tile_size_px": 256, "a_t": 6},
+        "encoder": {"name": "uni2"},
+    }
+    assert load_config(_write_yaml(tmp_path, data)).features.extraction.filter == FilterConfig(
+        ref_tile_size=256, a_t=6
+    )
+
+
+def test_a_tile_run_declares_no_tiling(tmp_path: Path):
+    data = {
+        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "tile"},
+        "encoder": {"name": "uni", "batch_size": 16},
+    }
+    features = load_config(_write_yaml(tmp_path, data)).features
+
+    assert features.extraction.tiling is None
+    assert features.dense is None
+    assert features.execution.batch_size == 16
+
+
+def test_the_composite_block_loads_as_the_composite_encoder_leaf(tmp_path: Path):
+    """A composite is an encoder registry entry whose params list the members; each
+    member overrides the run's DenseOptions / ExecutionOptions fields for itself."""
+    from soma.encoders import CompositeMember, CompositeParams
+
+    data = {
+        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "segmentation"},
+        "preprocessing": {"requested_spacing_um": 0.5, "requested_tile_size_px": 448},
+        "composite": {
+            "concat_resolution": "target",
+            "concat_grid_size": [37, 37],
+            "encoders": [
+                {"name": "uni", "feature_kind": "cls_attention", "attention": {"blocks": [-2, -1]}},
+                {
+                    "name": "phikon",
+                    "member_norm": "layernorm",
+                    "batch_size": 4,
+                    "allow_non_recommended_settings": True,
+                    "dense_window_size": 224,
+                },
+            ],
+        },
+        "decoder": {"name": "lightweight_conv"},
+        "task": {"name": "segmentation", "params": {"num_classes": 3}},
+    }
+    features = load_config(_write_yaml(tmp_path, data)).features
+
+    assert features.is_composite
+    composite = CompositeParams(**features.encoder.params)
+    assert composite.concat_resolution == "target"
+    assert composite.concat_grid_size == (37, 37)
+    assert composite.members == (
+        CompositeMember(name="uni", dense={"feature_kind": "cls_attention", "attention_blocks": [-2, -1]}),
+        CompositeMember(
+            name="phikon",
+            params={"allow_non_recommended_settings": True},
+            dense={"window_size": 224},
+            execution={"batch_size": 4},
+            member_norm="layernorm",
+        ),
+    )
+    member_dense = composite.members[1].dense_options(features.dense)
+    assert (member_dense.window_size, member_dense.spacing_um, member_dense.target_size) == (224, 0.5, 448)
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        _ANNOTATED_SEGMENTATION_YAML,
+        {
+            "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "detection"},
+            "preprocessing": {"requested_spacing_um": 0.25, "requested_tile_size_px": 1024, "dense_window_size": 448},
+            "composite": {"encoders": [{"name": "uni", "member_norm": "l2", "batch_size": 8}, {"name": "phikon"}]},
+            "decoder": {"name": "lightweight_conv"},
+            "task": {"name": "detection", "params": {"num_classes": 2}},
+        },
+        {
+            "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "slide"},
+            "preprocessing": {"tissue_method": "otsu", "seg_downsample": 32, "sam2_num_workers": 2, "a_t": 6},
+            "encoder": {"name": "uni2", "precision": "fp32", "save_tile_features": True},
+            "execution": {"num_gpus": 1, "num_workers_per_gpu": 3, "prefetch_factor": 2},
+        },
+    ],
+    ids=["annotated-segmentation", "composite-detection", "slide"],
+)
+def test_a_saved_config_loads_back_into_the_same_features(tmp_path: Path, data: dict):
+    config = load_config(_write_yaml(tmp_path, data, "given.yaml"))
+    saved = tmp_path / "saved.yaml"
+
+    save_config(config, saved)
+
+    assert load_config(saved) == config
+
+
+def test_the_encoder_leaf_is_validated_by_the_encoders_registry():
+    with pytest.raises(ValueError, match="Unknown encoder name 'not_a_real_encoder'"):
+        FeaturesConfig(encoder="not_a_real_encoder")
+    with pytest.raises(ValueError, match="has no param.*'precision'"):
+        FeaturesConfig(encoder=EncoderLeaf(name="uni2", params={"precision": "fp16"}))
+    with pytest.raises(ValueError, match="Unknown encoder name 'nope' in a composite"):
+        FeaturesConfig(encoder=EncoderLeaf(name="composite", params={"members": [{"name": "nope"}]}))
+    assert FeaturesConfig(encoder="uni2").encoder == EncoderLeaf(name="uni2")
+
+
+def test_features_validate_the_kind_and_the_spacing_policy():
+    with pytest.raises(ValueError, match="features.kind"):
+        FeaturesConfig(kind="streaming")
+    with pytest.raises(ValueError, match="spacing_policy"):
+        FeaturesConfig(spacing_policy="silently_upsample")
+    with pytest.raises(TypeError, match="features.extraction"):
+        FeaturesConfig(extraction={"tiling": None})
+
+
+def test_removed_preprocessing_keys_are_named(tmp_path: Path):
+    data = {
+        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "slide"},
+        "preprocessing": {"read_tile_size_px": 448},
+    }
+    with pytest.raises(ValueError, match="read_tile_size_px was removed"):
+        load_config(_write_yaml(tmp_path, data))
+    data["preprocessing"] = {"tissue_mask_tissue_value": 7}
+    with pytest.raises(ValueError, match="tissue_mask_tissue_value must be 1"):
+        load_config(_write_yaml(tmp_path, data))
+
+
+def test_native_if_coarser_resolves_one_effective_spacing_rule():
+    def effective(policy: str, native: float | None) -> float:
+        return resolve_effective_spacing_um(
+            requested_spacing_um=0.5, spacing_at_level_0=native, tolerance=0.05, policy=policy
+        )
+
+    assert effective("native_if_coarser", None) == 0.5
+    assert effective("native_if_coarser", 0.51) == 0.5
+    assert effective("native_if_coarser", 0.657476464) == 0.657476464
+    assert effective("strict", 0.657476464) == 0.5
 
 
 # --- Frozen immutability ---
-
-
-def test_preprocessing_config_is_frozen():
-    cfg = PreprocessingConfig()
-    with pytest.raises(FrozenInstanceError):
-        cfg.requested_tile_size_px = 512
 
 
 def test_pipeline_config_is_frozen():
@@ -53,104 +324,6 @@ def test_mirror_root_roundtrips_as_an_optional_run_setting(tmp_path: Path):
     saved = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
     assert saved["run"]["mirror_root"] == str(tmp_path / "shared-mirror")
     assert loaded.mirror_root == tmp_path / "shared-mirror"
-
-
-# --- Default values ---
-
-
-def test_preprocessing_config_defaults():
-    cfg = PreprocessingConfig()
-    assert cfg.backend == "auto"
-    assert cfg.requested_backend == "auto"
-    assert cfg.requested_tile_size_px is None
-    assert cfg.requested_spacing_um is None
-    assert cfg.requested_region_size_px is None
-    assert cfg.region_tile_multiple is None
-    assert cfg.read_tile_size_px is None
-    assert cfg.read_region_size_px is None
-    assert cfg.has_hierarchical_geometry is False
-    field_names = {field.name for field in fields(PreprocessingConfig)}
-    assert "hierarchical" not in field_names
-    assert "npatch" not in field_names
-    assert "hierarchical_patch_size_px" not in field_names
-    assert cfg.tissue_method is None
-    assert cfg.min_coverage == {"tissue": 0.1}
-    assert cfg.overlap == 0.0
-    assert cfg.seg_downsample == 64
-    assert cfg.sam2_device == "cpu"
-    assert cfg.sam2_num_workers is None
-    assert cfg.tolerance == 0.05
-    assert cfg.ref_tile_size_px is None
-    assert cfg.a_t == 4
-    assert cfg.tissue_mask_tissue_value == 1
-    assert cfg.preview.save_mask_preview is True
-    assert cfg.preview.save_tiling_preview is True
-    assert cfg.preview.downsample == 32
-    assert cfg.preview.tissue_contour_color == (37, 94, 59)
-    assert cfg.preview.mask_overlay_alpha == pytest.approx(0.5)
-
-
-def test_preprocessing_config_exposes_opt_in_native_if_coarser_spacing_policy():
-    assert PreprocessingConfig().spacing_policy == "strict"
-    assert (
-        PreprocessingConfig(spacing_policy="native_if_coarser").spacing_policy
-        == "native_if_coarser"
-    )
-
-
-def test_preprocessing_config_rejects_unknown_spacing_policy():
-    with pytest.raises(ValueError, match="spacing_policy"):
-        PreprocessingConfig(spacing_policy="silently_upsample")
-
-
-def test_native_if_coarser_resolves_one_effective_spacing_rule():
-    fallback = PreprocessingConfig(
-        requested_spacing_um=0.5,
-        tolerance=0.05,
-        spacing_policy="native_if_coarser",
-    )
-    strict = PreprocessingConfig(
-        requested_spacing_um=0.5,
-        tolerance=0.05,
-        spacing_policy="strict",
-    )
-
-    assert fallback.effective_spacing_um(None) == 0.5
-    assert fallback.effective_spacing_um(0.51) == 0.5
-    assert fallback.effective_spacing_um(0.657476464) == 0.657476464
-    assert strict.effective_spacing_um(0.657476464) == 0.5
-
-
-def test_preprocessing_dense_window_defaults_to_whole():
-    cfg = PreprocessingConfig()
-    assert cfg.dense_window_size is None
-    assert cfg.dense_window_overlap == 0.0
-
-
-@pytest.mark.parametrize(
-    ("kwargs", "message"),
-    [
-        ({"dense_window_size": 0}, "dense_window_size"),
-        ({"dense_window_size": -64}, "dense_window_size"),
-        ({"dense_window_overlap": 1.0}, "dense_window_overlap"),
-        ({"dense_window_overlap": -0.1}, "dense_window_overlap"),
-        ({"dense_window_overlap": 0.5}, "dense_window_overlap requires dense_window_size"),
-    ],
-)
-def test_preprocessing_dense_window_rejects_invalid(kwargs, message):
-    with pytest.raises(ValueError, match=message):
-        PreprocessingConfig(**kwargs)
-
-
-def test_preprocessing_dense_window_roundtrip(tmp_path: Path):
-    cfg = _make_pipeline_config(
-        preprocessing=PreprocessingConfig(dense_window_size=512, dense_window_overlap=0.5)
-    )
-    yaml_path = tmp_path / "config.yaml"
-    save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
-    assert loaded.preprocessing.dense_window_size == 512
-    assert loaded.preprocessing.dense_window_overlap == 0.5
 
 
 def test_training_config_defaults():
@@ -535,8 +708,8 @@ def test_load_config_rejects_unknown_projection_method(tmp_path: Path):
 
 
 def test_aggregator_config_explicit_name():
-    cfg = AggregatorConfig(name="abmil")
-    assert cfg.name == "abmil"
+    cfg = AggregatorConfig(name="transmil")
+    assert cfg.name == "transmil"
     assert cfg.params == {}
 
 
@@ -547,7 +720,7 @@ def test_aggregator_config_requires_name():
 
 def test_task_config_requires_name():
     with pytest.raises(TypeError):
-        TaskConfig()  # name is required
+        TaskConfig()
 
 
 def test_task_config_params_default_empty():
@@ -580,7 +753,7 @@ def test_pipeline_config_rejects_unknown_encoder():
             splits_csv="splits.csv",
             output_root="out",
             dataset_type="slide",
-            encoder=EncoderConfig(name="not_a_real_encoder"),
+            features=FeaturesConfig(encoder=EncoderLeaf(name="not_a_real_encoder")),
             task=TaskConfig(name="binary_classification"),
         )
 
@@ -618,20 +791,23 @@ def test_evaluation_config_metrics_explicit():
 
 
 _CLASS_SCHEME = {"classes": {"tumor": [1], "stroma": [2], "necrosis": [3]}, "ignore": [0]}
+_PIXEL_MAPPING = {"background": 0, "tumor": 1, "stroma": 2, "necrosis": 3}
+
+
+def _annotation_masks(**overrides) -> MaskSamplingConfig:
+    values = dict(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}, output_mode="merged")
+    values.update(overrides)
+    return MaskSamplingConfig(**values)
+
+
+def _features(masks: MaskSamplingConfig | None = None, **overrides) -> FeaturesConfig:
+    if masks is not None:
+        overrides["extraction"] = slide2vec.PreprocessingConfig(masks=masks)
+    return FeaturesConfig(**overrides)
 
 
 def _seg_config(**overrides):
-    # masks/sampling now live under preprocessing (#109); accept them as top-level
-    # kwargs here for test convenience and fold them into a PreprocessingConfig.
     masks = overrides.pop("masks", None)
-    sampling = overrides.pop("sampling", None)
-    preprocessing = overrides.pop("preprocessing", None)
-    if masks is not None or sampling is not None:
-        preprocessing = replace(
-            preprocessing if preprocessing is not None else PreprocessingConfig(),
-            masks=masks,
-            sampling=sampling,
-        )
     kwargs = dict(
         dataset_csv="data.csv",
         splits_csv="splits.csv",
@@ -640,9 +816,8 @@ def _seg_config(**overrides):
         decoder=DecoderConfig(name="lightweight_conv"),
         task=TaskConfig(name="segmentation"),
     )
-    if preprocessing is not None:
-        kwargs["preprocessing"] = preprocessing
     if masks is not None:
+        kwargs["features"] = _features(masks)
         # Annotation rasters need an explicit training class scheme.
         kwargs["task"] = TaskConfig(name="segmentation", params=dict(_CLASS_SCHEME))
     kwargs.update(overrides)
@@ -663,7 +838,7 @@ def test_segmentation_requires_decoder():
 
 def test_segmentation_rejects_aggregator():
     with pytest.raises(ValueError, match="aggregator must be None"):
-        _seg_config(aggregator=AggregatorConfig(name="mean_pool"))
+        _seg_config(aggregator=AggregatorConfig(name="abmil"))
 
 
 def test_segmentation_requires_segmentation_task():
@@ -677,93 +852,39 @@ def test_decoder_rejected_for_non_segmentation():
             dataset_csv="data.csv",
             splits_csv="splits.csv",
             output_root="out",
-            dataset_type="tile",
+            dataset_type="slide",
             decoder=DecoderConfig(name="lightweight_conv"),
             task=TaskConfig(name="binary_classification"),
         )
 
 
 def test_segmentation_rejects_unknown_decoder():
-    with pytest.raises(ValueError, match="Unknown decoder name"):
-        _seg_config(decoder=DecoderConfig(name="not_a_real_decoder"))
+    with pytest.raises(ValueError, match="Unknown decoder"):
+        _seg_config(decoder=DecoderConfig(name="not_a_decoder"))
 
 
 def test_decoder_config_round_trips_through_yaml(tmp_path: Path):
-    cfg = _seg_config(decoder=DecoderConfig(name="lightweight_conv", params={"num_upsample_blocks": 2}))
+    cfg = _seg_config(decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}))
     path = tmp_path / "cfg.yaml"
     save_config(cfg, path)
     loaded = load_config(path)
-    assert loaded.dataset_type == "segmentation"
     assert loaded.decoder.name == "lightweight_conv"
-    assert loaded.decoder.params == {"num_upsample_blocks": 2}
+    assert loaded.decoder.params == {"hidden_dim": 64}
 
 
-# --- A2: segmentation slide-manifest ingestion (masks:/sampling:) ---
-
-_PIXEL_MAPPING = {"background": 0, "tumor": 1, "stroma": 2, "necrosis": 3}
-
-
-def test_masks_config_valid_defaults():
-    masks = MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1, "stroma": 0.5})
-    assert masks.colors is None
-    sampling = SamplingConfig()
-    assert (sampling.strategy, sampling.output_mode) == ("joint", "merged")
-
-
-def test_masks_config_accepts_background_free_vocabulary():
-    # No reserved-name rule: a background-free vocabulary like {tumor: 2} is accepted,
-    # with structural validation still applied.
-    masks = MasksConfig(pixel_mapping={"tumor": 2}, min_coverage={"tumor": 0.5})
-    assert masks.pixel_mapping == {"tumor": 2}
-    assert masks.min_coverage == {"tumor": 0.5}
-
-
-def test_masks_config_rejects_empty_pixel_mapping():
-    with pytest.raises(ValueError, match="non-empty"):
-        MasksConfig(pixel_mapping={})
-
-
-def test_masks_config_rejects_duplicate_pixel_values():
-    with pytest.raises(ValueError, match="unique pixel values"):
-        MasksConfig(pixel_mapping={"tumor": 1, "stroma": 1})
-
-
-def test_masks_config_min_coverage_must_be_subset():
-    with pytest.raises(ValueError, match="min_coverage references labels absent"):
-        MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"glands": 0.1})
-
-
-def test_masks_config_min_coverage_range():
-    with pytest.raises(ValueError, match=r"min_coverage\['tumor'\] must be in \[0, 1\]"):
-        MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 1.5})
-
-
-def test_masks_config_colors_must_be_subset_and_rgb():
-    with pytest.raises(ValueError, match="colors references labels absent"):
-        MasksConfig(pixel_mapping=_PIXEL_MAPPING, colors={"glands": [1, 2, 3]})
-    with pytest.raises(ValueError, match=r"colors\['tumor'\] must be None or a length-3 RGB"):
-        MasksConfig(pixel_mapping=_PIXEL_MAPPING, colors={"tumor": [1, 2]})
-
-
-def test_sampling_config_rejects_unknown_strategy_and_mode():
-    with pytest.raises(ValueError, match="sampling.strategy must be 'joint' or 'independent'"):
-        SamplingConfig(strategy="greedy")
-    with pytest.raises(ValueError, match="sampling.output_mode must be 'merged' or 'per_annotation'"):
-        SamplingConfig(output_mode="single")
+# --- Annotation sampling: hs2p's MaskSamplingConfig in the extraction ---
 
 
 def test_segmentation_slide_manifest_config_valid():
     cfg = _seg_config(
-        masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        masks=_annotation_masks(),
         task=TaskConfig(
             name="segmentation",
             params={"classes": {"tissue": [1, 2], "necrosis": [3]}, "ignore": [0]},
         ),
     )
-    # masks/sampling now live under preprocessing (#109).
-    assert cfg.preprocessing.masks.pixel_mapping["necrosis"] == 3
-    assert cfg.preprocessing.sampling.output_mode == "merged"
+    assert cfg.features.extraction.masks.pixel_mapping["necrosis"] == (3,)
+    assert cfg.features.extraction.masks.output_mode == "merged"
 
 
 def test_segmentation_slide_manifest_requires_task_classes():
@@ -771,7 +892,7 @@ def test_segmentation_slide_manifest_requires_task_classes():
     must be stated (task.params.classes), it is never inferred from pixel_mapping."""
     with pytest.raises(ValueError, match=r"requires task\.params\.classes"):
         _seg_config(
-            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
+            masks=_annotation_masks(),
             task=TaskConfig(name="segmentation", params={"num_classes": 3}),
         )
 
@@ -783,7 +904,7 @@ def test_segmentation_slide_manifest_rejects_class_value_missing_from_pixel_mapp
         ValueError, match=r"task\.params\.classes 'tumor' lists raw value 7.*pixel_mapping"
     ):
         _seg_config(
-            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
+            masks=_annotation_masks(),
             task=TaskConfig(name="segmentation", params={"classes": {"tumor": [1, 7]}}),
         )
 
@@ -793,7 +914,7 @@ def test_segmentation_slide_manifest_rejects_ignored_value_missing_from_pixel_ma
         ValueError, match=r"task\.params\.ignore lists raw value 9.*pixel_mapping"
     ):
         _seg_config(
-            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage={"tumor": 0.1}),
+            masks=_annotation_masks(),
             task=TaskConfig(
                 name="segmentation", params={"classes": {"tumor": [1]}, "ignore": [0, 9]}
             ),
@@ -801,11 +922,11 @@ def test_segmentation_slide_manifest_rejects_ignored_value_missing_from_pixel_ma
 
 
 def test_segmentation_pre_cropped_classes_need_no_pixel_mapping():
-    # Without a masks block there is no sampling vocabulary to check against.
+    # hs2p's binary tissue vocabulary is no sampling vocabulary to check against.
     cfg = _seg_config(
         task=TaskConfig(name="segmentation", params={"classes": {"tumor": [7]}, "ignore": [9]})
     )
-    assert cfg.preprocessing.masks is None
+    assert cfg.features.extraction.masks.pixel_mapping == DEFAULT_MASK_SAMPLING.pixel_mapping
 
 
 def test_segmentation_rejects_raw_value_in_two_classes():
@@ -817,32 +938,8 @@ def test_segmentation_rejects_raw_value_in_two_classes():
         )
 
 
-def test_masks_and_sampling_live_under_preprocessing():
-    """masks/sampling are PreprocessingConfig fields, not top-level PipelineConfig fields (#109)."""
-    pipeline_field_names = {f.name for f in fields(PipelineConfig)}
-    assert "masks" not in pipeline_field_names
-    assert "sampling" not in pipeline_field_names
-    preprocessing_field_names = {f.name for f in fields(PreprocessingConfig)}
-    assert "masks" in preprocessing_field_names
-    assert "sampling" in preprocessing_field_names
-
-
-def test_pipeline_config_rejects_top_level_masks_kwarg():
-    """No backward-compat top-level masks= on PipelineConfig (clean break, #109)."""
-    with pytest.raises(TypeError):
-        PipelineConfig(
-            dataset_csv="data.csv",
-            splits_csv="splits.csv",
-            output_root="out",
-            dataset_type="segmentation",
-            decoder=DecoderConfig(name="lightweight_conv"),
-            task=TaskConfig(name="segmentation"),
-            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING),
-        )
-
-
 def test_top_level_masks_sampling_yaml_rejected(tmp_path: Path):
-    """A top-level masks:/sampling: block in YAML is no longer accepted (#109)."""
+    """A top-level masks:/sampling: block in YAML is not accepted (#109)."""
     path = tmp_path / "cfg.yaml"
     save_config(_seg_config(), path)
     raw = yaml.safe_load(path.read_text())
@@ -853,10 +950,9 @@ def test_top_level_masks_sampling_yaml_rejected(tmp_path: Path):
 
 
 def test_masks_valid_for_slide_dataset():
-    """AC1/AC2: a masks block is valid on a dataset_type='slide' dataset (the
-    annotation-restricted merged bag, #110), wired through the ordinary
-    featurizer→aggregator→predictor with an ordinary slide-level classification task — the
-    masks block restricts tile selection only; the MIL aggregator + task head are untouched."""
+    """An annotation vocabulary is valid on a dataset_type='slide' dataset (the
+    annotation-restricted merged bag, #110): it restricts tile selection only; the MIL
+    aggregator and task head are the ordinary slide-level pair."""
     cfg = PipelineConfig(
         dataset_csv="data.csv",
         splits_csv="splits.csv",
@@ -864,132 +960,114 @@ def test_masks_valid_for_slide_dataset():
         dataset_type="slide",
         aggregator=AggregatorConfig(name="abmil"),
         task=TaskConfig(name="binary_classification"),
-        preprocessing=PreprocessingConfig(
-            masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
+        features=_features(
+            MaskSamplingConfig(
+                pixel_mapping={"background": 0, "tumor": 1},
+                min_coverage={"tumor": 0.5},
+                output_mode="merged",
+            )
         ),
     )
-    assert cfg.preprocessing.masks.pixel_mapping == {"background": 0, "tumor": 1}
-    # The aggregator + task head are the ordinary slide-level pair, not special-cased by masks.
+    assert cfg.features.extraction.masks.pixel_mapping == {"background": (0,), "tumor": (1,)}
     assert cfg.aggregator.name == "abmil"
     assert cfg.task.name == "binary_classification"
 
 
 def test_masks_rejected_for_tile_dataset():
-    """AC5: a masks block on a dataset_type='tile' dataset raises — patch manifests have no
-    annotation-sampling step."""
-    with pytest.raises(ValueError, match="masks: .* dataset_type"):
+    """An annotation vocabulary on a dataset_type='tile' dataset raises — patch manifests
+    have no annotation-sampling step."""
+    with pytest.raises(ValueError, match="samples annotations.*dataset_type"):
         PipelineConfig(
             dataset_csv="data.csv",
             splits_csv="splits.csv",
             output_root="out",
             dataset_type="tile",
             task=TaskConfig(name="binary_classification"),
-            preprocessing=PreprocessingConfig(
-                masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
+            features=_features(
+                MaskSamplingConfig(
+                    pixel_mapping={"background": 0, "tumor": 1},
+                    min_coverage={"tumor": 0.5},
+                    output_mode="merged",
+                )
             ),
         )
 
 
-def test_per_annotation_output_mode_rejected_for_slide():
-    """AC5: output_mode='per_annotation' on a slide dataset raises, pointing at #86."""
+@pytest.mark.parametrize("dataset_type", ["slide", "patient", "segmentation"])
+def test_per_annotation_output_mode_is_deferred(dataset_type: str):
+    """hs2p's per_annotation output mode stays rejected, pointing at #86."""
+    kwargs = dict(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type=dataset_type,
+        task=TaskConfig(name="binary_classification"),
+        features=_features(_annotation_masks(output_mode="per_annotation")),
+    )
+    if dataset_type == "segmentation":
+        kwargs.update(decoder=DecoderConfig(name="lightweight_conv"), task=TaskConfig(name="segmentation", params=dict(_CLASS_SCHEME)))
     with pytest.raises(ValueError, match="per_annotation.*#86"):
-        PipelineConfig(
-            dataset_csv="data.csv",
-            splits_csv="splits.csv",
-            output_root="out",
-            dataset_type="slide",
-            task=TaskConfig(name="binary_classification"),
-            preprocessing=PreprocessingConfig(
-                masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
-                sampling=SamplingConfig(output_mode="per_annotation"),
-            ),
-        )
+        PipelineConfig(**kwargs)
 
 
 def test_masks_valid_for_patient_dataset():
-    """AC1/AC2 (#111): a masks block is valid on a dataset_type='patient' dataset — the
-    annotation-restricted merged bag extends from 'slide' to 'patient'. Every slide is tiled
-    to its restricted merged bag (tiling/selection identical to 'slide'); patient-level
-    aggregation then consumes those restricted slide bags. A patient pipeline carries no
-    trainable aggregator (it uses a pretrained patient encoder), so the masks block restricts
-    tile selection only; the patient-encoder + task head are untouched."""
+    """An annotation vocabulary is valid on a dataset_type='patient' dataset (#111):
+    every slide is tiled to its restricted merged bag; the patient encoder and task head
+    are untouched."""
     cfg = PipelineConfig(
         dataset_csv="data.csv",
         splits_csv="splits.csv",
         output_root="out",
         dataset_type="patient",
         task=TaskConfig(name="binary_classification"),
-        preprocessing=PreprocessingConfig(
-            masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
+        features=_features(
+            MaskSamplingConfig(
+                pixel_mapping={"background": 0, "tumor": 1},
+                min_coverage={"tumor": 0.5},
+                output_mode="merged",
+            )
         ),
     )
-    assert cfg.preprocessing.masks.pixel_mapping == {"background": 0, "tumor": 1}
-    assert cfg.dataset_type == "patient"
-    # Patient pipelines never carry a trainable aggregator; the masks block does not change that.
+    assert cfg.features.extraction.masks.min_coverage == {"tumor": 0.5}
     assert cfg.aggregator is None
 
 
-def test_per_annotation_output_mode_rejected_for_patient():
-    """AC4 (#111): output_mode='per_annotation' stays rejected on a patient dataset, pointing
-    at #86 (the bag path only supports the merged compartment bag)."""
-    with pytest.raises(ValueError, match="per_annotation.*#86"):
-        PipelineConfig(
-            dataset_csv="data.csv",
-            splits_csv="splits.csv",
-            output_root="out",
-            dataset_type="patient",
-            task=TaskConfig(name="binary_classification"),
-            preprocessing=PreprocessingConfig(
-                masks=MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}),
-                sampling=SamplingConfig(output_mode="per_annotation"),
-            ),
-        )
-
-
-def test_sampling_requires_masks():
+def test_sampling_requires_masks(tmp_path: Path):
+    path = _write_yaml(
+        tmp_path,
+        {
+            "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "segmentation"},
+            "decoder": {"name": "lightweight_conv"},
+            "task": {"name": "segmentation", "params": {"num_classes": 2}},
+            "preprocessing": {"sampling": {"strategy": "joint"}},
+        },
+    )
     with pytest.raises(ValueError, match="sampling: requires a masks: block"):
-        _seg_config(sampling=SamplingConfig())
-
-
-def test_per_annotation_output_mode_deferred():
-    with pytest.raises(ValueError, match="per_annotation.*deferred.*#86"):
-        _seg_config(
-            masks=MasksConfig(pixel_mapping=_PIXEL_MAPPING),
-            sampling=SamplingConfig(output_mode="per_annotation"),
-        )
+        load_config(path)
 
 
 def test_masks_sampling_round_trip_through_yaml(tmp_path: Path):
     cfg = _seg_config(
-        masks=MasksConfig(
-            pixel_mapping=_PIXEL_MAPPING,
+        masks=_annotation_masks(
             min_coverage={"tumor": 0.1, "stroma": 0.5},
             colors={"background": None, "tumor": [255, 0, 0], "stroma": [0, 255, 0], "necrosis": [0, 0, 255]},
+            strategy="independent",
         ),
-        sampling=SamplingConfig(strategy="independent", output_mode="merged"),
     )
     path = tmp_path / "seg-slide-manifest.yaml"
     save_config(cfg, path)
-    # masks/sampling are serialized under preprocessing (#109).
     raw = yaml.safe_load(path.read_text())
     assert "masks" not in raw and "sampling" not in raw
-    assert "masks" in raw["preprocessing"] and "sampling" in raw["preprocessing"]
+    assert raw["preprocessing"]["sampling"] == {"strategy": "independent", "output_mode": "merged"}
     loaded = load_config(path)
-    assert loaded.preprocessing.masks.pixel_mapping == _PIXEL_MAPPING
-    assert loaded.preprocessing.masks.min_coverage == {"tumor": 0.1, "stroma": 0.5}
-    assert loaded.preprocessing.masks.colors["tumor"] == [255, 0, 0]
-    assert loaded.preprocessing.masks.colors["background"] is None
-    assert (loaded.preprocessing.sampling.strategy, loaded.preprocessing.sampling.output_mode) == (
-        "independent",
-        "merged",
-    )
+    assert loaded.features.extraction.masks == cfg.features.extraction.masks
 
 
 def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
-    """An hs2p-style masks block (list of single-entry mappings) pastes in unchanged."""
+    """An hs2p-style masks block (list of single-entry mappings) pastes in unchanged: it
+    is read by hs2p's own resolver."""
     path = tmp_path / "cfg.yaml"
-    base = _seg_config()
-    save_config(base, path)
+    save_config(_seg_config(), path)
     raw = yaml.safe_load(path.read_text())
     raw["preprocessing"]["masks"] = {
         "pixel_mapping": [{"background": 0}, {"tumor": 1}, {"stroma": 2}, {"necrosis": 3}],
@@ -998,139 +1076,55 @@ def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
     raw["task"]["params"] = dict(_CLASS_SCHEME)
     path.write_text(yaml.safe_dump(raw))
     loaded = load_config(path)
-    assert loaded.preprocessing.masks.pixel_mapping == {
-        "background": 0, "tumor": 1, "stroma": 2, "necrosis": 3
+    assert loaded.features.extraction.masks.pixel_mapping == {
+        "background": (0,), "tumor": (1,), "stroma": (2,), "necrosis": (3,)
     }
-    assert loaded.preprocessing.masks.min_coverage == {"tumor": 0.1}
+    assert loaded.features.extraction.masks.min_coverage == {"tumor": 0.1}
 
 
-def test_composite_round_trips_through_yaml(tmp_path: Path):
-    from soma.config import CompositeConfig, EncoderMemberConfig
-
-    cfg = _seg_config(
-        composite=CompositeConfig(
-            encoders=[
-                EncoderMemberConfig(name="uni", feature_kind="cls_attention"),
-                EncoderMemberConfig(name="phikon", feature_kind="patch_features"),
-            ],
-        ),
-    )
-    path = tmp_path / "cfg.yaml"
-    save_config(cfg, path)
-    loaded = load_config(path)
-    assert loaded.composite is not None and len(loaded.composite.encoders) == 2
-    assert [m.name for m in loaded.composite.encoders] == ["uni", "phikon"]
-    assert loaded.composite.encoders[1].feature_kind == "patch_features"
-    # The decoder consumes token grids → grid mode; member_norm defaults by feature_kind.
-    assert loaded.composite.concat_resolution == "grid"
-    assert loaded.composite.encoders[0].member_norm == "none"  # cls_attention
-    assert loaded.composite.encoders[1].member_norm == "l2"  # patch_features
+# --- The composite encoder ---
 
 
-def test_composite_decoder_path_cross_defaults_to_grid(tmp_path: Path):
-    from soma.config import CompositeConfig, EncoderMemberConfig
-
-    cfg = _seg_config(
-        composite=CompositeConfig(
-            encoders=[EncoderMemberConfig(name="uni"), EncoderMemberConfig(name="phikon")]
-        ),
-    )
-    assert cfg.composite.concat_resolution == "grid"
-    assert all(m.feature_kind == "patch_features" for m in cfg.composite.encoders)
-    assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
+def _composite(*members: dict, **params) -> EncoderLeaf:
+    return EncoderLeaf(name="composite", params={"members": list(members), **params})
 
 
 def test_composite_rejects_top_level_feature_adaptor():
     """Composite streams own per-member normalization, not a concatenated adaptor."""
-    from soma.config import CompositeConfig, EncoderMemberConfig
-
     with pytest.raises(ValueError, match="not yet supported.*composite"):
         _seg_config(
-            composite=CompositeConfig(encoders=[EncoderMemberConfig(name="uni")]),
+            features=FeaturesConfig(encoder=_composite({"name": "uni"})),
             normalization=NormalizationConfig(method="zscore"),
         )
 
 
-def test_composite_grid_size_and_explicit_resolution_round_trip(tmp_path: Path):
-    from soma.config import CompositeConfig, EncoderMemberConfig
-
-    cfg = _seg_config(
-        composite=CompositeConfig(
-            encoders=[EncoderMemberConfig(name="uni", member_norm="layernorm")],
-            concat_resolution="target",
-            concat_grid_size=(37, 37),
-        ),
-    )
-    path = tmp_path / "cfg.yaml"
-    save_config(cfg, path)
-    loaded = load_config(path)
-    assert loaded.composite.concat_resolution == "target"
-    assert loaded.composite.concat_grid_size == (37, 37)
-    assert loaded.composite.encoders[0].member_norm == "layernorm"
-
-
-def test_composite_only_yaml_loads_without_tripping_xor(tmp_path: Path):
-    # The real regression: a documented `composite:` config (no `encoder:` key) must load.
-    # Previously the bundled default `encoder: uni2` merged in and tripped the XOR check.
-    raw = {
-        "data": {
-            "dataset_csv": "dataset.csv",
-            "splits_csv": "splits.csv",
-            "dataset_type": "segmentation",
-        },
-        "task": {"name": "segmentation", "params": {"num_classes": 3}},
-        "decoder": {"name": "lightweight_conv"},
-        "composite": {
-            "encoders": [
-                {"name": "uni", "feature_kind": "cls_attention"},
-                {"name": "phikon", "feature_kind": "patch_features"},
-            ],
-        },
-    }
-    yaml_path = tmp_path / "config.yaml"
-    with yaml_path.open("w") as f:
-        yaml.safe_dump(raw, f)
-    loaded = load_config(yaml_path)
-    assert loaded.encoder is None
-    assert [m.name for m in loaded.composite.encoders] == ["uni", "phikon"]
-
-
 def test_composite_yaml_rejects_unknown_keys(tmp_path: Path):
     raw = {
-        "data": {
-            "dataset_csv": "dataset.csv",
-            "splits_csv": "splits.csv",
-            "dataset_type": "segmentation",
-        },
+        "data": {"dataset_csv": "dataset.csv", "splits_csv": "splits.csv", "dataset_type": "segmentation"},
         "task": {"name": "segmentation", "params": {"num_classes": 3}},
         "decoder": {"name": "lightweight_conv"},
-        "composite": {
-            "encoders": [{"name": "uni"}],
-            "concat_resoluton": "target",
-        },
+        "composite": {"encoders": [{"name": "uni"}], "concat_resoluton": "target"},
     }
-    yaml_path = tmp_path / "config.yaml"
-    with yaml_path.open("w") as f:
-        yaml.safe_dump(raw, f)
-
     with pytest.raises(ValueError, match="unsupported keys.*concat_resoluton"):
-        load_config(yaml_path)
+        load_config(_write_yaml(tmp_path, raw))
+
+
+def test_composite_member_rejects_shared_read_geometry():
+    with pytest.raises(ValueError, match="cannot set dense field.*spacing_um"):
+        FeaturesConfig(encoder=_composite({"name": "uni", "dense": {"spacing_um": 1.0}}))
 
 
 def test_composite_enabled_for_detection():
-    from soma.config import CompositeConfig, EncoderMemberConfig
-
     cfg = PipelineConfig(
         dataset_csv="data.csv",
         splits_csv="splits.csv",
         output_root="out",
         dataset_type="detection",
         decoder=DecoderConfig(name="lightweight_conv"),
-        composite=CompositeConfig(encoders=[EncoderMemberConfig(name="uni")]),
+        features=FeaturesConfig(encoder=_composite({"name": "uni"})),
         task=TaskConfig(name="detection", params={"num_classes": 2}),
     )
-    assert cfg.composite.concat_resolution == "grid"
-    assert cfg.composite.encoders[0].feature_kind == "patch_features"
+    assert cfg.features.is_composite
 
 
 def test_detection_rejects_point_id_in_a_class_and_in_drop():
@@ -1145,38 +1139,51 @@ def test_detection_rejects_point_id_in_a_class_and_in_drop():
         )
 
 
-def test_encoder_xor_composite():
-    from soma.config import CompositeConfig, EncoderConfig, EncoderMemberConfig
-
+def test_encoder_xor_composite(tmp_path: Path):
+    raw = {
+        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "segmentation"},
+        "task": {"name": "segmentation", "params": {"num_classes": 3}},
+        "decoder": {"name": "lightweight_conv"},
+        "encoder": {"name": "uni"},
+        "composite": {"encoders": [{"name": "phikon"}]},
+    }
     with pytest.raises(ValueError, match="XOR"):
-        _seg_config(
-            encoder=EncoderConfig(name="uni"),
-            composite=CompositeConfig(encoders=[EncoderMemberConfig(name="phikon")]),
-        )
+        load_config(_write_yaml(tmp_path, raw))
 
 
 def test_composite_rejected_for_non_dense_dataset():
-    from soma.config import CompositeConfig, EncoderMemberConfig
-
     with pytest.raises(ValueError, match="only supported for dataset_type"):
         PipelineConfig(
             dataset_csv="data.csv",
             splits_csv="splits.csv",
             output_root="out",
             dataset_type="slide",
-            composite=CompositeConfig(encoders=[EncoderMemberConfig(name="uni")]),
+            features=FeaturesConfig(encoder=_composite({"name": "uni"})),
             task=TaskConfig(name="binary_classification"),
         )
 
 
 def test_composite_live_is_hard_error():
-    from soma.config import CompositeConfig, EncoderMemberConfig
-
     with pytest.raises(ValueError, match="cached-only"):
-        _seg_config(
-            feature_mode="live",
-            composite=CompositeConfig(encoders=[EncoderMemberConfig(name="uni")]),
-        )
+        _seg_config(features=FeaturesConfig(kind="live", encoder=_composite({"name": "uni"})))
+
+
+def test_composite_member_norm_defaults_by_feature_kind():
+    from soma.encoders import CompositeParams
+    from soma.encoders.composite import member_norm_for
+
+    run = slide2vec.DenseOptions(spacing_um=0.5, target_size=224)
+    composite = CompositeParams(
+        members=[
+            {"name": "uni", "dense": {"feature_kind": "cls_attention"}},
+            {"name": "phikon", "dense": {"feature_kind": "patch_features_prenorm"}},
+            {"name": "hibou-b"},
+            {"name": "phikon", "member_norm": "layernorm"},
+        ]
+    )
+    norms = [member_norm_for(member, member.dense_options(run)) for member in composite.members]
+    assert norms == ["none", "l2", "l2", "layernorm"]
+    assert composite.concat_resolution == "grid"
 
 
 def test_subgroup_config_defaults():
@@ -1189,81 +1196,40 @@ def test_subgroup_config_explicit():
     assert cfg.columns == ["sex", "grade"]
 
 
-def test_encoder_config_requires_name():
-    with pytest.raises(TypeError):
-        EncoderConfig()
-
-
-def test_encoder_config_defaults():
-    cfg = EncoderConfig(name="uni2")
-    assert cfg.name == "uni2"
-    assert cfg.precision is None
-    assert cfg.batch_size == 32
-    assert cfg.output_variant is None
-    assert cfg.allow_non_recommended_settings is False
-    assert cfg.save_tile_features is False
-
-
-def test_encoder_config_public_fields_are_geometry_free():
-    field_names = {field.name for field in fields(EncoderConfig)}
-    assert "input_size" not in field_names
-    assert "spacing_um" not in field_names
-
-
-def test_execution_config_defaults():
-    cfg = ExecutionConfig()
-    field_names = {field.name for field in fields(ExecutionConfig)}
-    assert cfg.num_gpus is None
-    assert cfg.num_workers_per_gpu is None
-    assert cfg.num_preprocessing_workers is None
-    assert cfg.prefetch_factor is None
-    assert cfg.precision is None
-    assert "num_workers" not in field_names
-    assert "persistent_workers" not in field_names
-
-
-def test_encoder_config_roundtrip_with_output_variant(tmp_path: Path):
-    cfg = _make_pipeline_config(encoder=EncoderConfig(name="h0-mini", output_variant="cls"))
-    yaml_path = tmp_path / "config.yaml"
-
-    save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
-
-    assert loaded.encoder.output_variant == "cls"
-
-
-def test_execution_config_roundtrip(tmp_path: Path):
+def test_encoder_params_round_trip(tmp_path: Path):
     cfg = _make_pipeline_config(
-        execution=ExecutionConfig(
-            num_gpus=2,
-            num_workers_per_gpu=6,
-            num_preprocessing_workers=0,
-            prefetch_factor=8,
-            precision="fp16",
+        features=FeaturesConfig(
+            encoder=EncoderLeaf(
+                name="h0-mini", params={"output_variant": "cls", "allow_non_recommended_settings": True}
+            )
         )
     )
     yaml_path = tmp_path / "config.yaml"
 
     save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
 
-    assert loaded.execution.num_gpus == 2
-    assert loaded.execution.num_workers_per_gpu == 6
-    assert loaded.execution.num_preprocessing_workers == 0
-    assert loaded.execution.prefetch_factor == 8
-    assert loaded.execution.precision == "fp16"
+    assert load_config(yaml_path).features.encoder == cfg.features.encoder
 
 
-def test_encoder_config_roundtrip_with_allow_non_recommended_settings(tmp_path: Path):
+def test_execution_options_round_trip(tmp_path: Path):
     cfg = _make_pipeline_config(
-        encoder=EncoderConfig(name="h0-mini", allow_non_recommended_settings=True)
+        features=FeaturesConfig(
+            encoder="uni2",
+            execution=slide2vec.ExecutionOptions(
+                num_gpus=2,
+                num_workers_per_gpu=6,
+                num_preprocessing_workers=0,
+                prefetch_factor=8,
+                precision="fp16",
+                batch_size=12,
+            ),
+        )
     )
     yaml_path = tmp_path / "config.yaml"
 
     save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
 
-    assert loaded.encoder.allow_non_recommended_settings is True
+    assert load_config(yaml_path).features.execution == cfg.features.execution
 
 
 def test_cache_config_defaults():
@@ -1272,7 +1238,6 @@ def test_cache_config_defaults():
     assert cfg.root_dir is None
     assert cfg.reuse_policy == "strict"
     assert cfg.validate_payloads is False
-    assert "fingerprint_files" not in {field.name for field in fields(CacheConfig)}
 
 
 def test_cache_config_rejects_noncanonical_fields():
@@ -1296,35 +1261,27 @@ def test_task_config_with_params():
 
 def test_save_and_load_config_roundtrip(tmp_path: Path):
     original = _make_pipeline_config(
-        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=7, backend="openslide")
+        features=FeaturesConfig(
+            encoder="uni2",
+            extraction=slide2vec.PreprocessingConfig(
+                tiling=TilingConfig(
+                    requested_spacing_um=0.5,
+                    requested_tile_size_px=224,
+                    tolerance=0.05,
+                    overlap=0.0,
+                    backend="openslide",
+                ),
+                segmentation=SegmentationConfig(method="otsu"),
+                filter=FilterConfig(ref_tile_size=224),
+            ),
+        )
     )
     yaml_path = tmp_path / "config.yaml"
 
     save_config(original, yaml_path)
-    assert yaml_path.exists()
-
     loaded = load_config(yaml_path)
 
-    assert loaded.dataset_csv == original.dataset_csv
-    assert loaded.splits_csv == original.splits_csv
-    assert loaded.output_root == original.output_root
-    assert loaded.preprocessing.backend == "openslide"
-    assert loaded.preprocessing.tissue_mask_tissue_value == 7
-    assert loaded.preprocessing.requested_tile_size_px == original.preprocessing.requested_tile_size_px
-
-    assert loaded.cache.enabled == original.cache.enabled
-    assert loaded.encoder.name == original.encoder.name
-    assert loaded.execution == original.execution
-    assert loaded.aggregator.name == original.aggregator.name
-    # Clean roundtrip: params are exactly what was set (no default-merge bleed now that
-    # the bundled aggregation default is neutral).
-    assert loaded.aggregator.params == original.aggregator.params
-    assert loaded.task.name == original.task.name
-    assert loaded.task.params == original.task.params
-    assert loaded.evaluation.metrics == original.evaluation.metrics
-    assert loaded.training.epochs == original.training.epochs
-    assert loaded.training.learning_rate == original.training.learning_rate
-    assert loaded.tags == original.tags
+    assert loaded == original
 
 
 def test_load_config_merges_bundled_defaults_for_new_layout(tmp_path: Path):
@@ -1335,19 +1292,15 @@ def test_load_config_merges_bundled_defaults_for_new_layout(tmp_path: Path):
             "dataset_type": "slide",
         }
     }
-    yaml_path = tmp_path / "config.yaml"
-    with yaml_path.open("w") as f:
-        yaml.safe_dump(raw, f)
-
-    loaded = load_config(yaml_path)
+    loaded = load_config(_write_yaml(tmp_path, raw))
 
     assert loaded.dataset_csv == "dataset.csv"
     assert loaded.splits_csv == "splits.csv"
     assert loaded.output_root == "runs"
     assert loaded.dataset_type == "slide"
-    assert loaded.preprocessing.sam2_device == "cpu"
+    assert loaded.features.extraction.segmentation.sam2_device == "cpu"
     # Neutral defaults: no baked-in encoder / aggregator / metrics (set those per run).
-    assert loaded.encoder is None
+    assert loaded.features.encoder is None
     assert loaded.aggregator is None
     assert loaded.task.name == "binary_classification"
     assert loaded.evaluation.metrics == []
@@ -1356,34 +1309,18 @@ def test_load_config_merges_bundled_defaults_for_new_layout(tmp_path: Path):
 
 def test_load_config_with_target_fields(tmp_path: Path):
     raw = {
-        "data": {
-            "dataset_csv": "dataset.csv",
-            "splits_csv": "splits.csv",
-            "dataset_type": "slide",
-        },
-        "preprocessing": {
-            "backend": "cucim",
-            "requested_tile_size_px": 256,
-            "requested_spacing_um": 0.5,
-        },
+        "data": {"dataset_csv": "dataset.csv", "splits_csv": "splits.csv", "dataset_type": "slide"},
+        "preprocessing": {"backend": "cucim", "requested_tile_size_px": 256, "requested_spacing_um": 0.5},
         "cache": {},
         "aggregation": None,
         "task": {"name": "binary_classification"},
         "training": {},
-        "run": {
-            "output_root": "out",
-            "tags": [],
-        },
+        "run": {"output_root": "out", "tags": []},
     }
-    yaml_path = tmp_path / "config.yaml"
-    with yaml_path.open("w") as handle:
-        yaml.safe_dump(raw, handle)
+    loaded = load_config(_write_yaml(tmp_path, raw))
 
-    loaded = load_config(yaml_path)
-
-    assert loaded.preprocessing.backend == "cucim"
-    assert loaded.preprocessing.requested_tile_size_px == 256
-    assert loaded.preprocessing.requested_spacing_um == 0.5
+    tiling = loaded.features.extraction.tiling
+    assert (tiling.backend, tiling.requested_tile_size_px, tiling.requested_spacing_um) == ("cucim", 256, 0.5)
     assert loaded.output_root == "out"
 
 
@@ -1397,35 +1334,10 @@ def test_save_config_produces_valid_yaml(tmp_path: Path):
     assert raw["run"]["output_root"] == "runs"
     assert raw["preprocessing"]["sam2_device"] == "cpu"
     assert raw["encoder"]["name"] == "uni2"
-    assert "spacing_um" not in raw["encoder"]
-    assert "input_size" not in raw["encoder"]
     assert raw["cache"]["enabled"] is True
     assert raw["training"]["learning_rate"] == 2e-4
     assert raw["aggregation"]["params"]["hidden_dim"] == 128
     assert "dataset_csv" not in raw
-
-
-def test_preview_color_roundtrip_preserves_tuple(tmp_path: Path):
-    cfg = _make_pipeline_config()
-    yaml_path = tmp_path / "config.yaml"
-
-    save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
-
-    assert loaded.preprocessing.preview.tissue_contour_color == (37, 94, 59)
-
-
-def test_preprocessing_sam2_worker_limit_roundtrip(tmp_path: Path):
-    cfg = _make_pipeline_config(
-        preprocessing=PreprocessingConfig(sam2_device="cuda", sam2_num_workers=3)
-    )
-    yaml_path = tmp_path / "config.yaml"
-
-    save_config(cfg, yaml_path)
-    loaded = load_config(yaml_path)
-
-    assert loaded.preprocessing.sam2_device == "cuda"
-    assert loaded.preprocessing.sam2_num_workers == 3
 
 
 def test_evaluation_metrics_roundtrip(tmp_path: Path):
@@ -1525,22 +1437,14 @@ def test_pipeline_config_requires_task():
 
 def test_load_config_blank_sections_inherit_defaults(tmp_path: Path):
     raw = {
-        "data": {
-            "dataset_csv": "dataset.csv",
-            "splits_csv": "splits.csv",
-            "dataset_type": "slide",
-        },
+        "data": {"dataset_csv": "dataset.csv", "splits_csv": "splits.csv", "dataset_type": "slide"},
         "task": {},
         "encoder": {},
     }
-    yaml_path = tmp_path / "config.yaml"
-    with yaml_path.open("w") as f:
-        yaml.safe_dump(raw, f)
-
-    loaded = load_config(yaml_path)
+    loaded = load_config(_write_yaml(tmp_path, raw))
 
     assert loaded.task.name == "binary_classification"
-    assert loaded.encoder is None  # blank encoder section + neutral default → no encoder
+    assert loaded.features.encoder is None  # blank encoder section + neutral default → no encoder
     assert loaded.output_root == "runs"
 
 
@@ -1552,12 +1456,8 @@ def test_load_config_rejects_legacy_flat_layout(tmp_path: Path):
         "dataset_type": "slide",
         "task": {"name": "binary_classification"},
     }
-    yaml_path = tmp_path / "config.yaml"
-    with yaml_path.open("w") as f:
-        yaml.safe_dump(raw, f)
-
     with pytest.raises(ValueError, match="unsupported top-level keys"):
-        load_config(yaml_path)
+        load_config(_write_yaml(tmp_path, raw))
 
 
 # --- dataset_type validation ---
@@ -1598,12 +1498,10 @@ def test_invalid_dataset_type_raises():
         )
 
 
-# --- feature_mode / augmentation (live segmentation path) ---
+# --- features.kind / augmentation (live segmentation path) ---
 
 
 def _seg_kwargs(**overrides):
-    from soma.config import DecoderConfig
-
     base = dict(
         dataset_csv="data.csv",
         splits_csv="splits.csv",
@@ -1616,15 +1514,13 @@ def _seg_kwargs(**overrides):
     return base
 
 
-def test_feature_mode_defaults_to_cached():
+_LIVE = FeaturesConfig(kind="live")
+
+
+def test_feature_kind_defaults_to_cached():
     config = PipelineConfig(**_seg_kwargs())
-    assert config.feature_mode == "cached"
+    assert config.features.kind == "cached"
     assert config.augmentation is None
-
-
-def test_invalid_feature_mode_raises():
-    with pytest.raises(ValueError, match="feature_mode"):
-        PipelineConfig(**_seg_kwargs(feature_mode="streaming"))
 
 
 def test_live_feature_mode_requires_segmentation():
@@ -1634,7 +1530,7 @@ def test_live_feature_mode_requires_segmentation():
             splits_csv="splits.csv",
             output_root="out",
             dataset_type="tile",
-            feature_mode="live",
+            features=_LIVE,
             task=TaskConfig(name="binary_classification"),
         )
 
@@ -1648,8 +1544,8 @@ def test_augmentation_requires_live_feature_mode():
 
 
 def test_live_segmentation_with_augmentation_is_valid():
-    config = PipelineConfig(**_seg_kwargs(feature_mode="live", augmentation=_FLIP))
-    assert config.feature_mode == "live"
+    config = PipelineConfig(**_seg_kwargs(features=_LIVE, augmentation=_FLIP))
+    assert config.features.kind == "live"
     assert config.augmentation == _FLIP
 
 
@@ -1658,9 +1554,9 @@ def test_live_detection_is_valid_but_its_points_cannot_be_augmented():
         dataset_type="detection",
         task=TaskConfig(name="detection", params={"num_classes": 1, "match_distance": 3.0}),
     )
-    assert PipelineConfig(**_seg_kwargs(feature_mode="live", **detection)).feature_mode == "live"
+    assert PipelineConfig(**_seg_kwargs(features=_LIVE, **detection)).features.kind == "live"
     with pytest.raises(ValueError, match="point targets cannot be augmented yet"):
-        PipelineConfig(**_seg_kwargs(feature_mode="live", augmentation=_FLIP, **detection))
+        PipelineConfig(**_seg_kwargs(features=_LIVE, augmentation=_FLIP, **detection))
 
 
 def test_detection_score_threshold_is_refused_with_its_replacements_named():
@@ -1679,26 +1575,25 @@ def test_augmentation_is_a_name_params_leaf(tmp_path: Path):
     with pytest.raises(ValueError, match="name, params"):
         load_config_from_dict({"augmentation": {"horizontal_flip": 0.5}}, tmp_path)
     with pytest.raises(ValueError, match="Unknown augmentation"):
-        PipelineConfig(**_seg_kwargs(feature_mode="live", augmentation={"name": "nope", "params": {}}))
+        PipelineConfig(**_seg_kwargs(features=_LIVE, augmentation={"name": "nope", "params": {}}))
 
 
 def test_live_no_aug_is_valid():
-    config = PipelineConfig(**_seg_kwargs(feature_mode="live"))
-    assert config.feature_mode == "live" and config.augmentation is None
+    config = PipelineConfig(**_seg_kwargs(features=_LIVE))
+    assert config.features.kind == "live" and config.augmentation is None
 
 
 def test_feature_mode_and_augmentation_roundtrip(tmp_path: Path):
     config = PipelineConfig(
         **_seg_kwargs(
-            encoder=EncoderConfig(name="uni2"),
-            feature_mode="live",
+            features=FeaturesConfig(kind="live", encoder="uni2"),
             augmentation={"name": "segmentation", "params": {"horizontal_flip": 0.5, "brightness": 0.2}},
         )
     )
     path = tmp_path / "config.yaml"
     save_config(config, path)
     loaded = load_config(path)
-    assert loaded.feature_mode == "live"
+    assert loaded.features.kind == "live"
     assert loaded.augmentation == config.augmentation
 
 
@@ -1711,8 +1606,7 @@ def _make_pipeline_config(**overrides) -> PipelineConfig:
         splits_csv="data/splits.csv",
         output_root="runs",
         dataset_type="slide",
-        cache=CacheConfig(),
-        encoder=EncoderConfig(name="uni2"),
+        features=FeaturesConfig(encoder="uni2"),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
         task=TaskConfig(name="multiclass_classification", params={"num_classes": 3}),
         evaluation=EvalConfig(),
@@ -1721,39 +1615,6 @@ def _make_pipeline_config(**overrides) -> PipelineConfig:
     )
     defaults.update(overrides)
     return PipelineConfig(**defaults)
-
-
-def test_prenorm_patch_features_is_a_valid_feature_kind():
-    from soma.config import VALID_FEATURE_KINDS, EncoderMemberConfig
-
-    assert "patch_features_prenorm" in VALID_FEATURE_KINDS
-    pre = PreprocessingConfig(requested_spacing_um=0.5, feature_kind="patch_features_prenorm")
-    assert pre.feature_kind == "patch_features_prenorm"
-    assert EncoderMemberConfig(name="uni", feature_kind="patch_features_prenorm").feature_kind == (
-        "patch_features_prenorm"
-    )
-    with pytest.raises(ValueError, match="Invalid feature_kind 'tokens'"):
-        PreprocessingConfig(requested_spacing_um=0.5, feature_kind="tokens")
-    with pytest.raises(ValueError, match="patch_features_prenorm"):
-        EncoderMemberConfig(name="uni", feature_kind="tokens")
-
-
-def test_composite_prenorm_member_norm_defaults_like_patch_features():
-    from soma.config import CompositeConfig, EncoderMemberConfig
-
-    cfg = _seg_config(
-        composite=CompositeConfig(
-            encoders=[
-                EncoderMemberConfig(name="uni", feature_kind="patch_features_prenorm"),
-                EncoderMemberConfig(name="phikon"),
-            ]
-        ),
-    )
-    assert [m.feature_kind for m in cfg.composite.encoders] == [
-        "patch_features_prenorm",
-        "patch_features",
-    ]
-    assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
 
 
 def test_training_config_optimizer_and_scheduler_are_component_leaves():

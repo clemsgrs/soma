@@ -40,9 +40,9 @@ from soma.cache.keys import (
     _sample_stems_for_roi_sampling,
     build_roi_sampling_cache_key,
     dataset_manifest_rows,
-    preprocessing_signature,
+    roi_sampling_signature,
 )
-from soma.config import PreprocessingConfig
+from slide2vec import PreprocessingConfig
 
 COORDS_DIR_NAME = "coords"
 MASKS_DIR_NAME = "masks"
@@ -52,12 +52,15 @@ _COORDS_FIELDNAMES = ("x", "y")
 def _build_roi_sampling_cache_metadata(
     *,
     preprocessing: PreprocessingConfig,
+    spacing_policy: str = "strict",
 ) -> dict[str, Any]:
     # No schema_version, matching the key payload (see build_roi_sampling_cache_key).
     return {
         "artifact_kind": "roi_sampling",
-        "cache_key": build_roi_sampling_cache_key(preprocessing=preprocessing),
-        "preprocessing": preprocessing_signature(preprocessing),
+        "cache_key": build_roi_sampling_cache_key(
+            preprocessing=preprocessing, spacing_policy=spacing_policy
+        ),
+        **roi_sampling_signature(preprocessing, spacing_policy=spacing_policy),
     }
 
 
@@ -100,6 +103,7 @@ def resolve_roi_sampling_cache(
     cache_root: Path,
     dataset: Any,
     preprocessing: PreprocessingConfig,
+    spacing_policy: str = "strict",
 ) -> RoiSamplingCacheResolution:
     """Resolve the ``roi_sampling`` cache entry for ``dataset`` under ``cache_root``.
 
@@ -109,7 +113,9 @@ def resolve_roi_sampling_cache(
     ``coords_by_id``, the rest are misses to re-sample. ``dataset`` is duck-typed over ``samples``/``sample_ids`` so the
     segmentation slide manifest fits.
     """
-    metadata = _build_roi_sampling_cache_metadata(preprocessing=preprocessing)
+    metadata = _build_roi_sampling_cache_metadata(
+        preprocessing=preprocessing, spacing_policy=spacing_policy
+    )
     key = str(metadata["cache_key"])
     cache_ids = tuple(sorted(str(sample_id) for sample_id in dataset.sample_ids))
     cache_stem_by_id = _sample_stems_for_roi_sampling(dataset)

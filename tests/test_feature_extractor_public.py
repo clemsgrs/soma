@@ -10,8 +10,12 @@ import pytest
 import torch
 import numpy as np
 
+from slide2vec import DenseOptions, ExecutionOptions
+
+from soma.config import EncoderLeaf
 from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
+from tests.extraction_configs import annotation_masks, extraction, tissue_masks
 
 
 def _write_scalar_dataset(path: Path) -> None:
@@ -65,7 +69,7 @@ def test_tile_dataset_extracts_through_canonical_result(
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
 
-    from soma import CacheConfig, EncoderConfig, ExecutionConfig
+    from soma import CacheConfig
 
     dataset_csv = tmp_path / "dataset.csv"
     _write_scalar_dataset(dataset_csv)
@@ -92,8 +96,8 @@ def test_tile_dataset_extracts_through_canonical_result(
 
     result = FeatureExtractor(
         dataset,
-        EncoderConfig(name="phikon", batch_size=7),
-        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
+        "phikon",
+        execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, batch_size=7),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path / "output",
         unit="tile",
@@ -117,7 +121,7 @@ def test_spatial_expression_extracts_through_canonical_result(
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
 
-    from soma import CacheConfig, EncoderConfig
+    from soma import CacheConfig
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -154,7 +158,7 @@ def test_spatial_expression_extracts_through_canonical_result(
 
     result = FeatureExtractor(
         dataset,
-        EncoderConfig(name="phikon", precision="fp32"),
+        "phikon",
         cache=CacheConfig(enabled=False),
         output_root=tmp_path / "output",
         unit="tile",
@@ -167,12 +171,11 @@ def test_spatial_expression_extracts_through_canonical_result(
 
 
 def test_unsupported_extraction_shape_fails_during_construction(tmp_path: Path) -> None:
-    from soma import EncoderConfig
 
     with pytest.raises(ValueError, match="shape must be"):
         FeatureExtractor(
             object(),
-            EncoderConfig(name="phikon"),
+            "phikon",
             shape="blob",
             output_root=tmp_path,
         )
@@ -285,15 +288,7 @@ def test_given_image_segmentation_extracts_dense_source(
 ) -> None:
     from slide2vec.artifacts import write_dense_image
 
-    from soma import (
-
-        CacheConfig,
-
-        EncoderConfig,
-
-        PreprocessingConfig,
-
-    )
+    from soma import CacheConfig
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -338,11 +333,9 @@ def test_given_image_segmentation_extracts_dense_source(
 
     result = FeatureExtractor(
         dataset,
-        EncoderConfig(name="phikon", precision="fp32", batch_size=5),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=32,
-            requested_spacing_um=0.5,
-        ),
+        "phikon",
+        execution=ExecutionOptions(precision="fp32", batch_size=5),
+        preprocessing=extraction(0.5, 32),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path / "output",
         shape="grid",
@@ -364,7 +357,6 @@ def test_given_image_segmentation_extracts_dense_source(
 def test_roi_addressed_rows_are_refused_without_annotation_sampling(tmp_path: Path) -> None:
     """A persisted ROI manifest used as pre-cropped images would read each parent slide
     whole and ignore the ROI address; the facade refuses it at construction."""
-    from soma import EncoderConfig, PreprocessingConfig
 
     dataset_csv = tmp_path / "rois.csv"
     dataset_csv.write_text(
@@ -375,8 +367,8 @@ def test_roi_addressed_rows_are_refused_without_annotation_sampling(tmp_path: Pa
     with pytest.raises(TypeError, match="explicit slide regions.*unit='slide'"):
         FeatureExtractor(
             legacy_samples_from_csv(dataset_csv),
-            EncoderConfig(name="phikon"),
-            PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            "phikon",
+            extraction(0.5, 224),
             shape="grid",
             unit="tile",
             output_root=tmp_path / "out",
@@ -386,7 +378,6 @@ def test_roi_addressed_rows_are_refused_without_annotation_sampling(tmp_path: Pa
 def test_given_image_detection_selects_dense_extraction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from soma import EncoderConfig, PreprocessingConfig
     from soma.dense_extraction import _DenseImageExtractor
 
     dataset_csv = tmp_path / "dataset.csv"
@@ -414,11 +405,8 @@ def test_given_image_detection_selects_dense_extraction(
 
     result = FeatureExtractor(
         dataset,
-        EncoderConfig(name="phikon", precision="fp32"),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=32,
-            requested_spacing_um=0.5,
-        ),
+        "phikon",
+        preprocessing=extraction(0.5, 32),
         output_root=tmp_path / "output",
         shape="grid",
         unit="tile",
@@ -434,15 +422,7 @@ def test_dense_facade_reuses_existing_cache_key_for_explicit_preprocessing(
 ) -> None:
     from slide2vec.artifacts import write_dense_image
 
-    from soma import (
-
-        CacheConfig,
-
-        EncoderConfig,
-
-        PreprocessingConfig,
-
-    )
+    from soma import CacheConfig
     from soma.dense_extraction import _DenseImageExtractor
 
     dataset_csv = tmp_path / "dataset.csv"
@@ -486,25 +466,20 @@ def test_dense_facade_reuses_existing_cache_key_for_explicit_preprocessing(
     monkeypatch.setattr(
         "soma.dense_extraction.resolve_patch_size", lambda _name: (16, 16)
     )
-    encoder = EncoderConfig(name="phikon", precision="fp32")
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=32,
-        requested_spacing_um=0.5,
-    )
     cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
 
+    # The engine handed slide2vec's dense options explicitly, and the facade deriving
+    # them from the extraction's tiling, key the same cache.
     existing = _DenseImageExtractor(
         dataset,
-        encoder,
-        target_size=32,
-        spacing_um=0.5,
-        preprocessing=preprocessing,
+        EncoderLeaf(name="phikon"),
+        dense=DenseOptions(spacing_um=0.5, target_size=32),
         cache=cache,
     ).run(tmp_path / "legacy-output")
     result = FeatureExtractor(
         dataset,
-        encoder,
-        preprocessing=preprocessing,
+        "phikon",
+        preprocessing=extraction(0.5, 32),
         cache=cache,
         output_root=tmp_path / "canonical-output",
         shape="grid",
@@ -521,19 +496,7 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
 ) -> None:
     from slide2vec.artifacts import write_dense_region
 
-    from soma import (
-
-        CacheConfig,
-
-        EncoderConfig,
-
-        MasksConfig,
-
-        PreprocessingConfig,
-
-        SamplingConfig,
-
-    )
+    from soma import CacheConfig
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -598,19 +561,15 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
     monkeypatch.setattr(
         "soma.dense.reader.read_mask_regions_within_slide", fake_mask_regions
     )
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=32,
-        requested_spacing_um=0.5,
-        masks=MasksConfig(
-            pixel_mapping={"background": 0, "tumor": 1},
-            min_coverage={"tumor": 0.0},
-        ),
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+    preprocessing = extraction(
+        0.5,
+        32,
+        masks=annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0}, strategy="joint"),
     )
 
     result = FeatureExtractor(
         dataset,
-        EncoderConfig(name="phikon", precision="fp32"),
+        "phikon",
         preprocessing=preprocessing,
         cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
         output_root=tmp_path / "output",
@@ -644,12 +603,7 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
 def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from soma import (
-        CacheConfig,
-        EncoderConfig,
-        MasksConfig,
-        PreprocessingConfig,
-    )
+    from soma import CacheConfig
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -677,14 +631,9 @@ def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
     monkeypatch.setattr("soma.dense_slide_extraction.Model", EncoderMustNotLoad)
     result = FeatureExtractor(
         legacy_samples_from_csv(dataset_csv),
-        EncoderConfig(name="phikon", precision="fp32"),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=32,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(
-                pixel_mapping={"background": 0, "tumor": 1},
-                min_coverage={"tumor": 0.0},
-            ),
+        "phikon",
+        preprocessing=extraction(
+            0.5, 32, masks=annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0})
         ),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path / "output",
@@ -706,7 +655,7 @@ def test_tile_extraction_missing_returned_outputs_commits_nothing_and_publishes_
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
 
-    from soma import CacheConfig, EncoderConfig
+    from soma import CacheConfig
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -745,7 +694,7 @@ def test_tile_extraction_missing_returned_outputs_commits_nothing_and_publishes_
     kwargs = dict(
         dataset=dataset,
         unit="tile",
-        encoder=EncoderConfig(name="phikon", precision="fp32"),
+        encoder="phikon",
         cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
         output_root=tmp_path / "output",
     )
@@ -768,7 +717,7 @@ def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
 
-    from soma import CacheConfig, EncoderConfig
+    from soma import CacheConfig
 
     dataset_csv = tmp_path / "dataset.csv"
     _write_scalar_dataset(dataset_csv)
@@ -801,7 +750,7 @@ def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
     kwargs = dict(
         dataset=dataset,
         unit="tile",
-        encoder=EncoderConfig(name="phikon", precision="fp32"),
+        encoder="phikon",
         cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
         output_root=tmp_path / "output",
     )
@@ -821,17 +770,7 @@ def test_pooled_slide_extracts_through_the_same_public_interface(
 ) -> None:
     tifffile = pytest.importorskip("tifffile")
 
-    from soma import (
-
-        CacheConfig,
-
-        EncoderConfig,
-
-        ExecutionConfig,
-
-        PreprocessingConfig,
-
-    )
+    from soma import CacheConfig
     from tests.dense_literal_encoder import register_literal_encoder
 
     encoder_name = register_literal_encoder()
@@ -868,18 +807,14 @@ def test_pooled_slide_extracts_through_the_same_public_interface(
 
     result = FeatureExtractor(
         dataset,
-        EncoderConfig(name=encoder_name, precision="fp32", batch_size=1),
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=32,
-            requested_spacing_um=0.5,
-            tissue_method="precomputed_mask",
-            min_coverage={"tissue": 0.0},
-        ),
-        execution=ExecutionConfig(
+        encoder_name,
+        preprocessing=extraction(0.5, 32, method="precomputed_mask", masks=tissue_masks(0.0)),
+        execution=ExecutionOptions(
             num_gpus=1,
             num_workers_per_gpu=0,
             num_preprocessing_workers=0,
             precision="fp32",
+            batch_size=1,
         ),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path / "output",
@@ -895,7 +830,7 @@ def test_pooled_slide_extracts_through_the_same_public_interface(
 def test_hierarchical_extracts_through_the_same_public_interface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from soma import CacheConfig, EncoderConfig, PreprocessingConfig
+    from soma import CacheConfig
     from soma.extraction.extractor import _PooledFeatureExtractor
     from soma.data import CachedSetSource
 
@@ -917,11 +852,8 @@ def test_hierarchical_extracts_through_the_same_public_interface(
 
     result = FeatureExtractor(
         dataset,
-        EncoderConfig(name="phikon", precision="fp32"),
-        preprocessing=PreprocessingConfig(
-            requested_region_size_px=448,
-            region_tile_multiple=2,
-        ),
+        "phikon",
+        preprocessing=extraction(None, None, requested_region_size_px=448, region_tile_multiple=2),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path / "output",
     ).extract()

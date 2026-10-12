@@ -9,7 +9,9 @@ import pandas as pd
 import pytest
 
 from soma.cache.keys import _sample_identity_payload, sample_identity_signature
-from soma.config import MasksConfig, PreprocessingConfig
+import slide2vec
+
+from tests.extraction_configs import annotation_masks, extraction
 from soma.data._legacy import legacy_samples_from_csv
 from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 from tests.e2e.synthetic import write_coordinates_artifact
@@ -45,25 +47,19 @@ def _manifest(tmp_path: Path, coordinates: dict[str, Path | None]) -> Path:
     return path
 
 
-def _preprocessing(**overrides) -> PreprocessingConfig:
-    return PreprocessingConfig(
-        requested_tile_size_px=TILE_PX,
-        requested_spacing_um=SPACING_UM,
-        tissue_method="otsu",
-        **overrides,
-    )
+def _preprocessing(**overrides) -> slide2vec.PreprocessingConfig:
+    return extraction(SPACING_UM, TILE_PX, method="otsu", **overrides)
 
 
 def _resolve_tile_cache(cache_root: Path, dataset: Dataset):
     from soma.cache import resolve_tile_cache
-    from soma.config import EncoderConfig
 
     return resolve_tile_cache(
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
         preprocessing=_preprocessing(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        execution=slide2vec.ExecutionOptions(precision="fp16"),
     )
 
 
@@ -144,14 +140,13 @@ def test_column_is_rejected_outside_slide_datasets(tmp_path: Path, dataset_type:
     frame["label_mask_path"] = "/m.png"
     frame["points_path"] = "/p.csv"
     frame.to_csv(manifest, index=False)
-    from soma.config import EncoderConfig
     from soma.extraction import FeatureExtractor
 
     shape = "set" if dataset_type == "tile" else "grid"
     with pytest.raises(ValueError, match="whole slides"):
         FeatureExtractor(
             legacy_samples_from_csv(manifest),
-            EncoderConfig(name="phikon"),
+            "phikon",
             shape=shape,
             unit="tile",
             output_root=tmp_path / "out",
@@ -166,14 +161,13 @@ def test_column_is_rejected_on_the_annotation_sampling_path(tmp_path: Path):
     frame = pd.read_csv(manifest)
     frame["label_mask_path"] = "/m.png"
     frame.to_csv(manifest, index=False)
-    from soma.config import EncoderConfig
     from soma.extraction import FeatureExtractor
 
-    masks = MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5})
+    masks = annotation_masks()
     with pytest.raises(ValueError, match="coordinates_path.*shape='set', unit='slide'"):
         FeatureExtractor(
             legacy_samples_from_csv(manifest),
-            EncoderConfig(name="phikon"),
+            "phikon",
             _preprocessing(masks=masks),
             shape="grid",
             unit="slide",
@@ -220,8 +214,8 @@ def test_missing_artifact_fails_staging(tmp_path: Path):
 def test_annotation_masks_cannot_reselect_supplied_tiles(tmp_path: Path):
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
     dataset = legacy_samples_from_csv(_manifest(tmp_path, {"a": path}))
-    masks = MasksConfig(pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5})
-    with pytest.raises(ValueError, match="cannot be combined with preprocessing.masks"):
+    masks = annotation_masks()
+    with pytest.raises(ValueError, match="cannot be combined with annotation sampling"):
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing(masks=masks))
 
 
@@ -248,18 +242,6 @@ def test_unsigned_legacy_cache_is_not_adopted_for_supplied_coordinates(tmp_path:
 
     supplied = resolve(legacy_samples_from_csv(manifest))
     assert supplied.missing_sample_ids() == ["a", "b"]
-
-
-def test_tissue_mask_value_guard_does_not_apply_to_supplied_coordinates(tmp_path: Path):
-    """The tiler that guard protects never runs: supplied tiles are not mask-sampled."""
-    from soma.slide2vec_adapter import ensure_supported_mask_value
-
-    path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
-    manifest = _manifest(tmp_path, {"a": path})
-    frame = pd.read_csv(manifest)
-    frame["mask_path"] = str(tmp_path / "a_mask.tif")
-    frame.to_csv(manifest, index=False)
-    ensure_supported_mask_value(legacy_samples_from_csv(manifest), _preprocessing(tissue_mask_tissue_value=255))
 
 
 def test_staged_dataset_is_keyed_on_the_tiles_the_run_embeds(tmp_path: Path):
@@ -378,13 +360,13 @@ def test_resume_rejects_an_artifact_changed_since_the_run_started(tmp_path: Path
 @pytest.mark.parametrize("encoder", ["prism", "moozy"])
 def test_supplied_coordinates_need_a_tile_encoder(tmp_path: Path, encoder: str):
     """Supplied tiles form bags of tile features; slide and patient encoders are refused."""
-    from soma import EncoderConfig, FeatureExtractor
+    from soma import FeatureExtractor
     from soma.config import CacheConfig
 
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
     extractor = FeatureExtractor(
         legacy_samples_from_csv(_manifest(tmp_path, {"a": path})),
-        EncoderConfig(name=encoder),
+        encoder,
         preprocessing=_preprocessing(),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path / "output",

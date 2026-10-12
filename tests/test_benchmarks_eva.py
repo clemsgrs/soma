@@ -104,8 +104,8 @@ def test_build_config_encodes_eva_protocol(tmp_path):
         seed=3,
     )
     assert config.dataset_type == "tile"
-    assert config.encoder.name == "uni2"
-    assert config.encoder.output_variant is None  # uni2 uses the slide2vec default (1536-d CLS)
+    assert config.features.encoder.name == "uni2"
+    assert config.features.encoder.output_variant is None  # uni2 uses the slide2vec default (1536-d CLS)
     assert config.task.name == "multiclass_classification"
     assert "balanced_accuracy" in config.evaluation.metrics
 
@@ -133,7 +133,7 @@ def test_build_config_pins_virchow2_cls_variant(tmp_path):
         output_root=tmp_path / "runs",
     )
     # eva's paige_virchow2 is CLS-only (1280-d); the 2560-d default would not match.
-    assert config.encoder.output_variant == "cls"
+    assert config.features.encoder.output_variant == "cls"
     assert config.training.tune_is_test is False  # pcam has a real val + test split
 
 
@@ -144,7 +144,7 @@ def test_build_config_defaults_to_default_encoder(tmp_path):
         splits_csv=splits,
         output_root=tmp_path / "runs",
     )
-    assert config.encoder.name == eva.DEFAULT_ENCODER
+    assert config.features.encoder.name == eva.DEFAULT_ENCODER
 
 
 def test_build_config_honours_smoke_overrides(tmp_path):
@@ -160,7 +160,7 @@ def test_build_config_honours_smoke_overrides(tmp_path):
     )
     assert config.training.max_steps == 1
     assert config.training.patience == 1
-    assert config.encoder.batch_size == 8
+    assert config.features.execution.batch_size == 8
 
 
 def test_build_config_applies_cache_overrides(tmp_path):
@@ -173,8 +173,8 @@ def test_build_config_applies_cache_overrides(tmp_path):
         max_steps=1,
         overrides={"cache": {"enabled": True, "root_dir": str(tmp_path / "cache")}},
     )
-    assert config.cache.enabled is True
-    assert str(config.cache.root_dir) == str(tmp_path / "cache")
+    assert config.features.cache.enabled is True
+    assert str(config.features.cache.root_dir) == str(tmp_path / "cache")
 
 
 def test_build_config_accepts_encoder_without_packaged_reference(tmp_path):
@@ -186,8 +186,8 @@ def test_build_config_accepts_encoder_without_packaged_reference(tmp_path):
         output_root=tmp_path / "runs",
         max_steps=1,
     )
-    assert config.encoder.name == "phikon"
-    assert config.encoder.output_variant is None
+    assert config.features.encoder.name == "phikon"
+    assert config.features.encoder.output_variant is None
 
 
 # --- keyed reference table ------------------------------------------------------------

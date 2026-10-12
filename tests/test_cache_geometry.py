@@ -22,7 +22,9 @@ from soma.cache import (
     resolve_dense_cache,
     resolve_tile_cache,
 )
-from soma.config import EncoderConfig, PreprocessingConfig
+import slide2vec
+
+from tests.extraction_configs import extraction
 from soma.data._legacy import legacy_samples_from_csv
 
 # phikon is 224 px native and cannot take a variable encoder input; uni is 224 px native
@@ -67,7 +69,7 @@ def test_pooled_geometry_records_the_declared_off_preset_size(
         encoder_name=encoder_name,
         requested_tile_size_px=requested_size,
         # A non-preset pooled size deviates from the model card's tiling recipe, so it is
-        # opt-in — the same gate the extractor passes through from EncoderConfig.
+        # opt-in — the same gate the extractor passes through from the encoder params.
         allow_non_recommended_settings=True,
     )
     assert geometry["encoder_input_size_px"] == expected_size
@@ -100,8 +102,8 @@ def test_tile_cache_records_the_geometry(tmp_path: Path):
         cache_root=tmp_path / "feature_cache",
         dataset=dataset,
         tile_encoder_name=VARIABLE_ENCODER,
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        execution=EncoderConfig(name=VARIABLE_ENCODER),
+        preprocessing=extraction(0.5, 224),
+        execution=None,
         extraction_geometry=pooled_extraction_geometry(
             encoder_name=VARIABLE_ENCODER,
             requested_tile_size_px=224,
@@ -120,8 +122,8 @@ def test_reusing_a_cache_under_a_changed_encoder_input_is_a_hard_error(tmp_path:
         cache_root=tmp_path / "feature_cache",
         dataset=dataset,
         tile_encoder_name=VARIABLE_ENCODER,
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        execution=EncoderConfig(name=VARIABLE_ENCODER),
+        preprocessing=extraction(0.5, 224),
+        execution=None,
     )
     resolve_tile_cache(
         **kwargs,
@@ -149,8 +151,8 @@ def test_an_unchanged_encoder_input_reuses_the_cache(tmp_path: Path):
         cache_root=tmp_path / "feature_cache",
         dataset=dataset,
         tile_encoder_name=VARIABLE_ENCODER,
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        execution=EncoderConfig(name=VARIABLE_ENCODER),
+        preprocessing=extraction(0.5, 224),
+        execution=None,
     )
     first = resolve_tile_cache(
         **kwargs,
@@ -180,8 +182,8 @@ def test_a_cache_predating_the_record_is_still_reusable(tmp_path: Path):
         cache_root=tmp_path / "feature_cache",
         dataset=dataset,
         tile_encoder_name=VARIABLE_ENCODER,
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        execution=EncoderConfig(name=VARIABLE_ENCODER),
+        preprocessing=extraction(0.5, 224),
+        execution=None,
     )
     resolve_tile_cache(**kwargs)  # written without a geometry record
 
@@ -200,12 +202,9 @@ def test_dense_cache_records_the_geometry(tmp_path: Path):
         cache_root=tmp_path / "feature_cache",
         dataset=dataset,
         tile_encoder_name=FIXED_ENCODER,
-        target_size=(512, 512),
         patch_size=(16, 16),
-        pad_mode="reflect",
-        execution=EncoderConfig(name=FIXED_ENCODER),
-        window_size=224,
-        overlap=0.0,
+        dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=512, window_size=224),
+        execution=None,
         extraction_geometry=dense_extraction_geometry(
             encoder_name=FIXED_ENCODER, target_size_px=(512, 512), window_size=224
         ),

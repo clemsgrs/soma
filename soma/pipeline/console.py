@@ -6,14 +6,16 @@ from rich import box
 from rich.panel import Panel
 from rich.table import Table
 
-from soma.config import AggregatorConfig, DecoderConfig, EncoderConfig, PreprocessingConfig, TaskConfig
+from slide2vec import PreprocessingConfig
+
+from soma.config import AggregatorConfig, DecoderConfig, EncoderLeaf, TaskConfig
 
 __all__ = ["build_completed_run_panel", "build_run_summary_panel"]
 
 
 def build_run_summary_panel(
     *,
-    encoder: EncoderConfig | None,
+    encoder: EncoderLeaf | None,
     preprocessing: PreprocessingConfig,
     aggregator: AggregatorConfig | None,
     task: TaskConfig,
@@ -33,7 +35,7 @@ def build_run_summary_panel(
 
     # Spacing — only meaningful for slide/WSI pipelines
     if dataset_type != "tile":
-        spacing = preprocessing.requested_spacing_um
+        spacing = None if preprocessing.tiling is None else preprocessing.tiling.requested_spacing_um
         grid.add_row("spacing", f"{spacing} µm" if spacing is not None else "[dim]—[/dim]")
 
     # Aggregator (set shape) or decoder (grid shape) — the trainable component.

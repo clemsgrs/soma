@@ -571,8 +571,8 @@ class _PanelBenchmark:
     ):
         from soma.config import (
             CacheConfig,
-            EncoderConfig,
             EvalConfig,
+            FeaturesConfig,
             PipelineConfig,
             TaskConfig,
             TrainingConfig,
@@ -584,8 +584,9 @@ class _PanelBenchmark:
             splits_csv=str(splits_csv or "splits.csv"),
             output_root=Path(output_root or "output/panel"),
             dataset_type="tile",
-            encoder=EncoderConfig(name=encoder),
-            cache=CacheConfig(**(overrides or {}).get("cache", {})),
+            features=FeaturesConfig(
+                encoder=encoder, cache=CacheConfig(**(overrides or {}).get("cache", {}))
+            ),
             task=TaskConfig(name="binary_classification"),
             evaluation=EvalConfig(metrics=["accuracy"]),
             training=TrainingConfig(seed=0 if seed is None else int(seed)),
@@ -679,7 +680,7 @@ def _write_completed_panel_run(config, metric: str, score: float) -> None:
 
     config.output_root.mkdir(parents=True, exist_ok=True)
     (config.output_root / "summary.json").write_text(json.dumps({metric: score}))
-    run_id = f"{config.encoder.name}-seed-{config.training.seed}"
+    run_id = f"{config.features.encoder.name}-seed-{config.training.seed}"
     layout = resolve_managed_output_paths(config, run_id=run_id)
     layout.run_dir.mkdir(parents=True, exist_ok=True)
     write_experiment_metadata(layout.experiment_dir, layout.experiment)
@@ -914,14 +915,14 @@ def test_reproduce_family_continues_ordered_cells_and_writes_isolated_leaderboar
             config = self.config
             relative = config.output_root.relative_to(output_root)
             member = relative.parts[0]
-            encoder = config.encoder.name
+            encoder = config.features.encoder.name
             audit.append(
                 (
                     "run",
                     member,
                     encoder,
                     config.training.seed,
-                    str(config.cache.root_dir),
+                    str(config.features.cache.root_dir),
                 )
             )
             if member == "alpha" and encoder == "uni2":
@@ -1026,18 +1027,18 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
             config = self.config
             run_events.append(
                 (
-                    config.encoder.name,
+                    config.features.encoder.name,
                     config.training.seed,
                     str(config.dataset_csv),
                     str(config.splits_csv),
-                    str(config.cache.root_dir),
+                    str(config.features.cache.root_dir),
                     str(config.output_root),
                 )
             )
             _write_completed_panel_run(
                 config=config,
                 metric=benchmark.primary_metric,
-                score=scores[config.encoder.name],
+                score=scores[config.features.encoder.name],
             )
 
     monkeypatch.setattr(cli, "Pipeline", FakePipeline)
@@ -1106,12 +1107,12 @@ def test_reproduce_plural_preserves_successful_runs_and_writes_partial_leaderboa
 
         def run(self):
             config = self.config
-            encoder = config.encoder.name
+            encoder = config.features.encoder.name
             attempts.append(
                 (
                     encoder,
                     config.training.seed,
-                    str(config.cache.root_dir),
+                    str(config.features.cache.root_dir),
                     str(config.output_root),
                 )
             )
@@ -1199,7 +1200,7 @@ def test_reproduce_plural_reports_all_runtime_failures_without_leaderboard(
             self.config = config
 
         def run(self):
-            encoder = self.config.encoder.name
+            encoder = self.config.features.encoder.name
             attempts.append(encoder)
             raise RuntimeError(failures[encoder])
 
@@ -1250,7 +1251,7 @@ def test_reproduce_plural_isolates_missing_reported_scores(
 
         def run(self):
             nonlocal current_encoder
-            current_encoder = self.config.encoder.name
+            current_encoder = self.config.features.encoder.name
             attempts.append(current_encoder)
 
     def score(_run_dir):
@@ -1300,7 +1301,7 @@ def test_reproduce_plural_projects_a_run_completed_before_its_cell_failed(
 
         def run(self):
             config = self.config
-            encoder = config.encoder.name
+            encoder = config.features.encoder.name
             if encoder == private_name and config.training.seed == 0:
                 _write_completed_panel_run(
                     config=config,
@@ -1352,7 +1353,7 @@ def test_reproduce_plural_does_not_mask_programming_errors(
             self.config = config
 
         def run(self):
-            attempts.append(self.config.encoder.name)
+            attempts.append(self.config.features.encoder.name)
             raise AssertionError("pipeline defect")
 
     monkeypatch.setattr(cli, "Pipeline", DefectivePipeline)
@@ -1396,7 +1397,7 @@ def test_reproduce_plural_curated_manifest_skips_curation_for_every_encoder(
         def run(self):
             config = self.config
             seen.append(
-                (config.encoder.name, str(config.dataset_csv), str(config.splits_csv))
+                (config.features.encoder.name, str(config.dataset_csv), str(config.splits_csv))
             )
             config.output_root.mkdir(parents=True, exist_ok=True)
             (config.output_root / "summary.json").write_text(
@@ -1882,7 +1883,7 @@ def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float):
                 "dataset_checksum": "d",
                 "splits_checksum": "s",
                 "canonical_spec": {
-                    "encoder": {"name": encoder},
+                    "features": {"encoder": {"name": encoder, "params": {}}},
                     "task": {"name": "multiclass_classification"},
                 },
             }

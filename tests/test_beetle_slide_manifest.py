@@ -153,14 +153,13 @@ def test_beetle_config_loads_and_validates():
 
 def test_beetle_config_encodes_masks_contract():
     cfg = _load_beetle_config()
-    masks = cfg.preprocessing.masks
-    assert masks is not None
+    masks = cfg.features.extraction.masks
     # masks.pixel_mapping is the BEETLE raw vocabulary; must include background (unannotated).
-    assert masks.pixel_mapping["background"] == 0
-    assert masks.pixel_mapping["other"] == 1
-    assert masks.pixel_mapping["non_invasive_epithelium"] == 2
-    assert masks.pixel_mapping["invasive_epithelium"] == 3
-    assert masks.pixel_mapping["necrosis"] == 4
+    assert masks.pixel_mapping["background"] == (0,)
+    assert masks.pixel_mapping["other"] == (1,)
+    assert masks.pixel_mapping["non_invasive_epithelium"] == (2,)
+    assert masks.pixel_mapping["invasive_epithelium"] == (3,)
+    assert masks.pixel_mapping["necrosis"] == (4,)
     # >=5%% min-coverage rule on the annotated (non-background) classes.
     assert all(v == 0.05 for v in masks.min_coverage.values())
     assert set(masks.min_coverage) == {"other", "non_invasive_epithelium", "invasive_epithelium", "necrosis"}
@@ -168,13 +167,13 @@ def test_beetle_config_encodes_masks_contract():
 
 def test_beetle_config_encodes_recipe():
     cfg = _load_beetle_config()
-    pp = cfg.preprocessing
-    assert pp.requested_tile_size_px == 512
-    assert pp.requested_spacing_um == 0.5
+    tiling = cfg.features.extraction.tiling
+    assert tiling.requested_tile_size_px == 512
+    assert tiling.requested_spacing_um == 0.5
     # Virchow2 native-224 sliding window @ 0.5 overlap.
-    assert pp.dense_window_size == 224
-    assert pp.dense_window_overlap == 0.5
-    assert cfg.encoder.name == "virchow2"
+    assert cfg.features.dense.window_size == 224
+    assert cfg.features.dense.overlap == 0.5
+    assert cfg.features.encoder.name == "virchow2"
     assert cfg.decoder.name == "lightweight_conv"
     assert cfg.evaluation.metrics == [
         "mean_dice",
@@ -182,7 +181,7 @@ def test_beetle_config_encodes_recipe():
         "mean_iou",
         "dice_per_class",
     ]
-    assert cfg.preprocessing.sampling.output_mode == "merged"
+    assert cfg.features.extraction.masks.output_mode == "merged"
 
 
 def test_beetle_remap_matches_curation_contract():
@@ -497,4 +496,4 @@ def test_coverage_estimate_uses_the_beetle_tiling_tolerance():
 
     config = _load_beetle_config()
 
-    assert curate.TILING_TOLERANCE == pytest.approx(config.preprocessing.tolerance)
+    assert curate.TILING_TOLERANCE == pytest.approx(config.features.extraction.tiling.tolerance)

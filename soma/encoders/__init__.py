@@ -1,22 +1,39 @@
-"""Encoder validation and discovery helpers for soma."""
+"""The ``encoders`` registry and the helpers that resolve what an encoder decides."""
 
 from __future__ import annotations
 
 from typing import Any
 
-from soma.config import AggregatorConfig
-from soma.encoders.validation import resolve_preprocessing_config, validate_encoder_config
-from soma.registry import Registry
+from slide2vec import Model
 from slide2vec.encoders.registry import encoder_registry as _slide2vec_encoders
 from slide2vec.encoders.registry import resolve_encoder_level
 
+from soma.config import AggregatorConfig
+from soma.encoders.composite import CompositeMember, CompositeParams
+from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
+from soma.registry import Registry, _Entry, signature_params
+
+#: The params of every slide2vec encoder: ``Model.from_preset``'s keywords. The device is
+#: the run's to choose, so it is not a param.
+EncoderParams = signature_params(Model.from_preset, name="EncoderParams", skip=("name", "device"))
+
+#: The encoder soma owns. Its class is resolved on first use (the store imports torch).
+COMPOSITE = "composite"
+
+
+def _composite_store_class() -> type:
+    from soma.dense.composite import CompositeDenseFeatureStore
+
+    return CompositeDenseFeatureStore
+
 
 class EncoderRegistry(Registry):
-    """soma's ``encoders`` domain: a read-only view of slide2vec's encoder registry.
+    """soma's ``encoders`` domain: slide2vec's encoders plus soma's ``composite``.
 
     Encoders belong to slide2vec, so a new one is registered there (an encoder
-    provider), never here; their constructor params are slide2vec's, so an entry's
-    ``params`` is ``None``. Each entry carries slide2vec's metadata, ``level`` included.
+    provider), never here. Every slide2vec entry's params are ``Model.from_preset``'s
+    keywords (:data:`EncoderParams`) and its metadata is slide2vec's, ``level``
+    included. ``composite`` concatenates several of them (:class:`CompositeParams`).
     """
 
     def __init__(self) -> None:
@@ -29,20 +46,25 @@ class EncoderRegistry(Registry):
         )
 
     def get(self, name: str) -> type:
+        if name == COMPOSITE:
+            return _composite_store_class()
         return _slide2vec_encoders.require(name)
 
     def __contains__(self, name: str) -> bool:
-        return name in _slide2vec_encoders
+        return name == COMPOSITE or name in _slide2vec_encoders
 
     def list(self) -> list[str]:
-        return list(_slide2vec_encoders.names())
+        return [*_slide2vec_encoders.names(), COMPOSITE]
 
     def info(self, name: str) -> dict[str, Any]:
+        if name == COMPOSITE:
+            return self._describe(name, _composite_store_class(), CompositeParams, {"level": "tile"})
         metadata = _slide2vec_encoders.info(name)
-        return self._describe(name, _slide2vec_encoders.require(name), None, metadata)
+        return self._describe(name, _slide2vec_encoders.require(name), EncoderParams, metadata)
 
-    def _lookup(self, name: str) -> tuple[Any, None]:
-        return self.get(name), None
+    def _lookup(self, name: str) -> tuple[Any, _Entry]:
+        params = CompositeParams if name == COMPOSITE else EncoderParams
+        return self.get(name), _Entry(cls=None, params=params, infer=None, metadata={})
 
 
 #: The ``encoders`` domain of :func:`soma.components`.
@@ -75,9 +97,13 @@ def resolve_aggregator(
 
 
 __all__ = [
+    "COMPOSITE",
+    "CompositeMember",
+    "CompositeParams",
+    "EncoderParams",
     "EncoderRegistry",
     "encoder_registry",
     "resolve_aggregator",
+    "resolve_encoder_precision",
     "resolve_preprocessing_config",
-    "validate_encoder_config",
 ]

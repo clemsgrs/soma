@@ -84,28 +84,31 @@ def _write_selected_recipe(
     pixel_mapping: dict[str, int] | None = None,
     classes: dict[str, list[int]] | None = None,
 ):
+    import slide2vec
+
     from examples.beetle.protocol import CLASSES, IGNORE, PIXEL_MAPPING
     from soma.config import (
         DecoderConfig,
-        EncoderConfig,
-        MasksConfig,
+        EncoderLeaf,
+        FeaturesConfig,
         PipelineConfig,
-        PreprocessingConfig,
         TaskConfig,
         save_config,
     )
+    from tests.extraction_configs import annotation_masks, extraction
 
     config = PipelineConfig(
         dataset_csv="development.csv",
         splits_csv="development_splits.csv",
         output_root="runs/uniform",
         dataset_type="segmentation",
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=8,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(pixel_mapping=pixel_mapping or PIXEL_MAPPING),
+        features=FeaturesConfig(
+            encoder=EncoderLeaf(name="virchow2", params={"output_variant": "cls"}),
+            extraction=extraction(
+                0.5, 8, masks=annotation_masks(pixel_mapping or PIXEL_MAPPING, {"other": 0.05})
+            ),
+            execution=slide2vec.ExecutionOptions(precision="fp32"),
         ),
-        encoder=EncoderConfig(name="virchow2", precision="fp32", output_variant="cls"),
         decoder=DecoderConfig(name="lightweight_conv"),
         task=TaskConfig(
             name="segmentation", params={"classes": classes or CLASSES, "ignore": IGNORE}
@@ -197,9 +200,15 @@ def test_selected_run_recipe_must_equal_protocol_resolved_arm(tmp_path: Path) ->
     binding = validate_selected_run_recipe(resolution, "uniform", run_dir)
     assert binding["resolved_arm_config"] == str(resolved.resolve())
 
+    extraction = config.features.extraction
     drifted = replace(
         config,
-        preprocessing=replace(config.preprocessing, requested_spacing_um=0.6),
+        features=replace(
+            config.features,
+            extraction=replace(
+                extraction, tiling=replace(extraction.tiling, requested_spacing_um=0.6)
+            ),
+        ),
     )
     save_config(drifted, run_dir / "config.yaml")
     with pytest.raises(ValueError, match="disagrees with the protocol-resolved"):

@@ -32,7 +32,7 @@ from soma.benchmarks import registry as registry_mod
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
-    EncoderConfig,
+    FeaturesConfig,
     PipelineConfig,
     TaskConfig,
     TrainingConfig,
@@ -58,8 +58,7 @@ class _FixtureBenchmark:
             splits_csv="s.csv",
             output_root="out",
             dataset_type="tile",
-            cache=CacheConfig(),
-            encoder=EncoderConfig(name=axes.get("encoder", "uni2")),
+            features=FeaturesConfig(encoder=axes.get("encoder", "uni2")),
             aggregator=AggregatorConfig(name="abmil"),
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=1),

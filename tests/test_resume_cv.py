@@ -22,14 +22,15 @@ from pathlib import Path
 import numpy as np
 import pytest
 import yaml
+from slide2vec import ExecutionOptions
 
+from tests.extraction_configs import extraction
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
-    EncoderConfig,
+    FeaturesConfig,
     EvalConfig,
     PipelineConfig,
-    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
     save_config,
@@ -61,9 +62,7 @@ def _make_config(tmp_path: Path, **overrides) -> PipelineConfig:
         splits_csv=splits_csv,
         output_root=tmp_path / "outputs",
         dataset_type="slide",
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        cache=CacheConfig(),
-        encoder=EncoderConfig(name="uni2"),
+        features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
         task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
@@ -182,6 +181,45 @@ def test_drift_guard_refuses_changed_config(tmp_path: Path):
     run_dir = tmp_path / "run"
     save_config(_make_config(tmp_path, training=TrainingConfig(seed=7)), run_dir / "config.yaml")
     changed = _make_config(tmp_path, training=TrainingConfig(seed=42), resume=True)
+    with pytest.raises(ValueError, match="Refusing to resume"):
+        guard_resume_config_drift(run_dir, changed)
+
+
+def test_drift_guard_ignores_the_machine_resolved_execution_resources(tmp_path: Path):
+    """slide2vec resolves the GPU count and the preprocessing worker count against the
+    machine when its ExecutionOptions are built, so the saved config records what the
+    original machine had; resuming on another machine is not drift."""
+    run_dir = tmp_path / "run"
+    features = FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224))
+    saved = _make_config(
+        tmp_path,
+        features=replace(
+            features, execution=ExecutionOptions(num_gpus=4, num_preprocessing_workers=32)
+        ),
+    )
+    save_config(saved, run_dir / "config.yaml")
+    resumed = _make_config(
+        tmp_path,
+        features=replace(
+            features, execution=ExecutionOptions(num_gpus=1, num_preprocessing_workers=8)
+        ),
+        resume=True,
+    )
+    guard_resume_config_drift(run_dir, resumed)  # no raise
+
+
+def test_drift_guard_refuses_a_changed_execution_precision(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    features = FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224))
+    save_config(
+        _make_config(tmp_path, features=replace(features, execution=ExecutionOptions(precision="fp16"))),
+        run_dir / "config.yaml",
+    )
+    changed = _make_config(
+        tmp_path,
+        features=replace(features, execution=ExecutionOptions(precision="fp32")),
+        resume=True,
+    )
     with pytest.raises(ValueError, match="Refusing to resume"):
         guard_resume_config_drift(run_dir, changed)
 

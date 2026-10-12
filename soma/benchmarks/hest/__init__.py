@@ -45,13 +45,15 @@ from soma.benchmarks.registry import (
     register_benchmark,
     score_from_summary,
 )
+from hs2p import TilingConfig
+from slide2vec import ExecutionOptions, PreprocessingConfig
+
 from soma.config import (
     CacheConfig,
-    EncoderConfig,
+    EncoderLeaf,
     EvalConfig,
-    ExecutionConfig,
+    FeaturesConfig,
     PipelineConfig,
-    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -188,7 +190,7 @@ class HestBenchmark:
         overrides: dict[str, Any] | None = None,
         pca_components: int = DEFAULT_PCA_COMPONENTS,
         encoder_batch_size: int = 32,
-        execution: ExecutionConfig | None = None,
+        execution: ExecutionOptions | None = None,
     ) -> PipelineConfig:
         """Build the HEST-faithful probe config for the encoder axis.
 
@@ -207,16 +209,25 @@ class HestBenchmark:
             splits_csv=str(splits_csv) if splits_csv is not None else "splits.csv",
             output_root=Path(output_root) if output_root is not None else Path("output/hest"),
             dataset_type="tile",
-            execution=execution or ExecutionConfig(),
-            cache=_cache_from_overrides(overrides) or CacheConfig(enabled=True),
-            preprocessing=PreprocessingConfig(
-                requested_tile_size_px=TILE_SIZE_PX,
-                requested_spacing_um=SPACING_UM,
-            ),
-            encoder=EncoderConfig(
-                name=encoder,
-                output_variant=OUTPUT_VARIANTS.get(encoder),
-                batch_size=encoder_batch_size,
+            features=FeaturesConfig(
+                encoder=EncoderLeaf(
+                    name=encoder,
+                    params=(
+                        {"output_variant": OUTPUT_VARIANTS[encoder]}
+                        if OUTPUT_VARIANTS.get(encoder) is not None
+                        else {}
+                    ),
+                ),
+                extraction=PreprocessingConfig(
+                    tiling=TilingConfig(
+                        requested_spacing_um=SPACING_UM,
+                        requested_tile_size_px=TILE_SIZE_PX,
+                        tolerance=0.05,
+                        overlap=0.0,
+                    ),
+                ),
+                execution=replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
+                cache=_cache_from_overrides(overrides) or CacheConfig(enabled=True),
             ),
             task=TaskConfig(name="regression", params={"pca_components": int(pca_components)}),
             evaluation=EvalConfig(metrics=[EVAL_METRIC]),
@@ -293,18 +304,19 @@ class HestBenchmark:
         records = records_for_pipeline(
             cohort, ImageManifest.from_csv(config.dataset_csv), None, path=config.dataset_csv
         )
+        features = config.features
         cache = replace(
-            config.cache,
-            root_dir=resolve_cache_root(config.cache, feature_dir=run_dir, output_root=config.output_root),
+            features.cache,
+            root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=config.output_root),
         )
         source = FeatureExtractor(
             records,
-            config.encoder,
+            features.encoder,
             resolve_pipeline_preprocessing(config),
             shape="set",
             unit="tile",
             output_root=run_dir,
-            execution=config.execution,
+            execution=features.execution,
             cache=cache,
         ).extract().source
         pca_components = int(config.task.params.get("pca_components", DEFAULT_PCA_COMPONENTS))

@@ -15,13 +15,14 @@ import numpy as np
 import pytest
 import torch
 
+from tests.extraction_configs import extraction
 from soma.config import (
+    FeaturesConfig,
     CacheConfig,
     DecoderConfig,
     EvalConfig,
     HeatmapConfig,
     PipelineConfig,
-    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -79,8 +80,10 @@ def _run(
         training=training or TrainingConfig(epochs=2, batch_size=2, pin_memory=False),
         decoder=DecoderConfig(name="lightweight_conv"),
         evaluation=evaluation or EvalConfig(metrics=["mean_f1", "f1_per_class"]),
-        preprocessing=PreprocessingConfig(requested_spacing_um=SPACING, requested_tile_size_px=TARGET),
-        cache=CacheConfig(enabled=False),
+        features=FeaturesConfig(
+            extraction=extraction(SPACING, TARGET),
+            cache=CacheConfig(enabled=False),
+        ),
         heatmaps=heatmaps or HeatmapConfig(),
     )
     result = Pipeline(config, source=store).run()

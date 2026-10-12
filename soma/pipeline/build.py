@@ -34,16 +34,16 @@ from torch.utils.data import DataLoader
 
 from soma.aggregators.registry import aggregator_registry
 from soma.cache import resolve_cache_root
+from slide2vec import DenseOptions, PreprocessingConfig
+
 from soma.config import (
     AggregatorConfig,
-    EncoderConfig,
-    EncoderMemberConfig,
     EvalConfig,
     NormalizationConfig,
     PipelineConfig,
-    PreprocessingConfig,
     ProjectionConfig,
     TrainingConfig,
+    is_annotation_sampling,
     validate_feature_adaptor_compatibility,
 )
 from soma.data import (
@@ -75,7 +75,7 @@ from soma.learn import (
 from soma.learn.grid import grid_loaders
 from soma.pipeline import _legacy
 from soma.pipeline._legacy import LegacyFolds, LegacyRecord, LegacySamples
-from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 from soma.tasks.classification import BranchAwareClassificationHead, MulticlassClassificationHead
 from soma.tasks.registry import task_registry
 from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
@@ -104,7 +104,6 @@ __all__ = [
     "build_grid_model",
     "build_set_fold",
     "build_set_model",
-    "composite_member_extraction_spec",
     "extraction_shape",
     "extraction_unit",
     "live_encoder_for",
@@ -195,6 +194,8 @@ class RunInputs:
     run_dir: Path
     source_identity: dict[str, Any]
     encoder_stage: Any = None
+    #: A grid run's slide2vec ``DenseOptions`` (its read spacing, tolerance and backend).
+    dense: DenseOptions | None = None
     roi_population_cache_root: Path | None = None
     _roi_population: Any = field(default=None, repr=False)
     _roi_caches: tuple[dict, dict] = field(default_factory=lambda: ({}, {}), repr=False)
@@ -550,7 +551,8 @@ def _no_adaptor(fold_dir: Path) -> None:
 
 
 def _encoder_identity(config: PipelineConfig) -> str:
-    return config.encoder.name if config.encoder is not None else ""
+    encoder = config.features.encoder
+    return encoder.name if encoder is not None else ""
 
 
 def _jsonable(value: Any) -> Any:
@@ -608,8 +610,8 @@ def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> 
 
 
 def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: AggregatorConfig) -> dict[str, object]:
-    patch_size = preprocessing.requested_tile_size_px or preprocessing.read_tile_size_px
-    region_size = preprocessing.requested_region_size_px or preprocessing.read_region_size_px
+    patch_size = preprocessing.tiling.requested_tile_size_px if preprocessing.tiling is not None else None
+    region_size = preprocessing.requested_region_size_px
     tile_multiple = preprocessing.region_tile_multiple
     if patch_size is None or region_size is None:
         raise ValueError("hierarchical preprocessing must resolve patch and region sizes")
@@ -1093,23 +1095,24 @@ def _set_loaders(inputs: RunInputs, records: _SetFoldRecords, head, *, kind: str
 def _segmentation_head_spec(inputs: RunInputs, geometry) -> dict[str, Any]:
     """The registered segmentation head bound to ``geometry``, as a ``{name, params}``
     section (a user subclass with its own loss keeps its class)."""
-    config, preprocessing = inputs.config, inputs.preprocessing
-    task, masks = config.task, config.preprocessing.masks
+    config, dense = inputs.config, inputs.dense
+    task, masks = config.task, config.features.extraction.masks
+    annotation_rasters = is_annotation_sampling(masks)
+    tiling = inputs.preprocessing.tiling if inputs.preprocessing is not None else None
     head_cls = task_registry.resolve(task.name)
-    num_classes, class_names, label_remap = resolve_class_scheme(task.params, annotation_rasters=masks is not None)
+    num_classes, class_names, label_remap = resolve_class_scheme(task.params, annotation_rasters=annotation_rasters)
     seg_params = {key: value for key, value in task.params.items() if key not in CLASS_SCHEME_KEYS}
-    mask_spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
     params = {
         "num_classes": num_classes,
         "geometry": geometry,
         "metrics": inputs.evaluation.metrics,
-        "spacing_um": float(mask_spacing_um) if mask_spacing_um is not None else None,
-        "spacing_policy": preprocessing.spacing_policy if preprocessing is not None else "strict",
-        "backend": preprocessing.mask_backend if preprocessing is not None else "auto",
-        "image_backend": preprocessing.backend if preprocessing is not None else "auto",
-        "tolerance": float(preprocessing.tolerance) if preprocessing is not None else 0.05,
+        "spacing_um": float(dense.spacing_um) if dense is not None else None,
+        "spacing_policy": config.features.spacing_policy,
+        "backend": tiling.mask_backend if tiling is not None else "auto",
+        "image_backend": dense.backend if dense is not None else "auto",
+        "tolerance": float(dense.tolerance) if dense is not None else 0.05,
         "label_remap": label_remap,
-        "pixel_mapping": masks.pixel_mapping if masks is not None else None,
+        "pixel_mapping": masks.pixel_mapping if annotation_rasters else None,
         "class_names": class_names if len(class_names) == num_classes else None,
         **seg_params,
     }
@@ -1341,7 +1344,10 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
             )
         )
         overlays = images or _legacy.overlay_images(
-            all_records, size=geometry.target_size, preprocessing=inputs.preprocessing
+            all_records,
+            size=geometry.target_size,
+            dense=inputs.dense,
+            spacing_policy=inputs.config.features.spacing_policy,
         )
 
         def plan(name: str, loader, records) -> SplitPlan:
@@ -1426,13 +1432,21 @@ def _require_configured_spacing(inputs: RunInputs, records) -> None:
     at (per record under ``native_if_coarser``); see :func:`soma.dense.require_declared_spacing`."""
     from soma.dense import require_declared_spacing
 
-    preprocessing = inputs.preprocessing
-    requested = preprocessing.requested_spacing_um if preprocessing is not None else None
+    from soma.spacing import resolve_effective_spacing_um
+
+    dense = inputs.dense
     require_declared_spacing(
         inputs.source,
         {
             record.sample_id: (
-                None if requested is None else preprocessing.effective_spacing_um(record.spacing_at_level_0)
+                None
+                if dense is None
+                else resolve_effective_spacing_um(
+                    requested_spacing_um=dense.spacing_um,
+                    spacing_at_level_0=record.spacing_at_level_0,
+                    tolerance=dense.tolerance,
+                    policy=inputs.config.features.spacing_policy,
+                )
             )
             for record in records
         },
@@ -1493,11 +1507,22 @@ def extraction_shape(dataset_type: str) -> str:
     return "grid" if dataset_type in {"segmentation", "detection"} else "set"
 
 
+def annotation_sampled(config: PipelineConfig) -> bool:
+    """Whether a segmentation run samples its ROIs from whole slides (the slide-manifest
+    input mode): the cohort has a ``label_mask_path`` column of annotation rasters and
+    hs2p's masks declare their annotation vocabulary. A pre-cropped segmentation cohort
+    has a ``label_mask_path`` column too, but its masks keep hs2p's binary tissue
+    vocabulary (ADR 0019)."""
+    if config.dataset_type != "segmentation" or not is_annotation_sampling(config.features.extraction.masks):
+        return False
+    return "label_mask_path" in pd.read_csv(config.dataset_csv, nrows=0).columns
+
+
 def extraction_unit(config: PipelineConfig) -> str:
     """What one manifest row is to extraction: a whole slide or a pre-cropped image."""
     if config.dataset_type in {"slide", "patient"}:
         return "slide"
-    if config.dataset_type in {"segmentation", "detection"} and config.preprocessing.masks is not None:
+    if annotation_sampled(config):
         return "slide"
     return "tile"
 
@@ -1548,10 +1573,10 @@ def load_pipeline_data(config: PipelineConfig) -> tuple[Cohort, ImageManifest, A
     image_manifest = ImageManifest.from_csv(config.dataset_csv)
     annotation_manifest = None
     if config.dataset_type in {"segmentation", "detection"}:
-        masks = config.preprocessing.masks
+        masks = config.features.extraction.masks
         annotation_manifest = AnnotationManifest.from_csv(
             config.dataset_csv,
-            pixel_mapping=masks.pixel_mapping if masks is not None else None,
+            pixel_mapping=masks.pixel_mapping if is_annotation_sampling(masks) else None,
         )
         if config.dataset_type == "segmentation" and not annotation_manifest.has_label_masks:
             raise ValueError("dataset_type='segmentation' needs a label_mask_path column.")
@@ -1593,22 +1618,23 @@ def attach_source(
     configured encoder extracts (or reuses from the feature cache) set or grid features.
     """
     is_dense = extraction_shape(config.dataset_type) == "grid"
-    annotation_sampled = config.dataset_type == "segmentation" and config.preprocessing.masks is not None
-    if annotation_sampled and source is not None:
+    features = config.features
+    roi_sampled = annotation_sampled(config)
+    if roi_sampled and source is not None:
         raise ValueError(
             "a supplied source is not supported for annotation-sampled segmentation; "
             "FeatureExtractor owns the effective ROI dataset and cache identity."
         )
-    if annotation_sampled and config.feature_mode == "live":
+    if roi_sampled and features.kind == "live":
         raise NotImplementedError(
             "Live extraction over annotation-sampled segmentation ROIs is outside "
             "the persistent FeatureExtractor contract."
         )
-    if annotation_sampled and config.composite is not None:
+    if roi_sampled and features.is_composite:
         raise NotImplementedError(
             "Multi-encoder extraction over annotation-sampled segmentation ROIs is not implemented."
         )
-    live = is_dense and config.feature_mode == "live"
+    live = is_dense and features.kind == "live"
     if source is not None:
         # A supplied image source under ``feature_mode: live`` is re-encoded by the
         # run's frozen encoder stage, like the one built below; supplied grids are cached.
@@ -1622,36 +1648,38 @@ def attach_source(
         stage = live_encoder_for(config) if live and not cached_grids else None
         return SourceContext(source=source, dataset=dataset, splits=splits, encoder_stage=stage)
     if live:
-        preprocessing = resolve_pipeline_preprocessing(config)
+        dense = resolve_pipeline_dense(config)
         images = TileImageSource.from_manifest(
             image_manifest,
-            size=int(preprocessing.requested_tile_size_px),
-            spacing_um=float(preprocessing.requested_spacing_um),
-            spacing_policy=preprocessing.spacing_policy,
-            backend=preprocessing.backend,
-            tolerance=float(preprocessing.tolerance),
+            size=int(dense.target_size),
+            spacing_um=float(dense.spacing_um),
+            spacing_policy=features.spacing_policy,
+            backend=dense.backend,
+            tolerance=float(dense.tolerance),
         )
         return SourceContext(source=images, dataset=dataset, splits=splits, encoder_stage=live_encoder_for(config))
-    if is_dense and config.composite is not None:
+    if is_dense and features.is_composite:
         from soma.dense import DenseSourceProvenance
 
         store = build_composite_dense_store(config, dataset, output_root=run_dir / "features")
         store.provenance = DenseSourceProvenance(kind="composite_dense_cache", dataset_csv=config.dataset_csv)
         return SourceContext(source=store, dataset=dataset, splits=splits)
-    if config.encoder is None:
-        raise ValueError("PipelineConfig.encoder is required when no source is supplied.")
+    if features.encoder is None:
+        raise ValueError("PipelineConfig.features.encoder is required when no source is supplied.")
     cache_config = replace(
-        config.cache,
-        root_dir=resolve_cache_root(config.cache, feature_dir=run_dir, output_root=config.output_root),
+        features.cache,
+        root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=config.output_root),
     )
     extraction = FeatureExtractor(
         dataset,
-        config.encoder,
+        features.encoder,
         resolve_pipeline_preprocessing(config),
         shape=extraction_shape(config.dataset_type),
         unit=extraction_unit(config),
+        dense=resolve_pipeline_dense(config) if is_dense else None,
+        spacing_policy=features.spacing_policy,
         output_root=run_dir,
-        execution=config.execution,
+        execution=features.execution,
         cache=cache_config,
     ).extract()
     return SourceContext(
@@ -1666,33 +1694,24 @@ def live_encoder_spec(config: PipelineConfig) -> dict[str, Any]:
     describes: what a live bundle records to rebuild its frozen encoder stage."""
     from soma.encoders.validation import resolve_encoder_precision
 
-    if config.encoder is None:
-        raise ValueError("PipelineConfig.encoder is required for feature_mode='live'.")
-    preprocessing = resolve_pipeline_preprocessing(config)
-    if preprocessing.requested_tile_size_px is None:
-        raise ValueError(
-            "feature_mode='live' requires preprocessing.requested_tile_size_px (the "
-            "supervision tile size)."
-        )
-    if preprocessing.requested_spacing_um is None:
-        raise ValueError(
-            "feature_mode='live' requires a spacing: set preprocessing.requested_spacing_um "
-            "or use an encoder that advertises a single supported_spacing_um."
-        )
+    encoder = config.features.encoder
+    if encoder is None:
+        raise ValueError("PipelineConfig.features.encoder is required for feature_mode='live'.")
+    dense = resolve_pipeline_dense(config)
     return {
-        "encoder": config.encoder.name,
-        "target_size": int(preprocessing.requested_tile_size_px),
-        "spacing_um": float(preprocessing.requested_spacing_um),
-        "window": preprocessing.dense_window_size,
-        "overlap": float(preprocessing.dense_window_overlap),
-        "feature_kind": preprocessing.feature_kind or "patch_features",
-        "precision": resolve_encoder_precision(config.encoder, encoder_name=config.encoder.name),
-        "output_variant": config.encoder.output_variant,
-        "allow_non_recommended_settings": config.encoder.allow_non_recommended_settings,
-        "tolerance": float(preprocessing.tolerance),
-        "backend": preprocessing.backend,
-        "attention_blocks": tuple(preprocessing.attention.blocks),
-        "attention_include_registers": bool(preprocessing.attention.include_registers),
+        "encoder": encoder.name,
+        "target_size": int(dense.target_size),
+        "spacing_um": float(dense.spacing_um),
+        "window": dense.window_size,
+        "overlap": float(dense.overlap),
+        "feature_kind": dense.feature_kind,
+        "precision": resolve_encoder_precision(config.features.execution.precision, encoder_name=encoder.name),
+        "output_variant": encoder.output_variant,
+        "allow_non_recommended_settings": encoder.allow_non_recommended_settings,
+        "tolerance": float(dense.tolerance),
+        "backend": dense.backend,
+        "attention_blocks": tuple(dense.attention_blocks),
+        "attention_include_registers": bool(dense.attention_include_registers),
     }
 
 
@@ -1705,7 +1724,7 @@ def live_encoder_for(config: PipelineConfig):
     """
     from soma import extract
 
-    return extract.live_encoder(**live_encoder_spec(config), num_gpus=config.execution.num_gpus)
+    return extract.live_encoder(**live_encoder_spec(config), num_gpus=config.features.execution.num_gpus)
 
 
 def log_cuda_memory(tag: str) -> None:
@@ -1724,87 +1743,41 @@ def log_cuda_memory(tag: str) -> None:
     torch.cuda.reset_peak_memory_stats()
 
 
-def composite_member_extraction_spec(
-    member: EncoderMemberConfig, preprocessing: PreprocessingConfig
-) -> tuple[EncoderConfig, PreprocessingConfig]:
-    """The ``(EncoderConfig, PreprocessingConfig)`` one composite member extracts with.
-
-    Mirrors the single-encoder path exactly, so a member's dense cache key is identical to
-    the key the same encoder produces in a single-encoder run (composite reuse of
-    already-extracted per-encoder caches depends on this). The per-member sliding window
-    falls back to the run's shared window when the member leaves it unset.
-    """
-    from soma.encoders.validation import resolve_preprocessing_config
-
-    member_encoder = EncoderConfig(
-        name=member.name,
-        precision=member.precision,
-        batch_size=member.batch_size,
-        adaptive_batching=member.adaptive_batching,
-        output_variant=member.output_variant,
-        allow_non_recommended_settings=member.allow_non_recommended_settings,
-    )
-    member_prep = replace(
-        resolve_preprocessing_config(member_encoder, preprocessing),
-        feature_kind=member.feature_kind,
-        attention=member.attention,
-        dense_window_size=(
-            member.dense_window_size if member.dense_window_size is not None else preprocessing.dense_window_size
-        ),
-        dense_window_overlap=(
-            member.dense_window_overlap
-            if member.dense_window_overlap is not None
-            else preprocessing.dense_window_overlap
-        ),
-    )
-    return member_encoder, member_prep
-
-
 def build_composite_dense_store(config: PipelineConfig, dataset: LegacySamples, *, output_root: Path):
     """Extract every composite member into its own cache; return the concat view.
 
     Public so that out-of-core consumers (a project protocol's rescore step) rebuild the
-    exact store a composite run trained on. Members share the run's spacing and
-    supervision ``target_size``; their token grids are combined at load time by
+    exact store a composite run trained on. Each member extracts with the run's slide2vec
+    ``DenseOptions`` and ``ExecutionOptions`` plus its own overrides, exactly as that
+    encoder does in a single-encoder run, so its dense cache is the one a single-encoder
+    run of it uses. The token grids are combined at load time by
     :class:`CompositeDenseFeatureStore` per ``concat_resolution`` / ``concat_grid_size``.
     """
     from soma.dense_extraction import _DenseImageExtractor
+    from soma.encoders import CompositeParams
+    from soma.encoders.composite import member_norm_for
+    from soma.config import EncoderLeaf
 
-    composite = config.composite
-    if composite is None:
-        raise ValueError("build_composite_dense_store requires config.composite.")
-    preprocessing = resolve_pipeline_preprocessing(config)
-    target_size = preprocessing.requested_tile_size_px
-    if target_size is None:
-        raise ValueError(
-            "multi-encoder extraction requires "
-            "preprocessing.requested_tile_size_px (the mask/tile supervision size)."
-        )
-    if preprocessing.requested_spacing_um is None:
-        raise ValueError(
-            "multi-encoder extraction requires an explicit or auto-resolved "
-            "preprocessing.requested_spacing_um."
-        )
+    features = config.features
+    if not features.is_composite:
+        raise ValueError("build_composite_dense_store requires the composite encoder.")
+    composite = CompositeParams(**features.encoder.params)
+    dense = resolve_pipeline_dense(config)
     cache_config = replace(
-        config.cache,
-        root_dir=resolve_cache_root(config.cache, feature_dir=output_root, output_root=config.output_root),
+        features.cache,
+        root_dir=resolve_cache_root(features.cache, feature_dir=output_root, output_root=config.output_root),
     )
-    member_stores = []
+    member_stores, member_norms = [], []
     try:
-        for index, member in enumerate(composite.encoders):
-            member_encoder, member_prep = composite_member_extraction_spec(member, preprocessing)
+        for index, member in enumerate(composite.members):
+            member_dense = member.dense_options(dense)
+            member_norms.append(member_norm_for(member, member_dense))
             extractor = _DenseImageExtractor(
                 dataset,
-                member_encoder,
-                target_size=int(target_size),
-                spacing_um=float(preprocessing.requested_spacing_um),
-                backend=preprocessing.backend,
-                tolerance=float(preprocessing.tolerance),
-                window_size=member_prep.dense_window_size,
-                overlap=float(member_prep.dense_window_overlap),
-                execution=config.execution,
+                EncoderLeaf(name=member.name, params=dict(member.params)),
+                dense=member_dense,
+                execution=member.execution_options(features.execution),
                 cache=cache_config,
-                preprocessing=member_prep,
             )
             member_dir = Path(output_root) / f"member_{index}_{member.name}"
             member_stores.append(extractor.run(feature_dir=member_dir))
@@ -1813,7 +1786,7 @@ def build_composite_dense_store(config: PipelineConfig, dataset: LegacySamples, 
         log_cuda_memory("after composite dense extraction release")
     return CompositeDenseFeatureStore(
         member_stores,
-        concat_resolution=composite.concat_resolution or "target",
+        concat_resolution=composite.concat_resolution,
         concat_grid_size=composite.concat_grid_size,
-        member_norms=[m.member_norm or "none" for m in composite.encoders],
+        member_norms=member_norms,
     )

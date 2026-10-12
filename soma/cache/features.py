@@ -48,6 +48,7 @@ from soma.cache.io import (
 )
 from soma.cache.keys import (
     _patient_stems_for_kind,
+    _resolve_encoder_precision,
     _sample_stems_for_kind,
     build_dense_cache_key,
     build_hierarchical_cache_key,
@@ -55,11 +56,11 @@ from soma.cache.keys import (
     build_slide_cache_key,
     build_tile_cache_key,
     dataset_manifest_rows,
-    dense_execution_signature,
+    dense_signature,
     execution_signature,
     preprocessing_signature,
 )
-from soma.config import EncoderConfig, PreprocessingConfig
+from slide2vec import DenseImageOptions, DenseOptions, ExecutionOptions, PreprocessingConfig
 from soma.data._legacy import LegacySamples
 
 # Joins every slide-manifest ROI grid's cache identity. ROI masks are read at the spacing
@@ -78,7 +79,7 @@ def _build_tile_cache_metadata(
     *,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig | None,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     feature_type: str = "bag",
     dtype: str = "fp32",
@@ -126,7 +127,7 @@ def _build_slide_cache_metadata(
     slide_encoder_name: str,
     tile_encoder_name: str,
     tile_dependency_signature: dict[str, Any],
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
@@ -167,7 +168,7 @@ def _build_patient_cache_metadata(
     patient_encoder_name: str,
     tile_encoder_name: str,
     tile_dependency_signature: dict[str, Any],
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
@@ -207,7 +208,7 @@ def _build_hierarchical_cache_metadata(
     *,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
@@ -248,17 +249,9 @@ def _build_hierarchical_cache_metadata(
 def _build_dense_cache_metadata(
     *,
     tile_encoder_name: str,
-    target_size: tuple[int, int],
     patch_size: tuple[int, int],
-    pad_mode: str,
-    execution: EncoderConfig,
-    preprocessing: PreprocessingConfig | None = None,
-    dense_input_mode: str = "whole",
-    window_size: int | None,
-    overlap: float,
-    feature_kind: str = "patch_features",
-    attention_blocks: tuple[int, ...] | None = None,
-    attention_include_registers: bool = False,
+    dense: DenseOptions | DenseImageOptions,
+    execution: ExecutionOptions | None,
     channel_dim: int = 0,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
@@ -267,56 +260,48 @@ def _build_dense_cache_metadata(
 ) -> dict[str, Any]:
     # Imported lazily so the cache layer has no load-time dependency on soma.dense
     # (soma.dense.store imports soma.cache; a top-level import here would cycle).
-    from soma.dense.geometry import compute_dense_geometry
+    from soma.dense.geometry import compute_dense_geometry, normalize_hw
 
     key = build_dense_cache_key(
         tile_encoder_name=tile_encoder_name,
-        target_size=target_size,
         patch_size=patch_size,
-        pad_mode=pad_mode,
+        dense=dense,
         execution=execution,
-        preprocessing=preprocessing,
-        dense_input_mode=dense_input_mode,
-        window_size=window_size,
-        overlap=overlap,
-        feature_kind=feature_kind,
-        attention_blocks=attention_blocks,
-        attention_include_registers=attention_include_registers,
         dtype=dtype,
         sampling_signature=sampling_signature,
     )
-    geometry = compute_dense_geometry(target_size=target_size, patch_size=patch_size)
+    geometry = compute_dense_geometry(
+        target_size=normalize_hw(dense.target_size, name="target_size"), patch_size=patch_size
+    )
+    feature_kind = str(dense.feature_kind)
+    attention = feature_kind != "patch_features"
+    signature = dense_signature(dense)
     metadata = {
         "schema_version": SCHEMA_VERSION,
         "artifact_kind": "dense",
         "cache_key": key,
         "encoder_name": tile_encoder_name,
         "encoder_level": "tile",
-        # The same signature the key hashes, so the recorded block and the key agree.
-        "execution": dense_execution_signature(
-            execution,
-            encoder_name=tile_encoder_name,
-            preprocessing=preprocessing,
-        ),
+        # The same fields the key hashes, so the recorded blocks and the key agree.
+        "precision": _resolve_encoder_precision(execution, encoder_name=tile_encoder_name),
+        "dense": signature,
         "feature_type": "dense_grid",
         "dtype": str(dtype),
-        "feature_kind": str(feature_kind),
-        "attention_blocks": [int(b) for b in (attention_blocks or ())] if feature_kind != "patch_features" else None,
-        "attention_include_registers": bool(attention_include_registers) if feature_kind != "patch_features" else None,
+        "feature_kind": feature_kind,
+        "attention_blocks": [int(b) for b in dense.attention_blocks] if attention else None,
+        "attention_include_registers": bool(dense.attention_include_registers) if attention else None,
         "feature_dim": None,
         "channel_dim": int(channel_dim),
-        "dense_input_mode": str(dense_input_mode),
-        "window_size": None if window_size is None else int(window_size),
-        "overlap": float(overlap),
+        "dense_input_mode": "whole" if dense.window_size is None else "sliding_window",
+        "window_size": None if dense.window_size is None else int(dense.window_size),
+        "overlap": float(dense.overlap),
         "target_size": [int(geometry.target_size[0]), int(geometry.target_size[1])],
         "patch_size": [int(geometry.patch_size[0]), int(geometry.patch_size[1])],
         "encoded_size": [int(geometry.encoded_size[0]), int(geometry.encoded_size[1])],
         "grid_shape": [int(geometry.grid_shape[0]), int(geometry.grid_shape[1])],
-        "pad_mode": str(pad_mode),
+        "pad_mode": str(dense.pad_mode),
         "sample_identity_signature_by_id": {},
     }
-    if preprocessing is not None:
-        metadata["preprocessing"] = preprocessing_signature(preprocessing)
     if sampling_signature is not None:
         metadata["sampling"] = sampling_signature
     if extraction_geometry is not None:
@@ -801,7 +786,7 @@ def resolve_tile_cache(
     dataset: LegacySamples,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig | None,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     feature_type: str = "bag",
     dtype: str = "fp32",
@@ -848,7 +833,7 @@ def resolve_image_cache(
     cache_root: Path,
     dataset: LegacySamples,
     tile_encoder_name: str,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
     complete_state: str = "hit",
@@ -887,9 +872,9 @@ def resolve_slide_cache(
     slide_encoder_name: str,
     tile_encoder_name: str,
     tile_preprocessing: PreprocessingConfig,
-    tile_execution: EncoderConfig,
+    tile_execution: ExecutionOptions | None,
     tile_output_variant: str | None = None,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
@@ -944,9 +929,9 @@ def resolve_patient_cache(
     patient_encoder_name: str,
     tile_encoder_name: str,
     tile_preprocessing: PreprocessingConfig,
-    tile_execution: EncoderConfig,
+    tile_execution: ExecutionOptions | None,
     tile_output_variant: str | None = None,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
@@ -1000,7 +985,7 @@ def resolve_hierarchical_cache(
     dataset: LegacySamples,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
@@ -1044,17 +1029,9 @@ def resolve_dense_cache(
     cache_root: Path,
     dataset: LegacySamples,
     tile_encoder_name: str,
-    target_size: tuple[int, int],
     patch_size: tuple[int, int],
-    pad_mode: str,
-    execution: EncoderConfig,
-    preprocessing: PreprocessingConfig | None = None,
-    dense_input_mode: str = "whole",
-    window_size: int | None,
-    overlap: float,
-    feature_kind: str = "patch_features",
-    attention_blocks: tuple[int, ...] | None = None,
-    attention_include_registers: bool = False,
+    dense: DenseOptions | DenseImageOptions,
+    execution: ExecutionOptions | None,
     channel_dim: int = 0,
     dtype: str = "fp32",
     backend_provenance: dict[str, Any] | None = None,
@@ -1067,17 +1044,9 @@ def resolve_dense_cache(
 ) -> FeatureCacheResolution:
     metadata = _build_dense_cache_metadata(
         tile_encoder_name=tile_encoder_name,
-        target_size=target_size,
         patch_size=patch_size,
-        pad_mode=pad_mode,
+        dense=dense,
         execution=execution,
-        preprocessing=preprocessing,
-        dense_input_mode=dense_input_mode,
-        window_size=window_size,
-        overlap=overlap,
-        feature_kind=feature_kind,
-        attention_blocks=attention_blocks,
-        attention_include_registers=attention_include_registers,
         channel_dim=channel_dim,
         dtype=dtype,
         backend_provenance=backend_provenance,

@@ -24,7 +24,9 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig  # noqa: E402
+from slide2vec import DenseOptions, ExecutionOptions  # noqa: E402
+
+from soma.config import CacheConfig, EncoderLeaf  # noqa: E402
 from soma.data._legacy import legacy_samples_from_csv, LegacyRecord  # noqa: E402
 from soma.dense import CachedGridSource, compute_dense_geometry  # noqa: E402
 from soma.dense.store import DENSE_SIDECAR_SUFFIX  # noqa: E402
@@ -142,15 +144,21 @@ def fake_model(monkeypatch) -> type[_FakeDenseImageModel]:
     return _FakeDenseImageModel
 
 
-def _extractor(dataset: Dataset, tmp_path: Path, **overrides) -> _DenseImageExtractor:
-    kwargs = dict(
-        target_size=32,
-        spacing_um=0.5,
-        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
-    )
-    kwargs.update(overrides)
+def _extractor(
+    dataset: Dataset,
+    tmp_path: Path,
+    *,
+    execution: ExecutionOptions | None = None,
+    cache: CacheConfig | None = None,
+    **dense_overrides,
+) -> _DenseImageExtractor:
+    dense = {"target_size": 32, "spacing_um": 0.5, **dense_overrides}
     return _DenseImageExtractor(
-        dataset, EncoderConfig(name="uni", precision="fp32", batch_size=2), **kwargs
+        dataset,
+        EncoderLeaf(name="uni"),
+        dense=DenseOptions(**dense),
+        execution=execution or ExecutionOptions(precision="fp32", batch_size=2),
+        cache=cache or CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
     )
 
 
@@ -200,10 +208,9 @@ def test_real_flat_raster_extraction_respects_manifest_source_spacing(
 
     store = _DenseImageExtractor(
         legacy_samples_from_csv(manifest),
-        EncoderConfig(name=encoder_name, precision="fp32", batch_size=1),
-        target_size=target_size,
-        spacing_um=0.5,
-        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0, precision="fp32"),
+        EncoderLeaf(name=encoder_name),
+        dense=DenseOptions(spacing_um=0.5, target_size=target_size),
+        execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=1),
     ).run(tmp_path / "features")
 
     expected = torch.tensor(expected_grid)
@@ -265,7 +272,6 @@ def test_run_states_the_read_and_encode_recipe_it_wants(tmp_path: Path, fake_mod
     assert dense.tolerance == 0.1
     assert dense.backend == "openslide"
     assert dense.pad_mode == "constant"
-    assert dense.image_pad_value == 0.0  # meaningful only for constant/zero padding
     assert dense.window_size is None and dense.overlap == 0.0
     assert dense.feature_kind == "patch_features"
 
@@ -282,7 +288,7 @@ def test_run_forwards_num_gpus(tmp_path: Path, fake_model):
     _extractor(
         dataset,
         tmp_path,
-        execution=ExecutionConfig(num_gpus=2, precision="fp32"),
+        execution=ExecutionOptions(num_gpus=2, precision="fp32"),
     ).run(tmp_path / "features")
 
     assert fake_model.calls[0]["execution"].num_gpus == 2
@@ -312,17 +318,14 @@ def test_sliding_window_is_stated_rather_than_derived_downstream(tmp_path: Path,
 
 
 def test_attention_run_forwards_the_channel_layout_knobs(tmp_path: Path, fake_model):
-    from soma.config import AttentionConfig, PreprocessingConfig, PreviewConfig
-
-    preprocessing = PreprocessingConfig(
-        requested_spacing_um=0.5,
-        min_coverage={},
-        feature_kind="cls_attention",
-        attention=AttentionConfig(blocks=(-1, -2), include_registers=True),
-        preview=PreviewConfig(),
-    )
     dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=1, size=32))
-    _extractor(dataset, tmp_path, preprocessing=preprocessing).run(tmp_path / "features")
+    _extractor(
+        dataset,
+        tmp_path,
+        feature_kind="cls_attention",
+        attention_blocks=(-1, -2),
+        attention_include_registers=True,
+    ).run(tmp_path / "features")
 
     dense = fake_model.calls[0]["dense"]
     assert dense.feature_kind == "cls_attention"
@@ -396,20 +399,12 @@ def test_cache_resolves_complete_and_validates_the_upstream_sidecar(tmp_path: Pa
     assert extractor.cache_dir(tmp_path / "features") == cache_dir  # side-effect-free
 
 
-@pytest.mark.parametrize(
-    "kwargs, match",
-    [
-        ({"pad_mode": "bilinear"}, "unsupported pad_mode"),
-        ({"window_size": 0}, "window_size must be a positive int"),
-        ({"window_size": 16, "overlap": 1.0}, r"overlap must be in \[0, 1\)"),
-    ],
-)
-def test_constructor_rejects_an_unencodable_recipe(tmp_path: Path, kwargs, match):
+def test_constructor_rejects_an_unencodable_pad_mode(tmp_path: Path):
     """Rejected in soma, before any model is built — the run is unencodable regardless of
     what slide2vec would say about it later."""
     dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=1, size=32))
-    with pytest.raises(ValueError, match=match):
-        _extractor(dataset, tmp_path, **kwargs)
+    with pytest.raises(ValueError, match="unsupported pad_mode"):
+        _extractor(dataset, tmp_path, pad_mode="bilinear")
 
 
 # --- cross-process extraction lock ---------------------------------------------------
@@ -443,16 +438,8 @@ def test_extract_lock_serializes_holders(tmp_path: Path, monkeypatch):
 
 
 def test_prenorm_run_forwards_the_feature_kind_without_attention_knobs(tmp_path: Path, fake_model):
-    from soma.config import PreprocessingConfig, PreviewConfig
-
-    preprocessing = PreprocessingConfig(
-        requested_spacing_um=0.5,
-        min_coverage={},
-        feature_kind="patch_features_prenorm",
-        preview=PreviewConfig(),
-    )
     dataset = _dataset(tmp_path, _make_tiles(tmp_path, n=1, size=32))
-    _extractor(dataset, tmp_path, preprocessing=preprocessing).run(tmp_path / "features")
+    _extractor(dataset, tmp_path, feature_kind="patch_features_prenorm").run(tmp_path / "features")
 
     dense = fake_model.calls[0]["dense"]
     assert dense.feature_kind == "patch_features_prenorm"

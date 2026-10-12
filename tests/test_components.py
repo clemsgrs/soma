@@ -80,14 +80,30 @@ def test_a_domain_lists_its_entries_with_params_and_defaults():
     assert abmil["params"] == {"hidden_dim": 128, "activation": "tanh", "gated": True, "dropout": 0.25}
 
 
-def test_encoders_are_slide2vecs_listed_with_their_level():
+def test_encoders_are_slide2vecs_listed_with_their_level_and_params():
+    """A slide2vec encoder's params are ``Model.from_preset``'s keywords (ADR 0019)."""
     levels = {entry["name"]: entry["level"] for entry in soma.components("encoders")}
 
     assert levels["uni2"] == "tile"
     assert levels["prism"] == "slide"
-    assert all(entry["params"] is None for entry in soma.components("encoders"))
+    assert _entry("encoders", "uni2")["params"] == {
+        "output_variant": None,
+        "allow_non_recommended_settings": False,
+    }
     with pytest.raises(TypeError, match="slide2vec"):
         soma.register("encoders", "mine", object)
+
+
+def test_the_composite_encoder_is_an_entry_whose_params_list_the_members():
+    composite = _entry("encoders", "composite")
+
+    assert composite["class"] == "soma.dense.composite.CompositeDenseFeatureStore"
+    assert composite["params"] == {"members": (), "concat_resolution": "grid", "concat_grid_size": None}
+    registry = discovery.registry("encoders")
+    params = {"members": [{"name": "uni", "dense": {"window_size": 224}}, {"name": "phikon"}]}
+    assert registry.validate("composite", params) == params
+    with pytest.raises(ValueError, match="at least one member"):
+        registry.validate("composite", {"members": []})
 
 
 # -- the registration ladder: dotted path (zero ceremony) vs soma.register ------------

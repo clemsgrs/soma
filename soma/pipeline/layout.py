@@ -27,7 +27,14 @@ from typing import Any
 import yaml
 
 from soma.atomic_io import atomic_write_text
-from soma.config import PipelineConfig, config_yaml_dict, save_config, task_config_dict
+from soma.config import (
+    FeaturesConfig,
+    PipelineConfig,
+    config_yaml_dict,
+    save_config,
+    task_config_dict,
+    without_machine_resolved_fields,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -137,8 +144,10 @@ def _stable_json(payload: dict[str, Any]) -> str:
 #: v5 added ``augmentation.random_resized_crop_scale`` to the augmentation block; v6 added
 #: ``training.hold_patience_until_monitor_moves``; v7 dropped ``pixel_classifier`` and
 #: ``training.method`` / ``max_train_pixels`` and made ``augmentation`` a ``{name, params}``
-#: leaf (or ``None``).
-IDENTITY_VERSION = 7
+#: leaf (or ``None``); v8 replaced ``feature_mode`` / ``preprocessing`` / ``cache`` /
+#: ``encoder`` / ``composite`` / ``execution`` with one ``features`` block holding the
+#: slide2vec and hs2p dataclasses (ADR 0019).
+IDENTITY_VERSION = 8
 
 # Loader plumbing: changes throughput, never the trained model or its evaluation.
 _TRAINING_IDENTITY_EXCLUDED = ("seed", "num_workers", "pin_memory", "persistent_workers")
@@ -250,6 +259,28 @@ def test_identity_digest(config: PipelineConfig) -> str:
     ).hexdigest()
 
 
+def _features_identity(features: FeaturesConfig, *, cache_dtype: bool = False) -> dict[str, Any]:
+    """The experiment-defining part of a run's features: every field of the held slide2vec
+    / hs2p dataclasses but the execution resources (only the precision counts)."""
+    from soma.cache.keys import _jsonable
+
+    cache: dict[str, Any] = {
+        "enabled": features.cache.enabled,
+        "reuse_policy": features.cache.reuse_policy,
+    }
+    if cache_dtype:
+        cache["dtype"] = features.cache.dtype
+    return {
+        "kind": features.kind,
+        "encoder": None if features.encoder is None else _jsonable(features.encoder),
+        "extraction": _jsonable(features.extraction),
+        "dense": None if features.dense is None else _jsonable(features.dense),
+        "spacing_policy": features.spacing_policy,
+        "precision": features.execution.precision,
+        "cache": cache,
+    }
+
+
 def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
     dataset_path = Path(config.dataset_csv).resolve()
     splits_path = Path(config.splits_csv).resolve()
@@ -265,15 +296,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             "dataset": {"checksum": dataset_digest},
             "splits": {"checksum": splits_digest},
             "dataset_type": config.dataset_type,
-            "feature_mode": config.feature_mode,
-            "preprocessing": asdict(config.preprocessing),
-            "cache": {
-                "enabled": config.cache.enabled,
-                "reuse_policy": config.cache.reuse_policy,
-                "dtype": config.cache.dtype,
-            },
-            "encoder": asdict(config.encoder) if config.encoder is not None else None,
-            "execution": {"precision": config.execution.precision},
+            "features": _features_identity(config.features, cache_dtype=True),
             "task": None,
             "representation": representation,
         }
@@ -299,14 +322,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             "checksum": splits_digest,
         },
         "dataset_type": config.dataset_type,
-        "feature_mode": config.feature_mode,
-        "preprocessing": asdict(config.preprocessing),
-        "cache": {
-            "enabled": config.cache.enabled,
-            "reuse_policy": config.cache.reuse_policy,
-        },
-        "encoder": asdict(config.encoder) if config.encoder is not None else None,
-        "composite": asdict(config.composite) if config.composite is not None else None,
+        "features": _features_identity(config.features),
         "aggregator": asdict(config.aggregator) if config.aggregator is not None else None,
         "decoder": asdict(config.decoder) if config.decoder is not None else None,
         "task": task_config_dict(config.task),
@@ -359,7 +375,8 @@ def build_experiment_spec(config: PipelineConfig) -> ExperimentSpec:
     digest = hashlib.sha256(_stable_json(canonical_spec).encode("utf-8")).hexdigest()
     short_hash = digest[:12]
     dataset_name = _slugify(Path(config.dataset_csv).stem)
-    encoder_name = _slugify(config.encoder.name if config.encoder is not None else "precomputed")
+    encoder = config.features.encoder
+    encoder_name = _slugify(encoder.name if encoder is not None else "precomputed")
     aggregator_name = _slugify(config.aggregator.name if config.aggregator is not None else "slide")
     task_name = _slugify(
         config.task.name if config.task is not None else config.representation.kind
@@ -875,8 +892,10 @@ def guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
     # Round-trip the current config through YAML so both sides are the same primitive
     # shapes (tuples→lists, Paths→str) and compare cleanly.
     current = yaml.safe_load(yaml.safe_dump(config_yaml_dict(config)))
-    # Shared-storage routing is operational: a resume may repoint a pending spool without
-    # changing the training recipe that produced its checkpoint.
+    # GPU and worker counts slide2vec resolves for the machine are operational, and so is
+    # shared-storage routing: a resume may repoint a pending spool without changing the
+    # training recipe that produced its checkpoint.
+    saved, current = without_machine_resolved_fields(saved), without_machine_resolved_fields(current)
     for payload in (saved, current):
         run = payload.get("run")
         if isinstance(run, dict):

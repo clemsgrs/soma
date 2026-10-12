@@ -224,14 +224,19 @@ def _preflight_config_compatibility(
         resolve_encoder_output,
     )
 
-    if config.encoder is None or config.encoder.name != capabilities.name:
-        resolved = None if config.encoder is None else config.encoder.name
+    encoder_leaf = config.features.encoder
+    if encoder_leaf is None or encoder_leaf.name != capabilities.name:
+        resolved = None if encoder_leaf is None else encoder_leaf.name
         return (
             f"Benchmark builder resolved encoder {resolved!r}, expected "
             f"{capabilities.name!r}."
         )
 
-    feature_kind = config.preprocessing.feature_kind
+    from soma.pipeline.build import extraction_shape
+    from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+
+    dense = resolve_pipeline_dense(config) if extraction_shape(config.dataset_type) == "grid" else None
+    feature_kind = None if dense is None else dense.feature_kind
     if feature_kind == "patch_features" and not capabilities.dense:
         return (
             f"missing dense capability: Benchmark {benchmark.name!r} requires dense "
@@ -264,31 +269,27 @@ def _preflight_config_compatibility(
     }
     resolve_encoder_output(
         encoder,
-        requested_output_variant=config.encoder.output_variant,
+        requested_output_variant=encoder_leaf.output_variant,
         metadata=metadata,
     )
     if not declared_geometry:
         return None
 
-    from soma.encoders.validation import resolve_preprocessing_config
-
-    preprocessing = resolve_preprocessing_config(config.encoder, config.preprocessing)
     from slide2vec.api import EncoderInputContract
 
     try:
-        if feature_kind is not None:
+        if dense is not None:
             EncoderInputContract.declared_dense(
                 encoder,
-                target_size_px=int(preprocessing.requested_tile_size_px),
-                window_size=preprocessing.dense_window_size,
+                target_size_px=int(dense.target_size),
+                window_size=dense.window_size,
             )
         else:
+            preprocessing = resolve_pipeline_preprocessing(config)
             EncoderInputContract.declared_pooled(
                 encoder,
-                requested_tile_size_px=int(preprocessing.requested_tile_size_px),
-                allow_non_recommended_settings=(
-                    config.encoder.allow_non_recommended_settings
-                ),
+                requested_tile_size_px=int(preprocessing.tiling.requested_tile_size_px),
+                allow_non_recommended_settings=encoder_leaf.allow_non_recommended_settings,
             )
     except ValueError as exc:
         return (

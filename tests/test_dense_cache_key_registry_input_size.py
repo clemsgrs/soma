@@ -1,17 +1,21 @@
-"""The dense cache key must not depend on the encoder registry's default ``input_size``.
+"""The dense cache key derives from slide2vec's ``DenseOptions``, not the registry size.
 
-A registry edit upstream (slide2vec 6.0.0 moved ``dinov2-vitb14`` from 224 to 518) must not
-move a dense cache key: the dense extraction's real encoder input is the configured
-target/window, which the key already carries. Pooled keys keep the registry size.
+A dense key carries every field of the slide2vec dense options the grids are read and
+encoded with (ADR 0019), the encoder's static patch size, its precision and the storage
+dtype. A registry edit upstream (slide2vec 6.0.0 moved ``dinov2-vitb14`` from 224 to 518)
+must not move it: the dense extraction's real encoder input is the configured
+target/window, which the options already carry. Pooled keys keep the registry size.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
+import slide2vec
 import torch
 
 from soma.cache import (
@@ -26,9 +30,9 @@ from soma.cache import (
     record_sample_identity_signatures,
     resolve_dense_cache,
 )
-from soma.config import EncoderConfig, PreprocessingConfig
 from soma.data._legacy import legacy_samples_from_csv
 from soma.dense import compute_dense_geometry, dense_grid_metadata, write_dense_grid
+from tests.extraction_configs import extraction
 
 
 class _StubRegistry:
@@ -47,23 +51,19 @@ class _StubRegistry:
 
 def _stub_registry(monkeypatch: pytest.MonkeyPatch, input_size: int) -> None:
     monkeypatch.setattr("soma.cache.keys.encoder_registry", _StubRegistry(input_size))
+    monkeypatch.setattr("soma.encoders.validation.encoder_registry", _StubRegistry(input_size))
 
 
-def _encoder() -> EncoderConfig:
-    return EncoderConfig(name="stub-encoder", precision="fp16")
+_FP16 = slide2vec.ExecutionOptions(precision="fp16")
+_DENSE = slide2vec.DenseOptions(spacing_um=0.5, target_size=1024, window_size=448, overlap=0.5)
 
 
 def _dense_key(**overrides) -> str:
     kwargs = dict(
         tile_encoder_name="stub-encoder",
-        target_size=(1024, 1024),
         patch_size=(14, 14),
-        pad_mode="reflect",
-        execution=_encoder(),
-        preprocessing=PreprocessingConfig(requested_spacing_um=0.5),
-        dense_input_mode="sliding_window",
-        window_size=448,
-        overlap=0.5,
+        dense=_DENSE,
+        execution=_FP16,
         dtype="fp16",
     )
     kwargs.update(overrides)
@@ -77,88 +77,93 @@ def test_dense_key_ignores_the_registry_default_input_size(monkeypatch: pytest.M
     assert _dense_key() == before
 
 
-@pytest.mark.parametrize(
-    "override",
-    [
-        {"target_size": (512, 512)},
-        {"dense_input_mode": "whole"},
-        {"window_size": 224},
-        {"overlap": 0.25},
-        {"preprocessing": PreprocessingConfig(requested_spacing_um=0.25)},
-        {"execution": EncoderConfig(name="stub-encoder", precision="fp32")},
-        {"dtype": "fp32"},
-    ],
-    ids=["target_size", "dense_input_mode", "window_size", "overlap", "spacing", "precision", "dtype"],
-)
-def test_dense_key_still_follows_what_the_extraction_computes(
-    monkeypatch: pytest.MonkeyPatch, override: dict
+def _dense_variations():
+    changed = {
+        "spacing_um": 0.25,
+        "target_size": 512,
+        "tolerance": 0.1,
+        "backend": "openslide",
+        "pad_mode": "constant",
+        "image_pad_value": 0.0,
+        "window_size": 224,
+        "overlap": 0.25,
+        "feature_kind": "cls_attention",
+        "attention_blocks": (-2, -1),
+        "attention_include_registers": True,
+    }
+    assert set(changed) == {field.name for field in dataclasses.fields(slide2vec.DenseOptions)}
+    for name, value in changed.items():
+        yield name, {"dense": dataclasses.replace(_DENSE, **{name: value})}
+    yield "precision", {"execution": slide2vec.ExecutionOptions(precision="fp32")}
+    yield "dtype", {"dtype": "fp32"}
+    yield "patch_size", {"patch_size": (16, 16)}
+    yield "sampling", {"sampling_signature": {"spacing_policy": "native_if_coarser"}}
+
+
+@pytest.mark.parametrize(("field", "override"), list(_dense_variations()), ids=lambda v: v if isinstance(v, str) else "")
+def test_the_dense_key_follows_every_field_the_extraction_computes_from(
+    monkeypatch: pytest.MonkeyPatch, field: str, override: dict
 ):
     _stub_registry(monkeypatch, 224)
-    assert _dense_key(**override) != _dense_key()
+    assert _dense_key(**override) != _dense_key(), field
+
+
+def test_dense_resources_leave_the_key_alone(monkeypatch: pytest.MonkeyPatch):
+    _stub_registry(monkeypatch, 224)
+    resources = slide2vec.ExecutionOptions(precision="fp16", batch_size=3, num_gpus=1, num_workers_per_gpu=1)
+    assert _dense_key(execution=resources) == _dense_key()
+
+
+def test_the_image_and_region_options_of_one_recipe_share_a_key(monkeypatch: pytest.MonkeyPatch):
+    """slide2vec's DenseImageOptions holds the same fields; the image route keys the
+    same recipe the same way (its cache kind keeps the two apart on disk)."""
+    _stub_registry(monkeypatch, 224)
+    image = slide2vec.DenseImageOptions(
+        **{field.name: getattr(_DENSE, field.name) for field in dataclasses.fields(slide2vec.DenseOptions)}
+    )
+    assert _dense_key(dense=image) == _dense_key()
 
 
 def _pooled_keys() -> dict[str, str]:
-    encoder = EncoderConfig(name="stub-encoder", precision="fp16", output_variant="cls")
-    preprocessing = PreprocessingConfig(requested_spacing_um=0.5)
+    preprocessing = extraction(0.5, 224)
     tile_dependency = {
         "tile_encoder_name": "stub-encoder",
         "tile_preprocessing": preprocessing_signature(preprocessing),
         "tile_execution": execution_signature(
-            encoder, encoder_name="stub-encoder", preprocessing=preprocessing
+            _FP16, encoder_name="stub-encoder", preprocessing=preprocessing, output_variant="cls"
         ),
     }
     return {
         "tile": build_tile_cache_key(
-            tile_encoder_name="stub-encoder", preprocessing=preprocessing, execution=encoder
+            tile_encoder_name="stub-encoder", preprocessing=preprocessing, execution=_FP16, output_variant="cls"
         ),
         "slide": build_slide_cache_key(
             slide_encoder_name="stub-slide",
             tile_dependency_signature=tile_dependency,
-            execution=encoder,
+            execution=_FP16,
+            output_variant="cls",
         ),
         "patient": build_patient_cache_key(
             patient_encoder_name="stub-patient",
             tile_dependency_signature=tile_dependency,
-            execution=encoder,
+            execution=_FP16,
+            output_variant="cls",
         ),
         "hierarchical": build_hierarchical_cache_key(
-            tile_encoder_name="stub-encoder", preprocessing=preprocessing, execution=encoder
+            tile_encoder_name="stub-encoder", preprocessing=preprocessing, execution=_FP16, output_variant="cls"
         ),
     }
 
 
-# Literals recorded on main (9f4e589), before the dense key dropped the registry size.
-@pytest.mark.parametrize(
-    ("input_size", "expected"),
-    [
-        (
-            224,
-            {
-                "tile": "91d6340252dc0a80",
-                "slide": "a4bdbe7278d987c7",
-                "patient": "fd7e7ee45d7c2d48",
-                "hierarchical": "ed4e511cc929fe84",
-            },
-        ),
-        (
-            518,
-            {
-                "tile": "34b11f827c2358eb",
-                "slide": "081ac377b3b514f7",
-                "patient": "49a3d72b3942aa74",
-                "hierarchical": "d8114a02e28b7b75",
-            },
-        ),
-    ],
-)
-def test_pooled_keys_are_byte_identical_and_keep_the_registry_input_size(
-    monkeypatch: pytest.MonkeyPatch, input_size: int, expected: dict[str, str]
-):
-    _stub_registry(monkeypatch, input_size)
-    assert _pooled_keys() == expected
+def test_pooled_keys_keep_the_registry_input_size(monkeypatch: pytest.MonkeyPatch):
+    _stub_registry(monkeypatch, 224)
+    small = _pooled_keys()
+    _stub_registry(monkeypatch, 518)
+    large = _pooled_keys()
+    assert all(small[kind] != large[kind] for kind in small)
 
 
-def _dataset(tmp_path: Path) -> Dataset:
+def _dataset(tmp_path: Path):
     csv_path = tmp_path / "dataset.csv"
     pd.DataFrame(
         [
@@ -169,28 +174,24 @@ def _dataset(tmp_path: Path) -> Dataset:
     return legacy_samples_from_csv(csv_path)
 
 
-def _resolve(tmp_path: Path, dataset: Dataset):
+def _resolve(tmp_path: Path, dataset):
     return resolve_dense_cache(
         cache_root=tmp_path / "cache",
         dataset=dataset,
         tile_encoder_name="stub-encoder",
-        target_size=(64, 64),
         patch_size=(16, 16),
-        pad_mode="reflect",
-        execution=_encoder(),
-        preprocessing=PreprocessingConfig(requested_spacing_um=0.5),
-        dense_input_mode="sliding_window",
-        window_size=32,
-        overlap=0.5,
+        dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=64, window_size=32, overlap=0.5),
+        execution=_FP16,
         dtype="fp16",
         cache_kind="dense_image",
     )
 
 
-def _write_grids(resolution, dataset: Dataset) -> None:
+def _write_grids(resolution, dataset) -> None:
     geometry = compute_dense_geometry(target_size=(64, 64), patch_size=16)
     for sample_id in dataset.sample_ids:
         sidecar = dense_grid_metadata(geometry, feature_dim=8, pad_mode="reflect")
+        sidecar.update(window_size=32, overlap=0.5)
         write_dense_grid(resolution.features_dir, sample_id, torch.randn(8, 4, 4), sidecar)
     record_feature_dim(resolution, 8)
     record_sample_identity_signatures(resolution, list(dataset.sample_ids))
@@ -210,4 +211,5 @@ def test_dense_cache_written_under_one_registry_size_is_a_hit_under_another(
     assert reloaded.cache_dir == written.cache_dir
     assert reloaded.complete is True
     recorded = json.loads(reloaded.metadata_path.read_text())
-    assert recorded["execution"] == {"precision": "fp16", "spacing_um": 0.5}
+    assert recorded["precision"] == "fp16"
+    assert recorded["dense"]["spacing_um"] == 0.5

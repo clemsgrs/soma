@@ -27,10 +27,9 @@ import pandas as pd
 
 from soma import (
     AggregatorConfig,
-    EncoderConfig,
     EvalConfig,
+    FeaturesConfig,
     PipelineConfig,
-    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -72,10 +71,8 @@ def build_validated_config(encoder_name: str) -> PipelineConfig:
         splits_csv=str(splits_csv),
         output_root=WORK / "outputs" / encoder_name,
         dataset_type="slide",
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224, requested_spacing_um=0.5
-        ),
-        encoder=EncoderConfig(name=encoder_name),
+        # Tile size and spacing resolve from the encoder's preset when the run extracts.
+        features=FeaturesConfig(encoder=encoder_name),
         aggregator=aggregator,
         task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(epochs=5, seed=0),

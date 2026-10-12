@@ -23,7 +23,11 @@ from soma.cache import (
     resolve_dense_cache,
     resolve_output_dtype,
 )
-from soma.config import EncoderConfig, PreprocessingConfig
+import dataclasses
+
+import slide2vec
+
+from tests.extraction_configs import extraction
 from soma.data._legacy import legacy_samples_from_csv
 from soma.dense import (
     CachedGridSource,
@@ -51,8 +55,12 @@ def _make_dataset(
     return legacy_samples_from_csv(csv_path)
 
 
-def _enc() -> EncoderConfig:
-    return EncoderConfig(name="uni", precision="fp16")
+def _enc() -> slide2vec.ExecutionOptions:
+    return slide2vec.ExecutionOptions(precision="fp16")
+
+
+#: The run's slide2vec dense options the key tests vary.
+_DENSE = slide2vec.DenseOptions(spacing_um=0.5, target_size=512)
 
 
 # --------------------------------------------------------------------------- #
@@ -99,64 +107,36 @@ def test_geometry_rejects_nonpositive():
 # --------------------------------------------------------------------------- #
 
 
-def _key(**overrides) -> str:
-    base = dict(
+def _key(dtype: str = "fp32", patch_size=(16, 16), **dense_overrides) -> str:
+    return build_dense_cache_key(
         tile_encoder_name="uni",
-        target_size=(512, 512),
-        patch_size=(16, 16),
-        pad_mode="reflect",
+        patch_size=patch_size,
+        dense=dataclasses.replace(_DENSE, **dense_overrides),
         execution=_enc(),
-        window_size=None,
-        overlap=0.0,
+        dtype=dtype,
     )
-    base.update(overrides)
-    return build_dense_cache_key(**base)
 
 
 def test_dense_key_changes_with_target_size():
-    assert _key(target_size=(512, 512)) != _key(target_size=(224, 224))
+    assert _key(target_size=512) != _key(target_size=224)
 
 
-def test_dense_key_changes_with_patch_and_pad_and_mode():
+def test_dense_key_changes_with_patch_and_pad():
     assert _key(patch_size=(16, 16)) != _key(patch_size=(14, 14))
     assert _key(pad_mode="reflect") != _key(pad_mode="zero")
-    assert _key(dense_input_mode="whole") != _key(dense_input_mode="sliding_window")
 
 
 def test_dense_key_changes_with_window_size_and_overlap():
     # Different windows produce different grids -> must not collide.
     assert _key(window_size=256, overlap=0.5) != _key(window_size=128, overlap=0.5)
     assert _key(window_size=256, overlap=0.25) != _key(window_size=256, overlap=0.5)
-
-
-def test_dense_key_whole_is_stable_when_window_unset():
-    # window_size=None must reproduce the legacy 'whole' key byte-for-byte (the
-    # window fields are injected only for sliding runs), so existing caches survive.
-    assert _key() == _key(window_size=None, overlap=0.0)
-
-
-def test_dense_key_requires_explicit_window(monkeypatch):
-    # The cache key has no silent window default: a caller MUST decide whole vs sliding,
-    # so a sliding run can never be mis-keyed as 'whole' by omission.
-    base = dict(
-        tile_encoder_name="uni",
-        target_size=(512, 512),
-        patch_size=(16, 16),
-        pad_mode="reflect",
-        execution=_enc(),
-    )
-    with pytest.raises(TypeError):
-        build_dense_cache_key(**base)  # window_size / overlap not supplied
+    assert _key() != _key(window_size=256)
 
 
 def test_dense_key_changes_with_spacing():
     # Grids read at different µm/px are different pixels -> must not alias to one
     # cache entry (the spacing-aware-read regression: spacing was absent from the key).
-    half = _key(preprocessing=PreprocessingConfig(requested_spacing_um=0.5))
-    one = _key(preprocessing=PreprocessingConfig(requested_spacing_um=1.0))
-    assert half != one
-    # And a spacing-bearing key differs from the spacing-less (flat) key.
-    assert half != _key()
+    assert _key(spacing_um=0.5) != _key(spacing_um=1.0)
 
 
 def test_dense_key_changes_with_feature_kind_and_attention_knobs():
@@ -171,29 +151,11 @@ def test_dense_key_changes_with_feature_kind_and_attention_knobs():
     )
 
 
-def test_dense_key_patch_features_is_byte_stable():
-    # Attention key fields are injected only for cls_attention, so existing
-    # patch-feature caches survive the schema addition byte-for-byte.
-    assert _key() == _key(feature_kind="patch_features")
-    assert _key() == _key(
-        feature_kind="patch_features", attention_blocks=(-1, -2), attention_include_registers=True
-    )
-
-
-def test_dense_key_independent_of_output_variant():
-    # Dense grid is pre-pooling, so the variant must not split the cache.
-    k_cls = _key(execution=EncoderConfig(name="uni", precision="fp16", output_variant="cls"))
-    k_mean = _key(
-        execution=EncoderConfig(name="uni", precision="fp16", output_variant="cls_patch_mean")
-    )
-    assert k_cls == k_mean
-
-
 def test_dense_key_distinct_from_pooled_tile_key():
     dense = _key()
     pooled = build_tile_cache_key(
         tile_encoder_name="uni",
-        preprocessing=PreprocessingConfig(),
+        preprocessing=extraction(0.5, 512),
         execution=_enc(),
         feature_type="bag",
     )
@@ -201,14 +163,11 @@ def test_dense_key_distinct_from_pooled_tile_key():
 
 
 # --------------------------------------------------------------------------- #
-# Storage dtype — fp16 and fp32 caches must never collide, and the legacy fp32
-# key must stay byte-stable so existing caches survive (#163).
+# Storage dtype — fp16 and fp32 caches must never collide (#163).
 # --------------------------------------------------------------------------- #
 
 
-def test_dense_key_fp32_is_byte_stable_default():
-    # dtype defaults to 'fp32' and is injected into the payload only when != 'fp32',
-    # so an explicit fp32 reproduces the legacy key byte-for-byte.
+def test_dense_key_dtype_defaults_to_fp32():
     assert _key() == _key(dtype="fp32")
 
 
@@ -377,12 +336,9 @@ def _dense_kw(tmp_path: Path, dataset) -> dict:
         cache_root=tmp_path / "dense_cache",
         dataset=dataset,
         tile_encoder_name="uni",
-        target_size=(512, 512),
         patch_size=(16, 16),
-        pad_mode="reflect",
+        dense=_DENSE,
         execution=_enc(),
-        window_size=None,
-        overlap=0.0,
     )
 
 

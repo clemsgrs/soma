@@ -185,8 +185,9 @@ def validate_selected_run_recipe(
         raise ValueError(
             "BEETLE selected run config disagrees with the protocol-resolved selected arm"
         )
-    masks = resolved_config.preprocessing.masks
-    if masks is None or masks.pixel_mapping != PIXEL_MAPPING:
+    masks = resolved_config.features.extraction.masks
+    held_vocabulary = {label: (int(value),) for label, value in PIXEL_MAPPING.items()}
+    if masks.pixel_mapping != held_vocabulary:
         raise ValueError(
             "BEETLE resolved selected arm must use the protocol's exact pixel vocabulary"
         )
@@ -212,21 +213,21 @@ def load_selected_fold_predictor(run_dir: Path, bundle_paths: tuple[Path, ...]):
     from soma.config import load_config
     from soma.dense.predict import SlidingWindowSegmentationPredictor
     from soma.pipeline.build import live_encoder_for
-    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+    from soma.preprocessing.resolution import resolve_pipeline_dense
 
     config = load_config(run_dir / "config.yaml")
-    if config.decoder is None or config.task is None or config.encoder is None:
+    if config.decoder is None or config.task is None or config.features.encoder is None:
         raise ValueError(
             "BEETLE External inference requires encoder, decoder, and task config"
         )
-    preprocessing = resolve_pipeline_preprocessing(config)
+    dense = resolve_pipeline_dense(config)
     # The folds trained on cached grids: the stage that extracted them re-encodes the ROIs.
     return SlidingWindowSegmentationPredictor.from_bundles(
         [load(path) for path in bundle_paths],
         encoder=live_encoder_for(config),
-        spacing_um=preprocessing.requested_spacing_um,
-        backend=preprocessing.backend,
-        tolerance=float(preprocessing.tolerance),
+        spacing_um=dense.spacing_um,
+        backend=dense.backend,
+        tolerance=float(dense.tolerance),
     )
 
 

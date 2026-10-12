@@ -75,14 +75,18 @@ from soma.benchmarks.registry import (
     register_benchmark,
     score_from_summary,
 )
+from dataclasses import replace as _replace
+
+from hs2p import TilingConfig
+from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
+
 from soma.config import (
     CacheConfig,
     DecoderConfig,
-    EncoderConfig,
+    EncoderLeaf,
     EvalConfig,
-    ExecutionConfig,
+    FeaturesConfig,
     PipelineConfig,
-    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -391,7 +395,7 @@ def _build_eva_segmentation_config(
     patience: int | None = None,
     encoder_batch_size: int = 32,
     head_num_workers: int = 0,
-    execution: ExecutionConfig | None = None,
+    execution: ExecutionOptions | None = None,
     cache: CacheConfig | None = None,
 ) -> PipelineConfig:
     """Assemble an EVA-faithful segmentation :class:`~soma.config.PipelineConfig`.
@@ -414,31 +418,36 @@ def _build_eva_segmentation_config(
         splits_csv=str(splits_csv),
         output_root=Path(output_root),
         dataset_type="segmentation",
-        feature_mode="live" if live else "cached",
         augmentation=(
             {"name": "segmentation", "params": {"crop_scale": list(spec.train_crop_scale)}}
             if live
             else None
         ),
-        execution=execution or ExecutionConfig(),
-        cache=cache or CacheConfig(enabled=True),
-        # The curated PNGs declare NOMINAL_SPACING_UM; requesting the same value reads
-        # EVA's 224 px samples pixel for pixel (no resampling).
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=OUTPUT_PX,
-            requested_spacing_um=NOMINAL_SPACING_UM,
-            # EVA builds its backbones with timm ``features_only=True, out_indices=1``:
-            # the last block's patch grid *before* the final norm. Match that tap.
-            feature_kind=FEATURE_KIND,
-        ),
-        encoder=EncoderConfig(
-            name=encoder,
-            # Dense extraction returns the patch-token grid; the pooled output variant
-            # (virchow2's CLS-only pin for the tile benchmarks) does not apply.
-            output_variant=None,
-            batch_size=encoder_batch_size,
-            # The tiles carry only a nominal spacing; the encoder's recommended regime is moot.
-            allow_non_recommended_settings=True,
+        features=FeaturesConfig(
+            kind="live" if live else "cached",
+            # Dense extraction returns the patch-token grid, so no pooled output variant
+            # applies; the tiles carry only a nominal spacing, so the encoder's
+            # recommended regime is moot.
+            encoder=EncoderLeaf(name=encoder, params={"allow_non_recommended_settings": True}),
+            extraction=PreprocessingConfig(
+                tiling=TilingConfig(
+                    requested_spacing_um=NOMINAL_SPACING_UM,
+                    requested_tile_size_px=OUTPUT_PX,
+                    tolerance=0.05,
+                    overlap=0.0,
+                ),
+            ),
+            # The curated PNGs declare NOMINAL_SPACING_UM; requesting the same value reads
+            # EVA's 224 px samples pixel for pixel (no resampling). EVA builds its
+            # backbones with timm ``features_only=True, out_indices=1``: the last block's
+            # patch grid *before* the final norm. Match that tap.
+            dense=DenseOptions(
+                spacing_um=NOMINAL_SPACING_UM,
+                target_size=OUTPUT_PX,
+                feature_kind=FEATURE_KIND,
+            ),
+            execution=_replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
+            cache=cache or CacheConfig(enabled=True),
         ),
         decoder=DecoderConfig(name=DECODER_NAME),
         task=TaskConfig(name=HEAD_NAME, params=task_params),
@@ -508,7 +517,7 @@ class EvaSegmentationBenchmark:
         max_steps: int | None = None,
         patience: int | None = None,
         encoder_batch_size: int = 32,
-        execution: ExecutionConfig | None = None,
+        execution: ExecutionOptions | None = None,
     ) -> PipelineConfig:
         """Build the EVA-faithful config for this dataset and the ``encoder`` axis."""
         return _build_eva_segmentation_config(
@@ -568,7 +577,10 @@ def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
             "saved test predictions"
         )
     _, _, label_remap = resolve_class_scheme(cfg.task.params, annotation_rasters=False)
-    preprocessing = cfg.preprocessing
+    from soma.preprocessing.resolution import resolve_pipeline_dense
+
+    dense = resolve_pipeline_dense(cfg)
+    tiling = cfg.features.extraction.tiling
     annotations = AnnotationManifest.from_csv(cfg.dataset_csv)
     images = ImageManifest.from_csv(cfg.dataset_csv)
     metrics = resolve_metrics("segmentation", cfg.evaluation.metrics)
@@ -583,11 +595,11 @@ def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
             images,
             size=predictions[predictions.sample_ids[0]].shape,
             label_remap=label_remap,
-            spacing_um=preprocessing.requested_spacing_um,
-            spacing_policy=preprocessing.spacing_policy,
-            tolerance=float(preprocessing.tolerance),
-            backend=preprocessing.mask_backend,
-            image_backend=preprocessing.backend,
+            spacing_um=dense.spacing_um,
+            spacing_policy=cfg.features.spacing_policy,
+            tolerance=float(dense.tolerance),
+            backend=tiling.mask_backend if tiling is not None else "auto",
+            image_backend=dense.backend,
         )
         rows = []
         for sample_id in predictions.sample_ids:

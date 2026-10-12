@@ -5,10 +5,12 @@ Preprocessing selects tissue or annotated regions and resolves tile geometry.
 Spacing controls the physical scale seen by the encoder: smaller µm/px values
 show finer morphology; larger values include broader structure.
 
-The main configuration object is :class:`soma.config.PreprocessingConfig`.
-
-.. autoclass:: soma.config.PreprocessingConfig
-   :members:
+Tiling is hs2p's and extraction is slide2vec's, so soma holds their configuration
+objects rather than its own copies (ADR 0019). In Python, the run's
+``FeaturesConfig.extraction`` is slide2vec's ``PreprocessingConfig``, which composes
+hs2p's ``TilingConfig``, ``SegmentationConfig``, ``FilterConfig``,
+``MaskSamplingConfig`` and ``PreviewConfig``. In YAML, the ``preprocessing:`` block
+below is translated into those objects when the config loads.
 
 Key settings
 ------------
@@ -58,11 +60,22 @@ Key settings
 Tiling configuration
 --------------------
 
-soma composes hs2p's ``TilingConfig`` for ``requested_spacing_um``,
-``requested_tile_size_px``, ``tolerance``, ``overlap``, ``min_coverage``,
-``backend``, and ``mask_backend``. Unset spacing and tile size are resolved from
-the encoder. Extraction, ROI sampling, and cache keys use that resolved config.
-Read-size fields such as ``read_tile_size_px`` are derived internally.
+The ``preprocessing:`` keys map onto the upstream objects:
+
+- ``requested_spacing_um``, ``requested_tile_size_px``, ``tolerance``, ``overlap``,
+  ``backend`` and ``mask_backend`` form hs2p's ``TilingConfig``;
+- ``tissue_method``, ``seg_downsample``, ``sam2_device`` and ``sam2_num_workers``
+  form hs2p's ``SegmentationConfig``;
+- ``a_t`` and ``ref_tile_size_px`` form hs2p's ``FilterConfig``;
+- ``min_coverage``, ``masks`` and ``sampling`` form hs2p's ``MaskSamplingConfig``;
+- ``requested_region_size_px`` and ``region_tile_multiple`` stay on slide2vec's
+  ``PreprocessingConfig``.
+
+Unset spacing and tile size are resolved from the encoder when the config loads.
+Extraction, ROI sampling, and cache keys use that resolved config. Read sizes
+are derived by hs2p and slide2vec. Cache keys are built from the fields of these
+upstream objects, so a field added upstream is keyed without a change in soma;
+caches written by soma releases that keyed its own copies are not reused.
 
 Declared pooled extraction encodes exactly ``requested_tile_size_px``, applying
 only the encoder's photometric transform after tiling. Defaults describe the
@@ -87,9 +100,11 @@ within tolerance still use the requested spacing, and samples without a declared
 spacing retain the requested value.
 
 The effective per-sample spacing is applied consistently to image extraction and
-annotation-mask reads so targets remain registered to dense feature grids. The non-default
-policy participates in ROI and feature-cache identities, and the effective spacing is
-recorded in cache sidecars and run provenance.
+annotation-mask reads so targets remain registered to dense feature grids. The policy is
+part of the ROI-sampling cache identity, and so of the dense caches built on its ROIs, and
+the effective spacing is recorded in cache sidecars and run provenance. It is a soma
+setting (``FeaturesConfig.spacing_policy`` in Python) because hs2p and slide2vec have no
+field for it.
 
 .. _preprocessing-source-masks:
 
@@ -114,8 +129,8 @@ A slide without resolution metadata needs ``spacing_at_level_0`` in
 Tiling artifacts record the mask level and spacing actually read
 (``mask_level``, ``mask_spacing_um``). Since hs2p 5 selects the mask level with
 a fixed 1% tolerance, these can differ from runs made with hs2p 4. Cache keys
-depend only on the configuration, so tiling and feature caches written with
-hs2p 4 are reused. The same holds for tilings cached with hs2p 5.0.2, which
+depend only on the configuration, not on the hs2p version, so a cache written
+under an older hs2p is reused. This holds for tilings cached with hs2p 5.0.2, which
 hs2p 5.1.0 would tile differently next to tissue holes and, with ``overlap > 0``
 read above level 0, on a slightly different stride. Delete the tiling cache to
 re-tile. hs2p 6 records ``null`` segmentation thresholds (``seg_sthresh`` and
@@ -143,12 +158,15 @@ ROI ``sampling`` under ``preprocessing``:
        output_mode: merged
        strategy: joint
 
-For ``dataset_type: segmentation``, ``preprocessing.masks`` selects the
-slide-manifest input mode: soma samples ROIs from slides and their
-``label_mask_path`` annotations, extracts dense grids, then fits a segmentation
-head. Without it, segmentation uses pre-cropped tiles. :doc:`segmentation`
-compares the two modes and explains how to choose the tile and window sizes.
-See :class:`soma.config.MasksConfig` and :class:`soma.config.SamplingConfig`.
+For ``dataset_type: segmentation``, the input mode is inferred from the data: a
+cohort whose ``dataset.csv`` has a ``label_mask_path`` column, extracted with an
+annotation vocabulary (any ``pixel_mapping`` other than hs2p's
+``{background: 0, tissue: 1}``), is a slide manifest. soma samples ROIs from the
+slides and their ``label_mask_path`` annotations, extracts dense grids, then fits
+a segmentation head. Otherwise segmentation uses pre-cropped tiles.
+:doc:`segmentation` compares the two modes and explains how to choose the tile
+and window sizes. The ``masks`` and ``sampling`` blocks become hs2p's
+``MaskSamplingConfig``.
 
 Annotation labels
 -----------------
@@ -170,8 +188,7 @@ coverage is their sum:
 
 A tile that is 30% value ``1`` and 30% value ``2`` is 60% ``tumor`` and is
 sampled; with ``tumor: 1`` and a separate label for ``2``, neither reaches 0.5.
-The order of a list does not matter, and configurations without lists keep
-their cache keys.
+The order of a list does not matter.
 
 ``pixel_mapping`` must declare every value the annotation masks hold: a mask
 holding any other value fails. Declare a value that should never select a tile,

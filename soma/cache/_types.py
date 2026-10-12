@@ -11,7 +11,8 @@ from typing import Any
 CACHE_METADATA_NAME = "cache_metadata.json"
 MANIFEST_NAME = "manifest.csv"
 PROCESS_LIST_NAME = "process_list.csv"
-SCHEMA_VERSION = "v1"
+#: v2: keys derive from the slide2vec / hs2p dataclasses soma holds (ADR 0019).
+SCHEMA_VERSION = "v2"
 # Single-file pack of every 1-D feature of a features directory, written next to the
 # per-sample files by ``soma.data.CachedSetSource``. A commit that changes the features
 # of a cache deletes it, so a re-encoded sample is never served from it.

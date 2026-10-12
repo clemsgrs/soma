@@ -33,7 +33,10 @@ def test_pyproject_has_publish_ready_metadata():
 
 
 def test_slide2vec_minimum_is_aligned_with_hs2p_6():
-    # slide2vec 7.0.0 requires hs2p 6.0.0, the same floor soma declares. It resumes an
+    # slide2vec 7.1.0 requires hs2p 6.1.0, the same floor soma declares. Its
+    # ``PreprocessingConfig`` composes hs2p's tiling, segmentation, filter, mask and
+    # preview dataclasses, and ``DenseOptions`` / ``ExecutionOptions`` carry the dense
+    # and execution fields; soma holds the three as given (ADR 0019). 7.0.0 resumes an
     # artifact only when its sidecar records the full feature identity, and
     # ``Model.pooled_identity_differences`` (6.3.2) reports a required field the record
     # lacks as ``MISSING_FIELD`` instead of accepting it, which soma's cache check relies
@@ -42,7 +45,7 @@ def test_slide2vec_minimum_is_aligned_with_hs2p_6():
     # segmentation benchmarks tap.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=7.0.0" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=7.1.0" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_provides_registered_roi_mask_reads():
@@ -55,10 +58,11 @@ def test_hs2p_minimum_provides_registered_roi_mask_reads():
     # and values of the wrong type (soma composes typed hs2p configs, so none reach it),
     # takes ``resolve_tissue_mask`` settings as one ``SegmentationConfig``, records
     # ``null`` segmentation thresholds when no segmentation ran, and lets ``auto`` skip a
-    # backend that opens a file but cannot decode it.
+    # backend that opens a file but cannot decode it. 6.1.0 is the floor slide2vec 7.1.0
+    # requires; soma holds its mask vocabulary (``MaskSamplingConfig``) as given.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "hs2p>=6.0.0" in data["project"]["dependencies"]
+    assert "hs2p>=6.1.0" in data["project"]["dependencies"]
 
 
 def test_release_metadata_matches_license_and_verified_python_support():
@@ -114,16 +118,11 @@ def test_public_import_surface_dependencies_are_declared():
 
 def test_top_level_package_exports_dense_configuration_and_discovery_surface():
     import soma
-    from soma.config import (
-        AttentionConfig,
-        CompositeConfig,
-        EncoderMemberConfig,
-    )
+    from soma.config import EncoderLeaf, FeaturesConfig
 
     expected_exports = {
-        "AttentionConfig": AttentionConfig,
-        "CompositeConfig": CompositeConfig,
-        "EncoderMemberConfig": EncoderMemberConfig,
+        "FeaturesConfig": FeaturesConfig,
+        "EncoderLeaf": EncoderLeaf,
         "components": soma.discovery.components,
         "register": soma.discovery.register,
         "DenseModel": soma.training.model.DenseModel,

@@ -15,7 +15,7 @@ from typing import Any
 
 import yaml
 
-from soma.config import PipelineConfig, config_yaml_dict
+from soma.config import PipelineConfig, config_yaml_dict, without_machine_resolved_fields
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def _verified_manifest(
 
 
 def _resume_recipe(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = json.loads(json.dumps(payload))
+    normalized = without_machine_resolved_fields(json.loads(json.dumps(payload)))
     run = normalized.get("run")
     if isinstance(run, dict):
         run.pop("mirror_root", None)

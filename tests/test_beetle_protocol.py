@@ -135,22 +135,23 @@ def test_resolved_arms_encode_the_locked_virchow2_recipe(
     assert tuple(paths) == EXPECTED_ARMS
     for arm, path in paths.items():
         config = load_config(path)
-        assert config.encoder is not None
-        assert config.encoder.name == "virchow2"
-        assert config.encoder.output_variant == "cls"
-        assert config.encoder.precision == "fp16"
-        assert config.execution.precision == "fp16"
-        assert config.cache.dtype == "fp16"
-        assert REVISION in str(config.cache.root_dir)
+        features = config.features
+        assert features.encoder is not None
+        assert features.encoder.name == "virchow2"
+        assert features.encoder.output_variant == "cls"
+        assert features.execution.precision == "fp16"
+        assert features.cache.dtype == "fp16"
+        assert REVISION in str(features.cache.root_dir)
         assert str(local_encoder_snapshot[0]) in path.read_text(encoding="utf-8")
-        assert config.preprocessing.feature_kind == "patch_features"
-        assert config.preprocessing.spacing_policy == "native_if_coarser"
-        assert config.preprocessing.tolerance == pytest.approx(0.1)
-        assert config.preprocessing.mask_backend == "openslide"
-        assert config.preprocessing.dense_window_size == 224
-        assert config.preprocessing.dense_window_overlap == 0.5
-        assert config.preprocessing.masks is not None
-        assert config.preprocessing.masks.pixel_mapping == PIXEL_MAPPING
+        assert features.dense.feature_kind == "patch_features"
+        assert features.spacing_policy == "native_if_coarser"
+        assert features.extraction.tiling.tolerance == pytest.approx(0.1)
+        assert features.extraction.tiling.mask_backend == "openslide"
+        assert features.dense.window_size == 224
+        assert features.dense.overlap == 0.5
+        assert features.extraction.masks.pixel_mapping == {
+            label: (value,) for label, value in PIXEL_MAPPING.items()
+        }
         assert config.decoder is not None
         assert config.decoder.name == "lightweight_conv"
         assert config.decoder.params == {

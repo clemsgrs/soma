@@ -122,13 +122,19 @@ def run_offline_smoke(output_dir: str | Path) -> Path:
     arm_artifacts: dict[str, dict[str, list[str]]] = {}
     for arm in ARM_NAMES:
         production = load_config(resolved_paths[arm])
-        smoke_preprocessing = replace(
-            production.preprocessing,
-            requested_tile_size_px=TARGET_SIZE,
-            dense_window_size=None,
-            dense_window_overlap=0.0,
-            masks=None,
-            sampling=None,
+        # Pre-cropped cached grids: hs2p's binary tissue vocabulary (no ROI sampling) and
+        # one whole-tile forward at the fixture's tile size.
+        from hs2p import DEFAULT_MASK_SAMPLING
+
+        features = production.features
+        smoke_features = replace(
+            features,
+            extraction=replace(
+                features.extraction,
+                tiling=replace(features.extraction.tiling, requested_tile_size_px=TARGET_SIZE),
+                masks=DEFAULT_MASK_SAMPLING,
+            ),
+            dense=replace(features.dense, target_size=TARGET_SIZE, window_size=None, overlap=0.0),
         )
         smoke_training = replace(
             production.training,
@@ -145,7 +151,7 @@ def run_offline_smoke(output_dir: str | Path) -> Path:
             splits_csv=splits_csv,
             output_root=output_dir / "runs" / arm,
             mirror_root=output_dir / "mirror" / arm,
-            preprocessing=smoke_preprocessing,
+            features=smoke_features,
             training=smoke_training,
         )
         # This project smoke is a CPU-only contract even when invoked on a GPU node.

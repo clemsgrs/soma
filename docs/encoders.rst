@@ -1,9 +1,11 @@
 Encoders
 ========
 
-Select a frozen encoder with ``EncoderConfig.name``. The encoder config also
-controls precision, batch size, and output variant; :doc:`preprocessing`
-controls image geometry.
+Select a frozen encoder by name: ``FeaturesConfig(encoder="uni2")`` in Python,
+``encoder.name`` in YAML. An encoder is a leaf of the ``encoder`` registry: a name
+plus its params (``output_variant``, ``allow_non_recommended_settings``).
+Precision and batch size are execution settings (slide2vec's
+``ExecutionOptions``); :doc:`preprocessing` controls image geometry.
 
 **Encoding methods**
 
@@ -12,9 +14,14 @@ controls image geometry.
   per-position vector: :doc:`details <encoders/composite>` ·
   :doc:`tutorial <tutorials/walkthrough-composite>`.
 
-The main configuration object is :class:`soma.config.EncoderConfig`.
+The run's features are configured by :class:`soma.config.FeaturesConfig`, which holds
+the encoder leaf (:class:`soma.config.EncoderLeaf`) next to slide2vec's
+``PreprocessingConfig``, ``ExecutionOptions`` and ``DenseOptions``.
 
-.. autoclass:: soma.config.EncoderConfig
+.. autoclass:: soma.config.FeaturesConfig
+   :members:
+
+.. autoclass:: soma.config.EncoderLeaf
    :members:
 
 Model Zoo

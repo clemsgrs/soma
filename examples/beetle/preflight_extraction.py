@@ -12,19 +12,16 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 
-from soma.config import (
-    CacheConfig,
-    EncoderConfig,
-    ExecutionConfig,
-    MasksConfig,
-    PreprocessingConfig,
-    SamplingConfig,
-)
+from hs2p import MaskSamplingConfig, TilingConfig
+from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
+
+from soma.config import CacheConfig, EncoderLeaf
 from soma import FeatureExtractor
 from soma.data._legacy import LegacySamples, legacy_samples_from_csv
 from soma.dense.reader import build_label_remap
 from soma.dense_slide_extraction import (
     build_roi_dataset,
+    effective_spacing_um,
     sample_slide_rois,
     write_roi_mask_crops,
 )
@@ -35,6 +32,8 @@ from examples.beetle.curate import _NATIVE_LEVEL_0_EXCEPTIONS
 COARSE_READ_POLICY = "native_level_0_no_upsample"
 EXPECTED_COARSE_SLIDES = 3
 DEFAULT_MINIMUM_COSINE_SIMILARITY = 0.9999
+#: The three curated TCGA slides coarser than 0.5 µm/px are read at their native spacing.
+SPACING_POLICY = "native_if_coarser"
 
 _PIXEL_MAPPING = {
     "background": 0,
@@ -103,23 +102,35 @@ class RepresentativeExtractionResult:
         return asdict(self)
 
 
-def _recipe() -> tuple[PreprocessingConfig, MasksConfig, SamplingConfig]:
-    masks = MasksConfig(pixel_mapping=_PIXEL_MAPPING, min_coverage=_MIN_COVERAGE)
-    sampling = SamplingConfig(strategy="joint", output_mode="merged")
+def _recipe() -> tuple[PreprocessingConfig, DenseOptions]:
+    """slide2vec's extraction (hs2p tiling + the BEETLE annotation vocabulary) and the
+    dense read/encode recipe of the BEETLE ROI grids."""
     preprocessing = PreprocessingConfig(
-        backend="auto",
-        mask_backend="openslide",
-        requested_tile_size_px=512,
-        requested_spacing_um=0.5,
-        spacing_policy="native_if_coarser",
-        tolerance=0.1,
-        feature_kind="patch_features",
-        dense_window_size=224,
-        dense_window_overlap=0.5,
-        masks=masks,
-        sampling=sampling,
+        tiling=TilingConfig(
+            requested_spacing_um=0.5,
+            requested_tile_size_px=512,
+            tolerance=0.1,
+            overlap=0.0,
+            backend="auto",
+            mask_backend="openslide",
+        ),
+        masks=MaskSamplingConfig(
+            pixel_mapping=_PIXEL_MAPPING,
+            min_coverage=_MIN_COVERAGE,
+            output_mode="merged",
+            strategy="joint",
+        ),
+        adaptive_batching=True,
     )
-    return preprocessing, masks, sampling
+    dense = DenseOptions(
+        spacing_um=0.5,
+        target_size=512,
+        tolerance=0.1,
+        window_size=224,
+        overlap=0.5,
+        feature_kind="patch_features",
+    )
+    return preprocessing, dense
 
 
 def _one_coordinate(coords: list[tuple[int, int]], *, sample_id: str) -> tuple[int, int]:
@@ -131,8 +142,6 @@ def _one_coordinate(coords: list[tuple[int, int]], *, sample_id: str) -> tuple[i
 def _representative_coordinates(
     dataset: LegacySamples,
     *,
-    masks: MasksConfig,
-    sampling: SamplingConfig,
     preprocessing: PreprocessingConfig,
 ) -> tuple[dict[str, list[tuple[int, int]]], set[str]]:
     coarse_ids = [
@@ -149,9 +158,8 @@ def _representative_coordinates(
         )
     coarse_coords = sample_slide_rois(
         dataset,
-        masks=masks,
-        sampling=sampling,
         preprocessing=preprocessing,
+        spacing_policy=SPACING_POLICY,
         sample_ids=coarse_ids,
     )
     missing_eligible = [sample_id for sample_id, coords in coarse_coords.items() if not coords]
@@ -173,9 +181,8 @@ def _representative_coordinates(
             continue
         candidate = sample_slide_rois(
             dataset,
-            masks=masks,
-            sampling=sampling,
             preprocessing=preprocessing,
+            spacing_policy=SPACING_POLICY,
             sample_ids=[sample_id],
         )[sample_id]
         if candidate:
@@ -194,26 +201,22 @@ def _run_precision(
     roi_dataset: LegacySamples,
     output_dir: Path,
     preprocessing: PreprocessingConfig,
-    masks: MasksConfig,
-    sampling: SamplingConfig,
+    dense: DenseOptions,
 ):
     result = FeatureExtractor(
         roi_dataset,
-        EncoderConfig(
-            name="virchow2",
-            precision=precision,
-            batch_size=8,
-            adaptive_batching=True,
-            output_variant="cls",
-        ),
+        EncoderLeaf(name="virchow2", params={"output_variant": "cls"}),
         preprocessing=preprocessing,
         # Annotation-sampled ROI grids over whole slides (the pipeline's segmentation path).
         shape="grid",
         unit="slide",
-        execution=ExecutionConfig(
+        dense=dense,
+        spacing_policy=SPACING_POLICY,
+        execution=ExecutionOptions(
             num_gpus=1,
             num_workers_per_gpu=0,
             precision=precision,
+            batch_size=8,
         ),
         cache=CacheConfig(
             enabled=True,
@@ -297,7 +300,9 @@ def _validate_sidecar(
             f"BEETLE representative sidecar mismatch for {record.sample_id}: {mismatches}"
         )
 
-    expected_spacing = preprocessing.effective_spacing_um(record.spacing_at_level_0)
+    expected_spacing = effective_spacing_um(
+        preprocessing, record.spacing_at_level_0, spacing_policy=SPACING_POLICY
+    )
     declared = metadata.get("declared_spacing_um")
     if declared is None or not math.isclose(
         float(declared), expected_spacing, rel_tol=0.0, abs_tol=1e-5
@@ -315,7 +320,7 @@ def _validate_sidecar(
     # A source level already within the configured tolerance is deliberately read native,
     # so an ordinary slide may record (for example) 0.485 rather than exactly 0.5.
     relative_mismatch = abs(float(effective) - expected_spacing) / expected_spacing
-    if relative_mismatch > float(preprocessing.tolerance) + 1e-9:
+    if relative_mismatch > float(preprocessing.tiling.tolerance) + 1e-9:
         raise ValueError(
             f"BEETLE representative {record.sample_id} effective spacing {effective!r} "
             f"is outside tolerance of its declared spacing {expected_spacing}"
@@ -386,13 +391,8 @@ def run_representative_extraction_parity(
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset = legacy_samples_from_csv(dataset_csv)
-    preprocessing, masks, sampling = _recipe()
-    coords_by_slide, coarse_ids = _representative_coordinates(
-        dataset,
-        masks=masks,
-        sampling=sampling,
-        preprocessing=preprocessing,
-    )
+    preprocessing, dense = _recipe()
+    coords_by_slide, coarse_ids = _representative_coordinates(dataset, preprocessing=preprocessing)
     roi_dir = output_dir / "representative_rois"
     roi_manifest = build_roi_dataset(
         dataset,
@@ -408,8 +408,7 @@ def run_representative_extraction_parity(
             roi_dataset=roi_dataset,
             output_dir=output_dir,
             preprocessing=preprocessing,
-            masks=masks,
-            sampling=sampling,
+            dense=dense,
         )
         for precision in ("fp16", "fp32")
     }
@@ -420,8 +419,7 @@ def run_representative_extraction_parity(
             roi_dataset=roi_dataset,
             output_dir=output_dir,
             preprocessing=preprocessing,
-            masks=masks,
-            sampling=sampling,
+            dense=dense,
         )
         for precision in ("fp16", "fp32")
     }
@@ -447,7 +445,6 @@ def run_representative_extraction_parity(
             )["effective_spacing_um"]
             for record in roi_dataset.samples.values()
         },
-        masks=masks,
         preprocessing=preprocessing,
     )
     label_remap = build_label_remap(_CLASSES, ignore=_IGNORE)

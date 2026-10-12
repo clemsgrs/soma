@@ -104,19 +104,21 @@ def resolve_dense_cache_dir(
 ) -> Path | None:
     """Prepare and return the exact dense-image cache directory described by ``cfg``."""
     from soma import FeatureExtractor
-    from soma.encoders.validation import resolve_preprocessing_config
+    from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
-    preprocessing = resolve_preprocessing_config(cfg.encoder, cfg.preprocessing)
-    cache = cfg.cache
+    features = cfg.features
+    cache = features.cache
     if cache.root_dir is None:
         cache = replace(cache, root_dir=Path(cfg.output_root) / "feature_cache")
     extraction = FeatureExtractor(
         manifest,
-        cfg.encoder,
-        preprocessing,
+        features.encoder,
+        resolve_pipeline_preprocessing(cfg),
         shape="grid",
         unit="tile",
-        execution=cfg.execution,
+        dense=resolve_pipeline_dense(cfg),
+        spacing_policy=features.spacing_policy,
+        execution=features.execution,
         cache=cache,
         output_root=Path(cfg.output_root) / "rescore_extraction",
     ).extract()

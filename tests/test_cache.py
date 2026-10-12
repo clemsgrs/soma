@@ -39,7 +39,10 @@ from soma.cache import (
 )
 from soma.cache.features import FeatureCacheResolution, _validate_feature_cache_contents
 from soma.cache.tiling import _validate_tiling_cache_contents
-from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
+from slide2vec import ExecutionOptions
+
+from soma.config import CacheConfig
+from tests.extraction_configs import extraction
 from soma.data._legacy import legacy_samples_from_csv
 
 
@@ -115,27 +118,13 @@ def test_manifest_digest_stable_under_row_order(tmp_path: Path):
 def test_tile_cache_key_changes_with_preprocessing(tmp_path: Path):
     key_a = build_tile_cache_key(
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     key_b = build_tile_cache_key(
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(requested_tile_size_px=256),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
-    )
-    assert key_a != key_b
-
-
-def test_tile_cache_key_changes_with_tissue_mask_value(tmp_path: Path):
-    key_a = build_tile_cache_key(
-        tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=1),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
-    )
-    key_b = build_tile_cache_key(
-        tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(tissue_mask_tissue_value=2),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 256),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert key_a != key_b
 
@@ -143,13 +132,13 @@ def test_tile_cache_key_changes_with_tissue_mask_value(tmp_path: Path):
 def test_tile_cache_key_changes_with_precision(tmp_path: Path):
     key_a = build_tile_cache_key(
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     key_b = build_tile_cache_key(
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp32"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp32"),
     )
     assert key_a != key_b
 
@@ -157,13 +146,15 @@ def test_tile_cache_key_changes_with_precision(tmp_path: Path):
 def test_tile_cache_key_changes_with_output_variant(tmp_path: Path):
     key_a = build_tile_cache_key(
         tile_encoder_name="h0-mini",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="h0-mini", output_variant="cls"),
+        preprocessing=extraction(),
+        execution=None,
+        output_variant="cls",
     )
     key_b = build_tile_cache_key(
         tile_encoder_name="h0-mini",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="h0-mini", output_variant="cls_patch_mean"),
+        preprocessing=extraction(),
+        execution=None,
+        output_variant="cls_patch_mean",
     )
     assert key_a != key_b
 
@@ -171,13 +162,13 @@ def test_tile_cache_key_changes_with_output_variant(tmp_path: Path):
 def test_tile_cache_key_changes_with_backend(tmp_path: Path):
     key_a = build_tile_cache_key(
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(backend="auto"),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224, tiling_fields={"backend": "auto"}),
+        execution=ExecutionOptions(precision="fp16"),
     )
     key_b = build_tile_cache_key(
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(backend="openslide"),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224, tiling_fields={"backend": "openslide"}),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert key_a != key_b
 
@@ -201,8 +192,8 @@ def test_cache_validation_surfaces_payload_errors(tmp_path: Path, caplog):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -221,8 +212,8 @@ def test_cache_validation_surfaces_payload_errors(tmp_path: Path, caplog):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
         validate_payloads=True,
     )
     assert resumed.complete is False
@@ -259,10 +250,10 @@ def test_sample_identity_is_path_based(tmp_path: Path):
 
 def test_build_tiling_cache_key_changes_with_preprocessing(tmp_path: Path):
     key_a = build_tiling_cache_key(
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        preprocessing=extraction(0.5, 224),
     )
     key_b = build_tiling_cache_key(
-        preprocessing=PreprocessingConfig(requested_tile_size_px=256, requested_spacing_um=0.5),
+        preprocessing=extraction(0.5, 256),
     )
     assert key_a != key_b
 
@@ -337,7 +328,7 @@ def test_resolve_tiling_cache_records_backend_provenance(tmp_path: Path):
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
         dataset=dataset,
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        preprocessing=extraction(0.5, 224),
         backend_provenance=provenance,
         requested_preprocessing={"backend": "auto", "requested_tile_size_px": None},
     )
@@ -355,7 +346,7 @@ def test_write_tiling_cache_stub_points_to_shared_cache_paths(tmp_path: Path):
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
         dataset=dataset,
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        preprocessing=extraction(0.5, 224),
         backend_provenance={
             "requested_backend": "openslide",
             "backend": "openslide",
@@ -404,7 +395,7 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
     resolution = resolve_tiling_cache(
         cache_root=tmp_path / "tiling_cache",
         dataset=dataset,
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        preprocessing=extraction(0.5, 224),
         backend_provenance={
             "requested_backend": "openslide",
             "backend": "openslide",
@@ -450,14 +441,7 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
         rows=[{"sample_id": "s1", "image_path": "/slides/s1.svs", "label": "tumor"}],
     )
     cache_root = tmp_path / "tiling_cache"
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        requested_region_size_px=1792,
-        region_tile_multiple=8,
-        read_tile_size_px=224,
-        read_region_size_px=1792,
-    )
+    preprocessing = extraction(0.5, 224, requested_region_size_px=1792, region_tile_multiple=8)
     provenance = {
         "requested_backend": "openslide",
         "backend": "openslide",
@@ -518,8 +502,8 @@ def test_resolve_tile_cache_records_backend_provenance(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(backend="auto"),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224, tiling_fields={"backend": "auto"}),
+        execution=ExecutionOptions(precision="fp16"),
         backend_provenance=provenance,
     )
 
@@ -537,8 +521,8 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -552,8 +536,8 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
 
     assert reused.complete is True
@@ -567,8 +551,8 @@ def test_record_empty_sample_ids_records_sample_identity(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
 
     record_empty_sample_ids(resolution, ["s1"])
@@ -622,21 +606,13 @@ def test_feature_cache_validation_checks_empty_sample_identity(tmp_path: Path):
 def test_hierarchical_cache_key_changes_with_region_geometry(tmp_path: Path):
     key_a = build_hierarchical_cache_key(
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_region_size_px=1344,
-            region_tile_multiple=6,
-        ),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224, requested_region_size_px=1344, region_tile_multiple=6),
+        execution=ExecutionOptions(precision="fp16"),
     )
     key_b = build_hierarchical_cache_key(
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_region_size_px=896,
-            region_tile_multiple=4,
-        ),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224, requested_region_size_px=896, region_tile_multiple=4),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert key_a != key_b
 
@@ -655,12 +631,12 @@ def test_slide_cache_key_changes_with_upstream_tile_cache_key(tmp_path: Path):
     key_a = build_slide_cache_key(
         slide_encoder_name="prism",
         tile_dependency_signature=tile_dependency_a,
-        execution=EncoderConfig(name="prism", precision="fp16"),
+        execution=ExecutionOptions(precision="fp16"),
     )
     key_b = build_slide_cache_key(
         slide_encoder_name="prism",
         tile_dependency_signature=tile_dependency_b,
-        execution=EncoderConfig(name="prism", precision="fp16"),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert key_a != key_b
 
@@ -672,8 +648,8 @@ def test_resolve_tile_cache_reuses_complete_store(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -686,8 +662,8 @@ def test_resolve_tile_cache_reuses_complete_store(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert reused.complete is True
     assert reused.reused is True
@@ -700,8 +676,8 @@ def test_feature_cache_metadata_mutations_return_refreshed_resolution(tmp_path: 
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     for sample_id in dataset.sample_ids:
         _save_payload(resolution, sample_id, torch.randn(4, 16))
@@ -730,8 +706,8 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -743,8 +719,8 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert resumed.complete is False
     assert resumed.missing_sample_ids() == ["s2"]
@@ -759,8 +735,8 @@ def test_non_dense_missing_sample_ids_ignores_sidecar(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     for sample_id in dataset.sample_ids:
         _save_payload(resolution, sample_id, torch.randn(4, 16))
@@ -771,8 +747,8 @@ def test_non_dense_missing_sample_ids_ignores_sidecar(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert reused.missing_sample_ids() == []
 
@@ -784,8 +760,8 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -798,8 +774,8 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
             cache_root=cache_root,
             dataset=dataset,
             tile_encoder_name="virchow",
-            preprocessing=PreprocessingConfig(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
+            preprocessing=extraction(0.5, 224),
+            execution=ExecutionOptions(precision="fp16"),
         )
 
     messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
@@ -818,8 +794,8 @@ def test_resolve_tile_cache_logs_missing_count_when_no_samples_exist(tmp_path: P
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -832,8 +808,8 @@ def test_resolve_tile_cache_logs_missing_count_when_no_samples_exist(tmp_path: P
             cache_root=cache_root,
             dataset=dataset,
             tile_encoder_name="virchow",
-            preprocessing=PreprocessingConfig(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
+            preprocessing=extraction(0.5, 224),
+            execution=ExecutionOptions(precision="fp16"),
         )
 
     messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
@@ -847,8 +823,8 @@ def _resolve_virchow_tile_cache(cache_root: Path, dataset: Dataset) -> FeatureCa
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
 
 
@@ -1028,8 +1004,8 @@ def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
             cache_root=cache_root,
             dataset=dataset,
             tile_encoder_name="virchow",
-            preprocessing=PreprocessingConfig(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
+            preprocessing=extraction(0.5, 224),
+            execution=ExecutionOptions(precision="fp16"),
         )
     messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
     assert any("resolving feature cache" in message for message in messages)
@@ -1042,7 +1018,7 @@ def test_resolve_tiling_cache_logs_resolving_state(tmp_path: Path):
         resolve_tiling_cache(
             cache_root=cache_root,
             dataset=dataset,
-            preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            preprocessing=extraction(0.5, 224),
             backend_provenance={
                 "requested_backend": "openslide",
                 "backend": "openslide",
@@ -1064,8 +1040,8 @@ def test_resolve_tile_cache_logs_validation_progress_for_large_dataset(tmp_path:
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     reporter = _FakeRichReporter()
     with patch("soma.cache.io.slide2vec_progress.get_progress_reporter", return_value=reporter):
@@ -1073,8 +1049,8 @@ def test_resolve_tile_cache_logs_validation_progress_for_large_dataset(tmp_path:
             cache_root=cache_root,
             dataset=dataset,
             tile_encoder_name="virchow",
-            preprocessing=PreprocessingConfig(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
+            preprocessing=extraction(0.5, 224),
+            execution=ExecutionOptions(precision="fp16"),
         )
     assert reporter.progress.started is True
     assert reporter.progress.added_tasks == [("Validating feature cache entries", 1100)]
@@ -1161,7 +1137,7 @@ def test_resolve_tiling_cache_logs_validation_progress_for_large_dataset(tmp_pat
         for i in range(1100)
     ]
     dataset = _make_dataset(tmp_path, rows=rows)
-    preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    preprocessing = extraction(0.5, 224)
     backend_provenance = {
         "requested_backend": "openslide",
         "backend": "openslide",
@@ -1232,14 +1208,14 @@ def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata.pop("artifact_kind")
     metadata["encoder_name"] = "other-encoder"
     metadata["unexpected_field"] = "boom"
-    metadata["schema_version"] = "v2"
+    metadata["schema_version"] = "v1"
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
 
     with pytest.raises(ValueError) as excinfo:
@@ -1247,8 +1223,8 @@ def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):
             cache_root=cache_root,
             dataset=dataset,
             tile_encoder_name="virchow",
-            preprocessing=PreprocessingConfig(),
-            execution=EncoderConfig(name="virchow", precision="fp16"),
+            preprocessing=extraction(0.5, 224),
+            execution=ExecutionOptions(precision="fp16"),
         )
 
     message = str(excinfo.value)
@@ -1268,7 +1244,7 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
         dataset=dataset,
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        preprocessing=extraction(0.5, 224),
         backend_provenance={
             "requested_backend": "openslide",
             "backend": "openslide",
@@ -1277,7 +1253,7 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata.pop("preprocessing")
-    metadata["schema_version"] = "v2"
+    metadata["schema_version"] = "v1"
     metadata["unexpected_field"] = "boom"
     resolution.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
 
@@ -1285,7 +1261,7 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
         resolve_tiling_cache(
             cache_root=cache_root,
             dataset=dataset,
-            preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            preprocessing=extraction(0.5, 224),
             backend_provenance={
                 "requested_backend": "openslide",
                 "backend": "openslide",
@@ -1318,7 +1294,7 @@ def test_resolve_tiling_cache_reuses_shared_sample_across_datasets(tmp_path: Pat
             {"sample_id": "s2", "image_path": "/slides/other.svs", "label": "normal"},
         ],
     )
-    preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    preprocessing = extraction(0.5, 224)
     provenance_a = {
         "requested_backend": "openslide",
         "backend": "openslide",
@@ -1374,7 +1350,7 @@ def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_p
         tmp_path / "b",
         rows=[{"sample_id": "s1", "image_path": "/slides/path-b.svs", "label": "tumor"}],
     )
-    preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    preprocessing = extraction(0.5, 224)
     resolution_a = resolve_tiling_cache(
         cache_root=cache_root,
         dataset=dataset_a,
@@ -1489,13 +1465,8 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            requested_region_size_px=1344,
-            region_tile_multiple=6,
-        ),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224, requested_region_size_px=1344, region_tile_multiple=6),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata["feature_dim"] = 16
@@ -1508,13 +1479,8 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            requested_region_size_px=1344,
-            region_tile_multiple=6,
-        ),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224, requested_region_size_px=1344, region_tile_multiple=6),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert reused.complete is True
     assert reused.reused is True
@@ -1539,8 +1505,8 @@ def test_resolve_tile_cache_reuses_shared_sample_across_datasets(tmp_path: Path)
         cache_root=cache_root,
         dataset=dataset_a,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata_a = json.loads(resolution_a.metadata_path.read_text())
     metadata_a["feature_dim"] = 8
@@ -1552,8 +1518,8 @@ def test_resolve_tile_cache_reuses_shared_sample_across_datasets(tmp_path: Path)
         cache_root=cache_root,
         dataset=dataset_b,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert resolution_b.complete is False
     assert resolution_b.missing_sample_ids() == ["s2"]
@@ -1575,8 +1541,8 @@ def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_pat
         cache_root=cache_root,
         dataset=dataset_a,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     metadata_a = json.loads(resolution_a.metadata_path.read_text())
     metadata_a["feature_dim"] = 8
@@ -1588,8 +1554,8 @@ def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_pat
         cache_root=cache_root,
         dataset=dataset_b,
         tile_encoder_name="virchow",
-        preprocessing=PreprocessingConfig(),
-        execution=EncoderConfig(name="virchow", precision="fp16"),
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
     )
     assert resolution_b.complete is False
     assert resolution_b.missing_sample_ids() == ["s1"]

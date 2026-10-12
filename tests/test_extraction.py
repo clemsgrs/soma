@@ -13,20 +13,26 @@ import slide2vec.progress as slide2vec_progress
 import torch
 from hs2p import SlideSpec
 from slide2vec import ExecutionOptions
-from slide2vec import PreprocessingConfig as Slide2VecPreprocessingConfig
 
 import soma.cache as cache_mod
 import soma.extraction.orchestration as orchestration_mod
 from soma.data import require_coverage
 from soma.cache import record_empty_sample_ids, record_feature_dim, record_sample_identity_signatures
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig as _PreprocessingConfig
+from soma.config import CacheConfig, EncoderLeaf
 from soma.data._legacy import legacy_samples_from_csv
 from soma.data import CachedSetSource
 from slide2vec.encoders.registry import encoder_registry
 from soma.extraction import _embed_tiles, _load_model, _run_with_coordinates, _validate_runtime
 from soma.extraction.extractor import _PooledFeatureExtractor, _feature_summary_from_sidecar
 from soma.cache._types import PACKED_FILENAME
-from soma.slide2vec_adapter import LoadedTiling, build_preprocessing_config, load_tilings
+from soma.slide2vec_adapter import LoadedTiling, execution_options, load_tilings
+from soma.encoders.validation import resolve_preprocessing_config
+from tests.extraction_configs import extraction
+
+
+def _resolved(preprocessing, encoder_name: str = "_cutover_tile"):
+    """The extraction as the extractor resolves it before keying (filter at the tile size)."""
+    return resolve_preprocessing_config(preprocessing, encoder_name=encoder_name)
 from soma.tile_extraction import _TileFeatureExtractor
 
 
@@ -35,15 +41,6 @@ _TEST_SLIDE = "_cutover_slide"
 _TEST_PATIENT = "_cutover_patient"
 _TEST_MULTI = "_cutover_multi_spacing"
 _TEST_SLIDE_VARIANTS = "_cutover_slide_variants"
-_TISSUE_METHOD_SENTINEL = object()
-
-
-def PreprocessingConfig(*args, tissue_method=_TISSUE_METHOD_SENTINEL, **kwargs):
-    if tissue_method is _TISSUE_METHOD_SENTINEL:
-        kwargs.setdefault("tissue_method", "hsv")
-    else:
-        kwargs["tissue_method"] = tissue_method
-    return _PreprocessingConfig(*args, **kwargs)
 
 
 def _register_test_encoders() -> None:
@@ -283,11 +280,7 @@ def test_embed_tiles_forwards_inputs_and_returns_public_artifacts_unchanged(tmp_
     ]
     tilings = [_tiling("s0"), _tiling("s1")]
     execution = ExecutionOptions(output_dir=tmp_path)
-    preprocessing = Slide2VecPreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        backend="openslide",
-    )
+    preprocessing = extraction(0.5, 224, tiling_fields={"backend": "openslide"})
     fake_model = object.__new__(orchestration_mod.Model)
     expected_artifacts = [object(), object()]
 
@@ -321,11 +314,7 @@ def test_coordinate_embedding_helpers_return_artifact_lists(tmp_path: Path):
         SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
     ]
     execution = ExecutionOptions(output_dir=tmp_path)
-    preprocessing = Slide2VecPreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        backend="openslide",
-    )
+    preprocessing = extraction(0.5, 224, tiling_fields={"backend": "openslide"})
     tile_artifact = _artifact(
         sample_id="s0",
         output_dir=tmp_path,
@@ -370,56 +359,48 @@ def test_coordinate_embedding_helpers_return_artifact_lists(tmp_path: Path):
     assert run_with_coordinates.call_count == 2
 
 
-def test_build_execution_options_uses_cpu_budget_for_tiling_workers(monkeypatch, tmp_path: Path):
+def test_execution_options_use_cpu_budget_for_workers(monkeypatch, tmp_path: Path):
+    """An unset worker count keeps soma's loader budget: the CPU budget split across
+    GPUs, capped at 16; slide2vec caps the tiling workers at the CPU budget."""
     import slide2vec.api as slide2vec_api
     from soma import slide2vec_adapter as adapter
 
     monkeypatch.setattr(slide2vec_api, "cpu_worker_limit", lambda: 24)
     monkeypatch.setattr(slide2vec_api, "slurm_cpu_limit", lambda: 24)
+    monkeypatch.setattr("slide2vec.api.cpu_worker_limit", lambda: 24)
 
-    execution = adapter.build_execution_options(
-        EncoderConfig(name=_TEST_TILE),
-        execution=ExecutionConfig(),
+    execution = adapter.execution_options(
+        ExecutionOptions(num_gpus=1),
+        encoder_name=_TEST_TILE,
         output_dir=tmp_path,
-        num_gpus=None,
         save_tile_embeddings=False,
     )
 
     assert execution.num_workers_per_gpu == 16  # capped at 16
     assert execution.num_preprocessing_workers == 24
     assert execution.prefetch_factor == 4
+    assert execution.output_dir == tmp_path
+    # The precision the cache key was derived at: the encoder's recommendation.
+    assert execution.precision == "fp16"
 
 
-def test_build_execution_options_forwards_explicit_num_workers_per_gpu(tmp_path: Path):
+def test_execution_options_forward_the_held_worker_tuning(tmp_path: Path):
     from soma import slide2vec_adapter as adapter
 
-    execution = adapter.build_execution_options(
-        EncoderConfig(name=_TEST_TILE),
-        execution=ExecutionConfig(num_workers_per_gpu=6),
+    execution = adapter.execution_options(
+        ExecutionOptions(num_workers_per_gpu=6, prefetch_factor=8, precision="fp32"),
+        encoder_name=_TEST_TILE,
         output_dir=tmp_path,
-        num_gpus=None,
-        save_tile_embeddings=False,
+        save_tile_embeddings=True,
+        output_dtype="fp16",
     )
 
-    assert execution.num_workers_per_gpu == 6
-
-
-def test_build_execution_options_forwards_worker_pipeline_tuning(tmp_path: Path):
-    from soma import slide2vec_adapter as adapter
-
-    execution = adapter.build_execution_options(
-        EncoderConfig(name=_TEST_TILE),
-            execution=ExecutionConfig(
-                num_workers_per_gpu=6,
-                prefetch_factor=8,
-            ),
-            output_dir=tmp_path,
-            num_gpus=None,
-            save_tile_embeddings=False,
-        )
-
-    assert execution.num_workers_per_gpu == 6
-    assert execution.prefetch_factor == 8
+    assert (execution.num_workers_per_gpu, execution.prefetch_factor) == (6, 8)
+    assert (execution.precision, execution.output_dtype, execution.save_tile_embeddings) == (
+        "fp32",
+        "fp16",
+        True,
+    )
 
 
 def test_load_model_forwards_allow_non_recommended_settings():
@@ -440,12 +421,7 @@ def test_validate_runtime_uses_resolved_tile_size_for_hierarchical_runs():
         captured["encoder_name"] = encoder_name
         captured.update(kwargs)
 
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        requested_region_size_px=1792,
-        region_tile_multiple=8,
-    )
+    preprocessing = extraction(0.5, 224, requested_region_size_px=1792, region_tile_multiple=8)
     hierarchical_tiling = SimpleNamespace(
         requested_tile_size_px=1792,
         requested_spacing_um=0.5,
@@ -455,7 +431,8 @@ def test_validate_runtime_uses_resolved_tile_size_for_hierarchical_runs():
         _validate_runtime(
             encoder_name=_TEST_TILE,
             output_variant="default",
-            encoder=EncoderConfig(name=_TEST_TILE),
+            encoder=EncoderLeaf(name=_TEST_TILE),
+            execution=ExecutionOptions(),
             preprocessing=preprocessing,
             tiling_results=[hierarchical_tiling],
         )
@@ -472,17 +449,15 @@ def test_validate_runtime_forwards_allow_non_recommended_settings():
         captured["encoder_name"] = encoder_name
         captured.update(kwargs)
 
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=1.0,
-    )
+    preprocessing = extraction(1.0, 224)
     tiling_result = SimpleNamespace(requested_tile_size_px=224, requested_spacing_um=1.0)
 
     with patch("soma.extraction.extractor.validate_slide2vec_encoder_config", side_effect=_fake_validate):
         _validate_runtime(
             encoder_name=_TEST_TILE,
             output_variant="default",
-            encoder=EncoderConfig(name=_TEST_TILE, allow_non_recommended_settings=True),
+            encoder=EncoderLeaf(name=_TEST_TILE, params={"allow_non_recommended_settings": True}),
+            execution=ExecutionOptions(),
             preprocessing=preprocessing,
             tiling_results=[tiling_result],
         )
@@ -494,9 +469,9 @@ def test_preprocess_delegates_to_slide2vec_pipeline(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        execution=ExecutionConfig(num_preprocessing_workers=0),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
+        execution=ExecutionOptions(num_preprocessing_workers=0),
         output_root=tmp_path / "outputs",
     )
     with patch("soma.extraction.extractor.probe_resolved_backends", return_value={"s0": "openslide"}), patch(
@@ -514,9 +489,9 @@ def test_preprocess_validates_encoder_settings_before_tiling(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=1.0),
-        execution=ExecutionConfig(num_preprocessing_workers=0),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(1.0, 224),
+        execution=ExecutionOptions(num_preprocessing_workers=0),
         output_root=tmp_path / "outputs",
     )
 
@@ -531,9 +506,9 @@ def test_preprocess_forwards_mask_path_to_slide2vec_pipeline(tmp_path: Path):
     dataset = _make_dataset(tmp_path, with_mask=True)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        execution=ExecutionConfig(num_preprocessing_workers=0),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
+        execution=ExecutionOptions(num_preprocessing_workers=0),
         output_root=tmp_path / "outputs",
     )
 
@@ -557,9 +532,9 @@ def test_preprocess_uses_precomputed_mask_method_when_every_slide_has_mask(tmp_p
     dataset = _make_dataset(tmp_path, with_mask=True)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        execution=ExecutionConfig(num_preprocessing_workers=0),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
+        execution=ExecutionOptions(num_preprocessing_workers=0),
         output_root=tmp_path / "outputs",
     )
 
@@ -573,15 +548,15 @@ def test_preprocess_uses_precomputed_mask_method_when_every_slide_has_mask(tmp_p
         extractor.preprocess(tiling_dir=tmp_path / "tiling")
 
     preprocessing = MockPipeline.call_args.args[1]
-    assert preprocessing.segmentation["method"] == "precomputed_mask"
+    assert preprocessing.segmentation.method == "precomputed_mask"
 
 
 def test_preprocess_skips_live_tiling_on_complete_tiling_cache_hit(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -621,8 +596,8 @@ def test_preprocess_rewrites_stale_local_process_list_when_cache_hit(tmp_path: P
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -665,8 +640,8 @@ def test_preprocess_uses_output_root_for_tiling_cache_when_cache_root_omitted(tm
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -684,8 +659,8 @@ def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -734,8 +709,8 @@ def test_extract_derives_feature_dir_from_output_root_and_encoder_name(tmp_path:
     output_root = tmp_path / "outputs"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         output_root=output_root,
     )
     expected_feature_dir = output_root / "features" / _TEST_TILE
@@ -774,8 +749,8 @@ def test_feature_extractor_requires_output_root(tmp_path: Path):
     with pytest.raises(TypeError, match="output_root"):
         _PooledFeatureExtractor(
             _make_dataset(tmp_path),
-            EncoderConfig(name=_TEST_TILE),
-            PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            EncoderLeaf(name=_TEST_TILE),
+            extraction(0.5, 224),
         )
 
 
@@ -783,8 +758,8 @@ def test_extract_rejects_unsafe_encoder_name_before_deriving_feature_dir(tmp_pat
     output_root = tmp_path / "outputs"
     extractor = _PooledFeatureExtractor(
         _make_dataset(tmp_path),
-        EncoderConfig(name="../escape"),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name="../escape"),
+        extraction(0.5, 224),
         output_root=output_root,
     )
 
@@ -802,8 +777,8 @@ def test_extract_rejects_feature_dir_outside_output_root(
     output_root = tmp_path / "outputs"
     extractor = _PooledFeatureExtractor(
         _make_dataset(tmp_path),
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         output_root=output_root,
     )
 
@@ -811,262 +786,13 @@ def test_extract_rejects_feature_dir_outside_output_root(
         extractor.extract(feature_dir)
 
 
-def test_preprocess_requires_tissue_method_without_precomputed_masks(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
-    extractor = _PooledFeatureExtractor(
-        dataset,
-        EncoderConfig(name=_TEST_TILE),
-        _PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5, backend="openslide"),
-        output_root=tmp_path / "outputs",
-    )
-
-    with pytest.raises(ValueError, match="tissue_method is required"):
-        extractor.preprocess(tiling_dir=tmp_path / "tiling")
-
-
-def test_build_preprocessing_config_uses_segmentation_method_not_use_hsv():
-    from soma.slide2vec_adapter import build_preprocessing_config
-
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        tissue_method="otsu",
-        sam2_device="cuda:0",
-        sam2_num_workers=4,
-    )
-
-    config = build_preprocessing_config(preprocessing)
-
-    assert config.segmentation["method"] == "otsu"
-    assert "use_hsv" not in config.segmentation
-    assert config.segmentation["sam2_num_workers"] == 4
-    assert config.segmentation["sam2_device"] == "cuda:0"
-    assert config.preview["save_mask_preview"] is True
-    assert config.preview["save_tiling_preview"] is True
-    assert config.preview["downsample"] == 32
-    assert config.preview["tissue_contour_color"] == (37, 94, 59)
-    assert config.preview["mask_overlay_alpha"] == pytest.approx(0.5)
-
-
-def test_build_preprocessing_config_accounts_for_slide2vec_surface():
-    slide2vec_fields = set(Slide2VecPreprocessingConfig.__dataclass_fields__)
-    translated_fields = {
-        # hs2p's tiling vocabulary is forwarded field by field off the composed TilingConfig
-        # rather than restated (ADR 0009) — which is how ``mask_backend`` reached the pooled
-        # payload without a soma edit.
-        "backend",
-        "mask_backend",
-        "requested_spacing_um",
-        "requested_tile_size_px",
-        "requested_region_size_px",
-        "region_tile_multiple",
-        "tolerance",
-        "overlap",
-        # soma expresses the tissue coverage threshold as preprocessing.min_coverage.tissue
-        # and routes it into slide2vec's masks.min_coverage.tissue (slide2vec has no top-level
-        # tissue_threshold field), so ``masks`` is a translated field on the pooled adapter
-        # (asserted behaviourally below).
-        "masks",
-        "on_the_fly",
-        "adaptive_batching",
-        "use_supertiles",
-        "segmentation",
-        "filtering",
-        "preview",
-    }
-    intentionally_slide2vec_owned_fields = {
-        "gpu_decode",
-        "jpeg_backend",
-        "num_cucim_workers",
-        "read_coordinates_from",
-        "read_tiles_from",
-        "resume",
-        # Tile archives soma never reads; slide2vec writes one anyway when on_the_fly is off.
-        "save_tiles",
-    }
-    # Annotation-restricted merged bag (#110): the pooled adapter now forwards the full
-    # masks block + the independent_sampling toggle (derived from sampling.strategy) when a
-    # masks block is active, so independent_sampling is a translated field too.
-    translated_fields = translated_fields | {"independent_sampling"}
-
-    assert slide2vec_fields == translated_fields | intentionally_slide2vec_owned_fields
-
-    config = build_preprocessing_config(
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            requested_region_size_px=1344,
-            region_tile_multiple=6,
-            tissue_method="hsv",
-            min_coverage={"tissue": 0.25},
-        )
-    )
-
-    assert config.requested_region_size_px == 1344
-    assert config.region_tile_multiple == 6
-    assert config.on_the_fly is True
-    assert config.adaptive_batching is False
-    assert config.use_supertiles is True
-    assert config.gpu_decode is False
-    assert config.read_coordinates_from is None
-    assert config.read_tiles_from is None
-    # preprocessing.min_coverage.tissue is routed into the masks block (slide2vec's single
-    # source of truth), not silently dropped by the __dataclass_fields__ filter.
-    assert config.masks["min_coverage"]["tissue"] == pytest.approx(0.25)
-
-
 # --- Annotation-restricted merged bag forwarding (#110) ---------------------------------
-
-
-def test_build_preprocessing_config_default_masks_forwards_tissue_only():
-    """AC4: no masks block ⇒ the adapter still emits the tissue-only spec (only
-    ``min_coverage.tissue``, deep-merged over slide2vec's default ``{background, tissue}``),
-    so existing tissue-only bag runs are unchanged."""
-    config = build_preprocessing_config(
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            min_coverage={"tissue": 0.1},
-        )
-    )
-    # Only the tissue threshold is stated; pixel_mapping/output_mode are NOT overridden,
-    # so slide2vec's deep-merge keeps the default {background:0, tissue:1} / per_annotation.
-    assert config.masks["pixel_mapping"] == {"background": 0, "tissue": 1}
-    assert config.masks["output_mode"] == "per_annotation"
-    assert config.masks["min_coverage"]["tissue"] == pytest.approx(0.1)
-    # independent_sampling stays at slide2vec's default (no masks block to override it).
-    assert config.independent_sampling is True
-
-
-def test_build_preprocessing_config_forwards_full_annotation_block():
-    """AC3: a masks block forwards the full pixel_mapping + per-class min_coverage +
-    explicit output_mode='merged' + independent_sampling (from sampling.strategy)."""
-    from soma.config import MasksConfig, SamplingConfig
-
-    config = build_preprocessing_config(
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            min_coverage={"tissue": 0.1},
-            masks=MasksConfig(
-                pixel_mapping={"background": 0, "tumor": 1},
-                min_coverage={"tumor": 0.5},
-                colors={"background": None, "tumor": [255, 0, 0]},
-            ),
-            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        )
-    )
-    # tumor is forwarded; the default ``tissue`` label is nulled out so the deep-merge does
-    # not re-admit tissue-only tiles (it is dropped at hs2p sampling time).
-    assert config.masks["pixel_mapping"]["tumor"] == 1
-    assert config.masks["pixel_mapping"]["tissue"] is None
-    assert "background" in config.masks["pixel_mapping"]
-    assert config.masks["min_coverage"]["tumor"] == pytest.approx(0.5)
-    assert config.masks["min_coverage"]["tissue"] is None
-    # EXPLICIT output_mode='merged' — guards against slide2vec's per_annotation default
-    # leaking through the deep-merge and colliding on sample_id in load_tilings.
-    assert config.masks["output_mode"] == "merged"
-    assert config.masks["colors"]["tumor"] == [255, 0, 0]
-    # strategy='joint' ⇒ independent_sampling=False.
-    assert config.independent_sampling is False
-
-
-def test_build_preprocessing_config_independent_strategy_sets_independent_sampling():
-    """AC3: sampling.strategy='independent' ⇒ independent_sampling=True."""
-    from soma.config import MasksConfig, SamplingConfig
-
-    config = build_preprocessing_config(
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(
-                pixel_mapping={"background": 0, "tumor": 1},
-                min_coverage={"tumor": 0.5},
-            ),
-            sampling=SamplingConfig(strategy="independent", output_mode="merged"),
-        )
-    )
-    assert config.independent_sampling is True
-
-
-def test_build_preprocessing_config_masks_default_sampling_is_merged():
-    """AC3: a masks block without an explicit sampling block defaults to merged output
-    and joint strategy (SamplingConfig defaults), still forwarded explicitly."""
-    from soma.config import MasksConfig
-
-    config = build_preprocessing_config(
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(
-                pixel_mapping={"background": 0, "tumor": 1},
-                min_coverage={"tumor": 0.5},
-            ),
-        )
-    )
-    assert config.masks["output_mode"] == "merged"
-    assert config.independent_sampling is False
-
-
-def test_build_preprocessing_config_honors_relabeled_vocabulary():
-    """AC6: a relabeled vocabulary {background:1, tumor:2} routes to annotation sampling and
-    is forwarded verbatim (the tissue-value ==1 guard does not gate the masks path)."""
-    from soma.config import MasksConfig
-
-    config = build_preprocessing_config(
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(
-                pixel_mapping={"background": 1, "tumor": 2},
-                min_coverage={"tumor": 0.5},
-            ),
-        )
-    )
-    assert config.masks["pixel_mapping"]["background"] == 1
-    assert config.masks["pixel_mapping"]["tumor"] == 2
-    assert config.masks["pixel_mapping"]["tissue"] is None
-    assert config.masks["output_mode"] == "merged"
-
-
-def test_ensure_supported_mask_value_skips_guard_under_masks(tmp_path: Path):
-    """AC6: the legacy ``tissue_mask_tissue_value == 1`` guard does not fire when a
-    customized masks block is active — pixel_mapping is the single source of truth."""
-    from soma.config import MasksConfig
-    from soma.slide2vec_adapter import ensure_supported_mask_value
-
-    dataset = _make_dataset(tmp_path, with_mask=True)
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        tissue_mask_tissue_value=2,  # would trip the guard on its own
-        masks=MasksConfig(
-            pixel_mapping={"background": 1, "tumor": 2},
-            min_coverage={"tumor": 0.5},
-        ),
-    )
-    # No raise: the masks block bypasses the tissue-value guard.
-    ensure_supported_mask_value(dataset, preprocessing)
-
-
-def test_ensure_supported_mask_value_still_guards_without_masks(tmp_path: Path):
-    """AC6 (counterpart): without a masks block, the tissue-value guard still fires."""
-    from soma.slide2vec_adapter import ensure_supported_mask_value
-
-    dataset = _make_dataset(tmp_path, with_mask=True)
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        tissue_mask_tissue_value=2,
-    )
-    with pytest.raises(ValueError, match="tissue_mask_tissue_value=1"):
-        ensure_supported_mask_value(dataset, preprocessing)
 
 
 def test_load_tilings_skips_tissue_value_provenance_under_masks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    """AC6: under an active masks block, load_tilings passes tissue_mask_tissue_value=None to
+    """AC6: under annotation sampling, load_tilings passes tissue_mask_tissue_value=None to
     the hs2p provenance validator (the ==1 check is bypassed — pixel_mapping governs)."""
     dataset = _make_dataset(tmp_path, with_mask=True)
     tiling_dir = tmp_path / "tiling"
@@ -1095,67 +821,9 @@ def test_load_tilings_skips_tissue_value_provenance_under_masks(
         dataset=dataset,
         tiling_dir=tiling_dir,
         requested_seg_downsample=64,
-        tissue_mask_tissue_value=2,
-        masks_active=True,
+        annotation_sampling=True,
     )
     assert captured["tissue_mask_tissue_value"] is None
-
-
-# --- Annotation-restricted merged bag forwarding, patient path (#111) -------------------
-
-
-def test_patient_restricted_bag_forwards_same_block_as_slide():
-    """AC2 (#111): a dataset_type='patient' run tiles each slide to its annotation-restricted
-    merged bag exactly as the slide path does. The tiling/forwarding goes through the shared
-    ``build_preprocessing_config`` (which never sees dataset_type), so the patient and slide
-    runs forward a byte-identical slide2vec masks block + independent_sampling toggle for the
-    same preprocessing — patient features then aggregate from those restricted slide bags."""
-    from soma.config import MasksConfig, PipelineConfig, SamplingConfig, TaskConfig
-
-    preprocessing = _PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        tissue_method="otsu",
-        min_coverage={"tissue": 0.1},
-        masks=MasksConfig(
-            pixel_mapping={"background": 0, "tumor": 1},
-            min_coverage={"tumor": 0.5},
-        ),
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-    )
-
-    # The patient PipelineConfig is accepted (eligibility widened from slide to slide+patient)
-    # and reuses the same preprocessing block — no aggregator (patient uses a pretrained encoder).
-    patient_cfg = PipelineConfig(
-        dataset_csv="data.csv",
-        splits_csv="splits.csv",
-        output_root="out",
-        dataset_type="patient",
-        task=TaskConfig(name="binary_classification"),
-        preprocessing=preprocessing,
-    )
-    slide_cfg = PipelineConfig(
-        dataset_csv="data.csv",
-        splits_csv="splits.csv",
-        output_root="out",
-        dataset_type="slide",
-        task=TaskConfig(name="binary_classification"),
-        preprocessing=preprocessing,
-    )
-
-    patient_block = build_preprocessing_config(patient_cfg.preprocessing)
-    slide_block = build_preprocessing_config(slide_cfg.preprocessing)
-
-    # Each slide is tiled to the restricted merged bag: tumor forwarded, tissue nulled out,
-    # explicit merged output — identical to the slide path.
-    assert patient_block.masks["pixel_mapping"]["tumor"] == 1
-    assert patient_block.masks["pixel_mapping"]["tissue"] is None
-    assert patient_block.masks["min_coverage"]["tumor"] == pytest.approx(0.5)
-    assert patient_block.masks["output_mode"] == "merged"
-    assert patient_block.independent_sampling is False
-    # Byte-identical forwarding to the slide path (same shared adapter, no dataset_type branch).
-    assert patient_block.masks == slide_block.masks
-    assert patient_block.independent_sampling == slide_block.independent_sampling
 
 
 def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1195,7 +863,6 @@ def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monke
         dataset=dataset,
         tiling_dir=tiling_dir,
         requested_seg_downsample=64,
-        tissue_mask_tissue_value=1,
     )
 
     assert loaded[0].requested_backend == "auto"
@@ -1258,7 +925,6 @@ def test_load_tilings_consumes_merged_mode_sampling_dir(tmp_path: Path, monkeypa
         dataset=dataset,
         tiling_dir=tiling_dir,
         requested_seg_downsample=64,
-        tissue_mask_tissue_value=1,
     )
 
     # one tiling per slide (not per (slide, annotation)); the existing per-slide extraction
@@ -1271,8 +937,8 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -1389,8 +1055,8 @@ def test_internal_tile_engine_embeds_given_images_via_slide2vec(tmp_path: Path, 
 
     store = _TileFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE, batch_size=2),
-        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
+        EncoderLeaf(name=_TEST_TILE),
+        execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, batch_size=2),
         cache=CacheConfig(enabled=False),
     ).run(feature_dir=tmp_path / "features")
 
@@ -1423,8 +1089,8 @@ def test_internal_tile_engine_hands_resolved_dtype_to_slide2vec(
 
     store = _TileFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE, precision="fp32"),
-        execution=ExecutionConfig(num_workers_per_gpu=0),
+        EncoderLeaf(name=_TEST_TILE),
+        execution=ExecutionOptions(num_workers_per_gpu=0, precision="fp32"),
         cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache", dtype=dtype),
     ).run(feature_dir=tmp_path / "features")
 
@@ -1442,12 +1108,12 @@ def test_internal_tile_engine_reuses_complete_cache_without_loading_the_encoder(
     cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
 
     first = _TileFeatureExtractor(
-        dataset, EncoderConfig(name=_TEST_TILE), cache=cache
+        dataset, EncoderLeaf(name=_TEST_TILE), cache=cache
     ).run(feature_dir=tmp_path / "features")
     assert len(recording_model.calls) == 1
 
     second = _TileFeatureExtractor(
-        dataset, EncoderConfig(name=_TEST_TILE), cache=cache
+        dataset, EncoderLeaf(name=_TEST_TILE), cache=cache
     ).run(feature_dir=tmp_path / "features")
 
     assert len(recording_model.calls) == 1  # complete hit: slide2vec is never asked
@@ -1463,12 +1129,12 @@ def test_internal_tile_engine_only_hands_slide2vec_samples_soma_reports_missing(
     cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
 
     store = _TileFeatureExtractor(
-        dataset, EncoderConfig(name=_TEST_TILE), cache=cache
+        dataset, EncoderLeaf(name=_TEST_TILE), cache=cache
     ).run(feature_dir=tmp_path / "features")
     for suffix in (".pt", ".meta.json"):
         (store.feature_dir / f"s1{suffix}").unlink()
 
-    _TileFeatureExtractor(dataset, EncoderConfig(name=_TEST_TILE), cache=cache).run(
+    _TileFeatureExtractor(dataset, EncoderLeaf(name=_TEST_TILE), cache=cache).run(
         feature_dir=tmp_path / "features"
     )
 
@@ -1487,7 +1153,7 @@ def test_internal_tile_engine_reencodes_a_sample_whose_identity_changed(
 
     dataset = _make_tile_dataset(tmp_path, ("s0",))
     cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
-    _TileFeatureExtractor(dataset, EncoderConfig(name=_TEST_TILE), cache=cache).run(
+    _TileFeatureExtractor(dataset, EncoderLeaf(name=_TEST_TILE), cache=cache).run(
         feature_dir=tmp_path / "features"
     )
 
@@ -1499,29 +1165,28 @@ def test_internal_tile_engine_reencodes_a_sample_whose_identity_changed(
     ).to_csv(moved_csv, index=False)
 
     _TileFeatureExtractor(
-        legacy_samples_from_csv(moved_csv), EncoderConfig(name=_TEST_TILE), cache=cache
+        legacy_samples_from_csv(moved_csv), EncoderLeaf(name=_TEST_TILE), cache=cache
     ).run(feature_dir=tmp_path / "features")
 
     assert [call["sample_ids"] for call in recording_model.calls] == [["s0"], ["s0"]]
     assert recording_model.calls[-1]["image_paths"] == [str(replacement)]
 
-def test_build_execution_options_splits_auto_workers_across_gpus(monkeypatch, tmp_path: Path):
+def test_execution_options_split_auto_workers_across_gpus(monkeypatch, tmp_path: Path):
     import slide2vec.api as slide2vec_api
     from soma import slide2vec_adapter as adapter
 
-    monkeypatch.setattr(slide2vec_api, "cpu_worker_limit", lambda: 32)
-    monkeypatch.setattr("torch.cuda.is_available", lambda: True)
-    monkeypatch.setattr("torch.cuda.device_count", lambda: 2)
+    monkeypatch.setattr(slide2vec_api, "cpu_worker_limit", lambda: 20)
 
-    execution = adapter.build_execution_options(
-        EncoderConfig(name=_TEST_TILE),
-        execution=ExecutionConfig(),
+    execution = adapter.execution_options(
+        ExecutionOptions(num_gpus=1),
+        encoder_name=_TEST_TILE,
         output_dir=tmp_path,
         num_gpus=2,
         save_tile_embeddings=False,
     )
 
-    assert execution.num_workers_per_gpu == 16  # capped at 16
+    assert execution.num_gpus == 2
+    assert execution.num_workers_per_gpu == 10
 
 
 
@@ -1529,8 +1194,8 @@ def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -1578,8 +1243,8 @@ def test_run_defaults_tiling_dir_to_sibling_run_local_path(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -1627,8 +1292,8 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -1682,8 +1347,8 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -1726,8 +1391,8 @@ def test_materialize_feature_dir_from_cache_leaves_pointer_only_run_dir(tmp_path
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -1768,8 +1433,8 @@ def test_tile_cache_hit_preserves_shared_manifest_and_uses_run_manifest(tmp_path
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path / "outputs",
     )
@@ -1822,8 +1487,8 @@ def test_tile_cache_hit_preserves_shared_manifest_and_uses_run_manifest(tmp_path
             loaded_tilings=loaded,
             prepared_tilings=[loaded[0].tiling_result],
             tiling_dir=tmp_path / "tiling",
-            preprocessing=build_preprocessing_config(PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)),
-            resolved_preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+            preprocessing=extraction(0.5, 224),
+            resolved_preprocessing=extraction(0.5, 224),
             backend_provenance={
                 "requested_backend": "openslide",
                 "backend": "openslide",
@@ -1851,8 +1516,8 @@ def test_write_feature_manifest_uses_manifest_metadata_without_loading_tensor(tm
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -1899,8 +1564,8 @@ def test_write_feature_manifest_preserves_cache_backed_paths(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True),
         output_root=tmp_path / "outputs",
     )
@@ -1947,14 +1612,20 @@ def test_write_feature_manifest_preserves_cache_backed_paths(tmp_path: Path):
     assert recorded.loc["s0", "feature_path"] == str(cached_feature_path.resolve())
 
 def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: Path):
+    """slide2vec's ExecutionOptions resolves an unset GPU count to every visible GPU when
+    it is built; the extractor embeds on all of them."""
     dataset = _make_dataset(tmp_path)
-    extractor = _PooledFeatureExtractor(
-        dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        cache=CacheConfig(enabled=False),
-        output_root=tmp_path,
-    )
+
+    def _extractor():
+        return _PooledFeatureExtractor(
+            dataset,
+            EncoderLeaf(name=_TEST_TILE),
+            extraction(0.5, 224),
+            execution=ExecutionOptions(),
+            cache=CacheConfig(enabled=False),
+            output_root=tmp_path,
+        )
+
     loaded = [
         LoadedTiling(
             slide=SlideSpec(sample_id="s0", image_path=Path("/tmp/s0.svs"), mask_path=None, spacing_at_level_0=None),
@@ -1990,7 +1661,7 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
         "soma.extraction.extractor._embed_tile_artifacts_with_coordinates",
         side_effect=_fake_embed_tile_artifacts,
     ) as embed_tile_artifacts:
-        store = extractor.extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
+        store = _extractor().extract(feature_dir="features", tiling_dir=tmp_path / "tiling")
 
     assert embed_tile_artifacts.called
     assert embed_tile_artifacts.call_args.kwargs["execution"].num_gpus == 2
@@ -2164,8 +1835,9 @@ def test_extract_slide_features_preserves_requested_tile_artifact_regime(
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=save_tile_features),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
+        execution=ExecutionOptions(save_tile_embeddings=save_tile_features),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -2236,8 +1908,8 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -2307,8 +1979,8 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -2376,8 +2048,8 @@ def test_slide_cache_population_records_all_empty_without_embedding(tmp_path: Pa
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -2422,8 +2094,8 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -2433,17 +2105,13 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
             tiling_result=_tiling(),
         )
     ]
-    resolved_preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    resolved_preprocessing = _resolved(extraction(0.5, 224))
     cache_resolution = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_TILE,
-            resolved_preprocessing=resolved_preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -2484,7 +2152,7 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
             loaded_tilings=loaded,
             prepared_tilings=[loaded[0].tiling_result],
             tiling_dir=tmp_path / "tiling",
-            preprocessing=build_preprocessing_config(resolved_preprocessing),
+            preprocessing=resolved_preprocessing,
             encoder_name=_TEST_TILE,
             output_variant="default",
             num_gpus=None,
@@ -2500,8 +2168,8 @@ def test_tile_cache_population_records_all_empty_without_embedding(tmp_path: Pat
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -2511,17 +2179,13 @@ def test_tile_cache_population_records_all_empty_without_embedding(tmp_path: Pat
             tiling_result=_empty_tiling(),
         )
     ]
-    resolved_preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    resolved_preprocessing = _resolved(extraction(0.5, 224))
     cache_resolution = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_TILE,
-            resolved_preprocessing=resolved_preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -2539,7 +2203,7 @@ def test_tile_cache_population_records_all_empty_without_embedding(tmp_path: Pat
             loaded_tilings=loaded,
             prepared_tilings=[loaded[0].tiling_result],
             tiling_dir=tmp_path / "tiling",
-            preprocessing=build_preprocessing_config(resolved_preprocessing),
+            preprocessing=resolved_preprocessing,
             encoder_name=_TEST_TILE,
             output_variant="default",
             num_gpus=None,
@@ -2555,8 +2219,8 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_PATIENT),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_PATIENT),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -2566,17 +2230,13 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
             tiling_result=_tiling("s0"),
         )
     ]
-    resolved_preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    resolved_preprocessing = _resolved(extraction(0.5, 224))
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
         dataset=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_TILE,
-            resolved_preprocessing=resolved_preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -2590,17 +2250,9 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
         patient_encoder_name=_TEST_PATIENT,
         tile_encoder_name=_TEST_TILE,
         tile_preprocessing=resolved_preprocessing,
-        tile_execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_TILE,
-            resolved_preprocessing=resolved_preprocessing,
-            output_variant="default",
-        ),
+        tile_execution=extractor._execution,
         tile_output_variant="default",
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_PATIENT,
-            resolved_preprocessing=resolved_preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -2616,11 +2268,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
         dataset=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_TILE,
-            resolved_preprocessing=resolved_preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -2669,10 +2317,10 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
 def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path):
     dataset = _make_two_slide_patient_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
-    resolved_preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    resolved_preprocessing = _resolved(extraction(0.5, 224))
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_PATIENT),
+        EncoderLeaf(name=_TEST_PATIENT),
         resolved_preprocessing,
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
@@ -2687,11 +2335,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
             tiling_result=_tiling("s1"),
         ),
     ]
-    tile_execution = extractor._resolved_execution_for_cache(
-        encoder_name=_TEST_TILE,
-        resolved_preprocessing=resolved_preprocessing,
-        output_variant="default",
-    )
+    tile_execution = extractor._execution
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
         dataset=dataset,
@@ -2713,11 +2357,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
         tile_preprocessing=resolved_preprocessing,
         tile_execution=tile_execution,
         tile_output_variant="default",
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_PATIENT,
-            resolved_preprocessing=resolved_preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -2781,10 +2421,10 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
 def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
     dataset = _make_patient_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
-    resolved_preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5)
+    resolved_preprocessing = _resolved(extraction(0.5, 224))
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_PATIENT),
+        EncoderLeaf(name=_TEST_PATIENT),
         resolved_preprocessing,
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
@@ -2795,11 +2435,7 @@ def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
             tiling_result=_tiling("s0"),
         )
     ]
-    tile_execution = extractor._resolved_execution_for_cache(
-        encoder_name=_TEST_TILE,
-        resolved_preprocessing=resolved_preprocessing,
-        output_variant="default",
-    )
+    tile_execution = extractor._execution
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
         dataset=dataset,
@@ -2821,11 +2457,7 @@ def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
         tile_preprocessing=resolved_preprocessing,
         tile_execution=tile_execution,
         tile_output_variant="default",
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_PATIENT,
-            resolved_preprocessing=resolved_preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -2876,8 +2508,8 @@ def test_patient_encoder_requires_every_sample_to_have_patient_id(tmp_path: Path
     dataset = legacy_samples_from_csv(csv_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_PATIENT),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_PATIENT),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
         output_root=tmp_path / "outputs",
     )
@@ -2889,15 +2521,10 @@ def test_patient_encoder_requires_every_sample_to_have_patient_id(tmp_path: Path
 def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        requested_region_size_px=448,
-        region_tile_multiple=2,
-    )
+    preprocessing = extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
+        EncoderLeaf(name=_TEST_TILE),
         preprocessing,
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path / "outputs",
@@ -2913,11 +2540,7 @@ def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_
         dataset=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=preprocessing,
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_TILE,
-            resolved_preprocessing=preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -2958,7 +2581,7 @@ def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_
             loaded_tilings=loaded,
             prepared_tilings=[loaded[0].tiling_result],
             tiling_dir=tmp_path / "tiling",
-            preprocessing=build_preprocessing_config(preprocessing),
+            preprocessing=preprocessing,
             encoder_name=_TEST_TILE,
             output_variant="default",
             num_gpus=None,
@@ -2979,15 +2602,10 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
     ).to_csv(csv_path, index=False)
     dataset = legacy_samples_from_csv(csv_path)
     cache_root = tmp_path / "shared-cache"
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        requested_region_size_px=448,
-        region_tile_multiple=2,
-    )
+    preprocessing = extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
+        EncoderLeaf(name=_TEST_TILE),
         preprocessing,
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path / "outputs",
@@ -3016,11 +2634,7 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
         dataset=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=preprocessing,
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_TILE,
-            resolved_preprocessing=preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -3061,7 +2675,7 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
             loaded_tilings=loaded,
             prepared_tilings=[loaded[0].tiling_result, loaded[1].tiling_result],
             tiling_dir=tmp_path / "tiling",
-            preprocessing=build_preprocessing_config(preprocessing),
+            preprocessing=preprocessing,
             encoder_name=_TEST_TILE,
             output_variant="default",
             num_gpus=None,
@@ -3077,15 +2691,10 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
 def test_hierarchical_cache_population_records_all_empty_without_embedding(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "shared-cache"
-    preprocessing = PreprocessingConfig(
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        requested_region_size_px=448,
-        region_tile_multiple=2,
-    )
+    preprocessing = extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
+        EncoderLeaf(name=_TEST_TILE),
         preprocessing,
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path / "outputs",
@@ -3101,11 +2710,7 @@ def test_hierarchical_cache_population_records_all_empty_without_embedding(tmp_p
         dataset=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=preprocessing,
-        execution=extractor._resolved_execution_for_cache(
-            encoder_name=_TEST_TILE,
-            resolved_preprocessing=preprocessing,
-            output_variant="default",
-        ),
+        execution=extractor._execution,
         output_variant="default",
         backend_provenance={
             "requested_backend": "openslide",
@@ -3123,7 +2728,7 @@ def test_hierarchical_cache_population_records_all_empty_without_embedding(tmp_p
             loaded_tilings=loaded,
             prepared_tilings=[loaded[0].tiling_result],
             tiling_dir=tmp_path / "tiling",
-            preprocessing=build_preprocessing_config(preprocessing),
+            preprocessing=preprocessing,
             encoder_name=_TEST_TILE,
             output_variant="default",
             num_gpus=None,
@@ -3139,8 +2744,8 @@ def test_tile_cache_metadata_records_resolved_execution_fields(tmp_path: Path):
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -3182,8 +2787,8 @@ def test_slide_cache_miss_reuses_cached_tiles_without_reembedding(tmp_path: Path
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -3280,8 +2885,8 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -3304,8 +2909,8 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
     ).to_csv(csv_path, index=False)
     extractor = _PooledFeatureExtractor(
         legacy_samples_from_csv(csv_path),
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -3442,8 +3047,8 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -3501,8 +3106,8 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
     ).to_csv(csv_path, index=False)
     extractor = _PooledFeatureExtractor(
         legacy_samples_from_csv(csv_path),
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -3581,8 +3186,8 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -3648,8 +3253,8 @@ def test_slide_extraction_computes_requested_non_default_output_variant(tmp_path
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE_VARIANTS, output_variant="wide", save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE_VARIANTS, params={"output_variant": "wide"}),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
         output_root=tmp_path,
     )
@@ -3705,8 +3310,8 @@ def test_single_variant_slide_encoder_passes_runtime_validation(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_SLIDE, save_tile_features=False),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        EncoderLeaf(name=_TEST_SLIDE),
+        extraction(0.5, 224),
         cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
         output_root=tmp_path,
     )
@@ -3756,13 +3361,8 @@ def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            requested_region_size_px=448,
-            region_tile_multiple=2,
-        ),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -3820,13 +3420,8 @@ def test_hierarchical_multi_gpu_uses_coordinate_helper(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            requested_region_size_px=448,
-            region_tile_multiple=2,
-        ),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
         cache=CacheConfig(enabled=False),
         output_root=tmp_path,
     )
@@ -3893,13 +3488,8 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
     cache_root = tmp_path / "shared-cache"
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            requested_region_size_px=448,
-            region_tile_multiple=2,
-        ),
+        EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
         cache=CacheConfig(root_dir=cache_root),
         output_root=tmp_path,
     )
@@ -3975,13 +3565,8 @@ def test_hierarchical_cache_extraction_accepts_allow_non_recommended_settings(tm
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE, allow_non_recommended_settings=True),
-        PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            requested_region_size_px=448,
-            region_tile_multiple=2,
-        ),
+        EncoderLeaf(name=_TEST_TILE, params={"allow_non_recommended_settings": True}),
+        extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
         cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
         output_root=tmp_path,
     )
@@ -4019,7 +3604,7 @@ def test_multispacing_encoder_requires_explicit_spacing(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_MULTI),
+        EncoderLeaf(name=_TEST_MULTI),
         output_root=tmp_path / "outputs",
     )
     with pytest.raises(ValueError, match="supports multiple spacings"):
@@ -4075,10 +3660,9 @@ def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
             {"sample_id": f"slide-{sid}" if kind == "patient" else sid, "patient_id": sid, "image_path": str(tmp_path / f"{sid}.svs"), "label": "tumor"}
             for sid in ["eval", f"support-{run}", f"empty-{run}"]
         ]).to_csv(root / "dataset.csv", index=False)
-        preprocessing = PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5,
-                                            **({"region_tile_multiple": 2} if kind == "hierarchical" else {}))
+        preprocessing = extraction(0.5, 224, **({"region_tile_multiple": 2} if kind == "hierarchical" else {}))
         extractors[run] = _PooledFeatureExtractor(
-            legacy_samples_from_csv(root / "dataset.csv"), EncoderConfig(name=encoder), preprocessing,
+            legacy_samples_from_csv(root / "dataset.csv"), EncoderLeaf(name=encoder), preprocessing,
             cache=CacheConfig(root_dir=tmp_path / "shared-cache"), output_root=root,
         )
 
@@ -4144,8 +3728,8 @@ def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
 
 def test_fallback_feature_manifest_publishes_only_in_run_directory(tmp_path: Path):
     extractor = _PooledFeatureExtractor(
-        _make_dataset(tmp_path), EncoderConfig(name=_TEST_TILE),
-        PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
+        _make_dataset(tmp_path), EncoderLeaf(name=_TEST_TILE),
+        extraction(0.5, 224),
         cache=CacheConfig(enabled=True), output_root=tmp_path,
     )
     payload_dir = tmp_path / "shared-cache" / "tile_embeddings"

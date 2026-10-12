@@ -20,7 +20,7 @@ masking and tiling nor a MIL aggregator.
      - Walkthrough
    * - Tile encoder + task head
      - A tile-level encoder emits one vector per tile; the classification head
-       consumes it as-is (``aggregator=None``, no ``PreprocessingConfig``). The
+       consumes it as-is (``aggregator=None``, no tiling). The
        walkthrough runs binary and multiclass on the **same** extracted features.
      - :doc:`Tile-level <walkthrough-tile-level>`
 

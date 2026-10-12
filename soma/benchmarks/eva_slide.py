@@ -66,14 +66,18 @@ from soma.benchmarks.registry import (
     register_benchmark,
     score_from_summary,
 )
+from dataclasses import replace as _replace
+
+from hs2p import SegmentationConfig, TilingConfig
+from slide2vec import ExecutionOptions, PreprocessingConfig
+
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
-    EncoderConfig,
+    EncoderLeaf,
     EvalConfig,
-    ExecutionConfig,
+    FeaturesConfig,
     PipelineConfig,
-    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -370,7 +374,7 @@ def _build_eva_slide_config(
     patience: int | None = None,
     encoder_batch_size: int = 32,
     head_num_workers: int = 0,
-    execution: ExecutionConfig | None = None,
+    execution: ExecutionOptions | None = None,
     cache: CacheConfig | None = None,
 ) -> PipelineConfig:
     """Assemble an EVA-faithful slide-level :class:`~soma.config.PipelineConfig`.
@@ -388,23 +392,34 @@ def _build_eva_slide_config(
         splits_csv=str(splits_csv),
         output_root=Path(output_root),
         dataset_type="slide",
-        execution=execution or ExecutionConfig(),
-        cache=cache or CacheConfig(enabled=True),
-        # The curated manifest supplies every slide's tiles (coordinates_path); these are
-        # the geometry the artifacts were sampled at, which staging checks.
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=TILE_PX,
-            requested_spacing_um=spec.target_mpp,
-            # Required by the configuration but unused: supplied coordinates skip tissue
-            # segmentation (the curator applied EVA's saturation mask).
-            tissue_method="otsu",
-        ),
-        encoder=EncoderConfig(
-            name=encoder,
-            output_variant=enc.output_variant if enc is not None else None,
-            batch_size=encoder_batch_size,
+        features=FeaturesConfig(
             # The spacing is EVA's, not the encoder's recommended regime.
-            allow_non_recommended_settings=True,
+            encoder=EncoderLeaf(
+                name=encoder,
+                params={
+                    **(
+                        {"output_variant": enc.output_variant}
+                        if enc is not None and enc.output_variant is not None
+                        else {}
+                    ),
+                    "allow_non_recommended_settings": True,
+                },
+            ),
+            # The curated manifest supplies every slide's tiles (coordinates_path); these
+            # are the geometry the artifacts were sampled at, which staging checks.
+            extraction=PreprocessingConfig(
+                tiling=TilingConfig(
+                    requested_spacing_um=float(spec.target_mpp),
+                    requested_tile_size_px=TILE_PX,
+                    tolerance=0.05,
+                    overlap=0.0,
+                ),
+                # Unused: supplied coordinates skip tissue segmentation (the curator
+                # applied EVA's saturation mask).
+                segmentation=SegmentationConfig(method="otsu"),
+            ),
+            execution=_replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
+            cache=cache or CacheConfig(enabled=True),
         ),
         aggregator=AggregatorConfig(name=AGGREGATOR_NAME),
         task=TaskConfig(name=spec.task, params=task_params),
@@ -473,7 +488,7 @@ class EvaSlideClassificationBenchmark:
         epochs: int | None = None,
         patience: int | None = None,
         encoder_batch_size: int = 32,
-        execution: ExecutionConfig | None = None,
+        execution: ExecutionOptions | None = None,
     ) -> PipelineConfig:
         """Build the EVA-faithful config for this dataset and the ``encoder`` axis."""
         return _build_eva_slide_config(
