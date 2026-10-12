@@ -44,7 +44,8 @@ When ``splits.csv`` has no ``fold`` column (or a single fold value), the
 per-fold artifacts are written directly inside it; with several folds, each
 ``fold_N/`` subdirectory holds its own set:
 
-- ``best_model.pt``, ``metrics.json``, ``training_history.json``
+- ``bundle/``, the trained model (see :ref:`model-bundle`), ``metrics.json`` and
+  ``training_history.json``
 - ``feature_adapter.json`` when ``normalization`` or ``projection`` is active:
   the methods, ``eps`` floor and floored-channel count, dimensions, projection
   seed, PCA explained variance, and the number of samples and feature rows used
@@ -57,6 +58,47 @@ per-fold artifacts are written directly inside it; with several folds, each
 - for segmentation and detection, the predictions of tune and every test split
   and the optional overlays, probabilities and heatmaps; see
   :ref:`grid-outputs`
+
+.. _model-bundle:
+
+Model bundle
+------------
+
+Each fold saves its selected model as a bundle with :func:`soma.save`. A bundle
+is a directory of four files:
+
+- ``weights.safetensors``: the model's full ``state_dict``. The fitted feature
+  adaptor (``normalization`` / ``projection``) is stored here as buffers.
+- ``model.json``: how to rebuild the model before the weights load: its shape,
+  the builder and the builder's arguments (aggregator or decoder, task head,
+  adaptor sections, and the encoder of a live run).
+- ``preprocessing.json``: what scoring needs beyond the model: the task family,
+  class names, target schema, metrics, and for grid runs the grid geometry, read
+  spacing and tile size. A detection bundle also records the score threshold
+  chosen on tune and the matching distance.
+- ``provenance.json``: the soma, slide2vec and hs2p versions, the selected epoch
+  and its monitor value, the fold, the run id and the identity of the feature
+  source (the cache key and feature identity, not a path).
+
+:func:`soma.load` rebuilds the model in eval mode and returns a
+:class:`soma.ModelBundle` with ``model``, ``preprocessing`` and ``provenance``.
+A live run's frozen encoder is built when the bundle loads, so missing encoder
+weights fail at load time. A bundle written by another soma major version is
+refused; another minor or patch version loads with a warning::
+
+   import soma
+
+   bundle = soma.load("runs/.../fold_0/bundle")
+   predictions = soma.predict(bundle.model, loader)
+
+``soma.save`` writes the bundle atomically: a reader sees the previous bundle
+or the new one, never a partial one. A model built by hand in a notebook can be
+saved too, but ``soma.load`` cannot rebuild it, because ``model.json`` records
+no builder; load its ``weights.safetensors`` into the same model instead.
+
+Resume is per fold. A fold is complete when its ``metrics.json`` and its
+``bundle/`` exist. A relaunch into the same run directory (``run.resume`` or
+``run.run_id``) skips complete folds and trains the others from epoch 0.
 
 Split-specific artifacts
 ------------------------
@@ -149,8 +191,9 @@ appends one line, and readers keep the last line per ``run_id``. Run
 Heatmap artifacts
 -----------------
 
-When ``HeatmapConfig.enabled`` is true, the pipeline stores raw attention
-scores in ``attention/<split>/<sample_id>.npz`` and rendered overlays in ``heatmaps/``
+When ``HeatmapConfig.enabled`` is true, the pipeline scores each fold's bundle
+once every fold is done and stores raw attention scores in
+``attention/<split>/<sample_id>.npz`` and rendered overlays in ``heatmaps/``
 (directly in the run directory for single-fold runs, inside each ``fold_N/``
 subdir for cross-validation). The rendered overlays can be regenerated with
 different visual settings without rerunning inference.

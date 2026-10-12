@@ -21,7 +21,7 @@ The old loop grew a branch for every variation: a windowed Cox epoch, a streamin
 ## Consequences
 
 - `soma/training/trainer.py` is deleted; the three fold functions in `pipeline.py` run on the new Trainer through `_build_learner` and `_fit_fold`. Datasets, collates and samplers stay in `soma/training/` until the layout rename.
-- `best_model.pt` keeps its name and the keys `model_state_dict`, `epoch`, `selection`; `metrics` replaces `tune_metrics` / `tune_loss` and `optimizer_state_dict` is dropped. The live segmentation path's file holds the decoder and head only.
+- `best_model.pt` keeps its name and the keys `model_state_dict`, `epoch`, `selection`; `metrics` replaces `tune_metrics` / `tune_loss` and `optimizer_state_dict` is dropped. The live segmentation path's file holds the decoder and head only. (Superseded for run directories by [ADR 0016](0016-model-bundle-and-fold-level-resume.md): the pipeline writes a model bundle instead.)
 - `training_history.json` holds one row per epoch (`epoch`, `train_loss`, `lr`, `elapsed_seconds`, then one column per summary key, `null` on an epoch without an evaluation). The reporting reader adapts; there is no converter for old run dirs.
 - `TrainingConfig.monitor` defaults to `loss`; `optimizer` / `scheduler` accept a name or a leaf (`scheduler` also a list); `learner` is a new optional leaf. `lr_warmup_epochs` / `lr_warmup_factor` are removed and fail as unknown keys.
 - `fp32` stays the default so reproduction rows are unchanged; `precision="bf16"` is opt-in autocast without a grad scaler.

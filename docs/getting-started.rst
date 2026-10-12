@@ -104,35 +104,34 @@ tile size and spacing resolve from the encoder's native configuration; see
 ~~~~~~~~~~~~~~~~~~~~~
 
 For slide classification, the downstream model pairs an AB-MIL aggregator with a
-task head. ``EvalConfig`` selects how its predictions are scored.
+task head. ``EvalConfig`` selects how its predictions are scored. A
+:class:`~soma.Pipeline` given the extracted ``source`` trains on it directly:
 
 .. code-block:: python
 
    from soma import (
        AggregatorConfig,
        EvalConfig,
+       Pipeline,
+       PipelineConfig,
        TaskConfig,
        TrainingConfig,
-       train,
    )
 
-   task = TaskConfig(name="binary_classification")
-   aggregator = AggregatorConfig(name="abmil")
-   evaluation = EvalConfig(metrics=["auroc", "balanced_accuracy"])
-   training = TrainingConfig(epochs=5, learning_rate=1e-4, seed=0)
-
-   result = train(
-       feature_store=features.source,
-       dataset=features.dataset,
-       splits=splits.project(features.dataset),
+   config = PipelineConfig(
+       dataset_csv="dataset.csv",
+       splits_csv="splits.csv",
+       output_root="output",
        dataset_type="slide",
-       aggregator=aggregator,
-       task=task,
-       training=training,
-       evaluation=evaluation,
-       run_dir="output/abmil",
+       aggregator=AggregatorConfig(name="abmil"),
+       task=TaskConfig(name="binary_classification"),
+       training=TrainingConfig(epochs=5, learning_rate=1e-4, seed=0),
+       evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
    )
-   print(result.summary)
+   result = Pipeline(config, source=features.source).run()
+
+Each fold saves its model as a bundle that :func:`soma.load` reopens (see
+:ref:`model-bundle`).
 
 See :doc:`aggregators`, :doc:`classification`, :doc:`training`, and
 :doc:`evaluation` for the available components and settings.

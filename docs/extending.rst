@@ -163,8 +163,8 @@ and ``validation_summary`` (how a split is reduced; the summary must contain
 ``loss``), ``configure_optimizers(budget)`` (parameter groups, unfreezing),
 ``transfer_batch`` (device placement), ``trainable_state_dict`` (what a
 checkpoint restores in memory: the model's state by default, so a learner that owns
-trainable modules of its own must widen it to cover them; ``best_model.pt`` holds
-the bare model's state either way) and ``predict_step`` (the prediction columns of
+trainable modules of its own must widen it to cover them; the fold's bundle holds the
+bare model's state either way) and ``predict_step`` (the prediction columns of
 a batch). A ``predict_step`` override can add a column; it lands in
 ``predictions_<split>.parquet`` next to the head's columns::
 
@@ -187,6 +187,73 @@ in ``targets``.
 checks a learner against the contract on one batch. From Python, :func:`soma.fit`
 trains a learner, or a bare model wrapped in its shape's learner, with
 ``Checkpoint``, ``EarlyStopping`` and ``Progress`` installed.
+
+.. _hand-composition:
+
+A run composed by hand
+----------------------
+
+:class:`soma.Pipeline` is the public verbs called in a fixed order, so the same
+fold can be written by hand, for example to change one step. Each fold runs:
+
+1. ``soma.seed_everything(seed, fold=fold)``
+2. fit the feature adaptor on the train split only
+3. build the model (weight initialisation draws random numbers here)
+4. build the loaders
+5. ``Baseline.fit`` on the train targets, for samples without features
+6. ``soma.fit`` with ``Checkpoint`` and ``EarlyStopping``
+7. a tune-time step: detection sweeps its score threshold on tune
+8. per split: ``soma.predict`` (plus baseline rows), then ``soma.evaluate``
+9. ``soma.save`` the fold's bundle
+
+The order matters because random numbers are drawn in it: a hand composition
+that follows it, with the config's values, gives byte-identical predictions and
+weights. soma's own test suite checks this for a MIL, a segmentation and a
+detection run. A set-shape fold over cached features looks like this::
+
+    import soma
+    from soma.aggregators import ABMIL
+    from soma.data import CachedSetSource, Cohort
+    from soma.evaluation import Baseline, Predictions
+    from soma.learn import Checkpoint, EarlyStopping, MILLearner, loaders
+    from soma.tasks.classification import BinaryClassificationHead
+    from soma.training.feature_adaptor import FeatureAdaptor
+    from soma.training.model import MILModel
+
+    cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
+    source = CachedSetSource("features/")
+    split = cohort.folds[0]
+
+    soma.seed_everything(0, fold=0)
+    adaptor = FeatureAdaptor(method="zscore", num_features=source.feature_dim)
+    adaptor.fit([source.load(sid) for sid in split.train])
+    aggregator = ABMIL(input_dim=source.feature_dim)
+    head = BinaryClassificationHead(
+        input_dim=aggregator.output_dim, num_classes=2, label_map={"normal": 0, "tumor": 1}
+    )
+    learner = MILLearner(
+        MILModel(aggregator, head, feature_adaptor=adaptor),
+        optimizer={"name": "adam", "params": {"lr": 1e-4, "weight_decay": 1e-5}},
+        schedulers=("cosine",),
+    )
+    fold = loaders(source, cohort, head=head, batch_size=1)
+    baseline = Baseline.fit(
+        cohort.targets("train"), task_family=head.task_family, classes=head.classes,
+        target_keys=head.target_keys,
+    )
+    result = soma.fit(
+        learner, fold.train, fold.tune,
+        callbacks=[Checkpoint(monitor="loss", mode="min"), EarlyStopping(patience=10)],
+        max_epochs=50,
+    )
+    predictions = Predictions.concat([soma.predict(result.learner, fold.tests["test"]), baseline.predict([])])
+    evaluation = soma.evaluate(predictions, cohort.targets("test"), metrics=["auroc"])
+    soma.save(result, "runs/by-hand/bundle")
+
+A ``Checkpoint`` or ``EarlyStopping`` passed in ``callbacks`` replaces the one
+``soma.fit`` would build from ``monitor``, ``mode`` and ``patience``. A model
+built this way saves, but :func:`soma.load` cannot rebuild it (see
+:ref:`model-bundle`).
 
 Custom encoder stage or image source
 ------------------------------------

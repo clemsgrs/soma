@@ -26,6 +26,12 @@ Repeat ``--set KEY=VALUE`` for multiple overrides. Keys are dotted YAML
 paths and values are parsed as YAML, preserving numbers and booleans.
 Use ``soma --help`` or ``soma COMMAND --help`` for command options.
 
+Train on features you already have with ``--feature-dir``: the directory of a
+pooled feature cache (slide, patient and tile runs) or of dense grids
+(segmentation and detection). The run attaches it and extracts nothing::
+
+    soma config.yaml --feature-dir runs/features/uni2
+
 ``soma`` prints soma's INFO log messages to stderr, and warnings and errors
 from other libraries. See :ref:`log-output` for the same behaviour in a Python
 script.
@@ -33,8 +39,9 @@ script.
 Available commands
 ------------------
 
-``soma CONFIG [--set KEY=VALUE ...]``
-   Run a full pipeline from the given YAML config file.
+``soma CONFIG [--set KEY=VALUE ...] [--feature-dir DIR]``
+   Run a full pipeline from the given YAML config file, optionally on
+   pre-extracted features.
 
 ``soma list encoders [--level {tile,slide,patient}]``
    List all registered encoder presets. ``--level`` narrows results to
