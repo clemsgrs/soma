@@ -49,6 +49,7 @@ from soma.cache import (
 )
 from soma.config import CacheConfig, EncoderLeaf
 from soma.dense import CachedGridSource, normalize_hw
+from soma.encoders.validation import resolve_filter_config
 from soma.slide2vec_adapter import execution_options
 from soma.spacing import resolve_effective_spacing_um
 
@@ -81,7 +82,9 @@ def sample_slide_rois(
     """Run hs2p annotation sampling per slide; return level-0 ROI coords by slide id.
 
     hs2p tiles each slide's annotation raster with ``preprocessing.tiling`` (read at the
-    slide's effective spacing) and ``preprocessing.masks``. ``sample_ids`` restricts
+    slide's effective spacing), ``preprocessing.masks`` and ``preprocessing.filter`` (its
+    contour-area threshold and pixel QC; unset resolves to ``ref_tile_size`` at the tile
+    size, as the roi_sampling key does). ``sample_ids`` restricts
     sampling to that subset of the manifest's slides (manifest order preserved) — the
     roi_sampling cache's partial-miss path samples only the missing slides without
     touching the hits. ``None`` (the default) samples every slide.
@@ -89,6 +92,9 @@ def sample_slide_rois(
     from hs2p import SlideSpec, tile_slide
 
     masks = preprocessing.masks
+    filtering = resolve_filter_config(
+        preprocessing.filter, tile_size_px=preprocessing.tiling.requested_tile_size_px
+    )
     if masks.output_mode != "merged":
         raise ValueError(
             f"slide-manifest dense extraction supports output_mode='merged' only, got "
@@ -125,6 +131,7 @@ def sample_slide_rois(
                 spacing_at_level_0=record.spacing_at_level_0,
             ),
             tiling=tiling,
+            filtering=filtering,
             masks=masks,
         )
         # MERGED collapses to a {None: merged} dict (one result per slide).

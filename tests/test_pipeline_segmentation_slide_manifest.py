@@ -663,6 +663,48 @@ def test_slide_sampling_uses_native_spacing_only_for_coarser_sources(tmp_path: P
     assert observed == [("ordinary", 0.5), ("coarse", 0.657476464)]
 
 
+def test_slide_sampling_forwards_the_filter_the_roi_key_records(tmp_path: Path, monkeypatch):
+    """hs2p filters annotation contours (``a_t`` × ``ref_tile_size``²) and runs pixel QC with
+    the ``filtering`` it is given; the roi_sampling key hashes the held filter, so the
+    sampler hands hs2p that filter, and resolves an unset one as the key does."""
+    from hs2p import FilterConfig
+    from soma.data._legacy import legacy_samples_from_csv
+    from soma.dense_slide_extraction import sample_slide_rois
+    from soma.encoders.validation import resolve_preprocessing_config
+
+    manifest = tmp_path / "slides.csv"
+    manifest.write_text(
+        "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
+        "s0,/fake/s0.tif,/fake/s0_mask.tif,0.5\n"
+    )
+    filters: list[FilterConfig] = []
+
+    def _tile_slide(slide, **kwargs):
+        filters.append(kwargs["filtering"])
+        return {
+            None: SimpleNamespace(
+                tiles=SimpleNamespace(
+                    x=np.asarray([0], dtype=np.int64),
+                    y=np.asarray([0], dtype=np.int64),
+                )
+            )
+        }
+
+    monkeypatch.setattr("hs2p.tile_slide", _tile_slide)
+    held = FilterConfig(ref_tile_size=TARGET, a_t=2, filter_white=True)
+    preprocessing = extraction(
+        0.5, TARGET, masks=annotation_masks(PIXEL_MAPPING, {"tumor": 0.0}), filter=held
+    )
+    sample_slide_rois(legacy_samples_from_csv(manifest), preprocessing=preprocessing)
+    unset = _roi_extraction()
+    assert unset.filter is None
+    sample_slide_rois(legacy_samples_from_csv(manifest), preprocessing=unset)
+
+    resolved = resolve_preprocessing_config(unset, encoder_name=ENCODER).filter
+    assert filters == [held, resolved]
+    assert resolved == FilterConfig(ref_tile_size=TARGET)
+
+
 # --------------------------------------------------------------------------- #
 # Cache key folds the sampling spec.
 # --------------------------------------------------------------------------- #

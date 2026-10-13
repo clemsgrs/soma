@@ -15,7 +15,7 @@ from hs2p import FilterConfig, TilingConfig
 from slide2vec import PreprocessingConfig
 from slide2vec.encoders.registry import encoder_registry, resolve_preprocessing_fields
 
-__all__ = ["resolve_encoder_precision", "resolve_preprocessing_config"]
+__all__ = ["resolve_encoder_precision", "resolve_filter_config", "resolve_preprocessing_config"]
 
 
 def resolve_encoder_precision(
@@ -36,6 +36,14 @@ def resolve_encoder_precision(
             metadata = None
     recommended = None if metadata is None else metadata.get("precision")
     return "fp32" if recommended is None else str(recommended)
+
+
+def resolve_filter_config(filter_config: FilterConfig | None, *, tile_size_px: int) -> FilterConfig:
+    """``filter_config``, or, when unset, hs2p's filter defaults with ``ref_tile_size`` at
+    the tile size (what slide2vec resolves an unset filter to)."""
+    if filter_config is not None:
+        return filter_config
+    return FilterConfig(ref_tile_size=int(tile_size_px))
 
 
 def resolve_preprocessing_config(
@@ -67,9 +75,7 @@ def resolve_preprocessing_config(
             overlap=0.0,
         )
     tile_size_px = int(tiling.requested_tile_size_px)
-    filter_config = preprocessing.filter
-    if filter_config is None:
-        filter_config = FilterConfig(ref_tile_size=tile_size_px)
+    filter_config = resolve_filter_config(preprocessing.filter, tile_size_px=tile_size_px)
 
     region_size_px = preprocessing.requested_region_size_px
     multiple = preprocessing.region_tile_multiple
