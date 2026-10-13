@@ -75,9 +75,39 @@ def test_the_cohort_decides_what_the_config_leaves_unset(files):
 
 def test_explicit_params_win_and_a_contradiction_raises(files):
     explicit = _resolve(experiment(*files, aggregator="abmil", head_params={"label_map": {"b": 0, "a": 1}}))
+    # An explicit label map decides the classes and their count.
     assert explicit.learner.params["head"].params["label_map"] == {"b": 0, "a": 1}
+    assert explicit.learner.params["head"].params["num_classes"] == 2
+    wider = _resolve(
+        experiment(*files, aggregator="abmil", head="multiclass_classification", head_params={"label_map": {"a": 0, "b": 1, "c": 2}})
+    )
+    assert wider.learner.params["head"].params["num_classes"] == 3
     with pytest.raises(ValueError, match=r"num_classes=3 contradicts what the cohort shows \(num_classes=2\)"):
         _resolve(experiment(*files, aggregator="abmil", head="multiclass_classification", head_params={"num_classes": 3}))
+    with pytest.raises(ValueError, match=r"num_classes=3 contradicts .*\(num_classes=2\)"):
+        _resolve(
+            experiment(
+                *files,
+                aggregator="abmil",
+                head="multiclass_classification",
+                head_params={"num_classes": 3, "label_map": {"b": 0, "a": 1}},
+            )
+        )
+
+
+def test_an_ordinal_head_keeps_an_explicit_num_classes_and_else_spans_its_label_map(files):
+    def head(**params):
+        plan = _resolve(experiment(*files, aggregator="abmil", head="ordinal_classification", head_params=params))
+        return plan.learner.params["head"].params
+
+    # num_classes bounds the rounded prediction, so it reaches the map's top index.
+    assert head(label_map={"a": 0, "b": 2})["num_classes"] == 3
+    # An explicit num_classes may be wider than the map or the grades the cohort shows.
+    assert head(num_classes=5, label_map={"a": 0, "b": 1})["num_classes"] == 5
+    assert {key: head(num_classes=5)[key] for key in ("num_classes", "label_map")} == {
+        "num_classes": 5,
+        "label_map": {"a": 0, "b": 1},
+    }
 
 
 def test_head_targets_map_keys_to_cohort_columns(tmp_path: Path):

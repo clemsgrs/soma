@@ -10,6 +10,7 @@ from soma.tasks.classification import (
     ClassificationParams,
     MulticlassClassificationHead,
     infer_label_map,
+    infer_ordinal_label_map,
 )
 from soma.tasks.detection import DetectionHead, DetectionParams
 from soma.tasks.ordinal_classification import OrdinalClassificationHead
@@ -34,6 +35,7 @@ __all__ = [
     "SurvivalParams",
     "infer_label_map",
     "infer_num_bins",
+    "infer_ordinal_label_map",
     "BinaryClassificationHead",
     "MulticlassClassificationHead",
     "BranchAwareClassificationHead",
