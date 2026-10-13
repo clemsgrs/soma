@@ -21,6 +21,7 @@ from soma.benchmarks.registry import (
 )
 from slide2vec import ExecutionOptions
 
+from soma import presets
 from soma.config import (
     CacheOptions,
     CohortConfig,
@@ -28,8 +29,9 @@ from soma.config import (
     EncoderLeaf,
     EvaluationConfig,
     ExperimentConfig,
-    FeaturesConfig,
+    LoadersConfig,
     RunConfig,
+    TrainerConfig,
 )
 from soma.benchmarks.reproduction import ResolvabilityPolicy
 from soma.curation.croma import curate_croma_view
@@ -211,33 +213,26 @@ class CromaBenchmark:
         if panel_spec is not None:
             validate_croma_0_3_encoder_panel(encoders=[encoder])
         cache_overrides = (overrides or {}).get("cache")
-        return ExperimentConfig(
-            run=RunConfig(
-                output_dir=Path(output_root) if output_root is not None else Path("output/croma"),
-                seed=0 if seed is None else int(seed),
-            ),
-            cohort=CohortConfig(
-                records=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
-                splits=str(splits_csv) if splits_csv is not None else "splits.csv",
-            ),
-            features=FeaturesConfig(
-                encoder=EncoderLeaf(
-                    name=encoder,
-                    params=(
-                        {"output_variant": panel_spec.output_variant}
-                        if panel_spec is not None and panel_spec.output_variant is not None
-                        else {}
-                    ),
-                ),
-                execution=ExecutionOptions(batch_size=encoder_batch_size),
-                cache=(
-                    CacheOptions(**cache_overrides)
-                    if cache_overrides
-                    else CacheOptions(enabled=True)
-                ),
-            ),
-            evaluation=EvaluationConfig(representation=CRoMaOptions(**REPRESENTATION_PROTOCOL)),
+        # CRoMa scores the tile embeddings of the tile-classification preset's encoder; it
+        # trains nothing, so the learner goes and loaders and trainer keep their defaults.
+        cfg = presets.tile_classification(encoder)
+        cfg.run = RunConfig(
+            output_dir=Path(output_root) if output_root is not None else Path("output/croma"),
+            seed=0 if seed is None else int(seed),
         )
+        cfg.cohort = CohortConfig(
+            records=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
+            splits=str(splits_csv) if splits_csv is not None else "splits.csv",
+        )
+        if panel_spec is not None and panel_spec.output_variant is not None:
+            cfg.features.encoder = EncoderLeaf(name=encoder, params={"output_variant": panel_spec.output_variant})
+        cfg.features.execution = ExecutionOptions(batch_size=encoder_batch_size)
+        cfg.features.cache = CacheOptions(**cache_overrides) if cache_overrides else CacheOptions(enabled=True)
+        cfg.loaders = LoadersConfig()
+        cfg.learner = None
+        cfg.trainer = TrainerConfig()
+        cfg.evaluation = EvaluationConfig(representation=CRoMaOptions(**REPRESENTATION_PROTOCOL))
+        return cfg
 
     def expected(self, **axes: Any) -> list[ReferenceRow]:
         merged = {"dataset": self.cohort, "encoder": DEFAULT_ENCODER}

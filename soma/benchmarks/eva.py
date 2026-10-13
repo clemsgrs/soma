@@ -7,7 +7,9 @@ registered as **one sub-benchmark per dataset** — ``eva/bach``, ``eva/breakhis
 exposing ``encoder`` as a ``build_config`` axis (the dataset × encoder grid). The recipe
 encodes the offline linear-probe protocol of the `kaiko-ai/eva
 <https://github.com/kaiko-ai/eva>`_ leaderboard so it reproduces with soma's tile path
-(a tile encoder with no aggregator: one tile is one sample). The leaderboard's two
+(a tile encoder with no aggregator: one tile is one sample): the config starts from the
+:func:`~soma.presets.tile_classification` preset and writes the protocol's values over it.
+The leaderboard's two
 segmentation tasks (``eva/consep``,
 ``eva/monusac``) live in :mod:`soma.benchmarks.eva_segmentation` and share this module's
 encoder table, reference ledger and family fan-out.
@@ -53,6 +55,7 @@ from dataclasses import replace as _replace
 
 from slide2vec import ExecutionOptions
 
+from soma import presets
 from soma.config import (
     CacheOptions,
     CohortConfig,
@@ -60,8 +63,6 @@ from soma.config import (
     EncoderLeaf,
     EvaluationConfig,
     ExperimentConfig,
-    FeaturesConfig,
-    LearnerConfig,
     LoadersConfig,
     RunConfig,
     TrainerConfig,
@@ -166,40 +167,28 @@ def _build_eva_config(
         patience = spec.patience
 
     monitor = {"monitor": "balanced_accuracy", "mode": "max"}
-    return ExperimentConfig(
-        run=RunConfig(output_dir=Path(output_root), seed=seed),
-        cohort=CohortConfig(records=str(dataset_csv), splits=str(splits_csv), tune_is_test=spec.tune_is_test),
-        features=FeaturesConfig(
-            encoder=EncoderLeaf(
-                name=encoder,
-                params=(
-                    {"output_variant": enc.output_variant}
-                    if enc is not None and enc.output_variant is not None
-                    else {}
-                ),
-            ),
-            execution=_replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
-            cache=cache or CacheOptions(enabled=True),
-        ),
-        # The head trains on tiny in-memory feature vectors, so dataloader worker spawn
-        # would dominate wall time; eva uses 0 workers here too.
-        loaders=LoadersConfig(batch_size=HEAD_BATCH_SIZE, num_workers=head_num_workers),
-        learner=LearnerConfig(
-            "mil",
-            {
-                "head": Component(spec.task),
-                "optimizer": Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY}),
-            },
-        ),
-        trainer=TrainerConfig(
-            max_steps=max_steps,
-            callbacks=[
-                Component("checkpoint", monitor),
-                Component("early_stopping", {**monitor, "patience": patience}),
-            ],
-        ),
-        evaluation=EvaluationConfig(metrics=["balanced_accuracy", "accuracy"]),
+    cfg = presets.tile_classification(encoder)
+    cfg.run = RunConfig(output_dir=Path(output_root), seed=seed)
+    cfg.cohort = CohortConfig(records=str(dataset_csv), splits=str(splits_csv), tune_is_test=spec.tune_is_test)
+    if enc is not None and enc.output_variant is not None:
+        cfg.features.encoder = EncoderLeaf(name=encoder, params={"output_variant": enc.output_variant})
+    cfg.features.execution = _replace(execution or ExecutionOptions(), batch_size=encoder_batch_size)
+    cfg.features.cache = cache or CacheOptions(enabled=True)
+    # The head trains on tiny in-memory feature vectors, so dataloader worker spawn
+    # would dominate wall time; eva uses 0 workers here too.
+    cfg.loaders = LoadersConfig(batch_size=HEAD_BATCH_SIZE, num_workers=head_num_workers)
+    cfg.learner.params["head"] = Component(spec.task)
+    cfg.learner.params["optimizer"] = Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY})
+    cfg.learner.params.pop("scheduler", None)  # eva's linear probe trains without a schedule
+    cfg.trainer = TrainerConfig(
+        max_steps=max_steps,
+        callbacks=[
+            Component("checkpoint", monitor),
+            Component("early_stopping", {**monitor, "patience": patience}),
+        ],
     )
+    cfg.evaluation = EvaluationConfig(metrics=["balanced_accuracy", "accuracy"])
+    return cfg
 
 
 def _cache_from_overrides(overrides: dict[str, Any] | None) -> CacheOptions | None:

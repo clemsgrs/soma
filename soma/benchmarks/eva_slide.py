@@ -6,7 +6,8 @@ the tile-classification (:mod:`soma.benchmarks.eva`) and segmentation
 (:mod:`soma.benchmarks.eva_segmentation`) members, sharing their encoder table, reference
 ledger and ``soma reproduce eva`` fan-out. They reproduce EVA's offline configs
 ``configs/vision/pathology/offline/classification/{camelyon16_small,panda_small}.yaml``
-on soma's slide path (a tile encoder's bags pooled by an aggregator) with components that exist only for this
+on soma's slide path (a tile encoder's bags pooled by an aggregator), starting from the
+:func:`~soma.presets.mil_classification` preset, with components that exist only for this
 protocol:
 
 * ``eva_abmil`` — EVA's ``ABMIL`` bag encoder: ``Linear(D -> 128)`` projection, then
@@ -71,6 +72,7 @@ from dataclasses import replace as _replace
 from hs2p import SegmentationConfig, TilingConfig
 from slide2vec import ExecutionOptions, PreprocessingConfig
 
+from soma import presets
 from soma.config import (
     CacheOptions,
     CohortConfig,
@@ -78,8 +80,6 @@ from soma.config import (
     EncoderLeaf,
     EvaluationConfig,
     ExperimentConfig,
-    FeaturesConfig,
-    LearnerConfig,
     LoadersConfig,
     RunConfig,
     TrainerConfig,
@@ -393,63 +393,55 @@ def _build_eva_slide_config(
     if spec.task == MULTICLASS_HEAD_NAME:
         task_params["num_classes"] = spec.num_classes
     monitor = {"monitor": "balanced_accuracy", "mode": "max"}
-    return ExperimentConfig(
-        run=RunConfig(output_dir=Path(output_root), seed=seed),
-        cohort=CohortConfig(records=str(dataset_csv), splits=str(splits_csv)),
-        features=FeaturesConfig(
-            # The spacing is EVA's, not the encoder's recommended regime.
-            encoder=EncoderLeaf(
-                name=encoder,
-                params={
-                    **(
-                        {"output_variant": enc.output_variant}
-                        if enc is not None and enc.output_variant is not None
-                        else {}
-                    ),
-                    "allow_non_recommended_settings": True,
-                },
+    cfg = presets.mil_classification(encoder, aggregator=AGGREGATOR_NAME)
+    cfg.run = RunConfig(output_dir=Path(output_root), seed=seed)
+    cfg.cohort = CohortConfig(records=str(dataset_csv), splits=str(splits_csv))
+    # The spacing is EVA's, not the encoder's recommended regime.
+    cfg.features.encoder = EncoderLeaf(
+        name=encoder,
+        params={
+            **(
+                {"output_variant": enc.output_variant}
+                if enc is not None and enc.output_variant is not None
+                else {}
             ),
-            # The curated manifest supplies every slide's tiles (coordinates_path); these
-            # are the geometry the artifacts were sampled at, which staging checks.
-            extraction=PreprocessingConfig(
-                tiling=TilingConfig(
-                    requested_spacing_um=float(spec.target_mpp),
-                    requested_tile_size_px=TILE_PX,
-                    tolerance=0.05,
-                    overlap=0.0,
-                ),
-                # Unused: supplied coordinates skip tissue segmentation (the curator
-                # applied EVA's saturation mask).
-                segmentation=SegmentationConfig(method="otsu"),
-            ),
-            execution=_replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
-            cache=cache or CacheOptions(enabled=True),
-        ),
-        loaders=LoadersConfig(batch_size=BATCH_SIZE, num_workers=head_num_workers),
-        learner=LearnerConfig(
-            "mil",
-            {
-                "aggregator": Component(AGGREGATOR_NAME),
-                "head": Component(spec.task, task_params),
-                "optimizer": Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY}),
-                # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
-                "scheduler": [Component("constant", {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS})],
-            },
-        ),
-        trainer=TrainerConfig(
-            max_epochs=EPOCHS if epochs is None else epochs,
-            callbacks=[
-                Component("checkpoint", monitor),
-                # EVA's Lightning EarlyStopping(min_delta=0) counts an initial plateau too:
-                # it stops at patience and keeps the first epoch.
-                Component(
-                    "early_stopping",
-                    {**monitor, "patience": PATIENCE if patience is None else patience, "hold_until_moves": False},
-                ),
-            ],
-        ),
-        evaluation=EvaluationConfig(metrics=list(METRICS)),
+            "allow_non_recommended_settings": True,
+        },
     )
+    # The curated manifest supplies every slide's tiles (coordinates_path); these are the
+    # geometry the artifacts were sampled at, which staging checks.
+    cfg.features.extraction = PreprocessingConfig(
+        tiling=TilingConfig(
+            requested_spacing_um=float(spec.target_mpp),
+            requested_tile_size_px=TILE_PX,
+            tolerance=0.05,
+            overlap=0.0,
+        ),
+        # Unused: supplied coordinates skip tissue segmentation (the curator applied EVA's
+        # saturation mask).
+        segmentation=SegmentationConfig(method="otsu"),
+    )
+    cfg.features.execution = _replace(execution or ExecutionOptions(), batch_size=encoder_batch_size)
+    cfg.features.cache = cache or CacheOptions(enabled=True)
+    cfg.loaders = LoadersConfig(batch_size=BATCH_SIZE, num_workers=head_num_workers)
+    cfg.learner.params["head"] = Component(spec.task, task_params)
+    cfg.learner.params["optimizer"] = Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY})
+    # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
+    cfg.learner.params["scheduler"] = [Component("constant", {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS})]
+    cfg.trainer = TrainerConfig(
+        max_epochs=EPOCHS if epochs is None else epochs,
+        callbacks=[
+            Component("checkpoint", monitor),
+            # EVA's Lightning EarlyStopping(min_delta=0) counts an initial plateau too: it
+            # stops at patience and keeps the first epoch.
+            Component(
+                "early_stopping",
+                {**monitor, "patience": PATIENCE if patience is None else patience, "hold_until_moves": False},
+            ),
+        ],
+    )
+    cfg.evaluation = EvaluationConfig(metrics=list(METRICS))
+    return cfg
 
 
 class EvaSlideClassificationBenchmark:

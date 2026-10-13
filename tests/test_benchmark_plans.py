@@ -107,6 +107,31 @@ def test_a_benchmark_resolves_to_its_pinned_plan(tmp_path: Path, case, benchmark
     assert benchmark_plan(benchmark, kwargs, labels, tune_is_test, tmp_path) == pinned[case]
 
 
+@pytest.mark.parametrize(
+    ("benchmark", "preset", "arguments"),
+    [
+        ("eva/bach", "tile_classification", ("uni2",)),
+        ("eva/camelyon16_small", "mil_classification", ("uni2",)),
+        ("eva/monusac", "segmentation", ("uni2",)),
+        ("hest/IDC", "tile_classification", ("uni2",)),
+        ("croma/camelyon", "tile_classification", ("uni2",)),
+    ],
+)
+def test_a_benchmark_builds_its_config_from_a_preset(monkeypatch, benchmark, preset, arguments):
+    from soma import presets
+
+    calls = []
+    original = getattr(presets, preset)
+
+    def spy(*args, **kwargs):
+        calls.append(args[: len(arguments)])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(presets, preset, spy)
+    get_benchmark(benchmark).build_config(encoder="uni2")
+    assert calls == [arguments]
+
+
 def _write_fixture() -> None:
     with tempfile.TemporaryDirectory() as directory:
         plans = {
