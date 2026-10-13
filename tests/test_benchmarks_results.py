@@ -3,7 +3,7 @@
 ``soma/benchmark/<name>/results.csv`` records soma's OWN produced numbers with the
 provenance that makes a reproduced value meaningful. These tests cover the loader
 (``load_results``/``reproduced_rows``), the append-only ``append_result`` ledger, and one
-consistency guard: every committed ``results/eva.csv`` row must join a gate reference band
+consistency guard: every committed ``eva/results.csv`` row must join a gate reference band
 and fall inside its tolerance — so the committed evidence can never silently contradict the
 target it claims to reproduce.
 """
@@ -35,7 +35,7 @@ def test_load_results_absent_table_is_empty_not_error():
 
 def test_load_results_parses_eva_seed_rows():
     rows = load_results("eva")
-    assert rows, "results/eva.csv should ship seeded historical rows"
+    assert rows, "eva/results.csv should ship seeded historical rows"
     # The ledger is append-only, so a re-recorded cell holds several rows; file order is
     # oldest-first and the latest reproduction of a cell is the last match.
     bach_uni2 = [r for r in rows if r.key == {"dataset": "bach", "encoder": "uni2"}]
@@ -190,3 +190,21 @@ def test_append_result_extends_an_existing_header_in_place(tmp_path, monkeypatch
     assert rows[0].key == {"encoder": "e"}  # old row: blank spacing stays out of the key
     assert rows[1].key == {"encoder": "e", "spacing": "0.2"}
     assert [r.measured for r in rows] == pytest.approx([0.5, 0.6])
+
+
+def test_a_name_that_is_no_protocol_package_has_no_ledger():
+    # Ledgers live in the protocol packages; a module of the generic mechanism, or no
+    # module at all, holds none.
+    assert load_results("detection") == []
+    assert load_results("no-such-protocol") == []
+
+
+def test_a_detection_view_records_into_its_dataset_s_protocol_ledger():
+    # detection/<dataset> joins <dataset>/reference.csv, so it records beside it.
+    from soma.benchmark import get_benchmark
+    from soma.benchmark.run import _results_table_name
+
+    assert _results_table_name(get_benchmark("detection/midog")) == "midog"
+    assert _results_table_name(get_benchmark("detection/monkey")) == "monkey"
+    assert _results_table_name(get_benchmark("eva/bach")) == "eva"
+    assert _results_table_name(get_benchmark("ocelot")) == "ocelot"

@@ -266,7 +266,7 @@ def _protocol_data(name: str, filename: str):
     """``filename`` in the ``soma.benchmark.<name>`` protocol package (its package data)."""
     try:
         return resources.files(f"soma.benchmark.{name}").joinpath(filename)
-    except ModuleNotFoundError:
+    except (ModuleNotFoundError, TypeError):  # no such module, or a module that is no package
         raise FileNotFoundError(f"no benchmark protocol package soma.benchmark.{name} holds {filename}") from None
 
 

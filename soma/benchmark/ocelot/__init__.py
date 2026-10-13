@@ -9,7 +9,7 @@ absorbs the former ``examples/ocelot/`` harness into first-class package code:
   override (greedy is OCELOT's leaderboard-comparable matcher, not soma's headline metric);
 * the static per-cell configs become committed package YAML that
   :meth:`OcelotBenchmark.build_config` loads by ``(encoder, spacing)`` axes;
-* the expected numbers move to ``reference/ocelot.csv`` (a broad, config-agnostic band
+* the expected numbers move to ``ocelot/reference.csv`` (a broad, config-agnostic band
   with a per-row tolerance);
 * ``reproduce.py`` / ``eval_greedy.py`` are superseded by the generic ``soma reproduce``.
 

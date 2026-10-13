@@ -18,7 +18,7 @@ varies the ``encoder`` axis (``DEFAULT_ENCODER = "uni2"``). ``curate_hest`` is t
 an unprovisioned task errors cleanly ("provide --raw-root") exactly like an unprovisioned
 ``eva/<dataset>`` — registering it is not a footgun.
 
-Reference numbers: ``reference/hest.csv`` carries **external** Reference rows only — HEST's
+Reference numbers: ``hest/reference.csv`` carries **external** Reference rows only — HEST's
 published Pearson per (task, encoder), ``kind=external`` with a ``label`` + ``url``. There is
 **no gate row**, so nothing is tolerance-checked: ``soma reproduce hest/<task>`` renders soma's
 Measured row next to HEST's Reference, making the slide2vec↔TRIDENT gap an explicit, non-gating
@@ -27,7 +27,7 @@ delta rather than hiding it in a loose tolerance (issue #260).
 HEST's numbers are ``kind=external``: soma **publishes** its Measured value beside them with
 the signed delta and never gates on it — a gate against another lab's extraction stack would
 fire on the cross-stack parity gap, not on a real regression (ADR 0005). ``soma reproduce
-hest/<task> --record`` logs each Measured value to ``results/hest.csv``; the generated HEST doc
+hest/<task> --record`` logs each Measured value to ``hest/results.csv``; the generated HEST doc
 page joins that ledger to the reference and reports the per-cell delta (A, published), pooled
 pairwise rank concordance (B, a bonus), and the provenance-pinned ledger as the drift guard
 (C, the only axis that gates — soma against soma). See
@@ -389,7 +389,7 @@ class HestBenchmark:
 
         Injects the sub-benchmark's own ``dataset`` (the HEST task) and defaults the
         ``encoder`` axis to :data:`DEFAULT_ENCODER`, so ``expected()`` resolves the uni2
-        row and ``expected(encoder="virchow2")`` the virchow2 row. ``reference/hest.csv``
+        row and ``expected(encoder="virchow2")`` the virchow2 row. ``hest/reference.csv``
         carries external (``kind=external``, non-gating) rows only — HEST's published
         Pearson per task and encoder — so these are rendered *beside* the Measured row,
         never gated.
@@ -407,7 +407,7 @@ class HestBenchmark:
 # Register one sub-benchmark per HEST-Benchmark task (name == "hest/<task>"), mirroring the
 # eva/<dataset> family. Every task shares the closed-form spatial-expression probe recipe and
 # varies only the encoder axis. curate_hest is task-generic (it just needs the <task>/ subtree
-# under --raw-root), and reference/hest.csv carries the external HEST numbers per task, so a
+# under --raw-root), and hest/reference.csv carries the external HEST numbers per task, so a
 # task whose data is not provisioned locally still errors cleanly ("provide --raw-root") the
 # same way an unprovisioned eva/<dataset> does — registering it is not a footgun.
 HEST_BENCHMARKS: dict[str, HestBenchmark] = {}

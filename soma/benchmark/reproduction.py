@@ -1,7 +1,7 @@
 """Reproduction report — how faithfully soma's native pipeline reproduces a benchmark.
 
-Joins soma's recorded measurements (``results/<name>.csv``) to the benchmark's external
-reference (``reference/<name>.csv``) and quantifies reproduction **soundness** along three
+Joins soma's recorded measurements (``<name>/results.csv``) to the benchmark's external
+reference (``<name>/reference.csv``) and quantifies reproduction **soundness** along three
 axes (agreed in the HEST reproduction design grill):
 
 * **A — absolute agreement (what is published).** Per ``(dataset, encoder)`` cell: soma's
@@ -21,7 +21,7 @@ axes (agreed in the HEST reproduction design grill):
   Per-dataset Spearman ρ is reported alongside (coarse at few encoders). Corroborates A
   rather than replacing it.
 
-* **C — drift guard.** ``results/<name>.csv`` is an append-only, provenance-pinned ledger
+* **C — drift guard.** ``<name>/results.csv`` is an append-only, provenance-pinned ledger
   (``soma_commit`` / ``slide2vec_version`` / ``date`` per row), so re-running a cell at a
   new commit adds a row and any drift is an explicit diff rather than a silent overwrite.
 
@@ -319,7 +319,7 @@ def _spearman(xs: list[float], ys: list[float]) -> float | None:
 def reproduction_report(name: str, *, metric: str | None = None) -> ReproductionReport:
     """Build the A/B/C :class:`ReproductionReport` for benchmark family ``name``.
 
-    Joins ``reference/<name>.csv`` (published reference) to ``results/<name>.csv`` (soma's
+    Joins ``<name>/reference.csv`` (published reference) to ``<name>/results.csv`` (soma's
     recorded measurements, latest per cell) on ``(dataset, encoder)`` + ``metric``. ``metric``
     defaults to the family's primary metric. Cells with no recorded measurement are omitted,
     so the report grows as ``soma reproduce --record`` fills the ledger.

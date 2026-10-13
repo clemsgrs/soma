@@ -3,7 +3,7 @@
 No HEST data or GPU here: the registry lookup (all 9 tasks), the Benchmark-Protocol
 conformance, the ``build_config`` recipe (tile extraction for the probe predictor, PCA
 latent dim 256, encoder axis defaulting to uni2, the virchow2 CLS variant / h-optimus-1
-default), the external-only ``reference/hest.csv`` parse (9 tasks × the reproduction encoders),
+default), the external-only ``hest/reference.csv`` parse (9 tasks × the reproduction encoders),
 the default ``summary.json`` scorer, ``curate`` delegation, and the external-only ``--record``
 path are all verifiable offline. The live curate→probe→score reproduction (HEST download +
 slide2vec weights + GPU) is a manual campaign, not a CI unit test.
@@ -282,7 +282,7 @@ def test_reference_csv_has_external_schema_header():
     # exists (#260: render Measured beside Reference, never tolerance-check). Datasets are the
     # 9 HEST-Benchmark tasks (IDC carries the full ~18-encoder leaderboard; the other tasks
     # carry the reproduction encoders).
-    assert rows, "reference/hest.csv must carry the published external rows"
+    assert rows, "hest/reference.csv must carry the published external rows"
     for row in rows:
         assert row["dataset"] in hest.HEST_TASKS
         assert row["metric"] == "test/mean_pearson_mean"
@@ -415,7 +415,7 @@ def test_reproduce_hest_keeps_encoder_reference_beside_measured(capsys, tmp_path
 def test_reproduce_record_appends_external_only_cell_to_ledger(tmp_path, monkeypatch, capsys):
     # The external-only --record fix: HEST has no gate row, so before the fix --record was a
     # silent no-op (it keyed off a gate row that never exists). Now it falls back to the single
-    # matching EXTERNAL row, so a reproduced Pearson still lands in results/hest.csv keyed to
+    # matching EXTERNAL row, so a reproduced Pearson still lands in hest/results.csv keyed to
     # join the HEST reference — which is what the docs' A/B/C reproduction proof reads.
     from soma.benchmark import load_results, registry
 

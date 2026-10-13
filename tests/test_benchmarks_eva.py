@@ -2,7 +2,7 @@
 
 No EVA raw data or GPU here: the registry lookup, the per-dataset ``build_config`` recipe
 fidelity (fixed max_steps budget, lr/wd/batch, balanced-accuracy metric, tune_is_test split,
-virchow2 CLS-only), the keyed ``reference/eva.csv`` per-row tolerance parse + axis
+virchow2 CLS-only), the keyed ``eva/reference.csv`` per-row tolerance parse + axis
 selection, the default ``summary.json`` scorer, and ``curate`` delegation are all
 verifiable offline. The live curate→train→score reproduction (needs data + GPU) is what
 the ``--from-run-dir`` CLI test exercises with a fixture summary.

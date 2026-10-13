@@ -1,7 +1,7 @@
 """Benchmark registry mechanics + a fixture Benchmark (protocol-as-code, ADR 0002).
 
 Exercises the parts that do not need OCELOT data or a GPU: register/lookup/list, the
-structural :class:`Benchmark` protocol, ``reference/<name>.csv`` parsing with a per-row
+structural :class:`Benchmark` protocol, ``<name>/reference.csv`` parsing with a per-row
 tolerance, axis matching (broad banner vs keyed rows), the default ``summary.json`` scorer,
 and the :class:`Facet`. A fixture Benchmark that uses the DEFAULT scorer proves the
 registry works independently of OCELOT's greedy override.

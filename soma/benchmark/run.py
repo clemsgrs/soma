@@ -264,13 +264,14 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
 
 
 def _results_table_name(benchmark) -> str:
-    """The results/reference table a benchmark records under (its family prefix).
+    """The protocol whose results/reference tables a benchmark records under.
 
     Family members share one keyed table: ``eva/bach`` records under ``eva`` (keyed by
-    ``dataset``), matching ``reference/eva.csv``. A standalone benchmark (``ocelot``) maps
-    to itself.
+    ``dataset``), matching ``eva/reference.csv``. A standalone benchmark (``ocelot``) maps
+    to itself. A benchmark whose tables sit in another protocol names it as
+    ``results_name`` (``detection/midog`` records under ``midog``).
     """
-    return benchmark.name.split("/", 1)[0]
+    return getattr(benchmark, "results_name", None) or benchmark.name.split("/", 1)[0]
 
 
 def _git_commit() -> str:

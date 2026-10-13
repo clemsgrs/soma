@@ -151,7 +151,7 @@ def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
     cfg = bench.build_config(encoder="uni2", dataset_csv="/x/d.csv", output_root="/out", seed=3)
     assert cfg.features.encoder.name == "uni2" and cfg.learner.params["head"].params["num_classes"] == 1
     assert cfg.run.seed == 3 and str(cfg.cohort.records) == "/x/d.csv"
-    # expected() reads reference/midog.csv (external anchors only, so any encoder matches).
+    # expected() reads midog/reference.csv (external anchors only, so any encoder matches).
     rows = bench.expected(encoder="uni2")
     assert rows and all(r.is_external for r in rows)
     write_cell_predictions(

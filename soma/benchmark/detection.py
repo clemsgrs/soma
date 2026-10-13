@@ -1245,6 +1245,8 @@ class DetectionDatasetBenchmark:
         spec = dataset_spec(dataset)
         self.dataset = dataset
         self.name = f"detection/{dataset}"
+        # Its reference rows and results ledger are the dataset protocol's.
+        self.results_name = dataset
         self.primary_metric = spec.metric_name
         self._harness = harness
         self.facet = Facet(

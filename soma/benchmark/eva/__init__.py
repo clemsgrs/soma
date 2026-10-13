@@ -33,7 +33,7 @@ Protocol points that matter for matching the leaderboard:
   CLS+mean concat, which would *not* match the leaderboard.
 
 The expected balanced-accuracy values live as **keyed rows** in
-``reference/eva.csv`` (``dataset, encoder, metric, expected, tolerance, source``) with a
+``eva/reference.csv`` (``dataset, encoder, metric, expected, tolerance, source``) with a
 per-row tolerance band. The default ``summary.json`` scorer suffices — EVA's metric is
 balanced accuracy; there is no custom scorer.
 """
