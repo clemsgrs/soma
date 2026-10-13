@@ -98,17 +98,33 @@ def _is_private(name: str) -> bool:
 
 
 def _private_imports(path: Path) -> list[str]:
-    """Each import in ``path`` of a ``_``-prefixed module or name of soma or the tests."""
+    """Each import in ``path`` of a ``_``-prefixed module or name of soma or the tests.
+
+    A relative import counts as one inside ``tests``: every test directory is a package.
+    """
     roots = {"soma", "tests"}
     found = []
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             names = [alias.name for alias in node.names if alias.name.split(".")[0] in roots]
             found += [name for name in names if any(_is_private(part) for part in name.split("."))]
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and (node.module or "").split(".")[0] in roots:
-            private_module = any(_is_private(part) for part in node.module.split("."))
-            found += [f"{node.module}.{alias.name}" for alias in node.names if private_module or _is_private(alias.name)]
+        elif isinstance(node, ast.ImportFrom) and (node.level > 0 or (node.module or "").split(".")[0] in roots):
+            module = node.module or ""
+            private_module = any(_is_private(part) for part in module.split("."))
+            prefix = "." * node.level + (f"{module}." if module else "")
+            found += [f"{prefix}{alias.name}" for alias in node.names if private_module or _is_private(alias.name)]
     return found
+
+
+def test_a_relative_import_of_a_private_name_is_caught(tmp_path):
+    # The test directories are packages, so ``from .x import _y`` reaches another test file.
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "from .helper import _x\nfrom . import _y\nfrom ._helper import public\nfrom .helper import public\n",
+        encoding="utf-8",
+    )
+
+    assert _private_imports(probe) == [".helper._x", "._y", "._helper.public"]
 
 
 def test_no_test_imports_a_private_name():
