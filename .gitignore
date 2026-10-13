@@ -209,6 +209,7 @@ __marimo__/
 # custom
 output/
 AGENTS.md
+!/tests/AGENTS.md
 CLAUDE.md
 .claude/
 /data/
