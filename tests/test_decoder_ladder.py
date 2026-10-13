@@ -87,16 +87,9 @@ def test_ensemble_projection_param_matches_single_encoder(decoder_cls):
 def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     """A full detection fold trains the heavy decoder on the composite (Σdᵢ) grids —
     the ensemble rung end-to-end through the real pipeline path."""
-    from soma.config import (
-        CacheConfig,
-        DecoderConfig,
-        EvalConfig,
-        FeaturesConfig,
-        PipelineConfig,
-        TaskConfig,
-        TrainingConfig,
-    )
+    from soma.config import CacheOptions, FeaturesConfig
     from soma.pipeline import Pipeline
+    from tests.experiment_configs import experiment
     from tests.extraction_configs import extraction
 
     ids = ["s0", "s1", "s2", "s3"]
@@ -120,23 +113,17 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
     (tmp_path / "splits.csv").write_text(
         "sample_id,split,fold\n" + "\n".join(f"{s},{v},0" for s, v in assign.items()) + "\n"
     )
-    config = PipelineConfig(
-        dataset_csv=tmp_path / "manifest.csv",
-        splits_csv=tmp_path / "splits.csv",
-        output_root=tmp_path / "out",
-        dataset_type="detection",
-        task=TaskConfig(
-            name="detection",
-            params={"num_classes": 2, "match_distance": 0.6, "sigma": 0.3},
-        ),
-        training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
-        decoder=DecoderConfig(name="heavy_conv", params={"hidden_dim": 32}),
-        evaluation=EvalConfig(metrics=["mean_f1"]),
-        features=FeaturesConfig(
-            encoder=None,
-            extraction=extraction(SPACING, TARGET),
-            cache=CacheConfig(enabled=False),
-        ),
+    config = experiment(
+        tmp_path / "manifest.csv",
+        tmp_path / "splits.csv",
+        output_dir=tmp_path / "out",
+        head="detection",
+        head_params={"num_classes": 2, "match_distance": 0.6, "sigma": 0.3},
+        decoder={"name": "heavy_conv", "params": {"hidden_dim": 32}},
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1},
+        evaluation={"metrics": ["mean_f1"]},
+        features=FeaturesConfig(extraction=extraction(SPACING, TARGET), cache=CacheOptions(enabled=False)),
     )
     result = Pipeline(config, source=composite).run().fold_results[0]
     assert "mean_f1" in result.test_evaluations["test"].metrics

@@ -24,6 +24,7 @@ from examples.beetle.external_submission import (  # noqa: E402
 from examples.beetle.external_runtime import validate_selected_run_recipe  # noqa: E402
 from soma.dense.geometry import compute_dense_geometry  # noqa: E402
 from soma.dense.predict import SlidingWindowSegmentationPredictor  # noqa: E402
+from tests.experiment_configs import experiment
 
 
 class _ConstantFoldModel:
@@ -87,39 +88,24 @@ def _write_selected_recipe(
     import slide2vec
 
     from examples.beetle.protocol import CLASSES, IGNORE, PIXEL_MAPPING
-    from soma.config import (
-        DecoderConfig,
-        EncoderLeaf,
-        FeaturesConfig,
-        PipelineConfig,
-        TaskConfig,
-        save_config,
-    )
+    from soma.config import EncoderLeaf, FeaturesConfig
     from tests.extraction_configs import annotation_masks, extraction
 
-    config = PipelineConfig(
-        dataset_csv="development.csv",
-        splits_csv="development_splits.csv",
-        output_root="runs/uniform",
-        dataset_type="segmentation",
-        features=FeaturesConfig(
-            encoder=EncoderLeaf(name="virchow2", params={"output_variant": "cls"}),
-            extraction=extraction(
-                0.5, 8, masks=annotation_masks(pixel_mapping or PIXEL_MAPPING, {"other": 0.05})
-            ),
-            execution=slide2vec.ExecutionOptions(precision="fp32"),
-        ),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(
-            name="segmentation", params={"classes": classes or CLASSES, "ignore": IGNORE}
-        ),
-        tags=["beetle", "project_protocol", "uniform"],
+    config = experiment(
+        'development.csv',
+        'development_splits.csv',
+        output_dir='runs/uniform',
+        features=FeaturesConfig(encoder=EncoderLeaf(name='virchow2', params={'output_variant': 'cls'}), extraction=extraction(0.5, 8, masks=annotation_masks(pixel_mapping or PIXEL_MAPPING, {'other': 0.05})), execution=slide2vec.ExecutionOptions(precision='fp32')),
+        decoder='lightweight_conv',
+        head='segmentation',
+        head_params={'classes': classes or CLASSES, 'ignore': IGNORE},
+        scheduler='cosine',
     )
     resolved = tmp_path / "resolved_uniform.yaml"
-    save_config(config, resolved)
+    config.to_yaml(resolved)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    save_config(config, run_dir / "config.yaml")
+    config.to_yaml(run_dir / "config.yaml")
     resolution = tmp_path / "protocol_resolution.json"
     resolution.write_text(
         json.dumps(
@@ -193,7 +179,6 @@ def test_encoder_runtime_environment_revalidates_and_binds_locked_snapshot(
 
 
 def test_selected_run_recipe_must_equal_protocol_resolved_arm(tmp_path: Path) -> None:
-    from soma.config import save_config
 
     config, resolved, run_dir, resolution = _write_selected_recipe(tmp_path)
 
@@ -210,7 +195,7 @@ def test_selected_run_recipe_must_equal_protocol_resolved_arm(tmp_path: Path) ->
             ),
         ),
     )
-    save_config(drifted, run_dir / "config.yaml")
+    drifted.to_yaml(run_dir / "config.yaml")
     with pytest.raises(ValueError, match="disagrees with the protocol-resolved"):
         validate_selected_run_recipe(resolution, "uniform", run_dir)
 

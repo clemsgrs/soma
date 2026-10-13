@@ -216,7 +216,7 @@ def test_classification_head_refuses_a_label_map_narrower_than_num_classes(
 ):
     # ``prob_<i>`` is ``classes[i]``: a configured ``num_classes`` above the label
     # vocabulary would emit probability columns no class names.
-    with pytest.raises(ValueError, match="task.params.label_map"):
+    with pytest.raises(ValueError, match="label_map param"):
         head_cls(input_dim=8, num_classes=num_classes, label_map=label_map)
 
 

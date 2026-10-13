@@ -40,16 +40,14 @@ requirements.
    from dataclasses import replace
 
    from soma import (
-       AggregatorConfig,
-       CacheConfig,
+       CacheOptions,
        Cohort,
+       ExperimentConfig,
        FeatureExtractor,
        ImageManifest,
        Pipeline,
-       PipelineConfig,
-       TaskConfig,
-       TrainingConfig,
    )
+   from soma.config import CohortConfig, LearnerConfig, RunConfig, TrainerConfig
    from soma.data._legacy import records_for_pipeline
 
    # The cohort holds identity, targets and folds; the image manifest holds the paths.
@@ -57,7 +55,7 @@ requirements.
    images = ImageManifest.from_csv("dataset.csv")
    # Extraction still reads one joined record per sample (see ``soma.data._legacy``).
    dataset = records_for_pipeline(cohort, images)
-   cache = CacheConfig(enabled=True, root_dir="shared/feature_cache")
+   cache = CacheOptions(enabled=True, root_dir="shared/feature_cache")
 
    extractor = FeatureExtractor(
        dataset=dataset,
@@ -66,22 +64,24 @@ requirements.
        output_root="output",
    )
    features = extractor.extract()
-   abmil = PipelineConfig(
-       dataset_csv="dataset.csv",
-       splits_csv="splits.csv",
-       output_root="output",
-       dataset_type="slide",
-       aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 256}),
-       task=TaskConfig(name="binary_classification"),
-       training=TrainingConfig(epochs=50, learning_rate=1e-4),
-   )
-   clam = replace(abmil, aggregator=AggregatorConfig(name="clam_sb", params={"hidden_dim": 256, "attn_dim": 128}))
+   def experiment(aggregator: dict) -> ExperimentConfig:
+       return ExperimentConfig(
+           run=RunConfig(output_dir="output"),
+           cohort=CohortConfig(records="dataset.csv", splits="splits.csv"),
+           learner=LearnerConfig(
+               "mil", {"aggregator": aggregator, "head": "binary_classification"}
+           ),
+           trainer=TrainerConfig(max_epochs=50),
+       )
+
+   abmil = experiment({"name": "abmil", "params": {"hidden_dim": 256}})
+   clam = experiment({"name": "clam_sb", "params": {"hidden_dim": 256, "attn_dim": 128}})
 
    abmil_result = Pipeline(abmil, source=features.source).run()
    clam_result = Pipeline(clam, source=features.source).run()
 
-Each config trains in its own run directory under ``output_root``; the source is
-attached, never re-extracted.
+Each config trains in its own run directory under ``run.output_dir``; the source
+is attached, never re-extracted.
 
 The source can be reused across experiments as long as the upstream dataset,
 preprocessing, and encoder settings do not change (see :doc:`getting-started`
@@ -90,23 +90,20 @@ for the result fields).
 Evaluation settings and attention heatmaps
 ------------------------------------------
 
-Set ``evaluation`` and ``heatmaps`` on the same config. See
-:doc:`evaluation` for metric contracts and :doc:`outputs` for the saved
-attention scores and overlays:
+Both live in the ``evaluation`` section. See :doc:`evaluation` for metric
+contracts and :doc:`outputs` for the saved attention scores and overlays:
 
 .. code-block:: python
 
-   from soma import EvalConfig, HeatmapConfig, SubgroupConfig
+   from soma.config import EvaluationConfig
 
-   evaluation = EvalConfig(
+   evaluation = EvaluationConfig(
        metrics=["auroc", "balanced_accuracy", "f1"],
-       subgroups=SubgroupConfig(columns=["center", "grade"]),
+       subgroups=["center", "grade"],
+       attention_heatmaps={"cmap": "coolwarm", "alpha": 0.5},
    )
-   heatmaps = HeatmapConfig(enabled=True, cmap="coolwarm", alpha=0.5)
 
-   result = Pipeline(
-       replace(abmil, evaluation=evaluation, heatmaps=heatmaps), source=features.source
-   ).run()
+   result = Pipeline(replace(abmil, evaluation=evaluation), source=features.source).run()
 
 Dense features over given images
 --------------------------------
@@ -121,7 +118,7 @@ padding, window, feature kind); batch size and precision are slide2vec's
 
    from slide2vec import DenseOptions, ExecutionOptions
 
-   from soma import CacheConfig, FeatureExtractor
+   from soma import CacheOptions, FeatureExtractor
    from soma.data._legacy import legacy_samples_from_csv
 
    dataset = legacy_samples_from_csv("segmentation.csv")
@@ -132,7 +129,7 @@ padding, window, feature kind); batch size and precision are slide2vec's
        unit="tile",
        dense=DenseOptions(spacing_um=0.5, target_size=224),
        execution=ExecutionOptions(batch_size=64),
-       cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
+       cache=CacheOptions(enabled=True, root_dir="shared/feature_cache"),
        output_root="output/dense",
    ).extract()
 
@@ -152,7 +149,7 @@ dataset is the persisted ROI table; parent-slide folds are projected explicitly:
    from hs2p import MaskSamplingConfig, SegmentationConfig, TilingConfig
    from slide2vec import PreprocessingConfig
 
-   from soma import CacheConfig, Cohort, FeatureExtractor
+   from soma import CacheOptions, Cohort, FeatureExtractor
    from soma.data._legacy import LegacyFolds, legacy_samples_from_csv
 
    slides = legacy_samples_from_csv("slides.csv")
@@ -173,7 +170,7 @@ dataset is the persisted ROI table; parent-slide folds are projected explicitly:
                output_mode="merged",
            ),
        ),
-       cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
+       cache=CacheOptions(enabled=True, root_dir="shared/feature_cache"),
        output_root="output/annotation-rois",
    ).extract()
 
@@ -264,31 +261,31 @@ For whole-image segmentation after a run, load each fold's bundle with
 ``SlidingWindowSegmentationPredictor.from_bundles(bundles, encoder=...)``, which
 slides the fold ensemble over an image. A bundle trained live carries its frozen
 encoder stage; for a run trained on cached grids, pass the stage that extracted
-them, ``soma.pipeline.build.live_encoder_for(config)``.
+them, ``soma.pipeline.build.live_encoder_for(plan)`` with the run's
+:class:`~soma.Plan` (``soma.Plan.from_yaml(run_dir / "plan.yaml")``).
 
 Task-free representation evaluation
 -----------------------------------
 
-Evaluate frozen tile embeddings with the fixed CRoMa v1 protocol by setting
-``task: null`` and a ``representation`` block. Save this as a YAML config and
-run it with ``soma config.yaml``:
+Evaluate frozen tile embeddings with the fixed CRoMa v1 protocol by leaving out
+the ``learner`` and setting ``evaluation.representation``. Save this as a YAML
+config and run it with ``soma config.yaml``:
 
 .. code-block:: yaml
 
-   data:
-     dataset_csv: dataset.csv
-     splits_csv: splits.csv
-     dataset_type: tile
-   encoder:
-     name: phikon
-   task: null
-   representation:
-     kind: croma
-     confounder_column: medical_center
-     split: test
-     evaluation_design: all
-     m: 5
-     alpha: 0.10
+   cohort:
+     records: dataset.csv
+     splits: splits.csv
+   features:
+     encoder:
+       name: phikon
+   evaluation:
+     representation:
+       confounder_column: medical_center
+       split: test
+       evaluation_design: all
+       m: 5
+       alpha: 0.10
 
 Selected dataset rows require non-empty ``label``, ``group_id`` (a metadata column
 naming the non-independence group), and ``medical_center`` columns. The selected split must occur in exactly one fold;
@@ -384,7 +381,7 @@ Runnable demonstrations live in ``examples/``
 
 * ``examples/external_benchmark_spec.py`` — build and execute a ``BenchmarkSpec``;
 * ``examples/fixed_step_training.py`` — fixed optimizer-step training budgets
-  (``TrainingConfig(max_steps=N, epochs=None)``);
+  (``TrainerConfig(max_steps=N)``);
 * ``examples/aggregator_resolution.py`` — resolve one fixed MIL recipe for
   tile- and slide-level encoders with ``soma.encoders.resolve_aggregator``;
 * ``examples/portable_identity.py`` — manifest identity is portable across

@@ -27,7 +27,7 @@ from soma.cache import CacheFeatureIdentityMismatch
 from hs2p import FilterConfig
 from slide2vec import ExecutionOptions
 
-from soma.config import CacheConfig
+from soma.config import CacheOptions
 from tests.extraction_configs import extraction, tissue_masks
 from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
@@ -180,7 +180,7 @@ def _extract_images(dataset, root: Path, **cache_settings):
         dataset,
         STUB_ENCODER,
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=2),
-        cache=CacheConfig(enabled=True, root_dir=root / "cache", **cache_settings),
+        cache=CacheOptions(enabled=True, root_dir=root / "cache", **cache_settings),
         output_root=root / "run",
         unit="tile",
     ).extract()
@@ -502,7 +502,7 @@ def test_extraction_interrupted_before_an_upgrade_restarts_with_the_current_reci
 
 def test_cache_config_rejects_an_unknown_identity_policy():
     with pytest.raises(ValueError, match="cache.on_identity_mismatch"):
-        CacheConfig(on_identity_mismatch="ignore")
+        CacheOptions(on_identity_mismatch="ignore")
 
 
 # --- Whole-slide caches: tile bags, hierarchical, slide-level and patient-level -------
@@ -554,7 +554,7 @@ def _extract_slides(dataset_csv: Path, root: Path, kind: str, **cache_settings):
         execution=ExecutionOptions(
             num_gpus=1, num_workers_per_gpu=0, num_preprocessing_workers=0, precision="fp32", batch_size=64
         ),
-        cache=CacheConfig(enabled=True, root_dir=root / "cache", **cache_settings),
+        cache=CacheOptions(enabled=True, root_dir=root / "cache", **cache_settings),
         output_root=root / "run",
     ).extract()
 

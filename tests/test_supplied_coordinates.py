@@ -361,14 +361,14 @@ def test_resume_rejects_an_artifact_changed_since_the_run_started(tmp_path: Path
 def test_supplied_coordinates_need_a_tile_encoder(tmp_path: Path, encoder: str):
     """Supplied tiles form bags of tile features; slide and patient encoders are refused."""
     from soma import FeatureExtractor
-    from soma.config import CacheConfig
+    from soma.config import CacheOptions
 
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
     extractor = FeatureExtractor(
         legacy_samples_from_csv(_manifest(tmp_path, {"a": path})),
         encoder,
         preprocessing=_preprocessing(),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path / "output",
     )
     with pytest.raises(ValueError, match="support tile encoders only"):

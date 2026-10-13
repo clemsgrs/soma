@@ -49,7 +49,14 @@ class ClassificationParams:
 
 
 def infer_label_map(cohort: "Cohort", params: "Mapping[str, Any]") -> dict[str, Any]:
-    """``num_classes`` and the sorted raw-label -> index ``label_map`` of the cohort."""
+    """``num_classes`` and the sorted raw-label -> index ``label_map`` of the cohort.
+
+    An explicit ``label_map`` decides the classes, so nothing is inferred beside it; an
+    explicit ``num_classes`` other than the cohort's class count is a contradiction
+    :func:`soma.resolve` refuses.
+    """
+    if params.get("label_map") is not None:
+        return {}
     label_map = categorical_label_map(cohort.records)
     return {"num_classes": len(label_map), "label_map": label_map}
 
@@ -64,7 +71,7 @@ def _check_label_map_width(num_classes: int, label_map: dict[str | int, int] | N
         raise ValueError(
             f"num_classes={num_classes} but the label map names {len(label_map)} class(es) "
             f"({sorted(label_map, key=label_map.__getitem__)}). Each probability column "
-            "needs a label: set task.params.label_map to a {label: index} map naming every "
+            "needs a label: set the head's label_map param to a {label: index} map naming every "
             "class, or drop num_classes to infer it from the cohort's labels."
         )
 

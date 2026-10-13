@@ -13,8 +13,8 @@ Dataset format
 --------------
 
 ``dataset.csv``
-  | Required columns: ``sample_id``, ``image_path``, and the target columns the task head declares (``label`` for classification, ``value`` for regression, ``time`` and ``event`` (plus ``bin`` for discrete-time survival) for survival). ``task.targets`` maps a key to a differently named column, e.g. ``targets: {value: label}``.
-  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every ``dataset_type``), ``patient_id`` (required for ``dataset_type="patient"``; the sampling unit leakage checks protect), ``coordinates_path`` (user-supplied tile coordinates for whole slides; see :ref:`preprocessing-supplied-coordinates`), ``split`` / ``fold`` (a single CSV may carry its own splits).
+  | Required columns: ``sample_id``, ``image_path``, and the target columns the task head declares (``label`` for classification, ``value`` for regression, ``time`` and ``event`` (plus ``bin`` for discrete-time survival) for survival). The head's ``targets`` param maps a key to a differently named column, e.g. ``targets: {value: label}``.
+  | Optional columns: ``mask_path`` (pre-computed tissue mask, valid for every run), ``patient_id`` (required with ``cohort.collapse: patient_id``; the sampling unit leakage checks protect), ``coordinates_path`` (user-supplied tile coordinates for whole slides; see :ref:`preprocessing-supplied-coordinates`), ``split`` / ``fold`` (a single CSV may carry its own splits).
   | Additional, unrecognized columns are carried along as per-sample metadata.
 
 One CSV feeds three readers, each validating only its own columns:
@@ -22,7 +22,7 @@ One CSV feeds three readers, each validating only its own columns:
 (what extraction reads) and :class:`soma.data.AnnotationManifest` (dense supervision
 files). Records carry no file paths.
 
-Dense-supervision manifests (``dataset_type="segmentation"`` / ``"detection"``)
+Dense-supervision manifests (segmentation and detection heads)
 replace the scalar ``label`` with a per-sample supervision file:
 
 - **Segmentation** uses ``label_mask_path`` — a per-sample label mask. It is distinct
@@ -50,7 +50,7 @@ Splits format
   | Required columns: ``sample_id``, ``split``.
   | Optional column: ``fold`` (integer). Omit it for a single train/tune/test split; include distinct values (0, 1, 2, …) for cross-validation.
   | Valid split names: ``train``, ``tune``, or any name starting with ``test`` (e.g. ``test``, ``test_external``).
-  | Every fold must contain at least one test split, unless ``training.tune_is_test`` uses its tune split for both roles.
+  | Every fold must contain at least one test split, unless ``cohort.tune_is_test`` uses its tune split for both roles.
 
 Use explicit test split names for multiple held-out cohorts. See
 :doc:`training` for checkpoint selection and missing-tune policies, and

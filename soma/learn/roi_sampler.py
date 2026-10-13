@@ -14,7 +14,10 @@ from copy import deepcopy
 import numpy as np
 from torch.utils.data import Sampler
 
-from soma.config import ROI_BATCH_SAMPLING_STRATEGIES, RoiBatchSamplingStrategy
+from typing import Literal
+
+RoiBatchSamplingStrategy = Literal["uniform", "class_conditioned"]
+ROI_BATCH_SAMPLING_STRATEGIES = frozenset({"uniform", "class_conditioned"})
 
 
 class SegmentationRoiBatchSampler(Sampler[list[int]]):

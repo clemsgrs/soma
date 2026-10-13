@@ -48,11 +48,10 @@ _MISSING = object()
 # treated as a raw dotted path, so arbitrary config fields can be fixed/varied too.
 _AXIS_ALIASES: dict[str, str] = {
     "encoder": "features.encoder.name",
-    "aggregator": "aggregator.name",
-    "decoder": "decoder.name",
-    "task": "task.name",
+    "aggregator": "learner.params.aggregator.name",
+    "decoder": "learner.params.decoder.name",
+    "task": "learner.params.head.name",
     "spacing": "features.extraction.tiling.requested_spacing_um",
-    "dataset_type": "dataset_type",
     "feature_mode": "features.kind",
 }
 
@@ -149,7 +148,8 @@ def load_run_record(run_dir: str | Path) -> RunRecord | None:
         return None
     experiment = json.loads(exp_json.read_text(encoding="utf-8"))
     spec = experiment.get("canonical_spec") or {}
-    task = str((spec.get("task") or {}).get("name") or "")
+    task = axis_value(spec, "task")
+    task = "" if task is _MISSING or task is None else str(task)
 
     seed = meta.get("seed")
     return RunRecord(
@@ -1361,7 +1361,7 @@ def diff_configs(configs: list[dict]) -> tuple[dict, list[dict]]:
     """Partition config fields into shared values and per-run diffs.
 
     Recursively flattens nested dicts using dot notation (e.g.,
-    ``training.learning_rate``). Fields whose values are identical across
+    ``trainer.max_epochs``). Fields whose values are identical across
     all configs go into ``shared``; fields that differ go into per-run
     ``diffs`` dicts.
 

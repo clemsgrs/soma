@@ -50,9 +50,8 @@ A config can name a component in two ways:
       soma.register("aggregators", "fancy_mil", FancyMIL, params=FancyMILParams)
 
   Validation goes in ``__post_init__``: an unknown param, or a value it
-  rejects, fails the run before training starts. The params of aggregators,
-  decoders, learners, optimizers, schedulers, augmentations and samplers are
-  checked this way; ``task.params`` are not checked yet. Values the run supplies
+  rejects, fails the run before training starts. The params of every
+  component kind are checked this way, heads included. Values the run supplies
   are not fields: the feature width ``input_dim``, a head's ``metrics``, a
   dense head's ``geometry``. soma reads only the dataclass passed to
   ``register``; a ``Params`` attribute on the class is ignored.
@@ -82,7 +81,8 @@ Custom task head
 
 A task head owns the loss, the metrics and the post-processing of one task
 family. The family is the ``task_family`` class attribute, which a subclass
-inherits. Every head receives ``task.params`` as constructor keyword arguments.
+inherits. Every head receives its leaf's ``params`` as constructor keyword
+arguments.
 
 The example below trains a segmentation decoder with a pure Dice loss instead
 of the default cross-entropy plus Dice::
@@ -109,10 +109,14 @@ of the default cross-entropy plus Dice::
 
 Then select it in the config::
 
-    task:
-      name: dice_only_segmentation
+    learner:
+      name: dense
       params:
-        num_classes: 3
+        decoder: {name: lightweight_conv}
+        head:
+          name: dice_only_segmentation
+          params:
+            num_classes: 3
 
 The methods worth overriding are:
 
@@ -153,8 +157,9 @@ built-in ordinary multiclass head, but rejects registered ordinary multiclass
 subclasses instead of replacing them.
 
 Survival subclasses retain the objective of their base class and inherit its
-Cox or discrete-time NLL config constraints. ``task.params.loss`` selects the
-objective only for the built-in ``survival`` registration.
+Cox or discrete-time NLL config constraints: a subclass of
+:class:`~soma.tasks.survival.CoxSurvivalHead` trains the Cox objective, any other
+survival head the discrete-time NLL.
 
 Custom decoder
 --------------
@@ -227,15 +232,19 @@ heads, so an intermediate loss is one override of ``training_step``::
             entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1).mean()
             return self.compute_loss(output, batch) + self.weight * entropy
 
-Select it in the config by import path (no registration needed) or by a name
-registered with ``soma.register("learners", ...)``; ``params`` go to the
-constructor, and the config's ``optimizer`` / ``scheduler`` leaves still apply::
+Select it as the ``learner`` by import path (no registration needed) or by a
+name registered with ``soma.register("learners", ...)``. Its params hold the
+model's leaves, the ``optimizer`` / ``scheduler`` leaves and the learner's own
+keywords, which go to the constructor. The run's ``plan.yaml`` keeps the import
+path as written and spells out every param, and the bundle's ``provenance.json``
+records the installed version of the package the path imports from::
 
-    training:
-      learner:
-        name: my_package.learners.AttentionEntropyLearner
-        params:
-          weight: 0.01
+    learner:
+      name: my_package.learners.AttentionEntropyLearner
+      params:
+        aggregator: {name: abmil}
+        head: {name: binary_classification}
+        weight: 0.01
 
 The methods worth overriding are ``training_step`` (the loss), ``validation_step``
 and ``validation_summary`` (how a split is reduced; the summary must contain
@@ -258,7 +267,7 @@ a batch). A ``predict_step`` override can add a column; it lands in
             return PredictOutput(columns={**step.columns, "attention_entropy": entropy}, raw=step.raw)
 
 A grid learner is a :class:`soma.learn.DenseLearner` subclass, named the same
-way in ``training.learner``. Its batches are :class:`soma.learn.GridBatch`
+way in ``learner.name``. Its batches are :class:`soma.learn.GridBatch`
 objects holding cached ``features`` or live ``pixels`` and the raw supervision
 in ``targets``.
 

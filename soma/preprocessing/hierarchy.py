@@ -6,14 +6,17 @@ from dataclasses import replace
 
 from slide2vec import PreprocessingConfig
 
-from soma.config import AggregatorConfig
+from soma.config import Component
 
 
 def derive_preprocessing_for_aggregator(
     preprocessing: PreprocessingConfig,
-    aggregator: AggregatorConfig | None,
+    aggregator: Component | None,
 ) -> PreprocessingConfig:
-    if aggregator is None or aggregator.name != "hipt":
+    """``preprocessing`` with the region geometry a ``hipt`` aggregator leaf derives."""
+    from soma.aggregators.registry import aggregator_registry
+
+    if aggregator is None or aggregator_registry.key_of(aggregator.name) != "hipt":
         return preprocessing
 
     params = aggregator.params

@@ -12,7 +12,7 @@ import pytest
 
 from soma.evaluation import LabelMapPredictions, PointPredictions
 from soma.testing import FakeEncoder
-from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma
+from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset
 
 #: The dense grid cache keys of the cached scenarios (pinned in slice 6c).
@@ -21,38 +21,37 @@ PINNED_DETECTION_CACHE_KEYS = ["dense_image/3906c7b95e5c888c"]
 
 
 def _config(
-    tmp_path, encoder_name, kind, *, roi_px, task, metrics, epochs, live=False, augmentation=None,
+    tmp_path, encoder_name, kind, *, roi_px, head, metrics, epochs, live=False, augmentation=None,
     learning_rate=3e-3,
 ):
     dataset_csv, splits_csv = make_dense_dataset(tmp_path / "data", kind, size=roi_px)
     return {
-        "run": {"output_root": str(tmp_path / "runs"), "seed": 0},
-        "data": {
-            "dataset_csv": str(dataset_csv),
-            "splits_csv": str(splits_csv),
-            "dataset_type": kind,
-            "feature_mode": "live" if live else "cached",
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
+        "cohort": {"records": str(dataset_csv), "splits": str(splits_csv)},
+        "features": {
+            "kind": "live" if live else "cached",
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": roi_px,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
+            },
+            "execution": {**CPU_EXECUTION, "precision": "fp32", "batch_size": 8},
+            "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
         },
-        "preprocessing": {
-            "backend": "openslide",
-            "requested_tile_size_px": roi_px,
-            "requested_spacing_um": SPACING_UM,
-        },
-        "execution": CPU_EXECUTION,
-        "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
-        "encoder": {"name": encoder_name, "precision": "fp32", "batch_size": 8},
-        "decoder": {"name": "lightweight_conv"},
-        "task": task,
+        "loaders": {"batch_size": 4, **CPU_LOADER, "augment": augmentation},
+        "learner": learner_section(
+            "dense",
+            {"decoder": {"name": "lightweight_conv"}, "head": head},
+            learning_rate=learning_rate,
+            normalization={"method": "none" if live else "zscore"},
+        ),
+        "trainer": trainer_section(epochs),
         "evaluation": {"metrics": metrics},
-        "normalization": {"method": "none" if live else "zscore"},
-        "augmentation": augmentation,
-        "training": {
-            "epochs": epochs,
-            "learning_rate": learning_rate,
-            "batch_size": 4,
-            "patience": epochs,
-            **CPU_LOADER,
-        },
     }
 
 
@@ -78,7 +77,7 @@ def test_segmentation_is_learned(tmp_path, encoder_name, encoded_images, new_art
         encoder_name,
         "segmentation",
         roi_px=96,
-        task={"name": "segmentation", "params": {"num_classes": 3}},
+        head={"name": "segmentation", "params": {"num_classes": 3}},
         metrics=["mean_dice", "mean_iou"],
         epochs=20,
     )
@@ -105,7 +104,7 @@ def test_detection_is_learned(tmp_path, encoder_name, encoded_images, new_artifa
         encoder_name,
         "detection",
         roi_px=96,
-        task={
+        head={
             "name": "detection",
             "params": {"num_classes": 2, "match_distance": 3.0, "sigma": 1.5},
         },
@@ -129,7 +128,7 @@ def test_detection_is_learned(tmp_path, encoder_name, encoded_images, new_artifa
 def test_live_segmentation_with_augmentation_is_learned(
     tmp_path, encoder_name, encoded_images, fake_live_encoder, new_artifact
 ):
-    """``feature_mode: live``: the run builds one encoder stage, re-encodes augmented train
+    """``features.kind: live``: the run builds one encoder stage, re-encodes augmented train
     ROIs every step, and never extracts a cache."""
     artifact = new_artifact("dense_live_segmentation")
     config = _config(
@@ -137,7 +136,7 @@ def test_live_segmentation_with_augmentation_is_learned(
         encoder_name,
         "segmentation",
         roi_px=96,
-        task={"name": "segmentation", "params": {"num_classes": 3}},
+        head={"name": "segmentation", "params": {"num_classes": 3}},
         metrics=["mean_dice", "mean_iou"],
         epochs=30,
         live=True,
@@ -161,7 +160,7 @@ def test_live_detection_is_learned(tmp_path, encoder_name, encoded_images, fake_
         encoder_name,
         "detection",
         roi_px=96,
-        task={
+        head={
             "name": "detection",
             "params": {"num_classes": 2, "match_distance": 3.0, "sigma": 1.5},
         },
@@ -180,11 +179,11 @@ def test_live_detection_is_learned(tmp_path, encoder_name, encoded_images, fake_
 
 
 def test_live_run_re_encodes_a_supplied_image_source(tmp_path, encoder_name, encoded_images, fake_live_encoder):
-    """A caller-supplied ``ImageSource`` under ``feature_mode: live`` gets the run's frozen
+    """A caller-supplied ``ImageSource`` under ``features.kind: live`` gets the run's frozen
     encoder stage, exactly like the image source the run would build itself."""
     import yaml
 
-    from soma.config import load_config
+    from soma.config import ExperimentConfig
     from soma.data import TileImageSource
     from soma.pipeline import Pipeline
     from tests.e2e.synthetic import SPACING_UM
@@ -194,14 +193,14 @@ def test_live_run_re_encodes_a_supplied_image_source(tmp_path, encoder_name, enc
         encoder_name,
         "segmentation",
         roi_px=96,
-        task={"name": "segmentation", "params": {"num_classes": 3}},
+        head={"name": "segmentation", "params": {"num_classes": 3}},
         metrics=["mean_dice"],
         epochs=1,
         live=True,
     )
     config_path = tmp_path / "config.yaml"
     config_path.write_text(yaml.safe_dump(raw, sort_keys=False))
-    config = load_config(config_path)
+    config = ExperimentConfig.from_yaml(config_path)
     pipeline = Pipeline(config)
     images = TileImageSource.from_manifest(
         pipeline.image_manifest, size=96, spacing_um=SPACING_UM, backend="openslide"
@@ -216,7 +215,7 @@ def test_live_run_re_encodes_a_supplied_image_source(tmp_path, encoder_name, enc
 
 
 def _live_segmentation_over_cached_grids(tmp_path, encoder_name, *, augmentation=None):
-    """A ``feature_mode: live`` segmentation config and a grid cache over its ROIs."""
+    """A ``features.kind: live`` segmentation config and a grid cache over its ROIs."""
     from tests.e2e.synthetic import write_cached_grids
 
     config = _config(
@@ -224,18 +223,18 @@ def _live_segmentation_over_cached_grids(tmp_path, encoder_name, *, augmentation
         encoder_name,
         "segmentation",
         roi_px=96,
-        task={"name": "segmentation", "params": {"num_classes": 3}},
+        head={"name": "segmentation", "params": {"num_classes": 3}},
         metrics=["mean_dice"],
         epochs=1,
         live=True,
         augmentation=augmentation,
     )
-    grid_dir = write_cached_grids(config["data"]["dataset_csv"], tmp_path / "grids")
+    grid_dir = write_cached_grids(config["cohort"]["records"], tmp_path / "grids")
     return config, grid_dir
 
 
 def test_live_config_trains_on_supplied_cached_grids(tmp_path, encoder_name, encoded_images, fake_live_encoder):
-    """``--feature-dir`` on a ``feature_mode: live`` config supplies cached grids: the run
+    """``--feature-dir`` on a ``features.kind: live`` config supplies cached grids: the run
     attaches them on the cached path and never builds an encoder stage."""
     config, grid_dir = _live_segmentation_over_cached_grids(tmp_path, encoder_name)
 
@@ -247,10 +246,10 @@ def test_live_config_trains_on_supplied_cached_grids(tmp_path, encoder_name, enc
 
 
 def test_augmentation_refuses_supplied_cached_grids(tmp_path, encoder_name, fake_live_encoder):
-    """Cached grids cannot be augmented, so a supplied grid source with augmentation set fails."""
+    """Cached grids cannot be augmented, so a supplied grid source with loaders.augment set fails."""
     import yaml
 
-    from soma.config import load_config
+    from soma.config import ExperimentConfig
     from soma.data import CachedGridSource
     from soma.pipeline import Pipeline
 
@@ -259,6 +258,6 @@ def test_augmentation_refuses_supplied_cached_grids(tmp_path, encoder_name, fake
     )
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
 
-    with pytest.raises(ValueError, match="augmentation"):
-        Pipeline(load_config(tmp_path / "config.yaml"), source=CachedGridSource(grid_dir)).run()
+    with pytest.raises(ValueError, match="loaders.augment needs pixels"):
+        Pipeline(ExperimentConfig.from_yaml(tmp_path / "config.yaml"), source=CachedGridSource(grid_dir)).run()
     assert fake_live_encoder == []

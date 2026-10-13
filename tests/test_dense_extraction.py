@@ -26,7 +26,7 @@ from PIL import Image  # noqa: E402
 
 from slide2vec import DenseOptions, ExecutionOptions  # noqa: E402
 
-from soma.config import CacheConfig, EncoderLeaf  # noqa: E402
+from soma.config import CacheOptions, EncoderLeaf  # noqa: E402
 from soma.data._legacy import legacy_samples_from_csv, LegacyRecord  # noqa: E402
 from soma.dense import CachedGridSource, compute_dense_geometry  # noqa: E402
 from soma.dense.store import DENSE_SIDECAR_SUFFIX  # noqa: E402
@@ -149,7 +149,7 @@ def _extractor(
     tmp_path: Path,
     *,
     execution: ExecutionOptions | None = None,
-    cache: CacheConfig | None = None,
+    cache: CacheOptions | None = None,
     **dense_overrides,
 ) -> _DenseImageExtractor:
     dense = {"target_size": 32, "spacing_um": 0.5, **dense_overrides}
@@ -158,7 +158,7 @@ def _extractor(
         EncoderLeaf(name="uni"),
         dense=DenseOptions(**dense),
         execution=execution or ExecutionOptions(precision="fp32", batch_size=2),
-        cache=cache or CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
+        cache=cache or CacheOptions(enabled=True, root_dir=tmp_path / "cache"),
     )
 
 
@@ -299,7 +299,7 @@ def test_run_passes_the_resolved_storage_dtype(tmp_path: Path, fake_model):
     _extractor(
         dataset,
         tmp_path,
-        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache", dtype="fp16"),
+        cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache", dtype="fp16"),
     ).run(tmp_path / "features")
 
     execution = fake_model.calls[0]["execution"]
@@ -389,7 +389,7 @@ def test_cache_resolves_complete_and_validates_the_upstream_sidecar(tmp_path: Pa
     extractor = _extractor(
         dataset,
         tmp_path,
-        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache", validate_payloads=True),
+        cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache", validate_payloads=True),
     )
     extractor.run(tmp_path / "features")
 

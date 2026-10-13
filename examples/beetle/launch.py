@@ -21,7 +21,8 @@ from typing import Mapping, Sequence
 import yaml
 
 from examples.beetle.protocol import ARM_NAMES, BATCH_SIZE_CANDIDATES
-from soma.config import load_config
+from soma.config import ExperimentConfig
+from soma.plan import check
 
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -215,17 +216,17 @@ def resolve_arm_configs(
         template_path = CONFIG_DIR / f"{arm}.yaml"
         overlay = yaml.safe_load(template_path.read_text(encoding="utf-8"))
         payload = _merge(base, overlay)
-        configured = payload.get("training", {}).get("batch_size")
+        configured = payload.get("loaders", {}).get("batch_size")
         if configured != BATCH_SIZE_TOKEN:
             raise ValueError(
                 f"BEETLE arm template {template_path} must leave batch size to preflight"
             )
-        payload["training"]["batch_size"] = batch_size
-        cache_root = payload.get("cache", {}).get("root_dir")
+        payload["loaders"]["batch_size"] = batch_size
+        cache_root = payload.get("features", {}).get("cache", {}).get("root_dir")
         if cache_root != ENCODER_CACHE_ID_TOKEN:
             raise ValueError("BEETLE base config must namespace its cache by encoder lock")
         lock = _read_json(ENCODER_LOCK_PATH)
-        payload["cache"]["root_dir"] = (
+        payload["features"]["cache"]["root_dir"] = (
             "data/beetle/cache/virchow2_"
             f"{lock['revision']}_{lock['weight_sha256']}_dense_fp16"
         )
@@ -241,7 +242,7 @@ def resolve_arm_configs(
             source_header + yaml.safe_dump(payload, sort_keys=False),
             encoding="utf-8",
         )
-        load_config(path)
+        check(ExperimentConfig.from_yaml(path))
         paths[arm] = path
 
     resolution = {

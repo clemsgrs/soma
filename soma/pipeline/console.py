@@ -8,55 +8,38 @@ from rich.table import Table
 
 from slide2vec import PreprocessingConfig
 
-from soma.config import AggregatorConfig, DecoderConfig, EncoderLeaf, TaskConfig
-
 __all__ = ["build_completed_run_panel", "build_run_summary_panel"]
 
 
-def build_run_summary_panel(
-    *,
-    encoder: EncoderLeaf | None,
-    preprocessing: PreprocessingConfig,
-    aggregator: AggregatorConfig | None,
-    task: TaskConfig,
-    feature_store: object,
-    dataset_type: str = "slide",
-    decoder: DecoderConfig | None = None,
-) -> Panel:
+def build_run_summary_panel(*, plan, preprocessing: PreprocessingConfig, feature_store: object) -> Panel:
+    """What the run trains on: the encoder, spacing, trainable component, head and features."""
     grid = Table.grid(padding=(0, 2))
     grid.add_column(style="bold", justify="right", no_wrap=True)
     grid.add_column()
-
-    # Encoder
-    if encoder is not None:
-        grid.add_row("encoder", encoder.name)
-    else:
-        grid.add_row("encoder", "[dim]pre-extracted[/dim]")
+    params = plan.learner.params
+    encoder = plan.features.encoder
+    grid.add_row("encoder", encoder.name if encoder is not None else "[dim]pre-extracted[/dim]")
+    shape, unit = plan.shape, plan.unit
 
     # Spacing — only meaningful for slide/WSI pipelines
-    if dataset_type != "tile":
+    if not (shape == "set" and unit == "tile"):
         spacing = None if preprocessing.tiling is None else preprocessing.tiling.requested_spacing_um
         grid.add_row("spacing", f"{spacing} µm" if spacing is not None else "[dim]—[/dim]")
 
     # Aggregator (set shape) or decoder (grid shape) — the trainable component.
-    if dataset_type in ("segmentation", "detection"):
-        grid.add_row("decoder", decoder.name if decoder is not None else "[dim]—[/dim]")
-    elif aggregator is not None:
-        grid.add_row("aggregator", aggregator.name)
-    else:
-        grid.add_row("aggregator", "[dim]—[/dim]")
-
-    # Task
-    grid.add_row("task", task.name.replace("_", " "))
+    kind = "decoder" if shape == "grid" else "aggregator"
+    leaf = params.get(kind)
+    grid.add_row(kind, leaf.name if leaf is not None else "[dim]—[/dim]")
+    grid.add_row("task", params["head"].name.replace("_", " "))
 
     # Feature level + dim
-    if dataset_type == "patient":
-        level = "patient"
-    elif dataset_type == "tile":
-        level = "tile (encoded)"
-    elif dataset_type in ("segmentation", "detection"):
+    if shape == "grid":
         # A grid source is not a set source (no rank); branch before rank is touched.
-        level = "dense (segmentation)" if dataset_type == "segmentation" else "dense (detection)"
+        level = f"dense ({plan.task_family})"
+    elif unit == "patient":
+        level = "patient"
+    elif unit == "tile":
+        level = "tile (encoded)"
     elif feature_store.rank == 1:
         level = "slide"
     elif feature_store.rank == 3:

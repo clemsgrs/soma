@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from soma.config import EvalConfig, SubgroupConfig, TaskConfig, TrainingConfig
+from tests.experiment_configs import experiment
 from soma.evaluation import Predictions, evaluate, metric_registry
 from soma.evaluation.subgroups import subgroup_stats
 
@@ -127,7 +127,6 @@ def test_survival_predictions_break_down_by_subgroup():
 def test_a_subgroup_column_missing_from_the_dataset_is_refused_before_training(tmp_path: Path) -> None:
     import torch
 
-    from soma.config import PipelineConfig
     from soma.data import CachedSetSource
     from soma.pipeline import Pipeline
 
@@ -139,14 +138,12 @@ def test_a_subgroup_column_missing_from_the_dataset_is_refused_before_training(t
     features.mkdir()
     for sid in ("s0", "s1", "s2"):
         torch.save(torch.randn(8), features / f"{sid}.pt")
-    config = PipelineConfig(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "out",
-        dataset_type="slide",
-        task=TaskConfig(name="binary_classification"),
-        evaluation=EvalConfig(subgroups=SubgroupConfig(columns=["nonexistent"])),
-        training=TrainingConfig(seed=0, epochs=1),
+    config = experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / "out",
+        evaluation={"subgroups": ["nonexistent"]},
+        trainer={"max_epochs": 1},
     )
 
     def no_training(*args, **kwargs):  # pragma: no cover - the refusal comes first

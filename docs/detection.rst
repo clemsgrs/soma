@@ -31,7 +31,7 @@ points that are matched to ground truth with **class-aware F1@δ**.
 Data contract
 -------------
 
-``dataset_type: detection`` reads its supervision through
+A ``detection`` head reads its supervision through
 :class:`soma.data.AnnotationManifest` and :class:`soma.data.PointSource`. The
 supervision is a per-sample **point file**, not a scalar ``label`` or a mask.
 
@@ -76,11 +76,13 @@ Classes
 
 .. code-block:: yaml
 
-   task:
-     name: detection
+   learner:
      params:
-       classes: {mnl: [0, 1]}
-       drop: [2]
+       head:
+         name: detection
+         params:
+           classes: {mnl: [0, 1]}
+           drop: [2]
 
 ``classes`` names each class and the annotated id(s) that form it; several ids
 merge into one class, which gets one heatmap channel. The class index is the
@@ -161,7 +163,7 @@ into the run's ``target_size`` frame for encoding and matching::
 
 Both spacings come from each dense artifact's slide2vec sidecar;
 ``effective_spacing_um`` can differ slightly from
-``preprocessing.requested_spacing_um`` when a WSI reader accepts a nearby native
+the requested ``features.dense.spacing_um`` when a WSI reader accepts a nearby native
 level. Predicted points are written back to the source frame in the predictions
 file.
 
@@ -170,22 +172,24 @@ Configuration
 
 .. code-block:: yaml
 
-   data:
-     dataset_type: detection
-   preprocessing:
-     requested_tile_size_px: 1024         # supervision tile size
-     requested_spacing_um: 0.2            # requested read scale; sidecar records effective scale
-   encoder: { name: uni }
-   decoder:                               # the heatmap regressor
-     name: lightweight_conv
-   task:
-     name: detection
+   features:
+     encoder: { name: uni }
+     dense:
+       target_size: 1024                  # supervision tile size
+       spacing_um: 0.2                    # requested read scale; sidecar records effective scale
+   learner:
+     name: dense
      params:
-       classes: {background_cell: [0], tumor_cell: [1]}   # OCELOT, as curated by soma
-       match_distance: 3.0                # δ, in µm (OCELOT's 15 px at 0.2 µm/px)
-       sigma: 1.0                          # target Gaussian σ in µm (default ≈ δ/3)
-       matching: hungarian                # hungarian (default) | greedy (OCELOT-official)
-       foreground_weight: 10.0            # MSE up-weight on near-peak pixels
+       decoder:                           # the heatmap regressor
+         name: lightweight_conv
+       head:
+         name: detection
+         params:
+           classes: {background_cell: [0], tumor_cell: [1]}   # OCELOT, as curated by soma
+           match_distance: 3.0            # δ, in µm (OCELOT's 15 px at 0.2 µm/px)
+           sigma: 1.0                     # target Gaussian σ in µm (default ≈ δ/3)
+           matching: hungarian            # hungarian (default) | greedy (OCELOT-official)
+           foreground_weight: 10.0        # MSE up-weight on near-peak pixels
    evaluation:
      metrics: [mean_f1, f1_per_class]
 
@@ -195,7 +199,7 @@ using each grid's persisted ``effective_spacing_um``. Samples may have different
 source spacings, but a run requires one effective spacing and uniform grid
 geometry.
 
-The other task parameters are:
+The head's other parameters are:
 
 - ``min_score`` (default ``0.01``): the lowest peak score the head emits. Keep
   it low; the operating threshold is chosen afterwards on the predictions.
@@ -207,7 +211,7 @@ The other task parameters are:
   validation and for scoring.
 - ``classes`` / ``drop``: the class scheme; see :ref:`detection-classes`.
 
-Detection also runs with ``data.feature_mode: live``, which re-encodes the tiles
+Detection also runs with ``features.kind: live``, which re-encodes the tiles
 at every step; see :ref:`live-mode`. Detection cannot be augmented yet.
 
 The default feature kind is ``patch_features``. To probe attention maps with
@@ -215,9 +219,11 @@ the same head, loss, and evaluator, use an attention-capable encoder and set:
 
 .. code-block:: yaml
 
-   preprocessing:
-     feature_kind: cls_attention
-     attention: { blocks: [-1], include_registers: false }
+   features:
+     dense:
+       feature_kind: cls_attention
+       attention_blocks: [-1]
+       attention_include_registers: false
 
 Attention maps retain the token-grid resolution; switching feature kind does
 not add spatial samples. Detection requires a neural decoder. See
@@ -235,7 +241,7 @@ unmatched GT FN.
 * **Score threshold** — the pipeline sweeps one threshold per class on the **tune**
   predictions to maximise F1 (:func:`soma.evaluation.sweep_threshold` with
   ``per_class=True``) and applies it unchanged to every test split (no test
-  leakage). A run without a tune split (``training.allow_missing_tune``) scores at
+  leakage). A run without a tune split (``cohort.allow_missing_tune``) scores at
   ``validation_threshold`` instead: train stands in for tune there, and a sweep on
   the training samples would pick an in-sample cut.
 * **Aggregation** — the headline ``mean_f1`` is **dataset-global** (counts pooled per

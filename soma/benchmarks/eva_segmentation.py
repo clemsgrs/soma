@@ -3,7 +3,7 @@
 The two segmentation tasks of the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_
 pathology leaderboard join the ``eva`` family next to the tile-classification members of
 :mod:`soma.benchmarks.eva`. They share that module's encoder table, reference ledger and
-``soma reproduce eva`` fan-out, and run on soma's dense (``dataset_type="segmentation"``)
+``soma reproduce eva`` fan-out, and run on soma's dense (grid) segmentation
 path with components that exist only to reproduce EVA's decoder protocol:
 
 * ``eva_conv_with_image`` — EVA's online ``ConvDecoderWithImage``, the leaderboard
@@ -81,14 +81,17 @@ from hs2p import TilingConfig
 from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
 
 from soma.config import (
-    CacheConfig,
-    DecoderConfig,
+    CacheOptions,
+    CohortConfig,
+    Component,
     EncoderLeaf,
-    EvalConfig,
+    EvaluationConfig,
+    ExperimentConfig,
     FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
+    LearnerConfig,
+    LoadersConfig,
+    RunConfig,
+    TrainerConfig,
 )
 from soma.curation.eva_segmentation import (
     CONSEP_CLASSES,
@@ -396,9 +399,9 @@ def _build_eva_segmentation_config(
     encoder_batch_size: int = 32,
     head_num_workers: int = 0,
     execution: ExecutionOptions | None = None,
-    cache: CacheConfig | None = None,
-) -> PipelineConfig:
-    """Assemble an EVA-faithful segmentation :class:`~soma.config.PipelineConfig`.
+    cache: CacheOptions | None = None,
+) -> ExperimentConfig:
+    """Assemble an EVA-faithful segmentation :class:`~soma.config.ExperimentConfig`.
 
     ``max_steps`` defaults to eva's fixed :data:`MAX_STEPS` budget; ``patience`` defaults
     to the dataset's eva value. Pass overrides for smoke runs.
@@ -413,16 +416,10 @@ def _build_eva_segmentation_config(
         task_params["ignore_index"] = spec.ignore_index
 
     live = spec.train_crop_scale is not None
-    return PipelineConfig(
-        dataset_csv=str(dataset_csv),
-        splits_csv=str(splits_csv),
-        output_root=Path(output_root),
-        dataset_type="segmentation",
-        augmentation=(
-            {"name": "segmentation", "params": {"crop_scale": list(spec.train_crop_scale)}}
-            if live
-            else None
-        ),
+    monitor = {"monitor": "foreground_mean_dice", "mode": "max"}
+    return ExperimentConfig(
+        run=RunConfig(output_dir=Path(output_root), seed=seed),
+        cohort=CohortConfig(records=str(dataset_csv), splits=str(splits_csv), tune_is_test=True),
         features=FeaturesConfig(
             kind="live" if live else "cached",
             # Dense extraction returns the patch-token grid, so no pooled output variant
@@ -447,33 +444,33 @@ def _build_eva_segmentation_config(
                 feature_kind=FEATURE_KIND,
             ),
             execution=_replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
-            cache=cache or CacheConfig(enabled=True),
+            cache=cache or CacheOptions(enabled=True),
         ),
-        decoder=DecoderConfig(name=DECODER_NAME),
-        task=TaskConfig(name=HEAD_NAME, params=task_params),
-        evaluation=EvalConfig(metrics=list(METRICS)),
-        training=TrainingConfig(
-            seed=seed,
-            epochs=None,
-            max_steps=max_steps,
-            learning_rate=LEARNING_RATE,
-            weight_decay=WEIGHT_DECAY,
-            optimizer="adamw",
-            # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
-            scheduler={
-                "name": "constant",
-                "params": {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS},
-            },
-            patience=patience,
-            monitor="foreground_mean_dice",
-            monitor_mode="max",
+        loaders=LoadersConfig(
             batch_size=BATCH_SIZE,
-            tune_is_test=True,
             num_workers=head_num_workers,
-            pin_memory=False,
-            persistent_workers=False,
+            augment=(
+                Component("segmentation", {"crop_scale": list(spec.train_crop_scale)}) if live else None
+            ),
         ),
-        tags=["eva", dataset, encoder, "segmentation"],
+        learner=LearnerConfig(
+            "dense",
+            {
+                "decoder": Component(DECODER_NAME),
+                "head": Component(HEAD_NAME, task_params),
+                "optimizer": Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY}),
+                # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
+                "scheduler": [Component("constant", {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS})],
+            },
+        ),
+        trainer=TrainerConfig(
+            max_steps=max_steps,
+            callbacks=[
+                Component("checkpoint", monitor),
+                Component("early_stopping", {**monitor, "patience": patience}),
+            ],
+        ),
+        evaluation=EvaluationConfig(metrics=list(METRICS)),
     )
 
 
@@ -518,7 +515,7 @@ class EvaSegmentationBenchmark:
         patience: int | None = None,
         encoder_batch_size: int = 32,
         execution: ExecutionOptions | None = None,
-    ) -> PipelineConfig:
+    ) -> ExperimentConfig:
         """Build the EVA-faithful config for this dataset and the ``encoder`` axis."""
         return _build_eva_segmentation_config(
             dataset=self.dataset,
@@ -557,7 +554,7 @@ class EvaSegmentationBenchmark:
 def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
     """``{<split>/<metric>: value}`` of a finished single-fold run's saved test label maps."""
     from soma.benchmarks.ocelot import _locate_run_config
-    from soma.config import load_config
+    from soma.config import ExperimentConfig
     from soma.data import AnnotationManifest, ImageManifest, LabelMapSource
     from soma.data.targets import resolve_class_scheme
     from soma.evaluation import LabelMapPredictions
@@ -565,7 +562,7 @@ def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
 
     config_path = _locate_run_config(Path(run_dir))
     folder = config_path.parent
-    cfg = load_config(str(config_path))
+    cfg = ExperimentConfig.from_yaml(config_path)
     split_dirs = sorted(
         path
         for path in folder.glob("predictions_*")
@@ -576,13 +573,13 @@ def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
             f"no predictions_<split>/ label maps in {folder}; EVA scoring re-counts the run's "
             "saved test predictions"
         )
-    _, _, label_remap = resolve_class_scheme(cfg.task.params, annotation_rasters=False)
+    _, _, label_remap = resolve_class_scheme(cfg.learner.params["head"].params, annotation_rasters=False)
     from soma.preprocessing.resolution import resolve_pipeline_dense
 
     dense = resolve_pipeline_dense(cfg)
     tiling = cfg.features.extraction.tiling
-    annotations = AnnotationManifest.from_csv(cfg.dataset_csv)
-    images = ImageManifest.from_csv(cfg.dataset_csv)
+    annotations = AnnotationManifest.from_csv(cfg.cohort.records)
+    images = ImageManifest.from_csv(cfg.cohort.records)
     metrics = resolve_metrics("segmentation", cfg.evaluation.metrics)
     scores: dict[str, float] = {}
     for split_dir in split_dirs:

@@ -29,15 +29,9 @@ from soma.benchmarks import (
 )
 from soma import components
 from soma.benchmarks import registry as registry_mod
-from soma.config import (
-    AggregatorConfig,
-    CacheConfig,
-    FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
-)
+from soma.config import CacheOptions, ExperimentConfig, FeaturesConfig
 from soma.curation.manifest import CuratedManifest
+from tests.experiment_configs import experiment
 
 
 class _FixtureBenchmark:
@@ -52,16 +46,15 @@ class _FixtureBenchmark:
     def curate(self, raw_root, out_dir) -> CuratedManifest:
         return CuratedManifest(dataset_csv=Path(out_dir) / "dataset.csv", splits_csv=Path(out_dir) / "splits.csv")
 
-    def build_config(self, **axes) -> PipelineConfig:
-        return PipelineConfig(
-            dataset_csv="d.csv",
-            splits_csv="s.csv",
-            output_root="out",
-            dataset_type="tile",
-            features=FeaturesConfig(encoder=axes.get("encoder", "uni2")),
-            aggregator=AggregatorConfig(name="abmil"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=1),
+    def build_config(self, **axes) -> ExperimentConfig:
+        return experiment(
+            'd.csv',
+            's.csv',
+            output_dir='out',
+            features=FeaturesConfig(encoder=axes.get('encoder', 'uni2')),
+            aggregator='abmil',
+            trainer={"max_epochs": 1},
+            scheduler='cosine',
         )
 
     def expected(self, **axes):

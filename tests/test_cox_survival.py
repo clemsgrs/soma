@@ -17,7 +17,8 @@ import pytest
 import torch
 
 from soma.data import CachedSetSource
-from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
+from soma.plan import check
+from tests.experiment_configs import experiment
 from soma.data import SampleRecord
 from soma.data._legacy import legacy_samples_from_csv
 from soma.evaluation import Predictions
@@ -28,7 +29,7 @@ from soma.tasks.survival import (
     CoxSurvivalHead,
     SurvivalHead,
     cox_breslow_loss,
-    resolve_survival_head,
+    resolve_survival_task,
     validate_survival_dataset,
 )
 from soma.training.model import EmbeddingModel
@@ -142,13 +143,9 @@ class TestPolarity:
 
 
 class TestCoxSurvivalHead:
-    def test_resolve_routes_by_loss(self):
-        assert resolve_survival_head("nll") is SurvivalHead
-        assert resolve_survival_head("cox") is CoxSurvivalHead
-
-    def test_resolve_unknown_loss_raises(self):
-        with pytest.raises(ValueError, match="Unknown survival loss"):
-            resolve_survival_head("efron")
+    def test_the_head_name_selects_the_objective(self):
+        assert resolve_survival_task("survival") == (SurvivalHead, "nll")
+        assert resolve_survival_task("cox_survival") == (CoxSurvivalHead, "cox")
 
     def test_target_dtypes_have_no_bin(self):
         assert CoxSurvivalHead.target_dtypes == {"event": torch.float, "time": torch.float}
@@ -320,14 +317,17 @@ class TestFullCohortTuneLoss:
 
 
 class TestCoxConfigGuards:
-    def _base(self, tmp_path, **kw):
-        return dict(
-            dataset_csv=tmp_path / "d.csv",
-            splits_csv=tmp_path / "s.csv",
-            output_root=tmp_path / "out",
-            dataset_type="slide",
-            task=TaskConfig(name="survival", params={"loss": "cox"}),
-            **kw,
+    def _check(self, tmp_path, *, aggregator=None, batch_size=4, accumulate=1, head="cox_survival"):
+        check(
+            experiment(
+                tmp_path / "d.csv",
+                tmp_path / "s.csv",
+                output_dir=tmp_path / "out",
+                aggregator=aggregator,
+                head=head,
+                loaders={"batch_size": batch_size},
+                trainer={"accumulate_grad_batches": accumulate},
+            )
         )
 
     def test_padded_mil_aggregator_allowed(self, tmp_path: Path):
@@ -335,35 +335,31 @@ class TestCoxConfigGuards:
         # Cox (masking, batch_size >= 2) is now valid. Accumulation-mode guards are
         # exercised in test_cox_accumulation.py.
         for name in ("abmil", "transmil", "mean_pool"):
-            PipelineConfig(
-                **self._base(
-                    tmp_path,
-                    aggregator=AggregatorConfig(name=name),
-                    training=TrainingConfig(batch_size=4),
-                )
-            )
+            self._check(tmp_path, aggregator=name)
 
     def test_rejects_gradient_accumulation(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="gradient_accumulation = 1"):
-            PipelineConfig(
-                **self._base(tmp_path, training=TrainingConfig(batch_size=4, gradient_accumulation=2))
-            )
+        with pytest.raises(ValueError, match="accumulate_grad_batches = 1"):
+            self._check(tmp_path, accumulate=2)
 
     def test_rejects_batch_size_below_two(self, tmp_path: Path):
         with pytest.raises(ValueError, match="batch_size >= 2"):
-            PipelineConfig(**self._base(tmp_path, training=TrainingConfig(batch_size=1)))
+            self._check(tmp_path, batch_size=1)
 
-    def test_rejects_unknown_loss(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="Unknown survival loss"):
-            PipelineConfig(
-                **dict(
-                    self._base(tmp_path, training=TrainingConfig(batch_size=4)),
-                    task=TaskConfig(name="survival", params={"loss": "foo"}),
+    def test_the_survival_head_takes_no_loss_selector(self, tmp_path: Path):
+        # The objective is the head: ``cox_survival``, not a ``loss`` param on ``survival``.
+        with pytest.raises(ValueError, match="loss"):
+            check(
+                experiment(
+                    tmp_path / "d.csv",
+                    tmp_path / "s.csv",
+                    head="survival",
+                    head_params={"loss": "cox"},
+                    loaders={"batch_size": 4},
                 )
             )
 
     def test_valid_cox_config_passes(self, tmp_path: Path):
-        PipelineConfig(**self._base(tmp_path, training=TrainingConfig(batch_size=4)))
+        self._check(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -436,14 +432,14 @@ class TestCoxEndToEnd:
         for i in range(n):
             torch.save(torch.randn(D), feature_dir / f"s{i}.pt")  # (D,) -> slide-level
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "out",
-            dataset_type="slide",
-            aggregator=None,
-            task=TaskConfig(name="survival", params={"loss": "cox"}),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'out',
+            head='cox_survival',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -489,14 +485,15 @@ class TestCoxEndToEnd:
         for pid in ["p0", "p1", "p2", "p3"]:
             torch.save(torch.randn(D), feature_dir / f"{pid}.pt")
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "out",
-            dataset_type="patient",
-            aggregator=None,
-            task=TaskConfig(name="survival", params={"loss": "cox"}),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'out',
+            head='cox_survival',
+            cohort={"collapse": "patient_id"},
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()

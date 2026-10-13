@@ -23,6 +23,7 @@ def test_completed_fold_is_published_directly_with_verified_manifest(
     fold_dir = run_dir / "fold_0"
     fold_dir.mkdir(parents=True)
     (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
+    (run_dir / "plan.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
     (fold_dir / "metrics.json").write_text('{"dice": 0.75}', encoding="utf-8")
     (fold_dir / "bundle").mkdir()
     (fold_dir / "bundle" / "weights.safetensors").write_bytes(b"selected-checkpoint")
@@ -53,6 +54,13 @@ def test_completed_fold_is_published_directly_with_verified_manifest(
                 ),
                 "size": 15,
             },
+            "plan.yaml": {
+                "sha256": (
+                    "93764599da0d274d1cbbbed0c41825ae"
+                    "fbe8ab3720ebbc2cfc8c38f041fb2b8a"
+                ),
+                "size": 15,
+            },
             "metrics.json": {
                 "sha256": (
                     "84877ca75a1b504bd8b28c30e7e006cc"
@@ -70,6 +78,7 @@ def _completed_run(tmp_path: Path) -> tuple[Path, Path, ArtifactMirror]:
     run_dir = tmp_path / "local" / "run"
     run_dir.mkdir(parents=True)
     (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
+    (run_dir / "plan.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
     (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
     (run_dir / "bundle").mkdir()
     (run_dir / "bundle" / "weights.safetensors").write_bytes(b"selected-checkpoint")
@@ -146,6 +155,7 @@ def test_interrupted_publish_never_exposes_a_completed_fold(
     run_dir = tmp_path / "local" / "run"
     run_dir.mkdir(parents=True)
     (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
+    (run_dir / "plan.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
     (run_dir / "metrics.json").write_text("{}", encoding="utf-8")
     mirror_run_dir = tmp_path / "shared" / "run"
     destination = mirror_run_dir / "recovery" / "folds" / "fold_0"

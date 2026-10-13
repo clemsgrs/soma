@@ -413,16 +413,17 @@ class _ArchiveValidator:
         lock = _tracked_encoder_lock()
         for arm, payload in configs.items():
             rel = arm_config_archive_path(arm)
-            sampling = payload.get("training", {}).get("roi_batch_sampling")
+            sampler = payload.get("loaders", {}).get("sampler")
+            sampling = sampler.get("name") if isinstance(sampler, dict) else sampler
             if sampling != arm:
                 failures.append(
-                    f"{rel} records training.roi_batch_sampling {sampling!r}; "
+                    f"{rel} records loaders.sampler {sampling!r}; "
                     f"the {arm} arm config must record {arm!r}"
                 )
-            cache_root = str(payload.get("cache", {}).get("root_dir", ""))
+            cache_root = str(payload.get("features", {}).get("cache", {}).get("root_dir", ""))
             if lock["revision"] not in cache_root or lock["weight_sha256"] not in cache_root:
                 failures.append(
-                    f"{rel} cache.root_dir {cache_root!r} is not namespaced by the "
+                    f"{rel} features.cache.root_dir {cache_root!r} is not namespaced by the "
                     "locked encoder revision and weight digest"
                 )
         allowed = _sampling_overlay_leaf_paths()
@@ -439,12 +440,12 @@ class _ArchiveValidator:
                     f"{left!r} != {right!r}"
                 )
         batch_sizes = {
-            arm: flattened[arm].get(("training", "batch_size"), _MISSING)
+            arm: flattened[arm].get(("loaders", "batch_size"), _MISSING)
             for arm in ARM_NAMES
         }
         if len(set(batch_sizes.values())) != 1:
             failures.append(
-                f"resolved arm configs disagree on training.batch_size: {batch_sizes}"
+                f"resolved arm configs disagree on loaders.batch_size: {batch_sizes}"
             )
         return failures
 
@@ -542,10 +543,10 @@ class _ArchiveValidator:
         configs = self._load_arm_configs(config_failures)
         if configs is not None:
             for arm, payload in configs.items():
-                configured = payload.get("training", {}).get("batch_size")
+                configured = payload.get("loaders", {}).get("batch_size")
                 if configured != selected:
                     failures.append(
-                        f"{arm_config_archive_path(arm)} training.batch_size "
+                        f"{arm_config_archive_path(arm)} loaders.batch_size "
                         f"{configured!r} disagrees with the preflight-frozen "
                         f"batch size {selected!r}"
                     )

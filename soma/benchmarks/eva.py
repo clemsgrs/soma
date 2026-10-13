@@ -7,7 +7,8 @@ registered as **one sub-benchmark per dataset** — ``eva/bach``, ``eva/breakhis
 exposing ``encoder`` as a ``build_config`` axis (the dataset × encoder grid). The recipe
 encodes the offline linear-probe protocol of the `kaiko-ai/eva
 <https://github.com/kaiko-ai/eva>`_ leaderboard so it reproduces with soma's tile path
-(``dataset_type="tile"``). The leaderboard's two segmentation tasks (``eva/consep``,
+(a tile encoder with no aggregator: one tile is one sample). The leaderboard's two
+segmentation tasks (``eva/consep``,
 ``eva/monusac``) live in :mod:`soma.benchmarks.eva_segmentation` and share this module's
 encoder table, reference ledger and family fan-out.
 
@@ -16,14 +17,14 @@ Protocol points that matter for matching the leaderboard:
 * Linear head, AdamW ``lr=3e-4`` and ``weight_decay=0.01`` (eva sets only ``lr``, so
   torch's AdamW default ``0.01`` applies), no scheduler, batch size 256.
 * Training is step-based: a fixed budget of ``max_steps=12500`` optimizer updates with one
-  validation per epoch, expressed directly via ``TrainingConfig(max_steps=12500,
-  epochs=None)``. Early-stopping patience is eva's hand-set per-dataset value.
+  validation per epoch, expressed directly via ``TrainerConfig(max_steps=12500)``.
+  Early-stopping patience is eva's hand-set per-dataset value.
 * The selection/report metric is balanced accuracy, which equals eva's
   ``MulticlassAccuracy(average="macro")`` / ``BinaryBalancedAccuracy``.
 * Datasets with no eva test split (bach, breakhis, crc, mhist, gleason_arvaniti) report on
   the validation split: the curator keeps every eva-train sample as soma ``train`` and the
-  run uses ``tune_is_test=True`` so soma's ``test`` split *is* the eva validation set. patch_camelyon has a real val + test
-  split (``tune_is_test=False``): the reported (test) number is the headline; the val number
+  run uses ``cohort.tune_is_test`` so soma's ``test`` split *is* the eva validation set. patch_camelyon has a real val + test
+  split (no ``tune_is_test``): the reported (test) number is the headline; the val number
   is recorded alongside it in the reference table.
 * virchow2 must use the CLS-only output (1280-d); eva's ``paige_virchow2`` sets
   ``ExtractCLSFeatures(include_patch_tokens=False)``. slide2vec defaults to the 2560-d
@@ -53,13 +54,17 @@ from dataclasses import replace as _replace
 from slide2vec import ExecutionOptions
 
 from soma.config import (
-    CacheConfig,
+    CacheOptions,
+    CohortConfig,
+    Component,
     EncoderLeaf,
-    EvalConfig,
+    EvaluationConfig,
+    ExperimentConfig,
     FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
+    LearnerConfig,
+    LoadersConfig,
+    RunConfig,
+    TrainerConfig,
 )
 from soma.curation.eva import curate_eva_patch_dataset
 from soma.curation.manifest import CuratedManifest
@@ -143,9 +148,9 @@ def _build_eva_config(
     encoder_batch_size: int = 32,
     head_num_workers: int = 0,
     execution: ExecutionOptions | None = None,
-    cache: CacheConfig | None = None,
-) -> PipelineConfig:
-    """Assemble an EVA-faithful :class:`~soma.config.PipelineConfig` for one run.
+    cache: CacheOptions | None = None,
+) -> ExperimentConfig:
+    """Assemble an EVA-faithful :class:`~soma.config.ExperimentConfig` for one run.
 
     ``max_steps`` defaults to eva's fixed :data:`MAX_STEPS` budget; ``patience`` defaults
     to the dataset's eva value. Pass overrides for smoke runs.
@@ -160,11 +165,10 @@ def _build_eva_config(
     if patience is None:
         patience = spec.patience
 
-    return PipelineConfig(
-        dataset_csv=str(dataset_csv),
-        splits_csv=str(splits_csv),
-        output_root=Path(output_root),
-        dataset_type="tile",
+    monitor = {"monitor": "balanced_accuracy", "mode": "max"}
+    return ExperimentConfig(
+        run=RunConfig(output_dir=Path(output_root), seed=seed),
+        cohort=CohortConfig(records=str(dataset_csv), splits=str(splits_csv), tune_is_test=spec.tune_is_test),
         features=FeaturesConfig(
             encoder=EncoderLeaf(
                 name=encoder,
@@ -175,41 +179,37 @@ def _build_eva_config(
                 ),
             ),
             execution=_replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
-            cache=cache or CacheConfig(enabled=True),
+            cache=cache or CacheOptions(enabled=True),
         ),
-        task=TaskConfig(name=spec.task),
-        evaluation=EvalConfig(metrics=["balanced_accuracy", "accuracy"]),
-        training=TrainingConfig(
-            seed=seed,
-            epochs=None,
+        # The head trains on tiny in-memory feature vectors, so dataloader worker spawn
+        # would dominate wall time; eva uses 0 workers here too.
+        loaders=LoadersConfig(batch_size=HEAD_BATCH_SIZE, num_workers=head_num_workers),
+        learner=LearnerConfig(
+            "mil",
+            {
+                "head": Component(spec.task),
+                "optimizer": Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY}),
+            },
+        ),
+        trainer=TrainerConfig(
             max_steps=max_steps,
-            learning_rate=LEARNING_RATE,
-            weight_decay=WEIGHT_DECAY,
-            optimizer="adamw",
-            scheduler="none",
-            patience=patience,
-            monitor="balanced_accuracy",
-            monitor_mode="max",
-            batch_size=HEAD_BATCH_SIZE,
-            tune_is_test=spec.tune_is_test,
-            # The head trains on tiny in-memory feature vectors, so dataloader worker spawn
-            # would dominate wall time; eva uses 0 workers here too.
-            num_workers=head_num_workers,
-            pin_memory=False,
-            persistent_workers=False,
+            callbacks=[
+                Component("checkpoint", monitor),
+                Component("early_stopping", {**monitor, "patience": patience}),
+            ],
         ),
-        tags=["eva", dataset, encoder],
+        evaluation=EvaluationConfig(metrics=["balanced_accuracy", "accuracy"]),
     )
 
 
-def _cache_from_overrides(overrides: dict[str, Any] | None) -> CacheConfig | None:
-    """Turn a ``{"cache": {...}}`` override block into a :class:`CacheConfig`."""
+def _cache_from_overrides(overrides: dict[str, Any] | None) -> CacheOptions | None:
+    """Turn a ``{"cache": {...}}`` override block into ``features.cache``."""
     if not overrides:
         return None
     cache_over = overrides.get("cache")
     if not cache_over:
         return None
-    return replace(CacheConfig(), **cache_over)
+    return replace(CacheOptions(), **cache_over)
 
 
 class EvaTileClassificationBenchmark:
@@ -259,7 +259,7 @@ class EvaTileClassificationBenchmark:
         patience: int | None = None,
         encoder_batch_size: int = 32,
         execution: ExecutionOptions | None = None,
-    ) -> PipelineConfig:
+    ) -> ExperimentConfig:
         """Build the EVA-faithful config for this dataset and the ``encoder`` axis.
 
         ``dataset_csv`` / ``splits_csv`` / ``output_root`` come from the curated Manifest;

@@ -8,49 +8,77 @@ transforms below.
 Budget and checkpoint selection
 -------------------------------
 
-Choose one budget: ``epochs`` counts passes through the training loader;
-``max_steps`` counts optimizer updates after gradient accumulation. For a step
-budget, set ``epochs: null``. Cosine scheduling advances per epoch or per update
-to match the selected budget.
+Training is configured in three sections, one per callable. ``loaders`` holds
+:func:`soma.learn.loaders`' keywords (``batch_size``, ``num_workers``,
+``pin_memory``, ``persistent_workers`` and the optional ``sampler`` and
+``augment`` leaves). ``learner`` names the :class:`soma.learn.Learner` and its
+params: the model's ``aggregator`` or ``decoder`` and ``head`` leaves, the
+``optimizer`` and ``scheduler`` leaves, and the feature ``normalization`` and
+``projection``. ``trainer`` holds the :class:`soma.learn.Trainer`'s keywords.
 
-``optimizer`` and ``scheduler`` are component leaves: a name (``adam``, ``adamw``,
-``sgd``; ``cosine``, ``constant``, ``none``) or a ``{name, params}`` mapping whose
-name is a registry key or a dotted import path. ``learning_rate`` and
-``weight_decay`` seed the optimizer's params. ``scheduler`` may be a list of
-leaves, each stepped at its own ``interval`` (``epoch`` unless set); a warm-up is
-a ``constant`` leaf::
+.. code-block:: yaml
 
-   training:
-     optimizer: adamw
-     scheduler:
-       - {name: constant, params: {factor: 0.333, total_iters: 5}}
-       - cosine
+   loaders:
+     batch_size: 1
+   learner:
+     name: mil
+     params:
+       aggregator: {name: abmil}
+       head: {name: binary_classification}
+       optimizer:
+         name: adamw
+         params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+       scheduler:
+         - {name: constant, params: {factor: 0.333, total_iters: 5}}
+         - cosine
+   trainer:
+     max_epochs: 50
+     callbacks:
+       - {name: checkpoint, params: {monitor: auroc, mode: max}}
+       - {name: early_stopping, params: {monitor: auroc, mode: max, patience: 10}}
 
-``learner`` optionally names the :class:`soma.learn.Learner` subclass that owns
-the step logic (see :doc:`extending`); by default soma uses the shape's learner.
+Choose one budget: ``trainer.max_epochs`` counts passes through the training
+loader; ``trainer.max_steps`` counts optimizer updates after
+``accumulate_grad_batches``, and replaces the epoch budget when set. A cosine
+scheduler anneals over the budget, per epoch or per update.
 
-``checkpoint_selection: best`` selects weights using ``monitor`` and
-``monitor_mode`` (default: minimize the tune ``loss``; a metric name selects
-that metric). ``patience`` controls early
-stopping; ``null`` disables it. ``tune_every_n_epochs: N`` evaluates the tune
-split after every N-th epoch and after the final epoch, for runs where tune
-evaluation dominates the epoch cost; selection and ``patience`` then count tune
-evaluations, not epochs. ``checkpoint_selection: last`` evaluates weights at the
-end of the budget and requires ``patience: null``. Tune metrics are still
-recorded for diagnostics.
+Every component is a ``{name, params}`` leaf whose name is a registry key or a
+dotted import path; a bare name keeps the component's default params. The
+optimizer defaults to Adam (``lr`` 1e-4, ``weight_decay`` 1e-5) when the learner
+names none. ``scheduler`` may be one leaf or a list, each stepped at its own
+``interval`` (``epoch`` unless set); a warm-up is a ``constant`` leaf. With no
+scheduler the learning rate stays constant. ``learner.name`` is ``mil`` for
+the set shape and ``dense`` for the grid shape; a registered or dotted
+:class:`soma.learn.Learner` subclass owns custom step logic (see
+:doc:`extending`).
 
-By default, training requires a tune split. Two explicit alternatives
-are available:
+The ``checkpoint`` callback selects the weights: ``selection: best`` (the
+default) keeps the epoch that is best on ``monitor`` in direction ``mode``
+(default: minimize the tune ``loss``; a metric name selects that metric), and
+``selection: last`` keeps the final weights and refuses an ``early_stopping``
+callback. ``early_stopping`` stops after ``patience`` tune evaluations without
+improvement; leave it out to train the full budget.
+``trainer.val_every_n_epochs: N`` evaluates the tune split after every N-th
+epoch and after the final epoch, for runs where tune evaluation dominates the
+epoch cost; selection and patience then count tune evaluations, not epochs.
+Tune metrics are always recorded for diagnostics.
 
-- ``tune_is_test: true`` uses one held-out split for both checkpoint selection
-  and test reporting. Provide either tune or test, not both. Use this only when
-  reproducing a benchmark protocol that selects on its reported cohort.
-- ``allow_missing_tune: true`` reuses train as tune when tune is absent and emits
-  a warning. This controls the diagnostic split independently of checkpoint
-  selection.
+By default, training requires a tune split. The ``cohort`` section offers two
+explicit alternatives:
 
-.. autoclass:: soma.config.TrainingConfig
-   :members:
+- ``cohort.tune_is_test: true`` uses one held-out split for both checkpoint
+  selection and test reporting. Provide either tune or test, not both. Use this
+  only when reproducing a benchmark protocol that selects on its reported
+  cohort.
+- ``cohort.allow_missing_tune: true`` reuses train as tune when tune is absent
+  and emits a warning. This controls the diagnostic split independently of
+  checkpoint selection.
+
+.. autoclass:: soma.config.LoadersConfig
+
+.. autoclass:: soma.config.LearnerConfig
+
+.. autoclass:: soma.config.TrainerConfig
 
 .. _live-mode:
 
@@ -58,26 +86,27 @@ Live re-encoding and augmentation
 ---------------------------------
 
 Segmentation and detection read cached feature grids by default
-(``data.feature_mode: cached``): the frozen encoder runs once and every epoch
-reuses its output. With ``data.feature_mode: live``, soma re-encodes each
+(``features.kind: cached``): the frozen encoder runs once and every epoch
+reuses its output. With ``features.kind: live``, soma re-encodes each
 pre-cropped tile through the frozen encoder at every step instead, so pixel
 augmentation reaches the features. This costs one encoder forward pass per
 tile and step.
 
 .. code-block:: yaml
 
-   data:
-     dataset_type: segmentation
-     feature_mode: live
-   augmentation:
-     name: segmentation
-     params:
-       horizontal_flip: 0.5
-       vertical_flip: 0.5
-       rotation_degrees: 90
-       crop_scale: [0.08, 1.0]
+   features:
+     kind: live
+     encoder: {name: uni2}
+   loaders:
+     augment:
+       name: segmentation
+       params:
+         horizontal_flip: 0.5
+         vertical_flip: 0.5
+         rotation_degrees: 90
+         crop_scale: [0.08, 1.0]
 
-``augmentation`` is ``null`` by default. It is a ``{name, params}`` leaf: the
+``loaders.augment`` is ``null`` by default. It is a ``{name, params}`` leaf: the
 name is a registry key (``segmentation`` is
 :class:`soma.learn.SegmentationAugment`) or a dotted import path, and
 ``params`` go to its constructor. It applies to the train split only.
@@ -90,28 +119,30 @@ before the other operations.
 
 Live mode has these limits:
 
-- ``augmentation`` requires ``feature_mode: live``; cached grids cannot be
-  augmented.
-- Detection can run with ``feature_mode: live`` but cannot be augmented yet:
+- ``loaders.augment`` requires ``features.kind: live``; cached grids cannot
+  be augmented.
+- Detection can run with ``features.kind: live`` but cannot be augmented yet:
   joint image and point augmentation waits for torchvision 0.23.
-- Live mode reads pre-cropped tiles only. It does not support whole slides
-  with ``preprocessing.masks``, composite encoders, an active ``normalization``
-  or ``projection``, or ``training.roi_batch_sampling``.
+- Live mode reads pre-cropped tiles only. It does not support annotation-sampled
+  whole slides, composite encoders, an active ``normalization`` or
+  ``projection``, or a ``loaders.sampler``.
 
 .. autoclass:: soma.learn.SegmentationAugment
 
 Feature normalization
 ---------------------
 
-The top-level ``normalization`` section applies a feature adaptor before the
+``learner.params.normalization`` applies a feature adaptor before the
 trainable model, allowing encoders with different activation scales to share
 training settings.
 
 .. code-block:: yaml
 
-   normalization:
-     method: zscore   # none | zscore | l2 | layernorm
-     eps: 1.0e-6
+   learner:
+     params:
+       normalization:
+         method: zscore   # none | zscore | l2 | layernorm
+         eps: 1.0e-6
 
 ``zscore`` estimates per-feature center and scale from the train split alone.
 Held-out samples use the fitted transform without updating it. ``eps`` floors
@@ -127,17 +158,19 @@ each encoder's block separately before concatenation.
 Feature projection
 ------------------
 
-The top-level ``projection`` section maps frozen features to a common width
-without labels. Matching the downstream input dimension helps compare encoders
-without changing the aggregator's capacity simply because their embeddings have
+``learner.params.projection`` maps frozen features to a common width without
+labels. Matching the downstream input dimension helps compare encoders without
+changing the aggregator's capacity simply because their embeddings have
 different widths.
 
 .. code-block:: yaml
 
-   projection:
-     method: pca      # none | pca | random
-     target_dim: 512  # required when method != none
-     seed: 0           # configurable only for random
+   learner:
+     params:
+       projection:
+         method: pca      # none | pca | random
+         target_dim: 512  # required when method != none
+         seed: 0          # configurable only for random
 
 Projection follows normalization. Either stage can be enabled independently.
 
@@ -154,8 +187,9 @@ seed. The downstream aggregator and head use ``target_dim`` when projection is
 active.
 
 Both stages are frozen checkpoint buffers, so evaluation restores the fitted
-transform. Neither changes the extracted feature cache, and both blocks are part
-of the :doc:`experiment identity <outputs>`. Each fold with an active transform
+transform. Neither changes the extracted feature cache, and the plan spells
+both out (``method: none`` when off), so they are part of the
+:doc:`experiment identity <outputs>`. Each fold with an active transform
 writes ``feature_adapter.json``; see :doc:`outputs`.
 
 During training, the live summary panel reports epoch, loss, learning rate,

@@ -13,7 +13,8 @@ Input modes
 
 Each ``dataset.csv`` row gives an image (``image_path``) and its label mask
 (``label_mask_path``); ``mask_path`` is reserved for an optional tissue mask.
-What a row holds depends on whether ``preprocessing.masks`` is set:
+What a row holds depends on whether ``features.extraction.masks`` declares an
+annotation vocabulary:
 
 .. list-table::
    :header-rows: 1
@@ -22,20 +23,20 @@ What a row holds depends on whether ``preprocessing.masks`` is set:
    * -
      - Pre-cropped tiles
      - Whole slides
-   * - ``preprocessing.masks``
-     - Unset
-     - Set
+   * - ``features.extraction.masks``
+     - Unset (hs2p's binary tissue vocabulary)
+     - An annotation vocabulary
    * - A row is
-     - One tile and its mask, both ``requested_tile_size_px`` wide at
-       ``requested_spacing_um``. soma does not resize them.
+     - One tile and its mask, both ``features.dense.target_size`` wide at
+       ``features.dense.spacing_um``. soma does not resize them.
      - One slide and its annotation mask
    * - A training sample is
      - The row
      - One ROI sampled from the slide
    * - Mask values
      - Class indices ``0`` to ``num_classes - 1``, plus ``ignore_index``
-       (255 by default); or any values with ``task.params.classes``
-     - Values declared by ``pixel_mapping``; ``task.params.classes`` is
+       (255 by default); or any values with the head's ``classes``
+     - Values declared by ``pixel_mapping``; the head's ``classes`` is
        required
 
 Whole slides
@@ -43,30 +44,34 @@ Whole slides
 
 .. code-block:: yaml
 
-   preprocessing:
-     requested_tile_size_px: 512
-     requested_spacing_um: 0.5
-     masks:
-       pixel_mapping: {background: 0, stroma: 1, tumor: 2, necrosis: 3}
-       min_coverage: {stroma: 0.05, tumor: 0.05, necrosis: 0.05}
+   features:
+     dense:
+       target_size: 512
+       spacing_um: 0.5
+     extraction:
+       masks:
+         pixel_mapping: {background: 0, stroma: 1, tumor: 2, necrosis: 3}
+         min_coverage: {stroma: 0.05, tumor: 0.05, necrosis: 0.05}
+         output_mode: merged
 
-soma tiles each slide into ROIs of ``requested_tile_size_px`` at
-``requested_spacing_um``. It keeps an ROI when at least one class covers its
+soma tiles each slide into ROIs of ``target_size`` pixels at ``spacing_um``
+(an unset ``features.extraction.tiling`` takes both from ``features.dense``). It
+keeps an ROI when at least one class covers its
 ``min_coverage`` fraction of the ROI. Only classes with a ``min_coverage`` entry
 select ROIs, so give a threshold to every class you want sampled. Each ROI keeps
 its complete multi-class mask and belongs to the same split as its slide.
 
 ``pixel_mapping`` and ``min_coverage`` only decide which ROIs are sampled;
 :doc:`preprocessing` covers them. What the model predicts is set separately, by
-the task.
+the head.
 
 The annotation mask may have a lower resolution than its slide. soma aligns it
 to the slide and reads each ROI's mask on the ROI's pixel grid, so the targets
 register to the features. :ref:`Source masks <preprocessing-source-masks>` gives
 the alignment rules.
 
-A slide whose spacing is within ``tolerance`` of ``requested_spacing_um`` is read
-at its own spacing, so its ROIs cover ``requested_tile_size_px`` pixels at, for
+A slide whose spacing is within ``tolerance`` of ``spacing_um`` is read
+at its own spacing, so its ROIs cover ``target_size`` pixels at, for
 example, 0.486 µm/px rather than 0.5 µm/px. Each ROI's mask is read at the spacing
 its feature grid recorded, and so covers the same area. A ROI kept at the slide's
 right or bottom edge can extend past the slide; the pixels beyond it get
@@ -87,11 +92,13 @@ Classes
 
 .. code-block:: yaml
 
-   task:
-     name: segmentation
+   learner:
      params:
-       classes: {tumor: [1, 2], stroma: [3], muscle: [4, 5, 6]}
-       ignore: [0]
+       head:
+         name: segmentation
+         params:
+           classes: {tumor: [1, 2], stroma: [3], muscle: [4, 5, 6]}
+           ignore: [0]
 
 ``classes`` names each class and the raw mask value(s) that form it; several
 values merge into one class. The class index is the declaration order (``tumor``
@@ -102,7 +109,7 @@ reserved.
 A raw value belongs to one class or to ``ignore``; listing it twice is a config
 error. A mask holding a value declared in neither fails the run and names the
 sample, so a typo cannot silently drop a class. For whole slides, every value in
-``classes`` and ``ignore`` must also be in ``preprocessing.masks.pixel_mapping``,
+``classes`` and ``ignore`` must also be in ``features.extraction.masks.pixel_mapping``,
 since the masks are read against that vocabulary.
 
 The class scheme is not part of the feature cache key: regrouping classes reuses
@@ -115,16 +122,16 @@ Tile size and encoder window
 
 Two settings decide how much tissue the model sees.
 
-``requested_tile_size_px`` is the size of a training sample. It sets the ROI,
+``features.dense.target_size`` is the size of a training sample. It sets the ROI,
 its mask, and the area the decoder predicts. At 0.5 µm/px, a 512 px tile spans
 256 µm.
 
-``dense_window_size`` is the size of the image passed to the frozen encoder in
+``features.dense.window_size`` is the size of the image passed to the frozen encoder in
 one forward pass. It changes the features, not the training sample. With
 ``null`` (the default), the encoder receives the whole tile, which only works
 for encoders that accept that input size. With a smaller value, soma slides a
 window of that size over the tile and stitches the token grids into one grid
-for the tile. ``dense_window_overlap`` blends neighboring windows.
+for the tile. ``features.dense.overlap`` blends neighboring windows.
 
 Most pathology encoders were pretrained on 224 px inputs at about 0.5 µm/px. A
 window of the encoder's native input size keeps every forward pass at that
@@ -135,7 +142,7 @@ The token grid is coarser than the mask. The head upsamples the decoder's
 logits to the tile size, so the loss and the metrics are always computed per
 mask pixel.
 
-``preprocessing.feature_kind`` selects patch features or attention maps as the
+``features.dense.feature_kind`` selects patch features or attention maps as the
 grid content; see :doc:`decoders`.
 
 .. _native-window:
@@ -145,13 +152,13 @@ Choose the extraction window
 
 Read spacing and encoder-window size control different aspects of the input:
 spacing sets physical scale, while window size sets the context visible in one
-forward pass. Select the spacing through ``requested_spacing_um``; soma does
+forward pass. Select the spacing through ``features.dense.spacing_um``; soma does
 not force every run to an encoder's recommended spacing.
 
 .. list-table::
    :header-rows: 1
 
-   * - ``dense_window_size``
+   * - ``window_size``
      - Behavior
      - Context
    * - ``null`` (default)
@@ -167,7 +174,7 @@ not force every run to an encoder's recommended spacing.
 Whole-tile and larger-window extraction require encoder support for the input
 size. Native-size windows at a recommended spacing preserve those two
 pretraining input settings, but each window's tokens only see that window. Set
-``dense_window_overlap`` to overlap windows and blend their grids.
+``overlap`` to overlap windows and blend their grids.
 
 soma does not resize a complete image to the encoder's native pixel size (the
 method of `Ramchandani et al., 2026 <https://arxiv.org/abs/2602.18747>`_),
@@ -178,24 +185,28 @@ A starting configuration
 
 .. code-block:: yaml
 
-   data:
-     dataset_type: segmentation
-   preprocessing:
-     requested_tile_size_px: 512
-     requested_spacing_um: 0.5
-     dense_window_size: 224        # the encoder's native input size
-     dense_window_overlap: 0.5
+   features:
+     encoder: { name: uni }
+     dense:
+       target_size: 512
+       spacing_um: 0.5
+       window_size: 224             # the encoder's native input size
+       overlap: 0.5
      # whole slides only:
-     masks:
-       pixel_mapping: {background: 0, stroma: 1, tumor: 2, necrosis: 3}
-       min_coverage: {stroma: 0.05, tumor: 0.05, necrosis: 0.05}
-   encoder: { name: uni }
-   decoder: { name: lightweight_conv }
-   task:
-     name: segmentation
+     extraction:
+       masks:
+         pixel_mapping: {background: 0, stroma: 1, tumor: 2, necrosis: 3}
+         min_coverage: {stroma: 0.05, tumor: 0.05, necrosis: 0.05}
+         output_mode: merged
+   learner:
+     name: dense
      params:
-       classes: {stroma: [1], tumor: [2], necrosis: [3]}
-       ignore: [0]
+       decoder: { name: lightweight_conv }
+       head:
+         name: segmentation
+         params:
+           classes: {stroma: [1], tumor: [2], necrosis: [3]}
+           ignore: [0]
    evaluation:
      metrics: [mean_dice, mean_iou]
 
@@ -209,7 +220,7 @@ focal Tversky (``gamma > 1``). At evaluation, each pixel receives the class with
 the largest logit.
 
 By default the decoder trains on cached feature grids. To augment the tiles,
-set ``data.feature_mode: live`` and an ``augmentation`` leaf; the encoder then
+set ``features.kind: live`` and a ``loaders.augment`` leaf; the encoder then
 re-encodes each augmented tile at every step. See :ref:`live-mode`.
 
 Dice reduction and checkpoint selection
@@ -235,16 +246,17 @@ monitor it in maximum mode:
 
    evaluation:
      metrics: [mean_dice, dataset_global_mean_dice, mean_iou, dice_per_class]
-   training:
-     monitor: dataset_global_mean_dice
-     monitor_mode: max
+   trainer:
+     callbacks:
+       - {name: checkpoint, params: {monitor: dataset_global_mean_dice, mode: max}}
+       - {name: early_stopping, params: {monitor: dataset_global_mean_dice, mode: max}}
 
 Training-batch ROI sampling
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Cached segmentation runs can opt into an explicit training-batch contract
-with ``training.roi_batch_sampling``. This is distinct from
-``preprocessing.sampling``: preprocessing chooses ROI coordinates before feature
+with a ``loaders.sampler`` leaf. This is distinct from
+``features.extraction.masks.strategy``: extraction chooses ROI coordinates before feature
 extraction, while training-batch sampling chooses among the already-cached ROI grids.
 
 ``uniform`` traverses a shuffled ROI collection. ``class_conditioned`` follows
@@ -263,8 +275,8 @@ individual batches are only exactly proportional when their size permits it.
 
 A draw is one ROI index placed in one physical loader batch, so an epoch is a
 fixed draw budget rather than a unique pass over the dataset. Leave
-``roi_draws_per_epoch`` null to use the largest whole-effective-batch budget
-(``batch_size * gradient_accumulation``) no larger than the training ROI count,
+the sampler's ``draws_per_epoch`` null to use the largest whole-effective-batch
+budget (``batch_size * accumulate_grad_batches``) no larger than the training ROI count,
 which keeps ROI exposure constant across batch-size and accumulation trade-offs.
 An explicit budget takes precedence and must contain whole loader batches. Each
 fold writes ``roi_batch_sampling.json`` with the resolved budget, configured
@@ -273,11 +285,13 @@ exposure, and repeat counts.
 
 .. code-block:: yaml
 
-   training:
+   loaders:
      batch_size: 16
-     roi_draws_per_epoch: 1024
-     roi_batch_sampling: class_conditioned  # or uniform for the control arm
-     class_request_ratios: [1, 1, 2, 0]
+     sampler:
+       name: class_conditioned            # or uniform for the control arm
+       params:
+         draws_per_epoch: 1024
+         class_request_ratios: [1, 1, 2, 0]
 
 Outputs
 -------

@@ -34,7 +34,7 @@ pairwise rank concordance (B, a bonus), and the provenance-pinned ledger as the 
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -49,17 +49,20 @@ from hs2p import TilingConfig
 from slide2vec import ExecutionOptions, PreprocessingConfig
 
 from soma.config import (
-    CacheConfig,
+    CacheOptions,
+    CohortConfig,
     EncoderLeaf,
-    EvalConfig,
+    EvaluationConfig,
+    ExperimentConfig,
     FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
+    LearnerConfig,
+    RunConfig,
 )
 from soma.curation.hest import curate_hest
 from soma.curation.manifest import CuratedManifest
 from soma.benchmarks.hest.probe import DEFAULT_PCA_COMPONENTS, RidgePCAProbe, gene_pearson
+from soma.learn import learner_registry
+from soma.params import check_positive
 
 REFERENCE_NAME = "hest"
 
@@ -138,14 +141,40 @@ REFERENCE_ENVIRONMENT: dict[str, str] = {
 }
 
 
-def _cache_from_overrides(overrides: dict[str, Any] | None) -> CacheConfig | None:
-    """Turn a ``{"cache": {...}}`` override block into a :class:`CacheConfig`."""
+#: The learner a HEST config names: the closed-form probe, registered benchmark-private.
+PROBE_NAME = "hest_probe"
+
+
+@dataclass
+class HestProbeParams:
+    """:class:`~soma.benchmarks.hest.probe.RidgePCAProbe`'s params (the run's seed seeds
+    its PCA solver)."""
+
+    pca_components: int = DEFAULT_PCA_COMPONENTS
+    alpha: float | None = None
+
+    def __post_init__(self) -> None:
+        check_positive("pca_components", self.pca_components, integer=True)
+        check_positive("alpha", self.alpha, optional=True)
+
+
+if PROBE_NAME not in learner_registry:
+    learner_registry.register(
+        PROBE_NAME,
+        RidgePCAProbe,
+        params=HestProbeParams,
+        metadata={"description": "HEST's closed-form Ridge+PCA probe (benchmark-private, hest/<task>)"},
+    )
+
+
+def _cache_from_overrides(overrides: dict[str, Any] | None) -> CacheOptions | None:
+    """Turn a ``{"cache": {...}}`` override block into ``features.cache``."""
     if not overrides:
         return None
     cache_over = overrides.get("cache")
     if not cache_over:
         return None
-    return replace(CacheConfig(), **cache_over)
+    return replace(CacheOptions(), **cache_over)
 
 
 class HestBenchmark:
@@ -153,7 +182,7 @@ class HestBenchmark:
 
     Fixes the spatial-expression probe recipe + task and varies the ``encoder`` axis.
     ``build_config`` emits the tile-extraction config (HEST's tile geometry, the encoder,
-    PCA latent dim 256 under ``task.params``); ``run`` composes the verbs over it;
+    the ``hest_probe`` learner with PCA latent dim 256); ``run`` composes the verbs over it;
     ``curate`` delegates to :func:`soma.curation.hest.curate_hest`; ``expected`` selects
     the external reference row(s) for the task × encoder (possibly none yet); ``score``
     reads the fold-averaged mean-Pearson from ``summary.json``.
@@ -191,24 +220,28 @@ class HestBenchmark:
         pca_components: int = DEFAULT_PCA_COMPONENTS,
         encoder_batch_size: int = 32,
         execution: ExecutionOptions | None = None,
-    ) -> PipelineConfig:
+    ) -> ExperimentConfig:
         """Build the HEST-faithful probe config for the encoder axis.
 
-        A ``dataset_type='tile'`` config (one spot is one tile, extracted as a rank-1 set
-        source) with PCA latent dim 256 (``task.params.pca_components``), the
-        ``mean_pearson`` metric, and ``encoder`` (default ``uni2``). :meth:`run` reads it;
-        no ``Pipeline`` trains it. ``dataset_csv`` / ``splits_csv`` / ``output_root`` come
+        A tile-encoder config without an aggregator (one spot is one tile, extracted as a
+        rank-1 set source) whose learner is the ``hest_probe`` with PCA latent dim 256,
+        the ``mean_pearson`` metric, and ``encoder`` (default ``uni2``). :meth:`run` reads
+        it; no ``Pipeline`` trains it. ``dataset_csv`` / ``splits_csv`` / ``output_root`` come
         from the curated Manifest; ``overrides`` carries the CLI's shared feature-cache
         block (``{"cache": {...}}``).
 
         Preprocessing pins HEST's tile geometry (:data:`TILE_SIZE_PX` px @ :data:`SPACING_UM`
         µm/px) for every encoder, so the encoder axis varies the encoder and nothing else.
         """
-        return PipelineConfig(
-            dataset_csv=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
-            splits_csv=str(splits_csv) if splits_csv is not None else "splits.csv",
-            output_root=Path(output_root) if output_root is not None else Path("output/hest"),
-            dataset_type="tile",
+        return ExperimentConfig(
+            run=RunConfig(
+                output_dir=Path(output_root) if output_root is not None else Path("output/hest"),
+                seed=0 if seed is None else int(seed),
+            ),
+            cohort=CohortConfig(
+                records=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
+                splits=str(splits_csv) if splits_csv is not None else "splits.csv",
+            ),
             features=FeaturesConfig(
                 encoder=EncoderLeaf(
                     name=encoder,
@@ -227,19 +260,14 @@ class HestBenchmark:
                     ),
                 ),
                 execution=replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
-                cache=_cache_from_overrides(overrides) or CacheConfig(enabled=True),
+                cache=_cache_from_overrides(overrides) or CacheOptions(enabled=True),
             ),
-            task=TaskConfig(name="regression", params={"pca_components": int(pca_components)}),
-            evaluation=EvalConfig(metrics=[EVAL_METRIC]),
-            training=TrainingConfig(
-                seed=0 if seed is None else int(seed),
-                # The probe is closed-form: no epochs / early stopping / tune split, so the
-                # gradient-loop knobs keep their (inert) defaults.
-            ),
-            tags=["hest", self.task, encoder],
+            # The probe is closed-form: no loaders, trainer or tune split take part.
+            learner=LearnerConfig(PROBE_NAME, {"pca_components": int(pca_components)}),
+            evaluation=EvaluationConfig(metrics=[EVAL_METRIC]),
         )
 
-    def run(self, config: PipelineConfig) -> dict[str, float]:
+    def run(self, config: ExperimentConfig) -> dict[str, float]:
         """Extract, fit, predict and evaluate each fold through soma's verbs.
 
         Extracts the cohort's tiles once into a rank-1 set source (soma's feature cache),
@@ -254,39 +282,51 @@ class HestBenchmark:
         returns the summary. Like a ``Pipeline`` run it writes ``experiment.json`` and a
         ``run.yaml`` that tracks the run's status, so ``soma leaderboard`` and
         ``soma reproduce --from-run-dir`` can read the run. ``run.folds`` is refused: the
-        closed-form probe fits every fold in one launch. A resume onto an existing run
-        whose saved config differs is refused before anything is written.
+        closed-form probe fits every fold in one launch. The config resolves to its plan
+        against the expression cohort (``plan.yaml`` beside ``config.yaml``), and a resume
+        onto an existing run whose saved plan differs is refused before anything is written.
         """
-        if config.folds is not None:
+        if config.run.folds is not None:
             raise ValueError("the HEST runner fits every fold in one launch; run.folds is not supported")
-        from soma.config import save_config
+        import numpy as np
+
+        from soma.data import Cohort
         from soma.pipeline.layout import (
             RunRecorder,
-            guard_resume_config_drift,
+            guard_resume_plan_drift,
+            record_plan,
             resolve_managed_output_paths,
             write_experiment_metadata,
         )
+        from soma.plan import resolve
 
-        layout = resolve_managed_output_paths(config)
+        cohort = Cohort.from_csv(
+            config.cohort.records,
+            config.cohort.splits,
+            targets={"expression": "expression"},
+            dtypes={"expression": np.ndarray},
+        )
+        plan = resolve(config, cohort)
+        layout = resolve_managed_output_paths(plan)
         run_dir = layout.run_dir
-        # Like Pipeline.train: a resume (resume/run_id) onto a run saved under another
-        # config (e.g. a changed seed, outside experiment identity) is refused before any
-        # write, instead of silently replacing that run's config and fold outputs.
-        guard_resume_config_drift(run_dir, config)
+        # Like a Pipeline run: a resume (resume/run_id) onto a run saved under another plan
+        # (e.g. a changed seed, outside experiment identity) is refused before any write,
+        # instead of silently replacing that run's plan and fold outputs.
+        guard_resume_plan_drift(run_dir, plan)
         run_dir.mkdir(parents=True, exist_ok=True)
         write_experiment_metadata(layout.experiment_dir, layout.experiment)
-        save_config(config, run_dir / "config.yaml")
-        with RunRecorder(layout, config) as recorder:
-            summary = self._run_folds(config, run_dir)
+        record_plan(run_dir, plan, config=config)
+        with RunRecorder(layout, plan) as recorder:
+            summary = self._run_folds(plan, cohort, run_dir)
             recorder.complete(summary)
         return summary
 
-    def _run_folds(self, config: PipelineConfig, run_dir: Path) -> dict[str, float]:
+    def _run_folds(self, plan, cohort, run_dir: Path) -> dict[str, float]:
         """:meth:`run`'s work inside the managed run directory; returns the summary."""
         import numpy as np
         import pandas as pd
 
-        from soma.data import Cohort, ImageManifest
+        from soma.data import ImageManifest
         from soma.data._legacy import records_for_pipeline
         from soma.cache import resolve_cache_root
         from soma.evaluation import Evaluation, evaluate
@@ -294,32 +334,25 @@ class HestBenchmark:
         from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_metrics, save_summary
         from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
-        cohort = Cohort.from_csv(
-            config.dataset_csv,
-            config.splits_csv,
-            targets={"expression": "expression"},
-            dtypes={"expression": np.ndarray},
-        )
         genes = list(cohort.target_names.get("expression") or [])
-        records = records_for_pipeline(
-            cohort, ImageManifest.from_csv(config.dataset_csv), None, path=config.dataset_csv
-        )
-        features = config.features
+        records_csv = plan.cohort.records
+        records = records_for_pipeline(cohort, ImageManifest.from_csv(records_csv), None, path=records_csv)
+        features = plan.features
         cache = replace(
             features.cache,
-            root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=config.output_root),
+            root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=plan.run.output_dir),
         )
         source = FeatureExtractor(
             records,
             features.encoder,
-            resolve_pipeline_preprocessing(config),
+            resolve_pipeline_preprocessing(plan),
             shape="set",
             unit="tile",
             output_root=run_dir,
             execution=features.execution,
             cache=cache,
         ).extract().source
-        pca_components = int(config.task.params.get("pca_components", DEFAULT_PCA_COMPONENTS))
+        probe_params = plan.learner.params
         metrics = ["mean_pearson", *(gene_pearson(k, gene) for k, gene in enumerate(genes))]
 
         def features(ids) -> np.ndarray:
@@ -336,7 +369,7 @@ class HestBenchmark:
             fold_dir = run_dir if single else run_dir / f"fold_{index}"
             fold_dir.mkdir(parents=True, exist_ok=True)
             train_ids = list(fold.train)
-            probe = RidgePCAProbe(pca_components, seed=config.training.seed).fit(
+            probe = RidgePCAProbe(**probe_params, seed=plan.run.seed).fit(
                 features(train_ids), targets(train_ids)
             )
             evaluations = {}

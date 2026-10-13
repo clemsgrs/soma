@@ -7,24 +7,8 @@ from dataclasses import replace
 from hs2p import TilingConfig
 from slide2vec import DenseOptions, PreprocessingConfig
 
-from soma.config import PipelineConfig
 from soma.encoders.validation import resolve_preprocessing_config
 from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
-
-
-def resolve_composite_spacing(member_names: list[str]) -> float:
-    """Resolve the one spacing shared by every v1 composite member."""
-    from slide2vec.encoders.registry import resolve_preprocessing_defaults
-
-    per_member = {name: resolve_preprocessing_defaults(name)["spacing_um"] for name in member_names}
-    unique = sorted(set(per_member.values()))
-    if len(unique) != 1:
-        raise ValueError(
-            "composite members do not share a single default spacing "
-            f"({per_member}); set preprocessing.requested_spacing_um explicitly "
-            "(v1 reads every member at the same µm/px)."
-        )
-    return unique[0]
 
 
 def reconcile_dense_tiling(preprocessing: PreprocessingConfig, dense: DenseOptions | None) -> PreprocessingConfig:
@@ -67,23 +51,28 @@ def reconcile_dense_tiling(preprocessing: PreprocessingConfig, dense: DenseOptio
     return preprocessing
 
 
-def resolve_pipeline_preprocessing(config: PipelineConfig) -> PreprocessingConfig:
+def resolve_pipeline_preprocessing(config) -> PreprocessingConfig:
     """The slide2vec ``PreprocessingConfig`` every pipeline path extracts with.
 
-    The held ``features.extraction`` with what the run decides filled in: HIPT's region
-    geometry from its aggregator params, and the tiling and filter the encoder decides
-    when they were left unset. A grid run's tiling is reconciled with ``features.dense``
-    first (:func:`reconcile_dense_tiling`). Tile datasets declare no tiling, so theirs is
-    returned as held; so is a composite's without a tiling (its members read at the dense
-    options).
+    ``config`` is an :class:`~soma.config.ExperimentConfig` or its
+    :class:`~soma.plan.Plan`. The held ``features.extraction`` with what the run decides
+    filled in: HIPT's region geometry from its aggregator params, and the tiling and
+    filter the encoder decides when they were left unset. A grid run's tiling is
+    reconciled with ``features.dense`` first (:func:`reconcile_dense_tiling`). A set run
+    over tiles declares no tiling, so its extraction is returned as held; so is a
+    composite's without a tiling (its members read at the dense options).
     """
+    from soma.plan import learner_shape, sample_unit
+
     features = config.features
     extraction = features.extraction
-    if config.dataset_type == "tile":
+    shape = learner_shape(config)
+    if shape == "set" and sample_unit(config) == "tile":
         return extraction
-    if config.dataset_type in {"segmentation", "detection"}:
+    if shape == "grid":
         extraction = reconcile_dense_tiling(extraction, features.dense)
-    extraction = derive_preprocessing_for_aggregator(extraction, config.aggregator)
+    aggregator = None if config.learner is None else config.learner.params.get("aggregator")
+    extraction = derive_preprocessing_for_aggregator(extraction, aggregator)
     encoder = features.encoder
     if encoder is None:
         return extraction
@@ -97,7 +86,7 @@ def resolve_pipeline_preprocessing(config: PipelineConfig) -> PreprocessingConfi
     return resolve_preprocessing_config(extraction, encoder_name=encoder.name)
 
 
-def resolve_pipeline_dense(config: PipelineConfig) -> DenseOptions:
+def resolve_pipeline_dense(config) -> DenseOptions:
     """The slide2vec ``DenseOptions`` a grid run reads and encodes with.
 
     ``features.dense`` when set; otherwise slide2vec's dense defaults at the resolved
@@ -109,8 +98,8 @@ def resolve_pipeline_dense(config: PipelineConfig) -> DenseOptions:
     if tiling is None:
         raise ValueError(
             "A grid run needs a read spacing and a supervision tile size: set "
-            "features.dense, or preprocessing.requested_spacing_um and "
-            "requested_tile_size_px (or use an encoder that advertises them)."
+            "features.dense, or features.extraction.tiling (or use an encoder that "
+            "advertises them)."
         )
     return DenseOptions(
         spacing_um=float(tiling.requested_spacing_um),
@@ -122,7 +111,6 @@ def resolve_pipeline_dense(config: PipelineConfig) -> DenseOptions:
 
 __all__ = [
     "reconcile_dense_tiling",
-    "resolve_composite_spacing",
     "resolve_pipeline_dense",
     "resolve_pipeline_preprocessing",
 ]

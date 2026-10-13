@@ -1,7 +1,8 @@
 Tasks
 =====
 
-Select a task with ``task.name``. Its head maps a representation to predictions
+Select a task with the learner's ``head`` leaf (``learner.params.head.name``). The
+head maps a representation to predictions
 and defines the loss and compatible metrics. The representation comes directly
 from a frozen encoder or from a trained :doc:`aggregator <aggregators>` or
 :doc:`decoder <decoders>`; see :doc:`modeling` for the paths that produce it.
@@ -40,29 +41,31 @@ Task Zoo
    * - ``segmentation``
      - CE + soft-Dice
      - ``mean_dice``, ``mean_iou``
-     - Dense per-pixel classification (``dataset_type: segmentation``); see :doc:`segmentation`
+     - Dense per-pixel classification (the ``dense`` learner); see :doc:`segmentation`
    * - ``detection``
      - Foreground-weighted MSE
      - ``mean_f1``
-     - Cell / nucleus point detection (``dataset_type: detection``); see :doc:`detection`
+     - Cell / nucleus point detection (the ``dense`` learner); see :doc:`detection`
 
 Head dropout
 ------------
 
 The classification, ordinal-classification, regression and survival heads take an
 optional ``dropout`` probability, applied to the head's **input** — the aggregated
-bag representation, or the frozen embedding itself when ``aggregation: null`` leaves
-the head as the only trainable component:
+bag representation, or the frozen embedding itself when no aggregator leaves the
+head as the only trainable component:
 
 .. code-block:: yaml
 
-   task:
-     name: binary_classification
+   learner:
      params:
-       dropout: 0.2
+       head:
+         name: binary_classification
+         params:
+           dropout: 0.2
 
-The default is ``0.0``. Aggregator dropout, set under ``aggregation.params``, is
-independent.
+The default is ``0.0``. Aggregator dropout, set in the aggregator leaf's
+``params``, is independent.
 
 .. _regression-task:
 

@@ -10,15 +10,7 @@ import pytest
 import torch
 import yaml
 
-from soma.config import (
-    EncoderLeaf,
-    FeaturesConfig,
-    PipelineConfig,
-    RepresentationConfig,
-    TaskConfig,
-    config_yaml_dict,
-    load_config,
-)
+from soma.config import CRoMaOptions, EncoderLeaf, ExperimentConfig, FeaturesConfig
 from soma.data._legacy import legacy_samples_from_csv
 from soma.data._legacy import legacy_folds_from_csv
 from soma.data import CachedSetSource
@@ -28,30 +20,29 @@ from soma.pipeline.layout import (
     create_run_metadata,
 )
 from soma.pipeline.representation import evaluate_representation
+from soma.plan import Plan, check
+from tests.experiment_configs import experiment
+
+_PROTOCOL = {
+    "confounder_column": "medical_center",
+    "split": "test",
+    "evaluation_design": "all",
+    "m": 5,
+    "alpha": 0.10,
+}
 
 
 def _representation_yaml(tmp_path: Path, **representation_overrides: object) -> Path:
-    representation = {
-        "kind": "croma",
-        "confounder_column": "medical_center",
-        "split": "test",
-        "evaluation_design": "all",
-        "m": 5,
-        "alpha": 0.10,
-        **representation_overrides,
-    }
     path = tmp_path / "representation.yaml"
     path.write_text(
         yaml.safe_dump(
             {
-                "run": {"output_root": str(tmp_path / "runs")},
-                "data": {
-                    "dataset_csv": str(tmp_path / "dataset.csv"),
-                    "splits_csv": str(tmp_path / "splits.csv"),
-                    "dataset_type": "tile",
+                "run": {"output_dir": str(tmp_path / "runs")},
+                "cohort": {
+                    "records": str(tmp_path / "dataset.csv"),
+                    "splits": str(tmp_path / "splits.csv"),
                 },
-                "task": None,
-                "representation": representation,
+                "evaluation": {"representation": {**_PROTOCOL, **representation_overrides}},
             },
             sort_keys=False,
         ),
@@ -60,62 +51,40 @@ def _representation_yaml(tmp_path: Path, **representation_overrides: object) -> 
     return path
 
 
-def test_representation_yaml_disables_task_default_and_materializes_protocol(tmp_path: Path):
-    config = load_config(_representation_yaml(tmp_path))
+def test_representation_yaml_is_a_task_free_evaluation(tmp_path: Path):
+    config = ExperimentConfig.from_yaml(_representation_yaml(tmp_path))
+    check(config)
 
-    assert config.task is None
-    assert config.representation == RepresentationConfig(
-        kind="croma",
+    assert config.learner is None
+    assert config.evaluation.representation == CRoMaOptions(
         confounder_column="medical_center",
         split="test",
         evaluation_design="all",
         m=5,
         alpha=0.10,
     )
-    persisted = config_yaml_dict(config)
-    assert persisted["task"] is None
-    assert persisted["representation"] == {
-        "kind": "croma",
-        "confounder_column": "medical_center",
-        "split": "test",
-        "evaluation_design": "all",
-        "m": 5,
-        "alpha": 0.10,
-    }
+    persisted = config.to_dict()
+    assert persisted["learner"] is None
+    assert persisted["evaluation"]["representation"] == _PROTOCOL
 
 
-def test_pipeline_config_requires_exactly_one_consumer():
-    common = {
-        "dataset_csv": "dataset.csv",
-        "splits_csv": "splits.csv",
-        "output_root": "runs",
-        "dataset_type": "tile",
-    }
-    representation = RepresentationConfig(
-        kind="croma", confounder_column="site", split="test"
-    )
+def test_a_run_has_exactly_one_consumer():
+    representation = CRoMaOptions(confounder_column="site", split="test")
 
-    with pytest.raises(TypeError, match="exactly one.*task.*representation"):
-        PipelineConfig(**common, task=None, representation=None)
-    with pytest.raises(TypeError, match="exactly one.*task.*representation"):
-        PipelineConfig(
-            **common,
-            task=TaskConfig(name="binary_classification"),
-            representation=representation,
-        )
+    with pytest.raises(ValueError, match="needs a learner.*or evaluation.representation"):
+        check(experiment(head=None))
+    with pytest.raises(ValueError, match="task-free evaluation: drop the learner"):
+        check(experiment(evaluation={"representation": representation}))
 
 
-def test_representation_requires_tile_dataset():
-    with pytest.raises(ValueError, match="dataset_type='tile'"):
-        PipelineConfig(
-            dataset_csv="dataset.csv",
-            splits_csv="splits.csv",
-            output_root="runs",
-            dataset_type="slide",
-            task=None,
-            representation=RepresentationConfig(
-                kind="croma", confounder_column="site", split="test"
-            ),
+def test_representation_requires_tile_embeddings():
+    with pytest.raises(ValueError, match="tile-level encoder"):
+        check(
+            experiment(
+                head=None,
+                features=FeaturesConfig(encoder="titan"),
+                evaluation={"representation": CRoMaOptions(confounder_column="site", split="test")},
+            )
         )
 
 
@@ -126,12 +95,10 @@ def test_representation_requires_canonical_seed_zero(tmp_path: Path):
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
     with pytest.raises(ValueError, match="representation.*seed.*0"):
-        load_config(path)
+        check(ExperimentConfig.from_yaml(path))
 
 
-def test_ordinary_task_default_and_identity_match_semantic_manifest_contract(
-    tmp_path: Path,
-):
+def test_ordinary_task_identity_matches_semantic_manifest_contract(tmp_path: Path):
     (tmp_path / "dataset.csv").write_text(
         "sample_id,image_path,label\n"
         "train,/images/train.png,A\n"
@@ -142,44 +109,25 @@ def test_ordinary_task_default_and_identity_match_semantic_manifest_contract(
         "fold,sample_id,split\n0,train,train\n0,held,test\n",
         encoding="utf-8",
     )
-    path = tmp_path / "task.yaml"
-    path.write_text(
-        yaml.safe_dump(
-            {
-                "run": {"output_root": str(tmp_path / "runs")},
-                "data": {
-                    "dataset_csv": str(tmp_path / "dataset.csv"),
-                    "splits_csv": str(tmp_path / "splits.csv"),
-                    "dataset_type": "tile",
-                },
-            }
-        ),
-        encoding="utf-8",
-    )
+    config = experiment(tmp_path / "dataset.csv", tmp_path / "splits.csv", output_dir=tmp_path / "runs")
 
-    config = load_config(path)
-    persisted = config_yaml_dict(config)
-    payload = canonical_experiment_payload(config)
-    experiment = build_experiment_spec(config)
+    payload = canonical_experiment_payload(Plan(config))
+    spec = build_experiment_spec(Plan(config))
 
-    assert config.task == TaskConfig(name="binary_classification")
-    assert config.representation is None
-    assert persisted["task"] == {"name": "binary_classification", "params": {}}
-    assert "representation" not in persisted
-    assert payload["task"] == {"name": "binary_classification", "params": {}}
-    assert "representation" not in payload
-    assert experiment.experiment_id == (
-        "9ef20e237e7373f82e61583f4499ac6721413d7883c9c1d7bbd4987100a4641f"
+    assert payload["learner"]["params"]["head"] == {"name": "binary_classification", "params": {}}
+    assert payload["evaluation"]["representation"] is None
+    assert spec.experiment_id == (
+        "1e71145b4fae9ddabebd4a3c3898e4948abfcb6a39d5a4ed0675249a0cc9493c"
     )
-    assert experiment.slug == (
-        "dataset-precomputed-slide-binary-classification_9ef20e237e73"
+    assert spec.slug == (
+        "dataset-precomputed-slide-binary-classification_1e71145b4fae"
     )
 
 
 @pytest.mark.parametrize(
     ("overrides", "message"),
     [
-        ({"kind": "other"}, "kind"),
+        ({"kind": "croma"}, "kind"),
         ({"evaluation_design": "paired_2x2"}, "evaluation_design"),
         ({"m": 3}, "m"),
         ({"alpha": 0.2}, "alpha"),
@@ -191,29 +139,25 @@ def test_representation_v1_rejects_noncanonical_protocol(
     tmp_path: Path, overrides: dict[str, object], message: str
 ):
     with pytest.raises(ValueError, match=message):
-        load_config(_representation_yaml(tmp_path, **overrides))
+        ExperimentConfig.from_yaml(_representation_yaml(tmp_path, **overrides))
 
 
 @pytest.mark.parametrize(
-    "extra",
+    ("extra", "message"),
     [
-        {"normalization": {"method": "l2"}},
-        {"projection": {"method": "random", "target_dim": 8}},
-        {"augmentation": {"name": "segmentation", "params": {"horizontal_flip": 0.5}}},
+        ({"learner": {"name": "mil", "params": {"normalization": {"method": "l2"}}}}, "drop the learner"),
+        ({"learner": {"name": "mil", "params": {"projection": {"method": "random", "target_dim": 8}}}}, "drop the learner"),
+        ({"loaders": {"augment": {"name": "segmentation", "params": {"horizontal_flip": 0.5}}}}, "no augmentation"),
     ],
 )
-def test_representation_rejects_active_feature_transforms(tmp_path: Path, extra: dict):
+def test_representation_rejects_active_feature_transforms(tmp_path: Path, extra: dict, message: str):
     path = _representation_yaml(tmp_path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    for key, value in extra.items():
-        if isinstance(value, dict) and isinstance(raw.get(key), dict):
-            raw[key].update(value)
-        else:
-            raw[key] = value
+    raw.update(extra)
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
 
-    with pytest.raises(ValueError, match="representation.*normalization.*projection.*augmentation"):
-        load_config(path)
+    with pytest.raises(ValueError, match=message):
+        check(ExperimentConfig.from_yaml(path))
 
 
 def test_dataset_populates_literal_optional_group_id(tmp_path: Path):
@@ -242,7 +186,8 @@ def _representation_config_with_manifests(
     dataset_rows: str,
     split_rows: str,
     **representation_overrides: object,
-) -> PipelineConfig:
+) -> Plan:
+    """A representation run's plan over the given cohort files."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "dataset.csv").write_text(
         "sample_id,image_path,label,group_id,site\n" + dataset_rows,
@@ -252,7 +197,7 @@ def _representation_config_with_manifests(
         "fold,sample_id,split\n" + split_rows,
         encoding="utf-8",
     )
-    return load_config(_representation_yaml(tmp_path, **representation_overrides))
+    return Plan(ExperimentConfig.from_yaml(_representation_yaml(tmp_path, **representation_overrides)))
 
 
 def test_representation_identity_uses_only_selected_rows_and_protocol(tmp_path: Path):
@@ -295,17 +240,9 @@ def test_representation_identity_uses_only_selected_rows_and_protocol(tmp_path: 
     assert build_experiment_spec(changed_unselected).experiment_id == base_id
     assert build_experiment_spec(changed_protocol).experiment_id != base_id
     payload = canonical_experiment_payload(base)
-    assert payload["task"] is None
-    assert payload["representation"] == {
-        "kind": "croma",
-        "confounder_column": "medical_center",
-        "split": "test",
-        "evaluation_design": "all",
-        "m": 5,
-        "alpha": 0.10,
-    }
-    assert "training" not in payload
-    assert "evaluation" not in payload
+    assert payload["representation"] == _PROTOCOL
+    for section in ("learner", "trainer", "loaders", "evaluation"):
+        assert section not in payload
 
 
 @pytest.mark.parametrize(
@@ -341,16 +278,12 @@ def test_representation_identity_covers_encoder_output_variant(tmp_path: Path):
         dataset_rows="held,/images/held.png,B,g1,south\n",
         split_rows="0,held,test\n",
     )
-    cls = replace(
-        base,
-        features=replace(base.features, encoder=EncoderLeaf(name="h0-mini", params={"output_variant": "cls"})),
-    )
-    patch_mean = replace(
-        base,
-        features=replace(
-            base.features, encoder=EncoderLeaf(name="h0-mini", params={"output_variant": "cls_patch_mean"})
-        ),
-    )
+    def with_variant(variant: str) -> Plan:
+        encoder = EncoderLeaf(name="h0-mini", params={"output_variant": variant})
+        return Plan(replace(base.config, features=replace(base.features, encoder=encoder)))
+
+    cls = with_variant("cls")
+    patch_mean = with_variant("cls_patch_mean")
 
     assert build_experiment_spec(cls).experiment_id != build_experiment_spec(
         patch_mean
@@ -365,7 +298,7 @@ def test_representation_slug_and_metadata_use_tagged_comparison_key(tmp_path: Pa
     )
     experiment = build_experiment_spec(config)
     metadata = create_run_metadata(
-        config=config,
+        plan=config,
         experiment=experiment,
         run_dir=tmp_path / "run",
         run_id="attempt-1",
@@ -377,14 +310,7 @@ def test_representation_slug_and_metadata_use_tagged_comparison_key(tmp_path: Pa
         "kind": "representation",
         "dataset_checksum": experiment.dataset_checksum,
         "splits_checksum": experiment.splits_checksum,
-        "representation": {
-            "kind": "croma",
-            "confounder_column": "medical_center",
-            "split": "test",
-            "evaluation_design": "all",
-            "m": 5,
-            "alpha": 0.10,
-        },
+        "representation": _PROTOCOL,
     }
 
 
@@ -405,7 +331,7 @@ def test_representation_provenance_does_not_silence_version_lookup_failure(
 
     with pytest.raises(RuntimeError, match="distribution metadata is unreadable"):
         create_run_metadata(
-            config=config,
+            plan=config,
             experiment=experiment,
             run_dir=tmp_path / "run",
             run_id="attempt-1",
@@ -504,9 +430,7 @@ def test_representation_forwards_manifest_order_and_maps_croma_result(
         feature_store=store,
         dataset=dataset,
         splits=splits,
-        representation=RepresentationConfig(
-            kind="croma", confounder_column="site", split="test"
-        ),
+        representation=CRoMaOptions(confounder_column="site", split="test"),
         run_dir=tmp_path / "run",
     )
 
@@ -549,9 +473,7 @@ def test_representation_runs_the_installed_croma(tmp_path: Path):
         feature_store=store,
         dataset=dataset,
         splits=splits,
-        representation=RepresentationConfig(
-            kind="croma", confounder_column="site", split="test"
-        ),
+        representation=CRoMaOptions(confounder_column="site", split="test"),
         run_dir=tmp_path / "run",
     )
 
@@ -599,9 +521,7 @@ def test_representation_rejects_nonfinite_croma_results(
             feature_store=store,
             dataset=dataset,
             splits=splits,
-            representation=RepresentationConfig(
-                kind="croma", confounder_column="site", split="test"
-            ),
+            representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=tmp_path / "run",
         )
     assert not (tmp_path / "run" / "summary.json").exists()
@@ -627,9 +547,7 @@ def test_invalid_representation_rerun_removes_stale_summary(tmp_path: Path):
             feature_store=store,
             dataset=dataset,
             splits=splits,
-            representation=RepresentationConfig(
-                kind="croma", confounder_column="site", split="test"
-            ),
+            representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=run_dir,
         )
 
@@ -667,9 +585,7 @@ def test_representation_rejects_invalid_selected_rows_or_features(
             feature_store=store,
             dataset=dataset,
             splits=splits,
-            representation=RepresentationConfig(
-                kind="croma", confounder_column="site", split="test"
-            ),
+            representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=tmp_path / "run",
         )
 
@@ -686,9 +602,7 @@ def test_representation_split_must_be_nonempty_and_in_exactly_one_fold(tmp_path:
             feature_store=store,
             dataset=dataset,
             splits=splits,
-            representation=RepresentationConfig(
-                kind="croma", confounder_column="site", split="test"
-            ),
+            representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=tmp_path / "run",
         )
 
@@ -705,9 +619,7 @@ def test_representation_split_must_exist(tmp_path: Path):
             feature_store=store,
             dataset=dataset,
             splits=splits,
-            representation=RepresentationConfig(
-                kind="croma", confounder_column="site", split="test_external"
-            ),
+            representation=CRoMaOptions(confounder_column="site", split="test_external"),
             run_dir=tmp_path / "run",
         )
 
@@ -742,9 +654,7 @@ def test_representation_rejects_missing_selected_feature(tmp_path: Path):
             feature_store=store,
             dataset=dataset,
             splits=splits,
-            representation=RepresentationConfig(
-                kind="croma", confounder_column="site", split="test"
-            ),
+            representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=tmp_path / "run",
         )
 
@@ -760,7 +670,7 @@ def test_representation_attempt_metadata_retains_attempt_and_completion_time(
     experiment = build_experiment_spec(config)
 
     first = create_run_metadata(
-        config=config,
+        plan=config,
         experiment=experiment,
         run_dir=tmp_path / "attempt-1",
         run_id="attempt-1",
@@ -768,7 +678,7 @@ def test_representation_attempt_metadata_retains_attempt_and_completion_time(
         finished_at="2026-08-11T12:00:00+00:00",
     )
     second = create_run_metadata(
-        config=config,
+        plan=config,
         experiment=experiment,
         run_dir=tmp_path / "attempt-2",
         run_id="attempt-2",
@@ -812,15 +722,12 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
         split_rows=[(0, "s0", "test")],
     )
     del dataset, store
-    config = PipelineConfig(
-        dataset_csv=tmp_path / "dataset.csv",
-        splits_csv=tmp_path / "splits.csv",
-        output_root=tmp_path / "outputs",
-        dataset_type="tile",
-        task=None,
-        representation=RepresentationConfig(
-            kind="croma", confounder_column="site", split="test"
-        ),
+    config = experiment(
+        tmp_path / 'dataset.csv',
+        tmp_path / 'splits.csv',
+        output_dir=tmp_path / 'outputs',
+        head=None,
+        evaluation={"representation": CRoMaOptions(confounder_column='site', split='test')},
     )
     monkeypatch.setattr(
         "croma.CRoMa.compute",
@@ -838,6 +745,7 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
 
     assert result.fold_results == []
     assert (result.run_dir / "config.yaml").is_file()
+    assert (result.run_dir / "plan.yaml").is_file()
     assert (result.run_dir / "summary.json").is_file()
     assert (result.run_dir / "run.log").is_file()
     assert not (result.run_dir / "report.html").exists()

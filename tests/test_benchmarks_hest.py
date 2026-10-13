@@ -18,6 +18,8 @@ from pathlib import Path
 
 import pytest
 
+from soma.config import LearnerConfig
+from soma.plan import check, sample_unit
 from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import hest
 
@@ -63,13 +65,13 @@ def test_build_config_encodes_the_probe_recipe(tmp_path):
         output_root=tmp_path / "runs",
         seed=3,
     )
-    assert config.dataset_type == "tile"
-    assert config.task.name == "regression"
-    assert config.task.params["pca_components"] == 256  # PCA latent dim
+    assert sample_unit(config) == "tile"
+    assert config.learner == LearnerConfig(hest.PROBE_NAME, {"pca_components": 256})  # PCA latent dim
     assert config.features.encoder.name == "uni2"
     assert config.features.encoder.output_variant is None  # uni2 uses the slide2vec default
     assert config.evaluation.metrics == ["mean_pearson"]
-    assert config.training.seed == 3
+    assert config.run.seed == 3
+    check(config)
 
 
 def test_run_refuses_a_fold_selection_before_extracting(tmp_path, monkeypatch):
@@ -84,7 +86,7 @@ def test_run_refuses_a_fold_selection_before_extracting(tmp_path, monkeypatch):
         output_root=tmp_path / "runs",
         seed=0,
     )
-    config = replace(config, run_id="pinned", folds=(1,))
+    config = replace(config, run=replace(config.run, run_id="pinned", folds=(1,)))
     benchmark = get_benchmark("hest/IDC")
     monkeypatch.setattr(
         type(benchmark), "_run_folds", lambda *args, **kwargs: pytest.fail("extraction ran")
@@ -99,6 +101,7 @@ def test_run_refuses_a_drifted_resume_before_rewriting_the_run(tmp_path, monkeyp
     # Seed is outside experiment identity, so resuming a pinned run with another seed lands
     # on the same run dir; like Pipeline.train, the runner must refuse rather than
     # overwrite its config.yaml and refit every fold.
+    import numpy as np
     import yaml
     from dataclasses import replace
 
@@ -106,13 +109,15 @@ def test_run_refuses_a_drifted_resume_before_rewriting_the_run(tmp_path, monkeyp
         "sample_id,image_path,target_index,spacing_at_level_0\n"
         "a,a.png,0,0.5\nb,b.png,1,0.5\n"
     )
+    np.save(tmp_path / "targets.npy", np.zeros((2, 3)))
+    (tmp_path / "genes.json").write_text(json.dumps(["G1", "G2", "G3"]))
     (tmp_path / "splits.csv").write_text("sample_id,split\na,train\nb,test\n")
     benchmark = get_benchmark("hest/IDC")
     calls = []
     monkeypatch.setattr(
         type(benchmark),
         "_run_folds",
-        lambda self, config, run_dir: calls.append(config.training.seed) or {"test/mean_pearson": 0.5},
+        lambda self, plan, cohort, run_dir: calls.append(plan.run.seed) or {"test/mean_pearson": 0.5},
     )
 
     def config_for(seed):
@@ -123,7 +128,7 @@ def test_run_refuses_a_drifted_resume_before_rewriting_the_run(tmp_path, monkeyp
             output_root=tmp_path / "runs",
             seed=seed,
         )
-        return replace(config, run_id="pinned")
+        return replace(config, run=replace(config.run, run_id="pinned"))
 
     benchmark.run(config_for(0))
     (run_dir,) = (tmp_path / "runs").glob("experiments/*/runs/pinned")
@@ -169,11 +174,10 @@ def test_build_config_pins_virchow2_cls_patch_mean_variant(tmp_path):
     # HEST's virchow2 is the 2560-d CLS+mean concat; the 1280-d CLS-only variant would not match.
     assert config.features.encoder.output_variant == "cls_patch_mean"
     # Everything else stays the fixed HEST probe recipe (identical to the uni2 build).
-    assert config.dataset_type == "tile"
-    assert config.task.name == "regression"
-    assert config.task.params["pca_components"] == 256  # PCA latent dim
+    assert sample_unit(config) == "tile"
+    assert config.learner.params == {"pca_components": 256}  # PCA latent dim
     assert config.evaluation.metrics == ["mean_pearson"]
-    assert config.training.seed == 3
+    assert config.run.seed == 3
 
 
 def test_build_config_h_optimus_1_uses_slide2vec_default_variant(tmp_path):
@@ -189,7 +193,7 @@ def test_build_config_h_optimus_1_uses_slide2vec_default_variant(tmp_path):
     )
     assert config.features.encoder.name == "h-optimus-1"
     assert config.features.encoder.output_variant is None  # slide2vec default (CLS, 1536-d)
-    assert config.dataset_type == "tile"
+    assert sample_unit(config) == "tile"
 
 
 def test_output_variants_maps_only_virchow2_to_cls_patch_mean():

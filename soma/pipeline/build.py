@@ -1,11 +1,12 @@
-"""Config → objects: the run's feature source and, per fold, the :class:`FoldSetup`.
+"""Plan → objects: the run's feature source and, per fold, the :class:`FoldSetup`.
 
-Everything a ``PipelineConfig`` decides lives here, so :func:`~soma.pipeline.folds.run_fold`
-holds only the canonical order. The ``dataset_type`` branches stay here until slice 6
-replaces them with ``{name, params}`` leaves:
+Everything a :class:`~soma.plan.Plan` decides lives here, so
+:func:`~soma.pipeline.folds.run_fold` holds only the canonical order. The builders read
+plan sections: the learner's shape picks the builder, the head's task family the grid
+task, and the cohort's ``collapse`` the patient path:
 
 * :func:`attach_source` — the supplied source, or one extracted (or built live) from the
-  config;
+  plan;
 * :func:`build_set_model` / :func:`build_grid_model` — the two model builders. They are
   also what :func:`soma.load` calls to rebuild a bundle, so a bundle is rebuilt by the
   same code that built the model;
@@ -37,14 +38,12 @@ from soma.cache import resolve_cache_root
 from slide2vec import DenseOptions, PreprocessingConfig
 
 from soma.config import (
-    AggregatorConfig,
-    EvalConfig,
-    NormalizationConfig,
-    PipelineConfig,
-    ProjectionConfig,
-    TrainingConfig,
+    Component,
+    EvaluationConfig,
+    ExperimentConfig,
+    LoadersConfig,
+    TrainerConfig,
     is_annotation_sampling,
-    validate_feature_adaptor_compatibility,
 )
 from soma.data import (
     AnnotationManifest,
@@ -64,10 +63,9 @@ from soma.evaluation import Baseline
 from soma.evaluation.metrics import resolve_metrics
 from soma.extraction import FeatureExtractor, _release_parent_cuda_state
 from soma.learn import (
-    Checkpoint,
-    EarlyStopping,
     Learner,
     Progress,
+    callback_registry,
     learner_registry,
     record_builder,
     resolve_leaf,
@@ -75,6 +73,7 @@ from soma.learn import (
 from soma.learn.grid import grid_loaders
 from soma.pipeline import _legacy
 from soma.pipeline._legacy import LegacyFolds, LegacyRecord, LegacySamples
+from soma.plan import LEARNER_OWN_EXCLUDED, Plan, load_cohort
 from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 from soma.tasks.classification import BranchAwareClassificationHead, MulticlassClassificationHead
 from soma.tasks.registry import task_registry
@@ -82,8 +81,11 @@ from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
 from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
 from soma.training.feature_adaptor import (
     FeatureAdaptor,
+    NormalizationParams,
+    ProjectionParams,
     build_feature_adaptor,
     feature_adaptor_output_dim,
+    validate_feature_adaptor_compatibility,
     write_feature_adapter_sidecar,
 )
 from soma.training.fold_planning import plan_dense_fold
@@ -104,12 +106,10 @@ __all__ = [
     "build_grid_model",
     "build_set_fold",
     "build_set_model",
-    "extraction_shape",
     "extraction_unit",
     "live_encoder_for",
     "live_encoder_spec",
     "load_pipeline_data",
-    "resolve_task_class",
 ]
 
 logger = logging.getLogger(__name__)
@@ -181,11 +181,11 @@ class FoldSetup:
 
 @dataclass
 class RunInputs:
-    """What every fold of a run shares: the config, the attached source, the records."""
+    """What every fold of a run shares: the plan, the attached source, the records."""
 
-    config: PipelineConfig
+    plan: Plan
     preprocessing: PreprocessingConfig
-    evaluation: EvalConfig
+    evaluation: EvaluationConfig
     source: Any
     cohort: Cohort
     dataset: LegacySamples
@@ -197,12 +197,25 @@ class RunInputs:
     #: A grid run's slide2vec ``DenseOptions`` (its read spacing, tolerance and backend).
     dense: DenseOptions | None = None
     roi_population_cache_root: Path | None = None
+    #: ``{top-level package: version}`` of the plan's dotted-path components.
+    packages: dict[str, str | None] = field(default_factory=dict)
     _roi_population: Any = field(default=None, repr=False)
     _roi_caches: tuple[dict, dict] = field(default_factory=lambda: ({}, {}), repr=False)
 
     @property
     def num_folds(self) -> int:
         return self.splits.num_folds
+
+    @property
+    def provenance(self) -> dict[str, Any]:
+        """What every fold bundle's ``provenance.json`` records beyond soma's own: the run,
+        the feature source's identity and one ``<package>_version`` entry per top-level
+        package a dotted-path component imports from."""
+        return {
+            "run_id": self.run_id,
+            "feature_source": self.source_identity,
+            **{f"{package}_version": version for package, version in self.packages.items()},
+        }
 
     def roi_population(self):
         """The run's segmentation ROI population (explicit ROI batch sampling only),
@@ -222,8 +235,8 @@ class RunInputs:
 
 
 def build_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldSetup:
-    """The fold's :class:`FoldSetup`, from the builder of the config's shape."""
-    if extraction_shape(inputs.config.dataset_type) == "grid":
+    """The fold's :class:`FoldSetup`, from the builder of the learner's shape."""
+    if inputs.plan.shape == "grid":
         return build_grid_fold(inputs, fold, fold_split)
     return build_set_fold(inputs, fold, fold_split)
 
@@ -237,15 +250,22 @@ def build_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldSetup
 UNFITTED: Any = object()
 
 
-def _adaptor_sections(normalization, projection) -> tuple[NormalizationConfig | None, ProjectionConfig | None]:
+def _adaptor_sections(normalization, projection) -> tuple[NormalizationParams | None, ProjectionParams | None]:
     return (
-        None if normalization is None else NormalizationConfig(**normalization),
-        None if projection is None else ProjectionConfig(**projection),
+        None if normalization is None else NormalizationParams(**normalization),
+        None if projection is None else ProjectionParams(**projection),
     )
 
 
-def _section(config: Any) -> dict[str, Any] | None:
-    return None if config is None else dataclasses.asdict(config)
+def _adaptor_params(plan: Plan) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The plan's ``normalization`` and ``projection`` sections (both always present)."""
+    params = plan.learner.params
+    return dict(params["normalization"]), dict(params["projection"])
+
+
+def head_params(head: Component) -> dict[str, Any]:
+    """A head leaf's constructor params: the plan's params without the cohort's ``targets``."""
+    return {key: value for key, value in head.params.items() if key != "targets"}
 
 
 def _component_name(registry, configured: str, cls: type) -> str:
@@ -385,59 +405,41 @@ def build_grid_model(
 # ---------------------------------------------------------------------------
 
 
-def _optimizer_leaf(training: TrainingConfig) -> dict[str, object]:
-    """The config's optimizer leaf with ``learning_rate`` / ``weight_decay`` as its params."""
-    leaf = training.optimizer if isinstance(training.optimizer, dict) else {"name": training.optimizer}
-    params = {"lr": training.learning_rate, "weight_decay": training.weight_decay}
-    params.update(leaf.get("params") or {})
-    return {**leaf, "params": params}
+def build_learner(model: nn.Module, plan: Plan) -> Learner:
+    """Wrap ``model`` in the plan's learner, with its optimizer and scheduler leaves."""
+    learner = plan.learner
+    own = {key: value for key, value in learner.params.items() if key not in LEARNER_OWN_EXCLUDED}
+    cls, params, _ = resolve_leaf({"name": learner.name, "params": own}, learner_registry)
+    return cls(
+        model,
+        optimizer=learner.params["optimizer"],
+        schedulers=tuple(learner.params.get("scheduler") or ()),
+        **params,
+    )
 
 
-def _scheduler_leaves(training: TrainingConfig) -> tuple[object, ...]:
-    schedulers = training.scheduler if isinstance(training.scheduler, list) else [training.scheduler]
-    return tuple(leaf for leaf in schedulers if leaf is not None and leaf != "none")
-
-
-def build_learner(model: nn.Module, training: TrainingConfig, *, shape: str) -> Learner:
-    """Wrap ``model`` in the configured learner (``training.learner``) or the shape's."""
-    cls, params, _ = resolve_leaf(training.learner or {"name": shape}, learner_registry)
-    return cls(model, optimizer=_optimizer_leaf(training), schedulers=_scheduler_leaves(training), **params)
-
-
-def _fit_callbacks(training: TrainingConfig, *, fold: int, num_folds: int) -> Callable[[], list[Any]]:
-    """``Checkpoint`` (selection in memory, no file) and, unless ``patience`` is ``None``
-    (required by ``checkpoint_selection='last'``), ``EarlyStopping``; plus ``Progress``."""
+def _fit_callbacks(trainer: TrainerConfig, *, fold: int, num_folds: int) -> Callable[[], list[Any]]:
+    """The plan's callbacks (``checkpoint`` selects in memory, no file), plus ``Progress``."""
 
     def callbacks() -> list[Any]:
-        installed: list[Any] = [
-            Checkpoint(
-                monitor=training.monitor,
-                mode=training.monitor_mode,
-                selection=training.checkpoint_selection,
-            )
-        ]
-        if training.patience is not None:
-            installed.append(
-                EarlyStopping(
-                    monitor=training.monitor,
-                    mode=training.monitor_mode,
-                    patience=training.patience,
-                    hold_until_moves=training.hold_patience_until_monitor_moves,
-                )
-            )
+        installed: list[Any] = []
+        for leaf in trainer.callbacks:
+            cls, params, _ = resolve_leaf(leaf, callback_registry)
+            installed.append(cls(**params))
         installed.append(Progress(label=f"fold {fold + 1}/{num_folds}" if num_folds > 1 else None))
         return installed
 
     return callbacks
 
 
-def _trainer_kwargs(training: TrainingConfig) -> dict[str, Any]:
+def _trainer_kwargs(trainer: TrainerConfig) -> dict[str, Any]:
     return {
-        "max_epochs": training.epochs,
-        "max_steps": training.max_steps,
-        "accumulate_grad_batches": training.gradient_accumulation,
-        "val_every_n_epochs": training.tune_every_n_epochs,
-        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "max_epochs": trainer.max_epochs,
+        "max_steps": trainer.max_steps,
+        "accumulate_grad_batches": trainer.accumulate_grad_batches,
+        "val_every_n_epochs": trainer.val_every_n_epochs,
+        "device": trainer.device,
+        "precision": trainer.precision,
     }
 
 
@@ -446,13 +448,13 @@ def _trainer_kwargs(training: TrainingConfig) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _loader_kwargs(training: TrainingConfig) -> dict[str, object]:
-    """DataLoader kwargs from ``TrainingConfig``; ``persistent_workers`` needs workers."""
+def _loader_kwargs(loaders: LoadersConfig) -> dict[str, object]:
+    """DataLoader kwargs from the ``loaders`` section; ``persistent_workers`` needs workers."""
     return {
-        "batch_size": training.batch_size,
-        "num_workers": training.num_workers,
-        "pin_memory": training.pin_memory,
-        "persistent_workers": training.persistent_workers and training.num_workers > 0,
+        "batch_size": loaders.batch_size,
+        "num_workers": loaders.num_workers,
+        "pin_memory": loaders.pin_memory,
+        "persistent_workers": loaders.persistent_workers and loaders.num_workers > 0,
     }
 
 
@@ -506,7 +508,7 @@ class _SupportGrids(_SupportFeatures):
 
 
 def _adaptor_step(
-    config: PipelineConfig,
+    plan: Plan,
     *,
     support: _SupportFeatures,
     num_support: int,
@@ -522,8 +524,7 @@ def _adaptor_step(
 
     def fit_adaptor(fold_dir: Path) -> FeatureAdaptor | None:
         adaptor = build_feature_adaptor(
-            config.normalization,
-            config.projection,
+            *_adaptor_sections(*_adaptor_params(plan)),
             num_features=feature_dim,
             encoder_identity=encoder_identity,
         )
@@ -550,8 +551,8 @@ def _no_adaptor(fold_dir: Path) -> None:
     return None
 
 
-def _encoder_identity(config: PipelineConfig) -> str:
-    encoder = config.features.encoder
+def _encoder_identity(plan: Plan) -> str:
+    encoder = plan.features.encoder
     return encoder.name if encoder is not None else ""
 
 
@@ -576,12 +577,12 @@ def _resolve_tune_is_test_split(fold_split: FoldSplit, fold_label: str) -> str:
     if len(test_split_names) != 1:
         raise ValueError(
             f"{fold_label} has {len(test_split_names)} test splits; "
-            "training.tune_is_test=True requires exactly one test split"
+            "cohort.tune_is_test requires exactly one test split"
         )
     return test_split_names[0]
 
 
-def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> type:
+def _bag_head_class(task_cls: type, *, task_name: str, aggregator_key: str) -> type:
     """Pick the head class for a bag-level run.
 
     ``clam_mb`` emits one branch per class and needs a branch-aware head; every other
@@ -589,7 +590,7 @@ def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> 
     handles branch representations is kept as is; the ordinary multiclass head is
     swapped for the built-in branch-aware one.
     """
-    if aggregator_name != "clam_mb":
+    if aggregator_key != "clam_mb":
         return task_cls
     task_family = str(task_cls.task_family)
     if task_family != "multiclass_classification":
@@ -609,7 +610,7 @@ def _bag_head_class(task_cls: type, *, task_name: str, aggregator_name: str) -> 
     )
 
 
-def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: AggregatorConfig) -> dict[str, object]:
+def _resolve_hipt_params(preprocessing: PreprocessingConfig, aggregator: Component) -> dict[str, object]:
     patch_size = preprocessing.tiling.requested_tile_size_px if preprocessing.tiling is not None else None
     region_size = preprocessing.requested_region_size_px
     tile_multiple = preprocessing.region_tile_multiple
@@ -643,32 +644,28 @@ def _event_balanced_train_loader(
     collate_fn,
     *,
     events: list[int],
-    training: TrainingConfig,
+    loaders: LoadersConfig,
+    seed: int,
     min_events_per_window: int,
     window_size: int | None = None,
 ) -> DataLoader:
     """Training loader whose batches each hold >= one event (for batched Cox).
 
     The Cox partial likelihood is undefined on an event-free batch, so the risk set must
-    contain events. ``window_size`` is ``training.batch_size`` in padded mode and
+    contain events. ``window_size`` is ``loaders.batch_size`` in padded mode and
     ``cox_window`` in accumulation mode; the matching ``collate_fn`` decides which.
     """
     from soma.training.survival_sampler import EventBalancedBatchSampler
 
     sampler = EventBalancedBatchSampler(
         events,
-        batch_size=window_size if window_size is not None else training.batch_size,
+        batch_size=window_size if window_size is not None else loaders.batch_size,
         min_events_per_window=min_events_per_window,
-        seed=training.seed,
+        seed=seed,
     )
-    return DataLoader(
-        dataset,
-        batch_sampler=sampler,
-        collate_fn=collate_fn,
-        num_workers=training.num_workers,
-        pin_memory=training.pin_memory,
-        persistent_workers=training.persistent_workers and training.num_workers > 0,
-    )
+    kwargs = _loader_kwargs(loaders)
+    kwargs.pop("batch_size")
+    return DataLoader(dataset, batch_sampler=sampler, collate_fn=collate_fn, **kwargs)
 
 
 @dataclass(frozen=True)
@@ -701,13 +698,13 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
     and are scored with the training baseline; ``tune_is_test``, ``allow_missing_tune``
     and ``evaluation.holdout_test`` reshape the splits as their docs say.
     """
-    config, dataset, feature_store = inputs.config, inputs.dataset, inputs.source
-    training, evaluation = config.training, inputs.evaluation
-    dataset_type = config.dataset_type
+    plan, dataset, feature_store = inputs.plan, inputs.dataset, inputs.source
+    cohort, evaluation = plan.cohort, inputs.evaluation
+    patient = plan.unit == "patient"
     all_test_ids = {sid for ids in fold_split.tests.values() for sid in ids}
     _fp = f"Fold {fold}" if inputs.num_folds > 1 else "Run"
     statuses = _feature_statuses(feature_store)
-    if dataset_type == "patient":
+    if patient:
         # Patient-level: features are indexed by patient_id; splits are slide-based.
         train_records = [dataset.samples[sid] for sid in fold_split.train]
         tune_records = [dataset.samples[sid] for sid in fold_split.tune]
@@ -782,16 +779,16 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
         empty_by_split = None
 
     tune_from_test: str | None = None
-    if training.tune_is_test:
+    if cohort.tune_is_test:
         tune_from_test = _resolve_tune_is_test_split(fold_split, _fp)
         logger.warning(
-            "%s uses test split '%s' as tune because tune_is_test=True; "
+            "%s uses test split '%s' as tune because cohort.tune_is_test is set; "
             "checkpoint selection and test reporting use the same samples",
             _fp,
             tune_from_test,
         )
         tune_records = list(test_records_by_split[tune_from_test])
-        if dataset_type == "patient":
+        if patient:
             tune_ids = list(test_ids[tune_from_test])
             raw_tune_ids = list(raw_test_ids[tune_from_test])
         if empty_by_split is not None:
@@ -801,12 +798,11 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
         # Tune-only model-selection run: no test loader, no test inference; metrics and
         # summary carry tune only. Done after tune_is_test resolved tune from test.
         test_records_by_split = {}
-        if dataset_type == "patient":
+        if patient:
             test_ids, raw_test_ids = {}, {}
         if empty_by_split is not None:
             empty_by_split = {k: v for k, v in empty_by_split.items() if k in ("train", "tune")}
 
-    patient = dataset_type == "patient"
     train_items = train_ids if patient else train_records
     tune_items = tune_ids if patient else tune_records
     tests_items = test_ids if patient else test_records_by_split
@@ -814,12 +810,12 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
     if not train_items:
         raise ValueError(f"{_fp} has no training {unit} with available features")
     fallback_to_train = not tune_items and not (empty_by_split and empty_by_split.get("tune"))
-    if fallback_to_train and not training.allow_missing_tune:
+    if fallback_to_train and not cohort.allow_missing_tune:
         raise ValueError(f"{_fp} has no tuning {unit} with available features")
     if fallback_to_train:
         logger.warning(
             "%s has no tuning %s with available features; "
-            "using train split as tune because allow_missing_tune=True",
+            "using train split as tune because cohort.allow_missing_tune is set",
             _fp,
             unit,
         )
@@ -872,83 +868,68 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
 
 def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldSetup:
     """One set-shape fold (slide, patient, tile, hierarchical): bags or embeddings."""
-    config, dataset, feature_store = inputs.config, inputs.dataset, inputs.source
-    training, evaluation, task = config.training, inputs.evaluation, config.task
-    dataset_type, aggregator = config.dataset_type, config.aggregator
+    plan, dataset, feature_store = inputs.plan, inputs.dataset, inputs.source
+    evaluation, head = inputs.evaluation, plan.learner.params["head"]
+    aggregator = plan.learner.params.get("aggregator")
     records = _set_fold_records(inputs, fold, fold_split)
 
-    if evaluation.subgroups.columns:
+    if evaluation.subgroups:
         sample = next(iter(dataset.samples.values()))
-        missing = [c for c in evaluation.subgroups.columns if c not in sample.metadata]
+        missing = [c for c in evaluation.subgroups if c not in sample.metadata]
         if missing:
             raise ValueError(
                 f"Subgroup column(s) not found in dataset metadata: {missing}. "
                 f"Available: {sorted(sample.metadata)}"
             )
 
-    task_cls = task_registry.resolve(task.name)
-    # Validate survival columns before the head's infer hook reads them, so a
-    # missing/malformed column raises a clear message instead of a cryptic KeyError.
-    if task_cls.task_family == "survival":
-        from soma.tasks.survival import resolve_survival_task, validate_survival_dataset
-
-        task_cls, survival_loss = resolve_survival_task(task.name, task.params)
-        validate_survival_dataset(
-            dataset.records, dataset_type, loss=survival_loss, num_bins=task.params.get("num_bins")
-        )
-    # The cohort decides what the config leaves unset (class count, label map, survival
-    # bins); explicit task.params win.
-    head_name = _component_name(task_registry, task.name, task_cls)
-    inferred = task_registry.infer(head_name, inputs.cohort, task.params)
-    task_params = {**inferred, **task.params, "metrics": evaluation.metrics}
-    task_params.pop("loss", None)
+    # The plan already holds what the cohort decided (class count, label map, survival
+    # bins) under the explicit head params; the survival columns were validated there.
+    task_cls = task_registry.resolve(head.name)
+    task_params = {**head_params(head), "metrics": evaluation.metrics}
     task_family = task_cls.task_family
 
     # A transform a path cannot honor is refused rather than silently dropped.
+    normalization, projection = _adaptor_params(plan)
     validate_feature_adaptor_compatibility(
-        config.normalization,
-        config.projection,
-        dataset_type=dataset_type,
+        *_adaptor_sections(normalization, projection),
+        unit=plan.unit,
         is_hierarchical=feature_store.rank == 3,
     )
     feature_dim = feature_store.feature_dim
-    encoder_identity = _encoder_identity(config)
+    encoder_identity = _encoder_identity(plan)
     fits_adaptor = False
     aggregator_spec = None
     head_cls = task_cls
-    if dataset_type == "patient":
-        if aggregator is not None:
-            raise ValueError("aggregator must be None for dataset_type='patient'")
+    aggregator_key = None if aggregator is None else aggregator_registry.key_of(aggregator.name)
+    if plan.unit == "patient":
         kind = "embedding"
-    elif dataset_type == "tile" or feature_store.rank == 1:
-        if feature_store.rank == 1 and aggregator is not None:
-            raise ValueError("aggregator must be None for slide-level features")
+    elif feature_store.rank == 1:
+        if aggregator is not None:
+            raise ValueError("an aggregator pools a bag; these features are one vector per sample")
         kind, fits_adaptor = "embedding", True
     elif feature_store.rank == 3:
-        if aggregator is None:
-            raise ValueError("aggregator must be provided for hierarchical features")
-        if aggregator.name != "hipt":
+        if aggregator_key != "hipt":
             raise ValueError("hierarchical features require the hipt aggregator")
         kind = "mil"
         aggregator_spec = {"name": aggregator.name, "params": _resolve_hipt_params(inputs.preprocessing, aggregator)}
     else:
         if aggregator is None:
-            raise ValueError("aggregator must be provided for tile-level features")
+            raise ValueError("bags of tile features need an aggregator (learner.params.aggregator)")
         kind, fits_adaptor = "mil", True
         aggregator_spec = {"name": aggregator.name, "params": dict(aggregator.params)}
-        head_cls = _bag_head_class(task_cls, task_name=task.name, aggregator_name=aggregator.name)
+        head_cls = _bag_head_class(task_cls, task_name=head.name, aggregator_key=aggregator_key)
     model_spec = {
         "kind": kind,
         "feature_dim": feature_dim,
-        "head": {"name": _component_name(task_registry, task.name, head_cls), "params": task_params},
+        "head": {"name": _component_name(task_registry, head.name, head_cls), "params": task_params},
         "aggregator": aggregator_spec,
-        "normalization": _section(config.normalization),
-        "projection": _section(config.projection),
+        "normalization": normalization,
+        "projection": projection,
         "encoder_identity": encoder_identity,
     }
 
     def build_fold_learner(adaptor: FeatureAdaptor | None) -> Learner:
-        return build_learner(build_set_model(**model_spec, adaptor=adaptor), training, shape="mil")
+        return build_learner(build_set_model(**model_spec, adaptor=adaptor), plan)
 
     def build_loaders(learner: Learner, fold_dir: Path) -> FoldLoaders:
         return _set_loaders(inputs, records, learner.head, kind=kind)
@@ -971,7 +952,7 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
     def preprocessing(head, threshold) -> dict[str, Any]:
         return {
             "shape": "set",
-            "dataset_type": dataset_type,
+            "unit": plan.unit,
             "task_family": task_family,
             "target_schema": {key: getattr(t, "__name__", str(t)) for key, t in head.target_schema.items()},
             "classes": _jsonable(head.classes),
@@ -982,10 +963,10 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
     return FoldSetup(
         fold=fold,
         num_folds=inputs.num_folds,
-        seed=training.seed,
+        seed=plan.run.seed,
         fit_adaptor=(
             _adaptor_step(
-                config,
+                plan,
                 support=_SupportFeatures(feature_store, records.train_records),
                 num_support=len(records.train_records),
                 feature_dim=feature_dim,
@@ -997,20 +978,20 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
         build_learner=build_fold_learner,
         build_loaders=build_loaders,
         fit_baseline=fit_baseline,
-        callbacks=_fit_callbacks(training, fold=fold, num_folds=inputs.num_folds),
-        trainer=_trainer_kwargs(training),
+        callbacks=_fit_callbacks(plan.trainer, fold=fold, num_folds=inputs.num_folds),
+        trainer=_trainer_kwargs(plan.trainer),
         metrics=metrics,
         preprocessing=preprocessing,
-        provenance={"run_id": inputs.run_id, "feature_source": inputs.source_identity},
+        provenance=inputs.provenance,
     )
 
 
 def _set_loaders(inputs: RunInputs, records: _SetFoldRecords, head, *, kind: str) -> FoldLoaders:
     """Step 4 for the set shape: the train / tune / test loaders and the scored splits."""
-    config, feature_store, training = inputs.config, inputs.source, inputs.config.training
-    loader_kwargs = _loader_kwargs(training)
+    plan, feature_store = inputs.plan, inputs.source
+    loader_kwargs = _loader_kwargs(plan.loaders)
     target_fn = head.extract_targets
-    patient = config.dataset_type == "patient"
+    patient = plan.unit == "patient"
     if patient:
         record_map = inputs.dataset.patient_record_map
         collate = functools.partial(patient_collate_fn, target_dtypes=head.target_dtypes)
@@ -1054,7 +1035,8 @@ def _set_loaders(inputs: RunInputs, records: _SetFoldRecords, head, *, kind: str
             dataset(records.train),
             train_collate,
             events=events(records.train),
-            training=training,
+            loaders=plan.loaders,
+            seed=plan.run.seed,
             min_events_per_window=head.min_events_per_window,
             window_size=window_size,
         )
@@ -1064,7 +1046,7 @@ def _set_loaders(inputs: RunInputs, records: _SetFoldRecords, head, *, kind: str
         frame.index = pd.Index([str(sid) for sid in output_ids], name="sample_id", dtype=object)
         return frame
 
-    subgroups = tuple(inputs.evaluation.subgroups.columns)
+    subgroups = tuple(inputs.evaluation.subgroups)
     splits = [
         SplitPlan(
             name="tune",
@@ -1095,19 +1077,20 @@ def _set_loaders(inputs: RunInputs, records: _SetFoldRecords, head, *, kind: str
 def _segmentation_head_spec(inputs: RunInputs, geometry) -> dict[str, Any]:
     """The registered segmentation head bound to ``geometry``, as a ``{name, params}``
     section (a user subclass with its own loss keeps its class)."""
-    config, dense = inputs.config, inputs.dense
-    task, masks = config.task, config.features.extraction.masks
+    plan, dense = inputs.plan, inputs.dense
+    head, masks = plan.learner.params["head"], plan.features.extraction.masks
     annotation_rasters = is_annotation_sampling(masks)
     tiling = inputs.preprocessing.tiling if inputs.preprocessing is not None else None
-    head_cls = task_registry.resolve(task.name)
-    num_classes, class_names, label_remap = resolve_class_scheme(task.params, annotation_rasters=annotation_rasters)
-    seg_params = {key: value for key, value in task.params.items() if key not in CLASS_SCHEME_KEYS}
+    head_cls = task_registry.resolve(head.name)
+    scheme = head_params(head)
+    num_classes, class_names, label_remap = resolve_class_scheme(scheme, annotation_rasters=annotation_rasters)
+    seg_params = {key: value for key, value in scheme.items() if key not in CLASS_SCHEME_KEYS}
     params = {
         "num_classes": num_classes,
         "geometry": geometry,
         "metrics": inputs.evaluation.metrics,
         "spacing_um": float(dense.spacing_um) if dense is not None else None,
-        "spacing_policy": config.features.spacing_policy,
+        "spacing_policy": plan.features.spacing_policy,
         "backend": tiling.mask_backend if tiling is not None else "auto",
         "image_backend": dense.backend if dense is not None else "auto",
         "tolerance": float(dense.tolerance) if dense is not None else 0.05,
@@ -1116,7 +1099,7 @@ def _segmentation_head_spec(inputs: RunInputs, geometry) -> dict[str, Any]:
         "class_names": class_names if len(class_names) == num_classes else None,
         **seg_params,
     }
-    return {"name": _component_name(task_registry, task.name, head_cls), "params": params}
+    return {"name": _component_name(task_registry, head.name, head_cls), "params": params}
 
 
 def _build_segmentation_head(inputs: RunInputs, geometry):
@@ -1148,28 +1131,26 @@ def _resolve_segmentation_roi_population(
     )
 
 
-def _segmentation_roi_batch_sampler(records, population, *, training: TrainingConfig, fold: int):
-    """The explicit cached-grid training-batch contract, when requested."""
+def _segmentation_roi_batch_sampler(records, population, *, plan: Plan, fold: int):
+    """The explicit cached-grid training-batch contract (``loaders.sampler``)."""
     from soma.learn.samplers import sampler_registry
 
     sample_ids = [record.sample_id for record in records]
-    params: dict[str, Any] = {"draws_per_epoch": training.roi_draws_per_epoch}
-    if training.class_request_ratios is not None:
-        params["class_request_ratios"] = training.class_request_ratios
-    strategy = training.roi_batch_sampling
-    return sampler_registry.get(strategy)(
+    cls, params, _ = resolve_leaf(plan.loaders.sampler, sampler_registry)
+    return cls(
         sample_ids=sample_ids,
         class_pixel_counts=population.subset(sample_ids).class_pixel_counts,
-        batch_size=training.batch_size,
-        gradient_accumulation=training.gradient_accumulation,
-        seed=training.seed + fold,
-        **sampler_registry.validate(strategy, params),
+        batch_size=plan.loaders.batch_size,
+        gradient_accumulation=plan.trainer.accumulate_grad_batches,
+        seed=plan.run.seed + fold,
+        **params,
     )
 
 
-def _grid_augment(augmentation: dict | None, head, geometry):
+def _grid_augment(augmentation: Component | None, head, geometry):
     """Build the configured ``{name, params}`` augmentation, injecting the run's
-    ``ignore_index`` and ``target_size`` where the augmentation accepts them."""
+    ``ignore_index`` and ``target_size`` where the augmentation accepts them and its
+    params leave them unset."""
     if augmentation is None:
         return None
     from soma.learn import augment_registry
@@ -1184,8 +1165,9 @@ def _grid_augment(augmentation: dict | None, head, geometry):
         "target_size": tuple(int(v) for v in geometry.target_size),
     }
     for key, value in injected.items():
-        if key in accepted and key not in params and value is not None:
+        if key in accepted and params.get(key) is None and value is not None:
             params[key] = value
+    params = {key: value for key, value in params.items() if value is not None or key not in injected}
     return cls(**params)
 
 
@@ -1205,26 +1187,24 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
 
     The source is a :class:`~soma.data.GridSource` (cached grids) or, with the run's
     frozen encoder stage, an :class:`~soma.data.ImageSource` re-encoded every step, where
-    ``augmentation`` augments the train split. Detection sweeps its per-class threshold
+    ``loaders.augment`` augments the train split. Detection sweeps its per-class threshold
     on tune (without a tune split it scores at the head's ``validation_threshold``).
     """
-    config, feature_store, stage = inputs.config, inputs.source, inputs.encoder_stage
-    training, evaluation, decoder = config.training, inputs.evaluation, config.decoder
-    dataset_type = config.dataset_type
-    if decoder is None:
-        raise ValueError(f"dataset_type={dataset_type!r} requires a decoder configuration")
+    plan, feature_store, stage = inputs.plan, inputs.source, inputs.encoder_stage
+    evaluation, decoder = inputs.evaluation, plan.learner.params["decoder"]
+    family = plan.task_family
     _fp = f"Fold {fold}" if inputs.num_folds > 1 else "Run"
     live = stage is not None
+    normalization, projection = _adaptor_params(plan)
     validate_feature_adaptor_compatibility(
-        config.normalization,
-        config.projection,
+        *_adaptor_sections(normalization, projection),
         feature_mode="live" if live else "cached",
         has_composite=isinstance(feature_store, CompositeDenseFeatureStore),
     )
     fold_plan = plan_dense_fold(
         dataset=inputs.dataset,
         fold_split=fold_split,
-        training=training,
+        cohort=plan.cohort,
         fold_label=_fp,
         logger=logger,
         holdout_test=evaluation.holdout_test,
@@ -1247,30 +1227,30 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
     else:
         geometry = reference
         feature_dim = int(feature_store.feature_dim)
-        if dataset_type == "segmentation":
+        if family == "segmentation":
             _require_configured_spacing(inputs, all_records)
 
-    if dataset_type == "segmentation":
+    if family == "segmentation":
         head_spec = _segmentation_head_spec(inputs, geometry)
         point_source = None
     else:
         head_spec, point_source = _detection_head_spec(inputs, geometry, all_records, all_ids)
-    encoder_identity = _encoder_identity(config)
+    encoder_identity = _encoder_identity(plan)
     model_spec = {
         "feature_dim": feature_dim,
         "decoder": {"name": decoder.name, "params": dict(decoder.params)},
         "head": head_spec,
-        "normalization": _section(config.normalization),
-        "projection": _section(config.projection),
+        "normalization": normalization,
+        "projection": projection,
         "encoder_identity": encoder_identity,
-        "encoder": live_encoder_spec(config) if live else None,
+        "encoder": live_encoder_spec(plan) if live else None,
     }
 
     def fit_adaptor(fold_dir: Path) -> FeatureAdaptor | None:
         if live:  # refused above for live: the stage's grids are never seen whole
             return None
         return _adaptor_step(
-            config,
+            plan,
             support=_SupportGrids(feature_store, train_records),
             num_support=len(train_records),
             feature_dim=feature_dim,
@@ -1287,11 +1267,11 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
                 f"size {tuple(geometry.target_size)}, but the encoder input is padded to "
                 f"{tuple(geometry.encoded_size)}; image-prior decoders need an unpadded tile."
             )
-        return build_learner(model, training, shape="dense")
+        return build_learner(model, plan)
 
     def build_loaders(learner: Learner, fold_dir: Path) -> FoldLoaders:
         head, consumes_image = learner.head, learner.model.consumes_image
-        if dataset_type == "segmentation":
+        if family == "segmentation":
             targets = _legacy.segmentation_label_maps(head, all_records)
         else:
             targets = point_source
@@ -1304,21 +1284,21 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
                     "carry no flat tile to read"
                 )
         sampler = None
-        if training.roi_batch_sampling is not None:
-            if live or dataset_type != "segmentation":
+        if plan.loaders.sampler is not None:
+            if live or family != "segmentation":
                 raise ValueError("Explicit ROI batch sampling is a cached segmentation training contract.")
             population = inputs.roi_population().subset(all_ids)
             (fold_dir / "segmentation_roi_population.json").write_text(
                 json.dumps(population.provenance(), indent=2, sort_keys=True), encoding="utf-8"
             )
-            sampler = _segmentation_roi_batch_sampler(train_records, population, training=training, fold=fold)
+            sampler = _segmentation_roi_batch_sampler(train_records, population, plan=plan, fold=fold)
 
         def write_sampler_audit(directory: Path) -> None:
             (directory / "roi_batch_sampling.json").write_text(
                 json.dumps(sampler.audit(), indent=2, sort_keys=True), encoding="utf-8"
             )
 
-        loader_kwargs = _loader_kwargs(training)
+        loader_kwargs = _loader_kwargs(plan.loaders)
         fold_loaders = grid_loaders(
             feature_store,
             head=head,
@@ -1328,7 +1308,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
             batch_size=loader_kwargs.pop("batch_size"),
             num_workers=loader_kwargs.pop("num_workers"),
             targets=targets,
-            augment=_grid_augment(config.augmentation, head, geometry) if live else None,
+            augment=_grid_augment(plan.loaders.augment, head, geometry) if live else None,
             # An image-prior decoder reads the raw pixels, so the stage preprocesses them.
             preprocess=stage.preprocessor() if live and not consumes_image else None,
             sampler=sampler,
@@ -1347,10 +1327,10 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
             all_records,
             size=geometry.target_size,
             dense=inputs.dense,
-            spacing_policy=inputs.config.features.spacing_policy,
+            spacing_policy=plan.features.spacing_policy,
         )
 
-        def plan(name: str, loader, records) -> SplitPlan:
+        def split_plan(name: str, loader, records) -> SplitPlan:
             return SplitPlan(
                 name=name,
                 loader=loader,
@@ -1358,8 +1338,8 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
                 callbacks=tuple(_grid_callbacks(inputs, fold_dir, name, overlays)),
             )
 
-        splits = [plan("tune", fold_loaders.tune, tune_records)]
-        splits += [plan(name, fold_loaders.tests[name], recs) for name, recs in test_records_by_split.items()]
+        splits = [split_plan("tune", fold_loaders.tune, tune_records)]
+        splits += [split_plan(name, fold_loaders.tests[name], recs) for name, recs in test_records_by_split.items()]
         return FoldLoaders(
             train=fold_loaders.train,
             tune=fold_loaders.tune,
@@ -1369,7 +1349,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
 
     def metrics(head) -> list[Any]:
         names: list[Any] = list(resolve_metrics(head.task_family, evaluation.metrics))
-        if dataset_type == "detection":
+        if family == "detection":
             return [{"name": name, "params": {"matching": head.matching}} for name in names]
         return names
 
@@ -1386,7 +1366,6 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
     def preprocessing(head, threshold) -> dict[str, Any]:
         metadata = {
             "shape": "grid",
-            "dataset_type": dataset_type,
             "task_family": head.task_family,
             "num_classes": int(head.num_classes),
             "class_names": _jsonable(head.class_names),
@@ -1396,7 +1375,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
             "feature_mode": "live" if live else "cached",
             "metrics": _jsonable(metrics(head)),
         }
-        if dataset_type == "segmentation":
+        if family == "segmentation":
             metadata["ignore_index"] = int(head.ignore_index)
             metadata["label_remap"] = _jsonable(head.label_remap)
         else:
@@ -1414,16 +1393,16 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
     return FoldSetup(
         fold=fold,
         num_folds=inputs.num_folds,
-        seed=training.seed,
+        seed=plan.run.seed,
         fit_adaptor=fit_adaptor,
         build_learner=build_fold_learner,
         build_loaders=build_loaders,
-        callbacks=_fit_callbacks(training, fold=fold, num_folds=inputs.num_folds),
-        trainer=_trainer_kwargs(training),
+        callbacks=_fit_callbacks(plan.trainer, fold=fold, num_folds=inputs.num_folds),
+        trainer=_trainer_kwargs(plan.trainer),
         metrics=metrics,
         preprocessing=preprocessing,
-        provenance={"run_id": inputs.run_id, "feature_source": inputs.source_identity},
-        tune_step=tune_step if dataset_type == "detection" else None,
+        provenance=inputs.provenance,
+        tune_step=tune_step if family == "detection" else None,
     )
 
 
@@ -1445,7 +1424,7 @@ def _require_configured_spacing(inputs: RunInputs, records) -> None:
                     requested_spacing_um=dense.spacing_um,
                     spacing_at_level_0=record.spacing_at_level_0,
                     tolerance=dense.tolerance,
-                    policy=inputs.config.features.spacing_policy,
+                    policy=inputs.plan.features.spacing_policy,
                 )
             )
             for record in records
@@ -1454,19 +1433,19 @@ def _require_configured_spacing(inputs: RunInputs, records) -> None:
 
 
 def _detection_head_spec(inputs: RunInputs, geometry, records, sample_ids):
-    """``({name, params}, PointSource)`` of a detection run: classes from the task's class
+    """``({name, params}, PointSource)`` of a detection run: classes from the head's class
     scheme, distances converted at the run's one spacing."""
-    task = inputs.config.task
-    num_classes, class_names, point_source = _legacy.detection_points(task, records)
-    params = {k: v for k, v in task.params.items() if k not in ("num_classes", "classes", "drop")}
-    if "match_distance" not in params:
+    head = inputs.plan.learner.params["head"]
+    scheme = head_params(head)
+    num_classes, class_names, point_source = _legacy.detection_points(scheme, records)
+    params = {k: v for k, v in scheme.items() if k not in ("num_classes", "classes", "drop")}
+    if params.get("match_distance") is None:
         raise ValueError(
-            "dataset_type='detection' requires task.params.match_distance (the F1 "
-            "matching distance δ, in µm)."
+            "a detection head requires match_distance (the F1 matching distance δ, in µm)."
         )
-    head_cls = task_registry.resolve(task.name)
+    head_cls = task_registry.resolve(head.name)
     spec = {
-        "name": _component_name(task_registry, task.name, head_cls),
+        "name": _component_name(task_registry, head.name, head_cls),
         "params": {
             "num_classes": num_classes,
             "geometry": geometry,
@@ -1483,16 +1462,13 @@ def _grid_callbacks(inputs: RunInputs, fold_dir: Path, split_name: str, overlay_
     """The predict callbacks writing a grid split's side artefacts under ``fold_dir``."""
     from soma import evaluation as verbs
 
-    evaluation, dataset_type = inputs.evaluation, inputs.config.dataset_type
+    evaluation, family = inputs.evaluation, inputs.plan.task_family
     out: list[Any] = []
-    overlays = (
-        evaluation.save_segmentation_overlays if dataset_type == "segmentation" else evaluation.save_detection_overlays
-    )
-    if overlays:
+    if evaluation.save_overlays:
         out.append(verbs.SaveOverlays(fold_dir / "overlays" / split_name, images=overlay_images))
-    if dataset_type == "segmentation" and evaluation.save_segmentation_probabilities:
+    if family == "segmentation" and evaluation.save_probabilities:
         out.append(verbs.SaveProbabilities(fold_dir / "probabilities" / split_name))
-    if dataset_type == "detection" and evaluation.save_detection_heatmaps:
+    if family == "detection" and evaluation.save_heatmaps:
         out.append(verbs.SaveHeatmaps(fold_dir / "heatmaps" / split_name))
     return out
 
@@ -1502,86 +1478,53 @@ def _grid_callbacks(inputs: RunInputs, fold_dir: Path, split_name: str, overlay_
 # ---------------------------------------------------------------------------
 
 
-def extraction_shape(dataset_type: str) -> str:
-    """The feature shape a ``dataset_type`` trains on: ``grid`` for dense tasks, else ``set``."""
-    return "grid" if dataset_type in {"segmentation", "detection"} else "set"
-
-
-def annotation_sampled(config: PipelineConfig) -> bool:
+def annotation_sampled(plan: Plan | ExperimentConfig) -> bool:
     """Whether a segmentation run samples its ROIs from whole slides (the slide-manifest
     input mode): the cohort has a ``label_mask_path`` column of annotation rasters and
     hs2p's masks declare their annotation vocabulary. A pre-cropped segmentation cohort
     has a ``label_mask_path`` column too, but its masks keep hs2p's binary tissue
     vocabulary (ADR 0019)."""
-    if config.dataset_type != "segmentation" or not is_annotation_sampling(config.features.extraction.masks):
+    from soma.plan import head_family
+
+    if head_family(plan) != "segmentation" or not is_annotation_sampling(plan.features.extraction.masks):
         return False
-    return "label_mask_path" in pd.read_csv(config.dataset_csv, nrows=0).columns
+    return "label_mask_path" in pd.read_csv(plan.cohort.records, nrows=0).columns
 
 
-def extraction_unit(config: PipelineConfig) -> str:
+def extraction_unit(plan: Plan | ExperimentConfig) -> str:
     """What one manifest row is to extraction: a whole slide or a pre-cropped image."""
-    if config.dataset_type in {"slide", "patient"}:
-        return "slide"
-    if annotation_sampled(config):
-        return "slide"
-    return "tile"
+    from soma.plan import learner_shape, sample_unit
+
+    if learner_shape(plan) == "set":
+        return "tile" if sample_unit(plan) == "tile" else "slide"
+    return "slide" if annotation_sampled(plan) else "tile"
 
 
-def resolve_task_class(config: PipelineConfig):
-    """The registered head class a config trains (survival resolves its loss variant)."""
-    if config.task is None:
-        return None
-    task_cls = task_registry.resolve(config.task.name)
-    if task_cls.task_family == "survival":
-        from soma.tasks.survival import resolve_survival_task
+def load_pipeline_data(config: ExperimentConfig) -> tuple[Cohort, ImageManifest, AnnotationManifest | None]:
+    """Read the cohort and manifests a config names, validated against its head.
 
-        task_cls, _ = resolve_survival_task(config.task.name, config.task.params)
-    return task_cls
-
-
-def load_pipeline_data(config: PipelineConfig) -> tuple[Cohort, ImageManifest, AnnotationManifest | None]:
-    """Read the cohort and manifests a config names, validated against its task head.
-
-    The head's ``resolve_target_schema(task.params)`` says which target keys the cohort
-    must carry (``label``, ``time``/``event``, ``value`` or ``value_<k>`` ...);
-    ``task.targets`` maps a key to a differently named CSV column.
-    ``training.tune_is_test`` reuses each fold's tune split for test reporting via
-    :meth:`Cohort.with_test_from_tune`.
+    The head's ``resolve_target_schema`` says which target keys the cohort must carry
+    (``label``, ``time``/``event``, ``value`` or ``value_<k>`` ...); the head's
+    ``targets`` map a key to a differently named cohort column
+    (:func:`soma.plan.load_cohort`). A grid run also reads the annotations.
     """
-    task_cls = resolve_task_class(config)
-    schema = task_cls.resolve_target_schema(config.task.params) if task_cls is not None else {}
-    if config.representation is not None and config.task is None:
-        schema = {"label": object}
-    renames = dict(config.task.targets) if config.task is not None and config.task.targets else {}
-    unknown = sorted(set(renames) - set(schema))
-    if unknown:
-        raise ValueError(
-            f"task.targets names key(s) {unknown} the task head does not declare; "
-            f"its target keys are {sorted(schema)}."
-        )
-    targets = {key: renames.get(key, key) for key in schema}
-    cohort = Cohort.from_csv(
-        config.dataset_csv,
-        config.splits_csv,
-        targets=targets,
-        dtypes=schema,
-        unit="patient_id" if config.dataset_type == "patient" else None,
-        allow_missing_test=config.training.tune_is_test,
-    )
-    if config.training.tune_is_test:
-        cohort = cohort.with_test_from_tune()
-    image_manifest = ImageManifest.from_csv(config.dataset_csv)
+    from soma.plan import head_family
+
+    cohort = load_cohort(config)
+    records = config.cohort.records
+    image_manifest = ImageManifest.from_csv(records)
     annotation_manifest = None
-    if config.dataset_type in {"segmentation", "detection"}:
+    family = head_family(config)
+    if family in {"segmentation", "detection"}:
         masks = config.features.extraction.masks
         annotation_manifest = AnnotationManifest.from_csv(
-            config.dataset_csv,
+            records,
             pixel_mapping=masks.pixel_mapping if is_annotation_sampling(masks) else None,
         )
-        if config.dataset_type == "segmentation" and not annotation_manifest.has_label_masks:
-            raise ValueError("dataset_type='segmentation' needs a label_mask_path column.")
-        if config.dataset_type == "detection" and not annotation_manifest.has_points:
-            raise ValueError("dataset_type='detection' needs a points_path column.")
+        if family == "segmentation" and not annotation_manifest.has_label_masks:
+            raise ValueError("a segmentation run needs a label_mask_path column in the cohort records.")
+        if family == "detection" and not annotation_manifest.has_points:
+            raise ValueError("a detection run needs a points_path column in the cohort records.")
     return cohort, image_manifest, annotation_manifest
 
 
@@ -1601,7 +1544,7 @@ class SourceContext:
 
 
 def attach_source(
-    config: PipelineConfig,
+    plan: Plan,
     *,
     source: Any,
     dataset: LegacySamples,
@@ -1617,9 +1560,9 @@ def attach_source(
     stage and an image source; a composite extracts every member; otherwise the
     configured encoder extracts (or reuses from the feature cache) set or grid features.
     """
-    is_dense = extraction_shape(config.dataset_type) == "grid"
-    features = config.features
-    roi_sampled = annotation_sampled(config)
+    is_dense = plan.shape == "grid"
+    features = plan.features
+    roi_sampled = annotation_sampled(plan)
     if roi_sampled and source is not None:
         raise ValueError(
             "a supplied source is not supported for annotation-sampled segmentation; "
@@ -1639,16 +1582,16 @@ def attach_source(
         # A supplied image source under ``feature_mode: live`` is re-encoded by the
         # run's frozen encoder stage, like the one built below; supplied grids are cached.
         cached_grids = isinstance(source, GridSource)
-        if live and cached_grids and config.augmentation is not None:
+        if live and cached_grids and plan.loaders.augment is not None:
             raise ValueError(
-                "augmentation needs pixels re-encoded by an encoder stage, but the supplied "
+                "loaders.augment needs pixels re-encoded by an encoder stage, but the supplied "
                 "source is cached grids (frozen features); supply an ImageSource or clear "
-                "the augmentation section."
+                "loaders.augment."
             )
-        stage = live_encoder_for(config) if live and not cached_grids else None
+        stage = live_encoder_for(plan) if live and not cached_grids else None
         return SourceContext(source=source, dataset=dataset, splits=splits, encoder_stage=stage)
     if live:
-        dense = resolve_pipeline_dense(config)
+        dense = resolve_pipeline_dense(plan)
         images = TileImageSource.from_manifest(
             image_manifest,
             size=int(dense.target_size),
@@ -1657,26 +1600,26 @@ def attach_source(
             backend=dense.backend,
             tolerance=float(dense.tolerance),
         )
-        return SourceContext(source=images, dataset=dataset, splits=splits, encoder_stage=live_encoder_for(config))
+        return SourceContext(source=images, dataset=dataset, splits=splits, encoder_stage=live_encoder_for(plan))
     if is_dense and features.is_composite:
         from soma.dense import DenseSourceProvenance
 
-        store = build_composite_dense_store(config, dataset, output_root=run_dir / "features")
-        store.provenance = DenseSourceProvenance(kind="composite_dense_cache", dataset_csv=config.dataset_csv)
+        store = build_composite_dense_store(plan, dataset, output_root=run_dir / "features")
+        store.provenance = DenseSourceProvenance(kind="composite_dense_cache", dataset_csv=plan.cohort.records)
         return SourceContext(source=store, dataset=dataset, splits=splits)
     if features.encoder is None:
-        raise ValueError("PipelineConfig.features.encoder is required when no source is supplied.")
+        raise ValueError("features.encoder is required when no source is supplied.")
     cache_config = replace(
         features.cache,
-        root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=config.output_root),
+        root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=plan.run.output_dir),
     )
     extraction = FeatureExtractor(
         dataset,
         features.encoder,
-        resolve_pipeline_preprocessing(config),
-        shape=extraction_shape(config.dataset_type),
-        unit=extraction_unit(config),
-        dense=resolve_pipeline_dense(config) if is_dense else None,
+        resolve_pipeline_preprocessing(plan),
+        shape=plan.shape,
+        unit=extraction_unit(plan),
+        dense=resolve_pipeline_dense(plan) if is_dense else None,
         spacing_policy=features.spacing_policy,
         output_root=run_dir,
         execution=features.execution,
@@ -1689,15 +1632,15 @@ def attach_source(
     )
 
 
-def live_encoder_spec(config: PipelineConfig) -> dict[str, Any]:
-    """The :func:`soma.extract.live_encoder` arguments a ``feature_mode='live'`` config
+def live_encoder_spec(plan: Plan) -> dict[str, Any]:
+    """The :func:`soma.extract.live_encoder` arguments a ``features.kind='live'`` plan
     describes: what a live bundle records to rebuild its frozen encoder stage."""
     from soma.encoders.validation import resolve_encoder_precision
 
-    encoder = config.features.encoder
+    encoder = plan.features.encoder
     if encoder is None:
-        raise ValueError("PipelineConfig.features.encoder is required for feature_mode='live'.")
-    dense = resolve_pipeline_dense(config)
+        raise ValueError("features.encoder is required for features.kind='live'.")
+    dense = resolve_pipeline_dense(plan)
     return {
         "encoder": encoder.name,
         "target_size": int(dense.target_size),
@@ -1705,7 +1648,7 @@ def live_encoder_spec(config: PipelineConfig) -> dict[str, Any]:
         "window": dense.window_size,
         "overlap": float(dense.overlap),
         "feature_kind": dense.feature_kind,
-        "precision": resolve_encoder_precision(config.features.execution.precision, encoder_name=encoder.name),
+        "precision": resolve_encoder_precision(plan.features.execution.precision, encoder_name=encoder.name),
         "output_variant": encoder.output_variant,
         "allow_non_recommended_settings": encoder.allow_non_recommended_settings,
         "tolerance": float(dense.tolerance),
@@ -1717,8 +1660,8 @@ def live_encoder_spec(config: PipelineConfig) -> dict[str, Any]:
     }
 
 
-def live_encoder_for(config: PipelineConfig):
-    """The frozen encoder stage a ``feature_mode='live'`` config re-encodes with.
+def live_encoder_for(plan: Plan):
+    """The frozen encoder stage a ``features.kind='live'`` plan re-encodes with.
 
     Built through :func:`soma.extract.live_encoder` from :func:`live_encoder_spec`, once
     per run and shared by every fold. Whole-image inference over a finished run loads
@@ -1726,7 +1669,7 @@ def live_encoder_for(config: PipelineConfig):
     """
     from soma import extract
 
-    return extract.live_encoder(**live_encoder_spec(config), num_gpus=config.features.execution.num_gpus)
+    return extract.live_encoder(**live_encoder_spec(plan), num_gpus=plan.features.execution.num_gpus)
 
 
 def log_cuda_memory(tag: str) -> None:
@@ -1745,7 +1688,7 @@ def log_cuda_memory(tag: str) -> None:
     torch.cuda.reset_peak_memory_stats()
 
 
-def build_composite_dense_store(config: PipelineConfig, dataset: LegacySamples, *, output_root: Path):
+def build_composite_dense_store(plan: Plan | ExperimentConfig, dataset: LegacySamples, *, output_root: Path):
     """Extract every composite member into its own cache; return the concat view.
 
     Public so that out-of-core consumers (a project protocol's rescore step) rebuild the
@@ -1760,14 +1703,14 @@ def build_composite_dense_store(config: PipelineConfig, dataset: LegacySamples, 
     from soma.encoders.composite import member_norm_for
     from soma.config import EncoderLeaf
 
-    features = config.features
+    features = plan.features
     if not features.is_composite:
         raise ValueError("build_composite_dense_store requires the composite encoder.")
     composite = CompositeParams(**features.encoder.params)
-    dense = resolve_pipeline_dense(config)
+    dense = resolve_pipeline_dense(plan)
     cache_config = replace(
         features.cache,
-        root_dir=resolve_cache_root(features.cache, feature_dir=output_root, output_root=config.output_root),
+        root_dir=resolve_cache_root(features.cache, feature_dir=output_root, output_root=plan.run.output_dir),
     )
     member_stores, member_norms = [], []
     try:

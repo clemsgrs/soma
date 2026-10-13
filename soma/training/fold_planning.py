@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from soma.config import TrainingConfig
+from soma.config import CohortConfig
 from soma.data import FoldSplit, SampleRecord
 
 
@@ -40,7 +40,7 @@ def plan_dense_fold(
     *,
     dataset,
     fold_split: FoldSplit,
-    training: TrainingConfig,
+    cohort: CohortConfig,
     fold_label: str,
     logger: logging.Logger | None = None,
     holdout_test: bool = False,
@@ -61,17 +61,17 @@ def plan_dense_fold(
     }
     if not train_records:
         raise ValueError(f"{fold_label} has no training samples")
-    if training.tune_is_test:
+    if cohort.tune_is_test:
         if len(fold_split.test_split_names) != 1:
             raise ValueError(
                 f"{fold_label} has {len(fold_split.test_split_names)} test splits; "
-                "training.tune_is_test=True requires exactly one test split"
+                "cohort.tune_is_test requires exactly one test split"
             )
         test_split_name = fold_split.test_split_names[0]
         tune_records = list(test_records_by_split[test_split_name])
     tune_from_train = not tune_records
     if tune_from_train:
-        if not training.allow_missing_tune:
+        if not cohort.allow_missing_tune:
             raise ValueError(f"{fold_label} has no tuning samples")
         if logger is not None:
             logger.warning(

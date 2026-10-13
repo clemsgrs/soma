@@ -3,16 +3,41 @@
 A component declares its params at registration as a dataclass whose fields mirror its
 user-set constructor keywords; the dataclass's ``__post_init__`` is where those values
 are validated, so a config is checked before anything is built.
+
+A field the run decides is declared with :func:`run_decided`: a config spelling the run
+turns into constructor arguments (a head's class scheme, HIPT's region grid), or a
+keyword left ``None`` for the run to derive (a decoder's upsampling depth, an
+augmentation's fill value). A plan records it like any other field.
 """
 
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import Field, dataclass, field
 from numbers import Integral, Real
 from typing import Any
 
-__all__ = ["NoParams", "check_choice", "check_non_negative", "check_positive", "check_probability"]
+__all__ = [
+    "NoParams",
+    "check_choice",
+    "check_non_negative",
+    "check_positive",
+    "check_probability",
+    "is_run_decided",
+    "run_decided",
+]
+
+_RUN_DECIDED = "run_decided"
+
+
+def run_decided(default: Any = None) -> Any:
+    """A params field the run turns into constructor arguments or derives when ``None``."""
+    return field(default=default, metadata={_RUN_DECIDED: True})
+
+
+def is_run_decided(params_field: Field) -> bool:
+    """Whether a params dataclass field was declared with :func:`run_decided`."""
+    return bool(params_field.metadata.get(_RUN_DECIDED))
 
 
 @dataclass

@@ -4,10 +4,9 @@ Caching
 The shared cache reuses tiling and frozen features across compatible runs.
 Run-specific checkpoints, predictions, and reports live in :doc:`outputs`.
 
-The cache configuration is :class:`soma.config.CacheConfig`.
+The cache configuration is ``features.cache``, a :class:`soma.config.CacheOptions`.
 
-.. autoclass:: soma.config.CacheConfig
-   :members:
+.. autoclass:: soma.config.CacheOptions
 
 Cache reuse rules
 -----------------
@@ -38,7 +37,8 @@ soma hands them back to slide2vec, which checks them or extracts them again.
 Pre-cropped images
 ------------------
 
-For ``dataset_type="tile"``, soma passes every image that needs work to one
+For a tile-level run (one image per row, a tile encoder without an aggregator),
+soma passes every image that needs work to one
 ``Model.embed_images`` call, whatever the dataset size:
 
 1. soma resolves the cache. An image counts as cached when its signature is
@@ -67,13 +67,13 @@ Validation
   (feature dimension, grid shape, target/encoded geometry, and — for
   ``cls_attention`` grids — the attention selection) before reuse, without
   loading the tensor payload. Set
-  ``cache.validate_payloads: true`` to load cached tensors and verify rank,
+  ``features.cache.validate_payloads: true`` to load cached tensors and verify rank,
   feature dimension, and dense grid shape before accepting a cache hit. This
   catches corrupt or wrong-shaped payloads, but it adds I/O proportional to the
   number of cached feature files.
 - Cache metadata stores a normalized ``feature_type``:
 
-  - ``tile``: 1-D embeddings for ``dataset_type="tile"``
+  - ``tile``: 1-D embeddings of pre-cropped images (tile-level runs)
   - ``bag``: 2-D WSI tile-bag embeddings
   - ``slide``: 1-D slide-level embeddings
   - ``patient``: 1-D patient-level embeddings
@@ -96,7 +96,7 @@ Geometry checks cannot detect pixel-processing changes that preserve size. A
 change of the encoder's image transform is detected by the feature identity
 check below. A change in how slide2vec reads a tile from the slide, such as a
 different interpolation kernel, is not detected: delete the affected cache
-directories, or select a fresh ``cache.root_dir``, when upgrading slide2vec
+directories, or select a fresh ``features.cache.root_dir``, when upgrading slide2vec
 across such a change.
 
 Feature identity
@@ -149,7 +149,7 @@ reuses the cache or adds samples to it:
   - A field differs, or the record lacks a field the installed slide2vec
     requires (reported as ``MISSING_FIELD``): the run stops with
     ``CacheFeatureIdentityMismatch``, which names the fields. Set
-    ``cache.on_identity_mismatch: reextract`` to delete the cache and extract it
+    ``features.cache.on_identity_mismatch: reextract`` to delete the cache and extract it
     again instead.
 
 A pooled cache that holds features but records no feature identity, such as a
@@ -164,8 +164,9 @@ hands its unsigned features to slide2vec. If the slide2vec version changed, soma
 extracts the cache again. If slide2vec writes features without a feature
 identity, soma raises ``MissingFeatureIdentity`` and does not commit them.
 
-The settings ``cache.commit_every`` and ``cache.on_unrecorded_identity`` were
-removed. soma rejects them as unknown keys, so delete them from your configs.
+The settings ``commit_every`` and ``on_unrecorded_identity`` were removed from
+the cache options. soma rejects them as unknown keys, so delete them from your
+configs.
 
 ``reextract`` deletes the whole cache directory, including the features of
 samples that the current dataset does not use. Do not use it while another job

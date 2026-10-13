@@ -23,26 +23,23 @@ The distribution is `soma-pathology`; the Python package and CLI are `soma`.
 For slide classification, prepare `dataset.csv` (sample ID, image path, label) and `splits.csv` (sample ID, split, fold). The [getting started guide](https://clemsgrs.github.io/soma/getting-started.html) shows both files and a complete walkthrough.
 
 ```python
-from soma import (
-    AggregatorConfig,
-    EvalConfig,
+from soma import ExperimentConfig, Pipeline
+from soma.config import (
+    CohortConfig,
+    EvaluationConfig,
     FeaturesConfig,
-    Pipeline,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
+    LearnerConfig,
+    RunConfig,
+    TrainerConfig,
 )
 
-config = PipelineConfig(
-    dataset_csv="dataset.csv",
-    splits_csv="splits.csv",
-    output_root="output",
-    dataset_type="slide",
+config = ExperimentConfig(
+    run=RunConfig(output_dir="output", seed=0),
+    cohort=CohortConfig(records="dataset.csv", splits="splits.csv"),
     features=FeaturesConfig(encoder="phikon"),
-    aggregator=AggregatorConfig(name="abmil"),
-    task=TaskConfig(name="binary_classification"),
-    training=TrainingConfig(epochs=5, learning_rate=1e-4, seed=0),
-    evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
+    learner=LearnerConfig("mil", {"aggregator": "abmil", "head": "binary_classification"}),
+    trainer=TrainerConfig(max_epochs=5),
+    evaluation=EvaluationConfig(metrics=["auroc", "balanced_accuracy"]),
 )
 result = Pipeline(config).run()
 print(result.summary)
@@ -61,7 +58,7 @@ soma config.yaml
 python -m soma config.yaml
 ```
 
-soma merges the file with its bundled defaults. Start with the [task examples](examples/README.md) or the [CLI reference](https://clemsgrs.github.io/soma/cli.html). `soma list` prints the component kinds and `soma list aggregators` (or `encoders`, `heads`, `decoders`, `benchmarks`, ...) prints one kind's registered components with their params.
+The YAML has the same seven sections as `ExperimentConfig` (`run`, `cohort`, `features`, `loaders`, `learner`, `trainer`, `evaluation`), spelled as the Python call spells them; a field left out keeps its default. soma resolves the config against the cohort and writes the result to the run's `plan.yaml`. Start with the [task examples](examples/README.md) or the [CLI reference](https://clemsgrs.github.io/soma/cli.html). `soma list` prints the component kinds and `soma list aggregators` (or `encoders`, `heads`, `decoders`, `benchmarks`, ...) prints one kind's registered components with their params.
 
 ## Explore
 

@@ -6,11 +6,27 @@ Spacing controls the physical scale seen by the encoder: smaller µm/px values
 show finer morphology; larger values include broader structure.
 
 Tiling is hs2p's and extraction is slide2vec's, so soma holds their configuration
-objects rather than its own copies (ADR 0019). In Python, the run's
-``FeaturesConfig.extraction`` is slide2vec's ``PreprocessingConfig``, which composes
-hs2p's ``TilingConfig``, ``SegmentationConfig``, ``FilterConfig``,
-``MaskSamplingConfig`` and ``PreviewConfig``. In YAML, the ``preprocessing:`` block
-below is translated into those objects when the config loads.
+objects rather than its own copies (ADR 0019). ``features.extraction`` is
+slide2vec's ``PreprocessingConfig``, which composes hs2p's ``TilingConfig``
+(``tiling``), ``SegmentationConfig`` (``segmentation``), ``FilterConfig``
+(``filter``), ``MaskSamplingConfig`` (``masks``) and ``PreviewConfig``
+(``preview``). The YAML spells the same fields as the Python objects, and a field
+left out keeps hs2p's or slide2vec's default:
+
+.. code-block:: yaml
+
+   features:
+     encoder: {name: uni2}
+     extraction:
+       tiling:
+         requested_spacing_um: 0.5
+         requested_tile_size_px: 224
+         tolerance: 0.05
+       segmentation:
+         method: otsu
+       masks:
+         pixel_mapping: {background: 0, tissue: 1}
+         min_coverage: {tissue: 0.1}
 
 Key settings
 ------------
@@ -18,42 +34,42 @@ Key settings
 .. list-table::
    :header-rows: 1
 
-   * - Field
+   * - Field (under ``features``)
      - Meaning
      - Typical use
-   * - ``requested_tile_size_px``
+   * - ``extraction.tiling.requested_tile_size_px``
      - Requested tile size and final pooled encoder input size
      - Match encoder expectations
-   * - ``requested_spacing_um``
+   * - ``extraction.tiling.requested_spacing_um``
      - Microns per pixel for tiling
      - Coarse vs fine biological context
    * - ``spacing_policy``
      - How to handle a source coarser than the requested spacing
      - Use ``native_if_coarser`` to forbid synthetic upsampling
-   * - ``requested_region_size_px``
+   * - ``extraction.requested_region_size_px``
      - Region size for hierarchical pipelines
      - HIPT-style runs
-   * - ``region_tile_multiple``
+   * - ``extraction.region_tile_multiple``
      - Tiles per side of a hierarchical region
      - Alternative to ``requested_region_size_px``
-   * - ``tissue_method``
+   * - ``extraction.segmentation.method``
      - Tissue segmentation method: ``sam2``, ``hsv``, ``otsu``, ``threshold``, or
        ``precomputed_mask``
      - Set ``precomputed_mask`` when dataset rows provide tissue masks; soma
        selects it automatically when every row has one
-   * - ``sam2_device``
+   * - ``extraction.segmentation.sam2_device``
      - Device used for SAM2 tissue segmentation
      - Set explicitly when running SAM2 on GPU
-   * - ``sam2_num_workers``
+   * - ``extraction.segmentation.sam2_num_workers``
      - Cap on concurrent SAM2 tissue-segmentation workers
      - Reduce GPU memory pressure on smaller cards
-   * - ``min_coverage.tissue``
+   * - ``extraction.masks.min_coverage.tissue``
      - Minimum tissue fraction to keep a tile
      - Adjust only if tissue masks are too loose or too strict
-   * - ``backend``
+   * - ``extraction.tiling.backend``
      - Slide reader (``auto`` resolves per slide)
      - Pin when a slide decodes correctly under only one reader
-   * - ``mask_backend``
+   * - ``extraction.tiling.mask_backend``
      - Reader for tissue/annotation mask rasters (``auto`` resolves from the mask
        file: ``pil`` for PNG/JPEG, ``tifffile`` for TIFF masks that store
        samples other than 8-bit unsigned, such as 16-bit labels)
@@ -62,18 +78,21 @@ Key settings
 Tiling configuration
 --------------------
 
-The ``preprocessing:`` keys map onto the upstream objects:
+``features.extraction`` holds the upstream objects as given:
 
-- ``requested_spacing_um``, ``requested_tile_size_px``, ``tolerance``, ``overlap``,
-  ``backend`` and ``mask_backend`` form hs2p's ``TilingConfig``;
-- ``tissue_method``, ``seg_downsample``, ``sam2_device`` and ``sam2_num_workers``
-  form hs2p's ``SegmentationConfig``;
-- ``a_t`` and ``ref_tile_size_px`` form hs2p's ``FilterConfig``;
-- ``min_coverage``, ``masks`` and ``sampling`` form hs2p's ``MaskSamplingConfig``;
-- ``requested_region_size_px`` and ``region_tile_multiple`` stay on slide2vec's
-  ``PreprocessingConfig``.
+- ``tiling`` is hs2p's ``TilingConfig`` (``requested_spacing_um``,
+  ``requested_tile_size_px``, ``tolerance``, ``overlap``, ``backend``,
+  ``mask_backend``);
+- ``segmentation`` is hs2p's ``SegmentationConfig`` (``method``, ``downsample``,
+  ``sam2_device``, ``sam2_num_workers``, ...);
+- ``filter`` is hs2p's ``FilterConfig`` (``a_t``, ``ref_tile_size``, ...);
+- ``masks`` is hs2p's ``MaskSamplingConfig`` (``pixel_mapping``,
+  ``min_coverage``, ``strategy``, ``output_mode``, ``colors``);
+- ``requested_region_size_px`` and ``region_tile_multiple`` are slide2vec's
+  ``PreprocessingConfig`` fields.
 
-Unset spacing and tile size are resolved from the encoder when the config loads.
+An unset tiling (spacing and tile size) and filter are resolved from the encoder
+preset when the run resolves; a grid run takes them from ``features.dense``.
 Extraction, ROI sampling, and cache keys use that resolved config. Read sizes
 are derived by hs2p and slide2vec. Cache keys are built from the fields of these
 upstream objects, so a field added upstream is keyed without a change in soma;
@@ -85,16 +104,16 @@ final model input: GigaPath uses 224 px, DINOv2 224 px, and DINOv3 256 px. At
 fixed spacing, changing this size changes the sampled physical extent.
 
 An explicit off-preset pooled size requires
-``encoder.allow_non_recommended_settings: true`` and an encoder that supports
+``features.encoder.params.allow_non_recommended_settings: true`` and an encoder that supports
 variable input sizes; the flag cannot bypass that capability check.
-Pre-cropped classification images (``dataset_type: tile``) instead use the
+Pre-cropped classification images (a tile-level run) instead use the
 encoder's shipped image transform, including its resizing and cropping.
 
 Coarser source spacing
 ----------------------
 
 ``spacing_policy`` controls what happens when a manifest's declared
-``spacing_at_level_0`` is coarser than ``requested_spacing_um`` beyond the configured
+``spacing_at_level_0`` is coarser than the requested spacing beyond the configured
 relative ``tolerance``. The default, ``strict``, preserves the requested spacing and lets
 the reader reject a request that would require forbidden upsampling.
 ``native_if_coarser`` instead uses the declared level-0 spacing for that sample. Sources
@@ -105,8 +124,8 @@ The effective per-sample spacing is applied consistently to image extraction and
 annotation-mask reads so targets remain registered to dense feature grids. The policy is
 part of the ROI-sampling cache identity, and so of the dense caches built on its ROIs, and
 the effective spacing is recorded in cache sidecars and run provenance. It is a soma
-setting (``FeaturesConfig.spacing_policy`` in Python) because hs2p and slide2vec have no
-field for it.
+setting (``features.spacing_policy``) because hs2p and slide2vec have no field for
+it.
 
 .. _preprocessing-source-masks:
 
@@ -145,30 +164,30 @@ needs an explicit ``mask_backend``.
 Segmentation slide-manifest sampling
 ------------------------------------
 
-For segmentation from whole slides and annotation masks, place ``masks`` and
-ROI ``sampling`` under ``preprocessing``:
+For segmentation from whole slides and annotation masks, declare the annotation
+vocabulary and the ROI sampling in ``features.extraction.masks``:
 
 .. code-block:: yaml
 
-   preprocessing:
-     requested_tile_size_px: 512
-     requested_spacing_um: 0.5
-     masks:
-       pixel_mapping: {background: 0, tumor: 1}
-       min_coverage: {tumor: 0.5}
-     sampling:
-       output_mode: merged
-       strategy: joint
+   features:
+     dense:
+       target_size: 512
+       spacing_um: 0.5
+     extraction:
+       masks:
+         pixel_mapping: {background: 0, tumor: 1}
+         min_coverage: {tumor: 0.5}
+         output_mode: merged
+         strategy: joint
 
-For ``dataset_type: segmentation``, the input mode is inferred from the data: a
+For a segmentation head, the input mode is inferred from the data: a
 cohort whose ``dataset.csv`` has a ``label_mask_path`` column, extracted with an
 annotation vocabulary (any ``pixel_mapping`` other than hs2p's
 ``{background: 0, tissue: 1}``), is a slide manifest. soma samples ROIs from the
 slides and their ``label_mask_path`` annotations, extracts dense grids, then fits
 a segmentation head. Otherwise segmentation uses pre-cropped tiles.
 :doc:`segmentation` compares the two modes and explains how to choose the tile
-and window sizes. The ``masks`` and ``sampling`` blocks become hs2p's
-``MaskSamplingConfig``.
+and window sizes.
 
 Annotation labels
 -----------------
@@ -184,9 +203,11 @@ coverage is their sum:
 
 .. code-block:: yaml
 
-   masks:
-     pixel_mapping: {background: 0, tumor: [1, 2], stroma: 3}
-     min_coverage: {tumor: 0.5}
+   features:
+     extraction:
+       masks:
+         pixel_mapping: {background: 0, tumor: [1, 2], stroma: 3}
+         min_coverage: {tumor: 0.5}
 
 A tile that is 30% value ``1`` and 30% value ``2`` is 60% ``tumor`` and is
 sampled; with ``tumor: 1`` and a separate label for ``2``, neither reaches 0.5.
@@ -197,40 +218,44 @@ holding any other value fails. Declare a value that should never select a tile,
 such as unannotated background, and leave it out of ``min_coverage``.
 
 These labels only select tiles and ROIs. For segmentation, the classes the model
-predicts are declared separately under ``task.params.classes`` and
-``task.params.ignore`` (:doc:`segmentation`), so a label here may be split or
+predicts are declared separately by the head's ``classes`` and ``ignore``
+params (:doc:`segmentation`), so a label here may be split or
 merged differently at training time: ``tumor: [1, 2]`` above may still train as
 two classes. Every raw value those list must also be in
 ``pixel_mapping``; the config is rejected otherwise.
 
-Annotation-restricted bags (``dataset_type: slide`` or ``patient``)
--------------------------------------------------------------------
+Annotation-restricted bags (slide and patient runs)
+---------------------------------------------------
 
-For ``dataset_type: slide``, ``preprocessing.masks`` restricts each MIL bag to
-tiles meeting the annotation coverage thresholds. The bag retains the slide's
-``label`` and passes through the configured aggregator and predictor.
+For a slide-level MIL run, an annotation vocabulary in
+``features.extraction.masks`` restricts each bag to tiles meeting the annotation
+coverage thresholds. The bag retains the slide's ``label`` and passes through the
+configured aggregator and head.
 
-For ``dataset_type: patient``, each slide supplies a restricted bag to the
-pretrained patient encoder, producing compartment-restricted patient features.
+For a patient run (``cohort.collapse: patient_id``), each slide supplies a
+restricted bag to the pretrained patient encoder, producing
+compartment-restricted patient features.
 
 .. code-block:: yaml
 
-   data:
-     dataset_type: slide          # whole-slide MIL, not segmentation
-   preprocessing:
-     requested_tile_size_px: 224
-     requested_spacing_um: 0.5
-     tissue_method: otsu
-     masks:
-       pixel_mapping: {background: 0, tumor: 1}
-       min_coverage: {tumor: 0.5}   # keep tiles ≥ 50% tumor; tissue-only tiles are excluded
-     sampling:
-       output_mode: merged          # one merged bag per slide (required; see below)
-       strategy: joint              # joint across classes; 'independent' tiles each class separately
-   aggregation:
-     name: abmil                    # any existing MIL aggregator
-   task:
-     name: binary_classification
+   features:
+     encoder: {name: uni2}
+     extraction:
+       tiling:
+         requested_tile_size_px: 224
+         requested_spacing_um: 0.5
+       segmentation:
+         method: otsu
+       masks:
+         pixel_mapping: {background: 0, tumor: 1}
+         min_coverage: {tumor: 0.5}  # keep tiles ≥ 50% tumor; tissue-only tiles are excluded
+         output_mode: merged         # one merged bag per slide (required; see below)
+         strategy: joint             # joint across classes; 'independent' tiles each class separately
+   learner:
+     name: mil
+     params:
+       aggregator: {name: abmil}     # any existing MIL aggregator
+       head: {name: binary_classification}
 
 Each row's ``mask_path`` is the annotation raster and ``pixel_mapping`` names
 its classes exactly as stored; tiles are kept by per-class ``min_coverage``, and
@@ -238,8 +263,8 @@ the tissue threshold does not apply. The default ``{background: 0, tissue: 1}``
 vocabulary is plain tissue tiling; any other mapping opts into annotation
 sampling. The selection (``pixel_mapping``, ``min_coverage``, ``strategy``,
 ``output_mode``) is part of the cache key, so a restricted bag never reuses a
-full-tissue bag's features; ``colors`` is cosmetic. A ``masks`` block is rejected
-on ``dataset_type: tile``.
+full-tissue bag's features; ``colors`` is cosmetic. An annotation vocabulary is
+rejected on a tile-level run.
 
 A ready-to-run example lives at ``examples/slide_tumor_restricted_bag.yaml``.
 
@@ -270,7 +295,7 @@ stops with an error when:
 - its ``sample_id``, ``image_path`` or ``spacing_at_level_0`` differs from the
   manifest row;
 - its ``requested_spacing_um`` or ``requested_tile_size_px`` differs from
-  ``preprocessing``;
+  ``features.extraction.tiling``;
 - only some rows set ``coordinates_path``.
 
 The content of each artifact is part of the slide's feature-cache identity. The same
@@ -294,11 +319,11 @@ give each its own identity with an extra column, such as a checksum of each arti
    s01,/slides/s01.tif,1,/coords/s01.coordinates.npz,9f2c...
    s02,/slides/s02.tif,0,/coords/s02.coordinates.npz,41ab...
 
-Supplied coordinates work for pooled whole-slide bags (``dataset_type: slide``) built
+Supplied coordinates work for pooled whole-slide bags (slide-level MIL runs) built
 from a tile encoder; slide- and patient-level encoders reject them.
-They cannot be combined with ``preprocessing.masks`` or hierarchical regions, and
-tile, segmentation, and detection manifests reject the column. ``tissue_method`` is
-still required by the configuration, but it is not used.
+They cannot be combined with an annotation vocabulary or hierarchical regions, and
+tile, segmentation, and detection manifests reject the column. The segmentation
+method is not used.
 
 Tissue mask preview
 -------------------

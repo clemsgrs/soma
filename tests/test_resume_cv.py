@@ -9,7 +9,7 @@ Covers the four moving parts of resume:
 * **fold-skip guard + end-to-end resume** — a relaunch into the same run dir skips
   complete folds (``metrics.json`` and ``bundle/``, ADR 0016), restarts the others from
   epoch 0, and the resumed summary aggregates all folds;
-* **config-drift guard** — resuming into a run dir whose saved config differs is refused.
+* **plan-drift guard** — resuming into a run dir whose saved plan differs is refused.
 """
 
 from __future__ import annotations
@@ -25,24 +25,15 @@ import yaml
 from slide2vec import ExecutionOptions
 
 from tests.extraction_configs import extraction
-from soma.config import (
-    AggregatorConfig,
-    CacheConfig,
-    DecoderConfig,
-    FeaturesConfig,
-    EvalConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
-    load_config,
-    save_config,
-)
+from soma.config import ExperimentConfig, FeaturesConfig
 from soma.pipeline.layout import (
     latest_existing_run_id,
     resolve_managed_output_paths,
 )
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk
-from soma.pipeline.layout import guard_resume_config_drift
+from soma.pipeline.layout import guard_resume_plan_drift, record_plan
+from soma.plan import Plan, load_cohort, resolve
+from tests.experiment_configs import experiment
 
 
 def _write_csv(path: Path, text: str) -> Path:
@@ -50,27 +41,47 @@ def _write_csv(path: Path, text: str) -> Path:
     return path
 
 
-def _make_config(tmp_path: Path, **overrides) -> PipelineConfig:
-    dataset_csv = _write_csv(
-        tmp_path / "dataset.csv",
-        "sample_id,image_path,label\ns0,/slides/s0.svs,tumor\n",
-    )
+_DATASET = "sample_id,image_path,label\n" + "".join(
+    f"s{i},/slides/s{i}.svs,{label}\n" for i, label in enumerate(("tumor", "normal") * 2)
+)
+
+
+def _make_config(tmp_path: Path, **overrides) -> ExperimentConfig:
+    """A slide-level AB-MIL classifier; ``overrides`` are :func:`experiment` fields and
+    ``run`` keywords (``run_id``, ``resume``, ``folds``, ``mirror_root``)."""
+    dataset_csv = _write_csv(tmp_path / "dataset.csv", _DATASET)
     splits_csv = _write_csv(
         tmp_path / "splits.csv",
-        "fold,sample_id,split\n0,s0,train\n",
+        "fold,sample_id,split\n0,s0,train\n0,s1,train\n0,s2,tune\n0,s3,test\n",
     )
-    defaults = dict(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "outputs",
-        dataset_type="slide",
+    run = {key: overrides.pop(key) for key in ("run_id", "resume", "folds", "mirror_root") if key in overrides}
+    fields = dict(
+        output_dir=tmp_path / "outputs",
+        seed=7,
         features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
-        aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
+        aggregator={"name": "abmil", "params": {"hidden_dim": 128}},
+        optimizer={"name": "adam", "params": {"lr": 1e-4}},
+        trainer={"max_epochs": 10},
+        run=run,
     )
-    defaults.update(overrides)
-    return PipelineConfig(**defaults)
+    fields.update(overrides)
+    return experiment(dataset_csv, splits_csv, **fields)
+
+
+def _with_run(config: ExperimentConfig, **run) -> ExperimentConfig:
+    return replace(config, run=replace(config.run, **run))
+
+
+def _plan(config: ExperimentConfig) -> Plan:
+    return resolve(config, load_cohort(config))
+
+
+def _record(run_dir: Path, config: ExperimentConfig) -> Plan:
+    """Record ``config`` and its plan in ``run_dir`` the way a run start does."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    plan = _plan(config)
+    record_plan(run_dir, plan, config=config)
+    return plan
 
 
 def _write_metrics(fold_dir: Path, *, tune: dict, test: dict) -> None:
@@ -84,38 +95,38 @@ def _write_metrics(fold_dir: Path, *, tune: dict, test: dict) -> None:
 
 
 def test_default_mints_fresh_timestamped_run_id(tmp_path: Path):
-    layout = resolve_managed_output_paths(_make_config(tmp_path))
+    layout = resolve_managed_output_paths(Plan(_make_config(tmp_path)))
     assert layout.run_id.endswith("__local")
     assert layout.run_dir == layout.experiment_dir / "runs" / layout.run_id
 
 
 def test_explicit_run_id_config_pins_that_run(tmp_path: Path):
-    layout = resolve_managed_output_paths(_make_config(tmp_path, run_id="pinned-run"))
+    layout = resolve_managed_output_paths(Plan(_make_config(tmp_path, run_id="pinned-run")))
     assert layout.run_id == "pinned-run"
     assert layout.run_dir.name == "pinned-run"
 
 
 def test_resume_reuses_latest_existing_run(tmp_path: Path):
     cfg = _make_config(tmp_path)
-    first = resolve_managed_output_paths(cfg)
+    first = resolve_managed_output_paths(Plan(cfg))
     first.run_dir.mkdir(parents=True)
     # A newer run dir under the same experiment — resume must land on the latest.
     (first.experiment_dir / "runs" / "2999-01-01_00-00-00__local").mkdir()
 
-    resumed = resolve_managed_output_paths(replace(cfg, resume=True))
+    resumed = resolve_managed_output_paths(Plan(_with_run(cfg, resume=True)))
     assert resumed.run_id == "2999-01-01_00-00-00__local"
     assert resumed.experiment_dir == first.experiment_dir
 
 
 def test_resume_without_prior_run_raises(tmp_path: Path):
     with pytest.raises(FileNotFoundError, match="no prior run"):
-        resolve_managed_output_paths(_make_config(tmp_path, resume=True))
+        resolve_managed_output_paths(Plan(_make_config(tmp_path, resume=True)))
 
 
 def test_explicit_run_id_arg_still_wins_over_config(tmp_path: Path):
     # Back-compat: callers passing run_id= (tests, leaderboard replay) are unaffected.
     layout = resolve_managed_output_paths(
-        _make_config(tmp_path, resume=True), run_id="2020-01-01_00-00-00__local"
+        Plan(_make_config(tmp_path, resume=True)), run_id="2020-01-01_00-00-00__local"
     )
     assert layout.run_id == "2020-01-01_00-00-00__local"
 
@@ -165,120 +176,117 @@ def test_from_disk_include_tune_surfaces_tune(tmp_path: Path):
 
 def test_drift_guard_noop_when_not_resuming(tmp_path: Path):
     run_dir = tmp_path / "run"
-    save_config(_make_config(tmp_path), run_dir / "config.yaml")
-    # Different config, but resume/run_id unset → guard must not fire.
-    changed = _make_config(tmp_path, training=TrainingConfig(seed=999))
-    guard_resume_config_drift(run_dir, changed)  # no raise
+    _record(run_dir, _make_config(tmp_path))
+    # Different plan, but resume/run_id unset → guard must not fire.
+    guard_resume_plan_drift(run_dir, _plan(_make_config(tmp_path, seed=999)))  # no raise
 
 
-def test_drift_guard_passes_on_identical_config(tmp_path: Path):
+def test_drift_guard_passes_on_identical_plan(tmp_path: Path):
     run_dir = tmp_path / "run"
     cfg = _make_config(tmp_path)
-    save_config(cfg, run_dir / "config.yaml")
-    # Adding the resume directive alone is not drift (it is not serialized).
-    guard_resume_config_drift(run_dir, replace(cfg, resume=True))  # no raise
+    _record(run_dir, cfg)
+    # Adding the resume directive alone is not drift (a launch-only field).
+    guard_resume_plan_drift(run_dir, _plan(_with_run(cfg, resume=True)))  # no raise
 
 
 _SEGMENTATION = dict(
-    dataset_type="segmentation",
     aggregator=None,
-    decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
-    task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+    decoder={"name": "lightweight_conv", "params": {"hidden_dim": 64}},
+    head="segmentation",
+    head_params={"num_classes": 2},
 )
 
 
 @pytest.mark.parametrize("overrides", [{}, _SEGMENTATION], ids=["slide", "segmentation"])
 def test_drift_guard_passes_resuming_from_the_saved_config_of_a_preset_tiling(tmp_path: Path, overrides):
     """A Python config that leaves the tiling (and a grid run's dense options) to the
-    encoder preset saves what the loader resolves, so resuming from the config.yaml it
-    saved is not drift."""
+    encoder preset resolves to the same plan as the config.yaml it saved, so resuming
+    from that file is not drift."""
     run_dir = tmp_path / "run"
     cfg = _make_config(tmp_path, features=FeaturesConfig(encoder="uni2"), **overrides)
-    save_config(cfg, run_dir / "config.yaml")
+    _record(run_dir, cfg)
 
-    reloaded = load_config(run_dir / "config.yaml")
+    reloaded = ExperimentConfig.from_yaml(run_dir / "config.yaml")
 
-    guard_resume_config_drift(run_dir, replace(reloaded, resume=True))  # no raise
+    guard_resume_plan_drift(run_dir, _plan(_with_run(reloaded, resume=True)))  # no raise
 
 
-def test_drift_guard_refuses_changed_config(tmp_path: Path):
+def test_drift_guard_refuses_a_changed_seed(tmp_path: Path):
     run_dir = tmp_path / "run"
-    save_config(_make_config(tmp_path, training=TrainingConfig(seed=7)), run_dir / "config.yaml")
-    changed = _make_config(tmp_path, training=TrainingConfig(seed=42), resume=True)
-    with pytest.raises(ValueError, match="Refusing to resume"):
-        guard_resume_config_drift(run_dir, changed)
+    _record(run_dir, _make_config(tmp_path, seed=7))
+    changed = _make_config(tmp_path, seed=42, resume=True)
+    with pytest.raises(ValueError, match="Refusing to resume.*run"):
+        guard_resume_plan_drift(run_dir, _plan(changed))
+
+
+def test_drift_guard_refuses_a_changed_head(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    _record(run_dir, _make_config(tmp_path))
+    changed = _make_config(tmp_path, head_params={"dropout": 0.5}, resume=True)
+    with pytest.raises(ValueError, match="Refusing to resume.*learner"):
+        guard_resume_plan_drift(run_dir, _plan(changed))
 
 
 def test_drift_guard_ignores_the_machine_resolved_execution_resources(tmp_path: Path):
     """slide2vec resolves the GPU count and the preprocessing worker count against the
-    machine when its ExecutionOptions are built, so the saved config records what the
+    machine when its ExecutionOptions are built, so the saved plan records what the
     original machine had; resuming on another machine is not drift."""
     run_dir = tmp_path / "run"
     features = FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224))
-    saved = _make_config(
-        tmp_path,
-        features=replace(
-            features, execution=ExecutionOptions(num_gpus=4, num_preprocessing_workers=32)
+    _record(
+        run_dir,
+        _make_config(
+            tmp_path,
+            features=replace(features, execution=ExecutionOptions(num_gpus=4, num_preprocessing_workers=32)),
         ),
     )
-    save_config(saved, run_dir / "config.yaml")
     resumed = _make_config(
         tmp_path,
-        features=replace(
-            features, execution=ExecutionOptions(num_gpus=1, num_preprocessing_workers=8)
-        ),
+        features=replace(features, execution=ExecutionOptions(num_gpus=1, num_preprocessing_workers=8)),
         resume=True,
     )
-    guard_resume_config_drift(run_dir, resumed)  # no raise
+    guard_resume_plan_drift(run_dir, _plan(resumed))  # no raise
 
 
 def test_drift_guard_refuses_a_changed_execution_precision(tmp_path: Path):
     run_dir = tmp_path / "run"
     features = FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224))
-    save_config(
-        _make_config(tmp_path, features=replace(features, execution=ExecutionOptions(precision="fp16"))),
-        run_dir / "config.yaml",
-    )
+    _record(run_dir, _make_config(tmp_path, features=replace(features, execution=ExecutionOptions(precision="fp16"))))
     changed = _make_config(
         tmp_path,
         features=replace(features, execution=ExecutionOptions(precision="fp32")),
         resume=True,
     )
     with pytest.raises(ValueError, match="Refusing to resume"):
-        guard_resume_config_drift(run_dir, changed)
+        guard_resume_plan_drift(run_dir, _plan(changed))
 
 
-def test_drift_guard_noop_when_no_saved_config(tmp_path: Path):
+def test_drift_guard_noop_when_no_saved_plan(tmp_path: Path):
     # A pinned run id naming a not-yet-created dir has nothing to compare.
-    guard_resume_config_drift(tmp_path / "fresh", _make_config(tmp_path, run_id="fresh"))
+    guard_resume_plan_drift(tmp_path / "fresh", _plan(_make_config(tmp_path, run_id="fresh")))
 
 
 def test_drift_guard_allows_changing_operational_mirror_root(tmp_path: Path):
     run_dir = tmp_path / "run"
     original = _make_config(tmp_path, mirror_root=tmp_path / "shared-a")
-    save_config(original, run_dir / "config.yaml")
+    _record(run_dir, original)
 
-    resumed = replace(
-        original,
-        mirror_root=tmp_path / "shared-b",
-        resume=True,
-    )
+    resumed = _with_run(original, mirror_root=tmp_path / "shared-b", resume=True)
 
-    guard_resume_config_drift(run_dir, resumed)
+    guard_resume_plan_drift(run_dir, _plan(resumed))
 
 
 def test_drift_guard_refuses_unknown_evaluation_settings(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     original = _make_config(tmp_path)
-    save_config(original, run_dir / "config.yaml")
-    saved_path = run_dir / "config.yaml"
+    _record(run_dir, original)
+    saved_path = run_dir / "plan.yaml"
     saved = yaml.safe_load(saved_path.read_text())
     saved["evaluation"]["patient_oof"] = {"arm": "legacy"}
     saved_path.write_text(yaml.safe_dump(saved))
-    resumed = replace(original, resume=True)
 
     with pytest.raises(ValueError, match="evaluation"):
-        guard_resume_config_drift(run_dir, resumed)
+        guard_resume_plan_drift(run_dir, _plan(_with_run(original, resume=True)))
 
 
 # --------------------------------------------------------------------------- #
@@ -286,26 +294,24 @@ def test_drift_guard_refuses_unknown_evaluation_settings(tmp_path: Path) -> None
 # --------------------------------------------------------------------------- #
 
 
-def _multifold_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
+def _multifold_pipeline_config(tmp_path: Path, **run) -> ExperimentConfig:
     from tests.test_pipeline import _setup_multifold_data
 
     dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
     (tmp_path / "feature_dir.txt").write_text(str(feature_dir))
-    defaults = dict(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "output",
-        dataset_type="slide",
-        aggregator=AggregatorConfig(name="mean_pool"),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=2, patience=10, batch_size=2, pin_memory=False),
-        run_id="2026-07-08_10-00-00__local",
+    return experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / "output",
+        aggregator="mean_pool",
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 2},
+        scheduler="cosine",
+        run={"run_id": "2026-07-08_10-00-00__local", **run},
     )
-    defaults.update(overrides)
-    return PipelineConfig(**defaults)
 
 
-def _run(tmp_path: Path, config: PipelineConfig):
+def _run(tmp_path: Path, config: ExperimentConfig):
     from soma.data import CachedSetSource
     from soma.pipeline import Pipeline
 
@@ -326,7 +332,7 @@ def test_resume_skips_completed_folds_and_restarts_a_fold_without_its_bundle(tmp
     shutil.rmtree(run_dir / "fold_1" / "bundle")
     (run_dir / "summary.json").unlink()
 
-    resumed = _run(tmp_path, replace(config, resume=True))
+    resumed = _run(tmp_path, _with_run(config, resume=True))
 
     # Fold 0 was skipped (its metrics.json is byte-for-byte untouched)…
     assert fold0_metrics.stat().st_mtime_ns == fold0_mtime
@@ -370,34 +376,33 @@ def test_from_disk_reads_only_declared_folds_in_order(tmp_path: Path):
 def test_drift_guard_refuses_changed_manifest_content_under_same_paths(tmp_path: Path):
     run_dir = tmp_path / "run"
     cfg = _make_config(tmp_path)
-    save_config(cfg, run_dir / "config.yaml")
+    plan = _record(run_dir, cfg)
     # The run recorded the identity minted from the original train/tune content.
     from soma.pipeline.layout import build_experiment_spec
 
     (run_dir / "run.yaml").write_text(
-        yaml.safe_dump({"experiment_id": build_experiment_spec(cfg).experiment_id})
+        yaml.safe_dump({"experiment_id": build_experiment_spec(plan).experiment_id})
     )
-    guard_resume_config_drift(run_dir, replace(cfg, resume=True))  # unchanged: passes
+    guard_resume_plan_drift(run_dir, _plan(_with_run(cfg, resume=True)))  # unchanged: passes
 
-    # Same paths, different label -> different train/tune content.
-    Path(cfg.dataset_csv).write_text("sample_id,image_path,label\ns0,/slides/s0.svs,normal\n")
+    # Same paths, different label -> different train/tune content (the plan is unchanged).
+    Path(cfg.cohort.records).write_text(_DATASET.replace("s0,/slides/s0.svs,tumor", "s0,/slides/s0.svs,normal"))
     with pytest.raises(ValueError, match="train/tune content"):
-        guard_resume_config_drift(run_dir, replace(cfg, resume=True))
+        guard_resume_plan_drift(run_dir, _plan(_with_run(cfg, resume=True)))
 
 
 # --- run.folds: launches that split the folds of one run between them ----------------
 
 
-def test_folds_directive_loads_from_yaml_and_stays_out_of_the_saved_config(tmp_path: Path):
-    from soma.config import config_yaml_dict, load_config
-
+def test_folds_directive_loads_from_yaml_and_is_launch_scoped(tmp_path: Path):
     config = _make_config(tmp_path, run_id="shared-run")
-    save_config(config, tmp_path / "config.yaml")
-    loaded = load_config(
-        tmp_path / "config.yaml", overrides={"run": {"run_id": "shared-run", "folds": [1, 3]}}
+    config.to_yaml(tmp_path / "config.yaml")
+    loaded = ExperimentConfig.from_yaml(
+        tmp_path / "config.yaml", overrides={"run": {"folds": [1, 3]}}
     )
-    assert loaded.folds == (1, 3)
-    assert config_yaml_dict(loaded) == config_yaml_dict(config)
+    assert loaded.run.folds == (1, 3)
+    # Which folds a launch takes on is not what the run is: its plan compares equal.
+    assert _plan(loaded).comparable() == _plan(config).comparable()
 
 
 @pytest.mark.parametrize("folds", [(), (1, 1), (-1,)])
@@ -416,7 +421,7 @@ def test_launches_that_split_the_folds_match_a_single_launch(tmp_path: Path):
     config = _multifold_pipeline_config(tmp_path, run_id="shared-run")
 
     # The launch given fold 1 trains it alone and writes no summary: fold 0 is pending.
-    first = _run(tmp_path, replace(config, folds=(1,)))
+    first = _run(tmp_path, _with_run(config, folds=(1,)))
     run_dir = first.run_dir
     assert [fr.fold for fr in first.fold_results] == [1]
     assert first.pending_folds == (0,) and first.summary == {}
@@ -425,14 +430,14 @@ def test_launches_that_split_the_folds_match_a_single_launch(tmp_path: Path):
     fold1_mtime = (run_dir / "fold_1" / "metrics.json").stat().st_mtime_ns
 
     # The launch given fold 0 finds every fold complete afterwards, so it summarizes both.
-    second = _run(tmp_path, replace(config, folds=(0,)))
+    second = _run(tmp_path, _with_run(config, folds=(0,)))
     assert [fr.fold for fr in second.fold_results] == [0]
     assert second.pending_folds == ()
     assert (run_dir / "fold_1" / "metrics.json").stat().st_mtime_ns == fold1_mtime
     split_summary = json.loads((run_dir / "summary.json").read_text())
 
     # Folds seed independently, so splitting them changes nothing about the result.
-    single = _run(tmp_path, replace(config, run_id="single-run"))
+    single = _run(tmp_path, _with_run(config, run_id="single-run"))
     assert split_summary == pytest.approx(single.summary, nan_ok=True)
 
 

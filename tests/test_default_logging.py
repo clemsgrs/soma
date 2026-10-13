@@ -9,25 +9,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from soma.data import CachedSetSource
-from soma import (
-
-    AggregatorConfig,
-
-
-    FeatureExtractor,
-
-    Pipeline,
-
-    PipelineConfig,
-
-    TaskConfig,
-
-    TrainingConfig,
-
-)
+from soma import ExperimentConfig, FeatureExtractor, Pipeline
 from soma.data._legacy import legacy_samples_from_csv
 from soma.cli import main
-from soma.config import save_config
+from tests.experiment_configs import experiment
 from tests.test_pipeline import FIXED_RUN_ID, _setup_synthetic_data
 
 
@@ -65,16 +50,15 @@ def no_logging_setup():
         soma_logger.propagate = saved[4]
 
 
-def _slide_config(tmp_path: Path) -> tuple[PipelineConfig, Path]:
+def _slide_config(tmp_path: Path) -> tuple[ExperimentConfig, Path]:
     dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-    config = PipelineConfig(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "output",
-        dataset_type="slide",
-        aggregator=AggregatorConfig(name="mean_pool"),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=1, patience=10, batch_size=2),
+    config = experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / "output",
+        aggregator="mean_pool",
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1},
     )
     return config, feature_dir
 
@@ -154,7 +138,7 @@ def test_a_caller_logging_setup_made_after_soma_does_not_duplicate_records(
 def test_the_soma_cli_prints_info_logs(tmp_path: Path, capsys):
     config, _ = _slide_config(tmp_path)
     config_path = tmp_path / "config.yaml"
-    save_config(config, config_path)
+    config.to_yaml(config_path)
 
     class LoggingPipeline:
         """Stands in for the real run: it only logs, so the CLI alone owns the setup."""

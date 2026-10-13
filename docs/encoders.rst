@@ -2,7 +2,7 @@ Encoders
 ========
 
 Select a frozen encoder by name: ``FeaturesConfig(encoder="uni2")`` in Python,
-``encoder.name`` in YAML. An encoder is a leaf of the ``encoder`` registry: a name
+``features.encoder.name`` in YAML. An encoder is a leaf of the ``encoder`` registry: a name
 plus its params (``output_variant``, ``allow_non_recommended_settings``).
 Precision and batch size are execution settings (slide2vec's
 ``ExecutionOptions``); :doc:`preprocessing` controls image geometry.
@@ -227,7 +227,7 @@ Patient-level encoders
      - ``lunit``
      - 768
 
-Set ``preprocessing.requested_spacing_um`` explicitly for encoders with multiple
+Set ``features.extraction.tiling.requested_spacing_um`` explicitly for encoders with multiple
 recommended spacings. For a single recommended spacing, soma can fill it in.
 Configuration and runtime validation check the final combination.
 
@@ -236,7 +236,7 @@ Resolving a fixed benchmark MIL recipe
 
 A slide-level benchmark that accepts both tile- and slide-level encoders can
 use :func:`soma.encoders.resolve_aggregator` when it builds each
-``PipelineConfig``. The helper returns the supplied ``AggregatorConfig`` for a
+``ExperimentConfig``. The helper returns the supplied aggregator leaf for a
 tile encoder and ``None`` for a slide encoder, allowing the existing slide
 representation path to pass the embedding directly to the task head. Patient
 encoders are rejected because their representations are not slide-level.

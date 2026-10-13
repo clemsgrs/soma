@@ -73,8 +73,8 @@ def _merged_arm_config(arm: str, cache_root: str) -> dict:
             merged[key] = {**merged[key], **value}
         else:
             merged[key] = value
-    merged["training"]["batch_size"] = BATCH_SIZE
-    merged["cache"]["root_dir"] = cache_root
+    merged["loaders"]["batch_size"] = BATCH_SIZE
+    merged["features"]["cache"]["root_dir"] = cache_root
     return merged
 
 

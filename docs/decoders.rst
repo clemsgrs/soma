@@ -41,7 +41,7 @@ object class.
 Choose the input features
 -------------------------
 
-``preprocessing.feature_kind`` selects the dense grid:
+``features.dense.feature_kind`` selects the dense grid:
 
 * ``patch_features`` (the default) supplies patch-token embeddings after the
   backbone's final normalisation layer.
@@ -50,7 +50,8 @@ Choose the input features
   the decoder was designed against a timm feature backbone, as the EVA
   segmentation benchmarks are. timm ViT encoders only.
 * ``cls_attention`` supplies per-head prefix-token attention maps. Configure
-  the selected blocks and register tokens through ``preprocessing.attention``.
+  the selected blocks and register tokens through ``features.dense.attention_blocks``
+  and ``features.dense.attention_include_registers``.
 
 Both have shape ``(channels, grid_h, grid_w)``. The decoder's input dimension is
 resolved from the grid's channel count; changing feature kind leaves the task

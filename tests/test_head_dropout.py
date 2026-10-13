@@ -188,7 +188,7 @@ class TestBothModelingPaths:
 
 
 class TestReachesTheHeadThroughTheConfig:
-    """``task.params.dropout`` must survive the pipeline's head construction."""
+    """The head's ``dropout`` param must survive the pipeline's head construction."""
 
     @pytest.fixture
     def built_probabilities(self, monkeypatch):
@@ -206,8 +206,8 @@ class TestReachesTheHeadThroughTheConfig:
         return seen
 
     def _train(self, tmp_path, *, slide_level):
-        from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
         from soma.data import CachedSetSource
+        from tests.experiment_configs import experiment
         from soma.pipeline import Pipeline
 
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -218,14 +218,14 @@ class TestReachesTheHeadThroughTheConfig:
             for i in range(NUM_SAMPLES):
                 torch.save(torch.randn(PIPELINE_D), feature_dir / f"s{i}.pt")
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "out",
-            dataset_type="slide",
-            aggregator=None if slide_level else AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification", params={"dropout": 0.2}),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2, pin_memory=False),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / "out",
+            aggregator=None if slide_level else "mean_pool",
+            head_params={"dropout": 0.2},
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
         )
         return Pipeline(config, source=CachedSetSource(feature_dir)).run().fold_results[0]
 
@@ -241,25 +241,22 @@ class TestReachesTheHeadThroughTheConfig:
 
 
 class TestConfigLoadValidation:
-    """A bad probability fails at config load, before any extraction is spent."""
+    """A bad probability fails when the config is checked, before any extraction is spent."""
 
     @staticmethod
-    def _config(dropout):
-        from soma.config import PipelineConfig, TaskConfig
+    def _check(dropout):
+        from soma.plan import check
+        from tests.experiment_configs import experiment
 
-        return PipelineConfig(
-            dataset_csv="data.csv",
-            splits_csv="splits.csv",
-            output_root="out",
-            dataset_type="slide",
-            task=TaskConfig(name="binary_classification", params={"dropout": dropout}),
-        )
+        config = experiment(head_params={"dropout": dropout})
+        check(config)
+        return config
 
     @pytest.mark.parametrize("bad", [-0.1, 1.0, 1.5, True, "0.2"])
     def test_rejects_bad_probabilities(self, bad):
-        with pytest.raises(ValueError, match="task.params.dropout"):
-            self._config(bad)
+        with pytest.raises(ValueError, match="dropout must be a probability"):
+            self._check(bad)
 
     @pytest.mark.parametrize("ok", [0, 0.0, 0.5])
     def test_accepts_valid_probabilities(self, ok):
-        assert self._config(ok).task.params["dropout"] == ok
+        assert self._check(ok).learner.params["head"].params["dropout"] == ok

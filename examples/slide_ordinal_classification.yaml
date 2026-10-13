@@ -1,36 +1,41 @@
 run:
-  output_root: runs/ordinal
+  output_dir: runs/ordinal
   seed: 0
-  tags: []
 
-data:
-  dataset_csv: data/dataset.csv
-  splits_csv: data/splits.csv
-  dataset_type: slide
+cohort:
+  records: data/dataset.csv
+  splits: data/splits.csv
 
-preprocessing:
-  min_coverage:
-    tissue: 0.1
+features:
+  encoder:
+    name: uni2
+  extraction:
+    # hs2p's binary tissue vocabulary; tiles with >= 10% tissue are kept.
+    masks:
+      pixel_mapping: {background: 0, tissue: 1}
+      min_coverage: {tissue: 0.1}
 
-cache:
-  enabled: true
+learner:
+  name: mil
+  params:
+    aggregator:
+      name: abmil
+    head:
+      name: ordinal_classification
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
 
-encoder:
-  name: uni2
-
-aggregation:
-  name: abmil
-
-task:
-  name: ordinal_classification
+trainer:
+  max_epochs: 50
+  callbacks:
+    - name: checkpoint
+    - name: early_stopping
+      params: {patience: 10}
 
 evaluation:
   metrics:
     - qwk
     - balanced_accuracy
     - mae
-
-training:
-  epochs: 50
-  learning_rate: 1.0e-4
-  patience: 10

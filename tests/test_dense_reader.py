@@ -172,12 +172,12 @@ def test_class_scheme_rejects_num_classes_disagreeing_with_classes():
 
 
 def test_class_scheme_requires_classes_for_annotation_rasters():
-    with pytest.raises(ValueError, match=r"requires task\.params\.classes"):
+    with pytest.raises(ValueError, match=r"requires its 'classes' param"):
         resolve_class_scheme({"num_classes": 1}, annotation_rasters=True)
 
 
 def test_class_scheme_rejects_ignore_without_classes():
-    with pytest.raises(ValueError, match=r"task\.params\.ignore needs task\.params\.classes"):
+    with pytest.raises(ValueError, match=r"'ignore' param needs its 'classes'"):
         resolve_class_scheme({"num_classes": 2, "ignore": [0]}, annotation_rasters=False)
 
 

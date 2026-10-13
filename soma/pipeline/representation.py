@@ -1,7 +1,8 @@
 """Task-free representation evaluation: CRoMa over frozen embeddings, no training.
 
-``Pipeline.run`` dispatches here in one line when the config has a ``representation``
-section; the run still gets the managed layout, the drift guards and a recorded status.
+``Pipeline.run`` dispatches here in one line when the plan has an
+``evaluation.representation``; the run still gets the managed layout, the drift guards and
+a recorded status.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import pandas as pd
 import torch
 from rich.console import Console
 
-from soma.config import RepresentationConfig
+from soma.config import CRoMaOptions
 from soma.data import CachedSetSource, require_coverage
 from soma.pipeline._legacy import LegacyFolds, LegacySamples
 from soma.pipeline.aggregate import save_summary
@@ -30,12 +31,12 @@ __all__ = ["evaluate_representation", "run_representation"]
 
 
 def run_representation(pipeline) -> "PipelineResult":
-    """Run a ``representation`` config: open the run, attach the source, score CRoMa."""
-    config = pipeline.config
-    layout, _ = open_run(config, num_folds=pipeline.splits.num_folds)
-    with RunRecorder(layout, config) as recorder:
+    """Run a task-free plan: open the run, attach the source, score CRoMa."""
+    plan = pipeline.plan
+    layout, _ = open_run(plan, config=pipeline.config, num_folds=pipeline.splits.num_folds)
+    with RunRecorder(layout, plan) as recorder:
         context = attach_source(
-            config,
+            plan,
             source=pipeline.source,
             dataset=pipeline.dataset,
             splits=pipeline.splits,
@@ -48,7 +49,7 @@ def run_representation(pipeline) -> "PipelineResult":
             feature_store=context.source,
             dataset=context.dataset,
             splits=context.splits,
-            representation=config.representation,
+            representation=plan.evaluation.representation,
             run_dir=layout.run_dir,
         )
         with log_path.open("a", encoding="utf-8") as handle:
@@ -60,7 +61,7 @@ def run_representation(pipeline) -> "PipelineResult":
 
 
 def _representation_split_ids(
-    splits: LegacyFolds, representation: RepresentationConfig
+    splits: LegacyFolds, representation: CRoMaOptions
 ) -> list[str]:
     matches: list[tuple[int, tuple[str, ...]]] = []
     for fold_index, fold in enumerate(splits.folds):
@@ -98,7 +99,7 @@ def evaluate_representation(
     feature_store: CachedSetSource,
     dataset: LegacySamples,
     splits: LegacyFolds,
-    representation: RepresentationConfig,
+    representation: CRoMaOptions,
     run_dir: str | Path,
 ) -> "PipelineResult":
     """Evaluate selected frozen tile embeddings directly with CRoMa's public API."""

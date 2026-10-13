@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from dataclasses import dataclass
 
@@ -9,6 +10,7 @@ import pytest
 
 import soma
 from soma import discovery
+from soma.params import is_run_decided
 
 
 def _entry(kind: str, name: str) -> dict:
@@ -65,7 +67,11 @@ def test_every_soma_entry_declares_params_mirroring_its_constructor(kind, name):
     defaults = registry.info(name)["params"]
 
     assert defaults is not None, f"{kind} '{name}' is registered without params"
+    # A field the run decides (a class scheme, a derived size) is the documented exception.
+    run_decided = {f.name for f in dataclasses.fields(registry._entries[name].params) if is_run_decided(f)}
     for field, default in defaults.items():
+        if field in run_decided:
+            continue
         assert field in signature.parameters, f"{kind} '{name}': {field!r} is not a constructor keyword"
         declared = signature.parameters[field].default
         if declared is not inspect.Parameter.empty:
@@ -164,70 +170,73 @@ def test_a_dotted_path_class_resolves_with_a_warning_unvalidated_and_unlisted(ag
     assert dotted not in [entry["name"] for entry in soma.components("aggregators")]
 
 
-def _config(dataset_type: str = "slide", **components):
-    from soma.config import PipelineConfig
+def _plan(tmp_path, **kwargs):
+    """``kwargs``' experiment resolved against a two-class cohort of six samples."""
+    from soma import resolve
+    from soma.plan import load_cohort
+    from tests.experiment_configs import experiment
 
-    return PipelineConfig(
-        dataset_csv="data.csv",
-        splits_csv="splits.csv",
-        output_root="out",
-        dataset_type=dataset_type,
-        **components,
-    )
+    records, splits = tmp_path / "dataset.csv", tmp_path / "splits.csv"
+    ids = [f"s{i}" for i in range(6)]
+    records.write_text("sample_id,image_path,label,time,event,bin\n" + "".join(
+        f"{sid},/{sid}.tif,{i % 2},{i + 1.0},{i % 2},{i % 2}\n" for i, sid in enumerate(ids)
+    ))
+    splits.write_text("sample_id,split\n" + "".join(
+        f"{sid},{split}\n" for sid, split in zip(ids, ["train"] * 3 + ["tune", "test", "test"])
+    ))
+    config = experiment(records, splits, **kwargs)
+    return resolve(config, load_cohort(config))
 
 
-def test_config_names_a_registered_class_by_its_key_so_clam_mb_gets_the_branch_aware_head():
-    from soma.config import AggregatorConfig, TaskConfig
+def test_a_dotted_path_naming_a_registered_class_is_that_entry(tmp_path):
+    """The plan keeps the name as written, so it reloads in a fresh process (importing the
+    path registers the class); its params take the entry's defaults, and name-keyed
+    routing (``clam_mb``'s branch-aware head) sees the entry's key."""
+    from soma.aggregators.registry import aggregator_registry
     from soma.pipeline.build import _bag_head_class
     from soma.tasks import BranchAwareClassificationHead, MulticlassClassificationHead
 
-    config = _config(
-        aggregator=AggregatorConfig(name="soma.aggregators.mil.clam.CLAM_MB"),
-        task=TaskConfig(name="multiclass_classification"),
-    )
+    dotted = "soma.aggregators.mil.clam.CLAM_MB"
+    plan = _plan(tmp_path, aggregator=dotted, head="multiclass_classification")
 
-    assert config.aggregator.name == "clam_mb"
-    head_cls = _bag_head_class(
-        MulticlassClassificationHead,
-        task_name=config.task.name,
-        aggregator_name=config.aggregator.name,
-    )
+    aggregator = plan.learner.params["aggregator"]
+    assert aggregator.name == dotted
+    assert aggregator.params == aggregator_registry.canonical_params("clam_mb")
+    key = aggregator_registry.key_of(aggregator.name)
+    assert key == "clam_mb"
+    head_cls = _bag_head_class(MulticlassClassificationHead, task_name="multiclass_classification", aggregator_key=key)
     assert head_cls is BranchAwareClassificationHead
 
 
-def test_a_dotted_survival_head_honours_the_loss_selector():
-    from soma.config import TaskConfig, TrainingConfig
+def test_a_dotted_survival_head_selects_its_objective_by_class(tmp_path):
     from soma.tasks.survival import CoxSurvivalHead, resolve_survival_task
 
-    config = _config(
-        task=TaskConfig(name="soma.tasks.survival.SurvivalHead", params={"loss": "cox"}),
-        training=TrainingConfig(batch_size=4),
-    )
+    dotted = "soma.tasks.survival.CoxSurvivalHead"
+    plan = _plan(tmp_path, head=dotted, aggregator="abmil", loaders={"batch_size": 4})
 
-    assert config.task.name == "survival"
-    assert resolve_survival_task(config.task.name, config.task.params) == (CoxSurvivalHead, "cox")
+    assert plan.learner.params["head"].name == dotted
+    assert resolve_survival_task(dotted) == (CoxSurvivalHead, "cox")
 
 
-def test_config_names_a_registered_decoder_by_its_key():
-    from soma.config import DecoderConfig, TaskConfig
+def test_a_dotted_registered_decoder_takes_its_entry_s_defaults():
+    from soma.config import Component
+    from soma.decoders.registry import decoder_registry
+    from soma.plan import _expand
 
-    config = _config(
-        "segmentation",
-        decoder=DecoderConfig(name="soma.decoders.lightweight_conv.LightweightConvDecoder"),
-        task=TaskConfig(name="segmentation"),
-    )
-
-    assert config.decoder.name == "lightweight_conv"
+    dotted = "soma.decoders.lightweight_conv.LightweightConvDecoder"
+    leaf = _expand(decoder_registry, Component(dotted))
+    assert leaf.name == dotted
+    assert leaf.params == decoder_registry.canonical_params("lightweight_conv")
+    assert decoder_registry.key_of(dotted) == "lightweight_conv"
 
 
-def test_config_keeps_an_unregistered_dotted_path_as_written(aggregators):
-    from soma.config import AggregatorConfig, TaskConfig
-
+def test_an_unregistered_dotted_path_keeps_its_name_and_params_verbatim(aggregators, tmp_path):
     dotted = "tests.test_components.FancyMIL"
     with pytest.warns(UserWarning, match="is not registered"):
-        config = _config(aggregator=AggregatorConfig(name=dotted), task=TaskConfig(name="binary_classification"))
+        plan = _plan(tmp_path, aggregator={"name": dotted, "params": {"width": 0}})
 
-    assert config.aggregator.name == dotted
+    assert plan.learner.params["aggregator"].name == dotted
+    assert plan.learner.params["aggregator"].params == {"width": 0}
 
 
 def test_components_is_the_only_discovery_surface():

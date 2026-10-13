@@ -1,71 +1,77 @@
 run:
-  output_root: runs/cox
+  output_dir: runs/cox
   seed: 0
-  tags: []
 
-data:
+cohort:
   # dataset.csv carries `time` (time-to-event) and `event` (0/1). Unlike the
-  # discrete-time NLL path, Cox needs no `bin` column. A CSV that stores the time
-  # under another column name maps it with `task.targets` below.
-  dataset_csv: data/dataset.csv
-  splits_csv: data/splits.csv
-  dataset_type: slide
+  # discrete-time NLL head, Cox needs no `bin` column. A CSV that stores the time
+  # under another column name maps it with the head's `targets` below.
+  records: data/dataset.csv
+  splits: data/splits.csv
 
-preprocessing:
-  min_coverage:
-    tissue: 0.1
+features:
+  encoder:
+    name: uni2
+  extraction:
+    # hs2p's binary tissue vocabulary; tiles with >= 10% tissue are kept.
+    masks:
+      pixel_mapping: {background: 0, tissue: 1}
+      min_coverage: {tissue: 0.1}
 
-cache:
-  enabled: true
-
-encoder:
-  name: uni2
-
-# Padded mode (shown here): the risk set is the batch. Use single-embedding
-# slide-level features with no aggregator, OR a MIL aggregator (abmil / transmil
-# / mean_pool) on tile-bag features — masking keeps padded bags exact. For large
-# variable-size bags, prefer accumulation mode (see the commented block below) to
-# avoid padding memory.
-aggregation: null
-
-task:
-  name: survival
-  # targets: {time: label}    # target key -> CSV column, when the names differ
+# Padded mode (shown here): the risk set is the batch. Use a MIL aggregator (abmil /
+# transmil / mean_pool) on tile-bag features, where masking keeps padded bags exact, OR
+# a slide-level encoder's single embeddings with no aggregator. For large variable-size
+# bags, prefer accumulation mode (see the commented block below) to avoid padding memory.
+learner:
+  name: mil
   params:
-    loss: cox                 # selects the CoxPH path; default is nll (discrete-time)
-    ties: breslow             # only Breslow ties are implemented
-    min_events_per_window: 1  # event floor the sampler guarantees per batch/window
-    # cox_window: 48          # >= 2 switches to accumulation mode (see below)
+    aggregator:
+      name: abmil
+    head:
+      name: cox_survival          # the CoxPH head; `survival` is the discrete-time NLL one
+      params:
+        ties: breslow             # only Breslow ties are implemented
+        min_events_per_window: 1  # event floor the sampler guarantees per batch/window
+        # cox_window: 48          # >= 2 switches to accumulation mode (see below)
+        # targets: {time: label}  # target key -> CSV column, when the names differ
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
+
+# Padded mode: the risk set IS the batch. Raise batch_size to enlarge it (less biased
+# Cox gradient); it must be >= 2, and trainer.accumulate_grad_batches must stay 1 (it
+# makes several small risk sets, not one large one).
+loaders:
+  batch_size: 32
+
+trainer:
+  max_epochs: 50
+  callbacks:
+    # Selects and early-stops on the full-cohort tune partial likelihood by default; to
+    # use C-index instead, set params {monitor: c_index, mode: max} on both callbacks.
+    - name: checkpoint
+    - name: early_stopping
+      params: {patience: 10}
 
 evaluation:
   metrics:
     - c_index
 
-training:
-  epochs: 50
-  learning_rate: 1.0e-4
-  patience: 10
-  # Padded mode: the risk set IS the batch — raise batch_size to enlarge it (less
-  # biased Cox gradient). gradient_accumulation must stay 1 (it makes several small
-  # risk sets, not one large one), and batch_size must be >= 2.
-  batch_size: 32
-  gradient_accumulation: 1
-  # Early-stop on the full-cohort tune partial likelihood by default; to early-stop
-  # on C-index instead:
-  # monitor: c_index
-  # monitor_mode: max
-
 # --- Accumulation mode (large variable-size MIL bags) ---
-# Set an MIL aggregator and task.params.cox_window >= 2, with batch_size = 1:
+# Set an MIL aggregator and the head's cox_window >= 2, with batch_size = 1:
 #
-# aggregation:
-#   name: abmil
-# task:
-#   name: survival
+# learner:
+#   name: mil
 #   params:
-#     loss: cox
-#     cox_window: 48          # risk-set size = bags forwarded per Cox loss
-# training:
+#     aggregator: {name: abmil}
+#     head:
+#       name: cox_survival
+#       params: {cox_window: 48}  # risk-set size = bags forwarded per Cox loss
+#     optimizer:
+#       name: adam
+#       params: {lr: 5.0e-4, weight_decay: 1.0e-5}  # ~cox_window x fewer steps/epoch
+# loaders:
 #   batch_size: 1             # required: bags are forwarded un-padded, one at a time
-#   learning_rate: 5.0e-4     # ~cox_window x fewer steps/epoch -> budget a higher LR
-#   epochs: 100               #   and/or more epochs, or training appears to stall
+# trainer:
+#   max_epochs: 100           # and/or a higher LR, or training appears to stall

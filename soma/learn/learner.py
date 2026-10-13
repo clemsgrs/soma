@@ -99,7 +99,7 @@ class Budget:
 
 optimizer_registry = Registry("optimizers")
 scheduler_registry = Registry("schedulers")
-learner_registry = Registry("learners")
+learner_registry = Registry("learners", bundled_module="soma.benchmarks")
 
 # torch owns these signatures, so their params dataclasses are derived from them.
 for _name, _cls in {
@@ -146,6 +146,8 @@ def resolve_leaf(leaf: Any, registry: Registry) -> tuple[type, dict[str, Any], d
     """
     if isinstance(leaf, str):
         leaf = {"name": leaf}
+    elif hasattr(leaf, "name") and hasattr(leaf, "params") and not isinstance(leaf, Mapping):
+        leaf = {"name": leaf.name, "params": leaf.params}  # a soma.config.Component
     if not isinstance(leaf, Mapping) or "name" not in leaf:
         raise ValueError(
             f"a component leaf is a name or a {{name, params}} mapping, got {leaf!r}"
@@ -210,20 +212,20 @@ class Learner(nn.Module):
     ) -> torch.optim.Optimizer | tuple[torch.optim.Optimizer, list[SchedulerSpec]]:
         """Default: the leaves over every ``requires_grad`` parameter. Cosine follows the
         budget's cadence (``step`` under a step budget, else ``epoch``) unless the leaf
-        sets ``interval``; an omitted ``T_max`` is the budget in that cadence's units."""
+        sets ``interval``; an omitted (or null) ``T_max`` is the budget in that cadence's units."""
         cls, params, _ = resolve_leaf(self.optimizer_leaf, optimizer_registry)
         trainable = [p for p in self.parameters() if p.requires_grad]
         optimizer = cls(trainable, **params)
         specs: list[SchedulerSpec] = []
         for leaf in self.scheduler_leaves:
-            if (leaf.get("name") if isinstance(leaf, Mapping) else leaf) in (None, "none"):
+            if (leaf.get("name") if isinstance(leaf, Mapping) else getattr(leaf, "name", leaf)) in (None, "none"):
                 continue
             scls, sparams, extra = resolve_leaf(leaf, scheduler_registry)
             cosine = scls is torch.optim.lr_scheduler.CosineAnnealingLR
             interval = extra.get("interval", "step" if cosine and budget.max_steps is not None else "epoch")
             if interval not in {"epoch", "step"}:
                 raise ValueError(f"scheduler interval must be 'epoch' or 'step', got {interval!r}")
-            if cosine and "T_max" not in sparams:
+            if cosine and sparams.get("T_max") is None:
                 sparams["T_max"] = budget.total_steps if interval == "step" else budget.total_epochs
             specs.append(SchedulerSpec(scheduler=scls(optimizer, **sparams), interval=interval))
         return optimizer, specs

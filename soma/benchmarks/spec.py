@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from soma.config import PipelineConfig
+from soma.config import ExperimentConfig
 
 
 class BenchmarkConfigBuilder(Protocol):
@@ -22,7 +22,7 @@ class BenchmarkConfigBuilder(Protocol):
         seed: int,
         overrides: dict[str, Any],
         encoder: str,
-    ) -> PipelineConfig: ...
+    ) -> ExperimentConfig: ...
 
 
 BenchmarkScorer = Callable[[str | Path], dict[str, float]]

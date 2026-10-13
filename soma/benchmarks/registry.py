@@ -31,7 +31,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
-from soma.config import PipelineConfig
+from soma.config import ExperimentConfig
 from soma.curation.manifest import CuratedManifest
 from soma.registry import Registry, signature_params
 
@@ -138,7 +138,7 @@ class Benchmark(Protocol):
 
     def curate(self, raw_root: str | Path, out_dir: str | Path) -> CuratedManifest: ...
 
-    def build_config(self, **axes: Any) -> PipelineConfig: ...
+    def build_config(self, **axes: Any) -> ExperimentConfig: ...
 
     def expected(self, **axes: Any) -> list[ReferenceRow]: ...
 

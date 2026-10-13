@@ -6,24 +6,28 @@ Composite encoders
 A composite encoder concatenates several frozen encoders' dense features for
 segmentation or detection. Each member is cached independently;
 :class:`~soma.dense.composite.CompositeDenseFeatureStore` combines them at load
-time. Use ``composite`` in place of the single ``encoder`` block. The
+time. Name the ``composite`` encoder in place of a single encoder. The
 :doc:`composite walkthrough <../tutorials/walkthrough-composite>` trains a
 segmentation decoder on two concatenated encoders.
 
 .. code-block:: yaml
 
-   composite:
-     encoders:
-       - { name: uni, feature_kind: cls_attention }
-       - { name: phikon, feature_kind: cls_attention }
-       - { name: lunit, feature_kind: patch_features, member_norm: l2 }
+   features:
+     encoder:
+       name: composite
+       params:
+         members:
+           - { name: uni, dense: { feature_kind: cls_attention } }
+           - { name: phikon, dense: { feature_kind: cls_attention } }
+           - { name: lunit, dense: { feature_kind: patch_features }, member_norm: l2 }
 
-Each member can select its feature kind, attention settings, output variant,
-and extraction window. If omitted, ``feature_kind`` resolves to
-``patch_features``.
-All members share the run's read spacing and supervision size; per-member
-spacing is not supported. Set ``dense_window_size`` and
-``dense_window_overlap`` on a member to override the shared preprocessing
+Each member can select its feature kind, attention settings and extraction
+window (``dense``, fields of slide2vec's ``DenseOptions``), its encoder params
+(``params``, such as ``output_variant``) and its ``execution`` precision and
+batch size. If omitted, ``feature_kind`` resolves to ``patch_features``.
+All members share the run's read spacing and supervision size
+(``features.dense``); per-member spacing is not supported. Set
+``window_size`` and ``overlap`` in a member's ``dense`` to override the shared
 settings, for example when an encoder requires a fixed input size.
 
 Concatenation resolution

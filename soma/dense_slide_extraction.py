@@ -47,7 +47,7 @@ from soma.cache import (
     resolve_cache_dtype,
     roi_sampling_signature,
 )
-from soma.config import CacheConfig, EncoderLeaf
+from soma.config import CacheOptions, EncoderLeaf
 from soma.dense import CachedGridSource, normalize_hw
 from soma.encoders.validation import resolve_filter_config
 from soma.slide2vec_adapter import execution_options
@@ -282,7 +282,7 @@ class _SlideRegionExtractor:
         dense: DenseOptions,
         spacing_policy: str = "strict",
         execution: ExecutionOptions | None = None,
-        cache: CacheConfig | None = None,
+        cache: CacheOptions | None = None,
     ) -> None:
         self._dataset = roi_dataset
         self._encoder = encoder
@@ -290,7 +290,7 @@ class _SlideRegionExtractor:
         self._dense = dense
         self._spacing_policy = spacing_policy
         self._execution = execution if execution is not None else ExecutionOptions()
-        self._cache = cache or CacheConfig(enabled=False)
+        self._cache = cache or CacheOptions(enabled=False)
         self._target_size = normalize_hw(int(dense.target_size), name="target_size")
 
     def _payload_stems(self) -> dict[str, str]:

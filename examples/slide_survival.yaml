@@ -1,46 +1,50 @@
 run:
-  output_root: runs/survival
+  output_dir: runs/survival
   seed: 0
-  tags: []
 
-data:
+cohort:
   # dataset.csv carries the survival head's targets as same-named columns: `time`
   # (time-to-event), `event` (0/1) and `bin` (the discrete bin containing `time`, for
   # every sample including censored ones — compute these yourself, e.g. via qcut on
   # uncensored times). A CSV that stores the time under another column name (e.g. a
-  # legacy `label`) maps it with `task.targets` below instead of being rewritten.
-  dataset_csv: data/dataset.csv
-  splits_csv: data/splits.csv
-  dataset_type: slide
+  # legacy `label`) maps it with the head's `targets` below instead of being rewritten.
+  records: data/dataset.csv
+  splits: data/splits.csv
 
-preprocessing:
-  min_coverage:
-    tissue: 0.1
+features:
+  encoder:
+    name: uni2
+  extraction:
+    # hs2p's binary tissue vocabulary; tiles with >= 10% tissue are kept.
+    masks:
+      pixel_mapping: {background: 0, tissue: 1}
+      min_coverage: {tissue: 0.1}
 
-cache:
-  enabled: true
-
-encoder:
-  name: uni2
-
-# CLAM / DTFD-MIL are not supported for survival; use abmil, transmil, mean_pool.
-aggregation:
-  name: abmil
-
-task:
-  name: survival
-  # targets: {time: label}  # target key -> CSV column, when the names differ
+learner:
+  name: mil
   params:
-    alpha: 0.15  # up-weighting of the uncensored NLL term (HIPT default)
+    # CLAM / DTFD-MIL are not supported for survival; use abmil, transmil, mean_pool.
+    aggregator:
+      name: abmil
+    head:
+      name: survival
+      params:
+        alpha: 0.15  # up-weighting of the uncensored NLL term (HIPT default)
+        # targets: {time: label}  # target key -> CSV column, when the names differ
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
+
+trainer:
+  max_epochs: 50
+  callbacks:
+    # Selects and early-stops on tune NLL by default; to use C-index instead, set
+    # params {monitor: c_index, mode: max} on both callbacks.
+    - name: checkpoint
+    - name: early_stopping
+      params: {patience: 10}
 
 evaluation:
   metrics:
     - c_index
-
-training:
-  epochs: 50
-  learning_rate: 1.0e-4
-  patience: 10
-  # Early-stop on tune NLL by default; to early-stop on C-index instead:
-  # monitor: c_index
-  # monitor_mode: max

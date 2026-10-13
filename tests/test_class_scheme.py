@@ -62,12 +62,12 @@ def test_resolve_rejects_num_classes_disagreeing_with_classes():
 
 
 def test_resolve_rejects_excluded_key_without_classes():
-    with pytest.raises(ValueError, match="task.params.drop needs task.params.classes"):
+    with pytest.raises(ValueError, match="'drop' param needs its 'classes'"):
         resolve_classes({"num_classes": 2, "drop": [2]}, excluded_key="drop", subject="detection")
 
 
 def test_resolve_requires_classes_or_num_classes():
-    with pytest.raises(ValueError, match="dataset_type='detection' requires task.params.classes"):
+    with pytest.raises(ValueError, match="the detection head requires its 'classes'"):
         resolve_classes({}, excluded_key="drop", subject="detection")
 
 

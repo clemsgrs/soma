@@ -7,25 +7,10 @@ import pytest
 import yaml
 from slide2vec import DenseOptions
 
+from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
 
-from soma.config import (
-    AggregatorConfig,
-    CacheConfig,
-    DecoderConfig,
-    EncoderLeaf,
-    EvalConfig,
-    FeaturesConfig,
-    HeatmapConfig,
-    NormalizationConfig,
-    PipelineConfig,
-    ProjectionConfig,
-    TaskConfig,
-    TrainingConfig,
-    config_yaml_dict,
-    load_config,
-    save_config,
-)
+from soma.config import EncoderLeaf, ExperimentConfig, FeaturesConfig
 from soma.encoders import CompositeMember
 from soma.pipeline.layout import (
     ExperimentSpec,
@@ -42,6 +27,7 @@ from soma.pipeline.layout import (
     write_run_metadata,
 )
 from soma.pipeline.layout import test_identity_digest as compute_test_digest
+from soma.plan import Plan, check, load_cohort, resolve
 
 
 def _write_csv(path: Path, text: str) -> Path:
@@ -49,28 +35,33 @@ def _write_csv(path: Path, text: str) -> Path:
     return path
 
 
-def _make_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
+#: One cohort with a train, tune and test split, so a config over it resolves to a plan.
+_COHORT_SPLITS = "fold,sample_id,split\n0,s0,train\n0,s1,train\n0,s2,tune\n0,s3,test\n"
+
+
+def _resolved(config: ExperimentConfig) -> Plan:
+    """The plan a run of ``config`` resolves to over its cohort."""
+    return resolve(config, load_cohort(config))
+
+
+def _make_pipeline_config(tmp_path: Path, **overrides) -> Plan:
+    """A slide-level AB-MIL classifier's plan; ``overrides`` are :func:`experiment` fields."""
     dataset_csv = _write_csv(
         tmp_path / "dataset.csv",
-        "sample_id,image_path,label\ns0,/slides/s0.svs,tumor\n",
+        "sample_id,image_path,label\n"
+        + "".join(f"s{i},/slides/s{i}.svs,{label}\n" for i, label in enumerate(("tumor", "normal") * 2)),
     )
-    splits_csv = _write_csv(
-        tmp_path / "splits.csv",
-        "fold,sample_id,split\n0,s0,train\n",
-    )
-    defaults = dict(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "outputs",
-        dataset_type="slide",
+    splits_csv = _write_csv(tmp_path / "splits.csv", _COHORT_SPLITS)
+    fields = dict(
+        output_dir=tmp_path / "outputs",
+        seed=7,
         features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
-        aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
-        tags=["baseline"],
+        aggregator={"name": "abmil", "params": {"hidden_dim": 128}},
+        optimizer={"name": "adam", "params": {"lr": 1e-4}},
+        trainer={"max_epochs": 10},
     )
-    defaults.update(overrides)
-    return PipelineConfig(**defaults)
+    fields.update(overrides)
+    return _resolved(experiment(dataset_csv, splits_csv, **fields))
 
 
 def _segmentation_features(**overrides) -> FeaturesConfig:
@@ -83,28 +74,33 @@ def _segmentation_features(**overrides) -> FeaturesConfig:
     return FeaturesConfig(**values)
 
 
-def _make_segmentation_config(tmp_path: Path, **overrides) -> PipelineConfig:
+def _make_segmentation_config(tmp_path: Path, **overrides) -> Plan:
+    """A cached segmentation run's plan; ``overrides`` are :func:`experiment` fields."""
     dataset_csv = _write_csv(
         tmp_path / "segmentation_dataset.csv",
-        "sample_id,image_path,label_mask_path\ns0,/slides/s0.png,/masks/s0.png\n",
+        "sample_id,image_path,label_mask_path\n"
+        + "".join(f"s{i},/slides/s{i}.png,/masks/s{i}.png\n" for i in range(4)),
     )
-    splits_csv = _write_csv(
-        tmp_path / "segmentation_splits.csv",
-        "fold,sample_id,split\n0,s0,train\n",
-    )
-    defaults = dict(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "outputs",
-        dataset_type="segmentation",
+    splits_csv = _write_csv(tmp_path / "segmentation_splits.csv", _COHORT_SPLITS)
+    fields = dict(
+        output_dir=tmp_path / "outputs",
+        seed=7,
         features=_segmentation_features(),
-        aggregator=None,
-        decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
-        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
-        training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
+        decoder={"name": "lightweight_conv", "params": {"hidden_dim": 64}},
+        head="segmentation",
+        head_params={"num_classes": 2},
+        optimizer={"name": "adam", "params": {"lr": 1e-4}},
+        trainer={"max_epochs": 10},
     )
-    defaults.update(overrides)
-    return PipelineConfig(**defaults)
+    fields.update(overrides)
+    return _resolved(experiment(dataset_csv, splits_csv, **fields))
+
+
+def _callback(payload: dict, name: str) -> dict | None:
+    for leaf in payload["trainer"]["callbacks"]:
+        if leaf["name"] == name:
+            return leaf["params"]
+    return None
 
 
 def test_capture_environment_stamps_exactly_three_fields():
@@ -115,12 +111,12 @@ def test_capture_environment_stamps_exactly_three_fields():
 
 
 def test_run_yaml_stamps_bounded_environment(tmp_path: Path):
-    config = _make_pipeline_config(tmp_path)
-    experiment = build_experiment_spec(config)
+    plan = _make_pipeline_config(tmp_path)
+    experiment_spec = build_experiment_spec(plan)
     run_dir = tmp_path / "run"
     metadata = create_run_metadata(
-        config=config,
-        experiment=experiment,
+        plan=plan,
+        experiment=experiment_spec,
         run_dir=run_dir,
         run_id="r0",
         status="running",
@@ -134,21 +130,21 @@ def test_run_yaml_stamps_bounded_environment(tmp_path: Path):
     assert "gpu" not in payload["environment"]
 
 
-def test_canonical_experiment_payload_omits_seed(tmp_path: Path):
-    cfg_a = _make_pipeline_config(tmp_path, training=TrainingConfig(seed=1, epochs=10, learning_rate=1e-4))
-    cfg_b = _make_pipeline_config(tmp_path, training=TrainingConfig(seed=999, epochs=10, learning_rate=1e-4))
+def test_canonical_experiment_payload_omits_the_run_section(tmp_path: Path):
+    plan_a = _make_pipeline_config(tmp_path, seed=1)
+    plan_b = _make_pipeline_config(tmp_path, seed=999, output_dir=tmp_path / "elsewhere")
 
-    payload_a = canonical_experiment_payload(cfg_a)
-    payload_b = canonical_experiment_payload(cfg_b)
+    payload_a = canonical_experiment_payload(plan_a)
+    payload_b = canonical_experiment_payload(plan_b)
 
     assert payload_a == payload_b
-    assert payload_a["training"]["epochs"] == 10
-    assert "seed" not in payload_a["training"]
+    assert payload_a["trainer"]["max_epochs"] == 10
+    assert "run" not in payload_a
 
 
 def test_mirror_root_does_not_change_experiment_identity(tmp_path: Path):
     local_only = _make_pipeline_config(tmp_path)
-    mirrored = _make_pipeline_config(tmp_path, mirror_root=tmp_path / "shared")
+    mirrored = _make_pipeline_config(tmp_path, run={"mirror_root": tmp_path / "shared"})
 
     assert canonical_experiment_payload(mirrored) == canonical_experiment_payload(local_only)
     assert build_experiment_spec(mirrored).experiment_id == build_experiment_spec(
@@ -157,51 +153,46 @@ def test_mirror_root_does_not_change_experiment_identity(tmp_path: Path):
 
 
 def test_canonical_experiment_payload_names_checkpoint_selection_unconditionally(tmp_path: Path):
-    """Identity v2: every training knob is emitted, defaults included."""
+    """Every resolved knob is emitted, defaults included."""
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert payload["training"]["checkpoint_selection"] == "best"
-    assert payload["identity_version"] == 8
+    assert _callback(payload, "checkpoint")["selection"] == "best"
+    assert payload["identity_version"] == 9
 
 
 def test_canonical_epoch_experiment_payload_names_null_step_budget(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert payload["training"]["max_steps"] is None
+    assert payload["trainer"]["max_steps"] is None
 
 
 def test_canonical_step_experiment_payload_names_the_step_budget(tmp_path: Path):
     payload = canonical_experiment_payload(
-        _make_pipeline_config(
-            tmp_path,
-            training=TrainingConfig(epochs=None, max_steps=12500),
-        )
+        _make_pipeline_config(tmp_path, trainer={"max_steps": 12500})
     )
 
-    assert payload["training"]["epochs"] is None
-    assert payload["training"]["max_steps"] == 12500
+    assert payload["trainer"]["max_epochs"] is None
+    assert payload["trainer"]["max_steps"] == 12500
 
 
-def test_canonical_experiment_payload_names_null_roi_batch_sampling(tmp_path: Path):
+def test_canonical_experiment_payload_names_a_null_sampler(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert payload["training"]["roi_batch_sampling"] is None
-    assert payload["training"]["class_request_ratios"] is None
-    assert payload["training"]["roi_draws_per_epoch"] is None
+    assert payload["loaders"]["sampler"] is None
 
 
 def test_loader_plumbing_is_not_part_of_identity(tmp_path: Path):
     """num_workers / pin_memory / persistent_workers change throughput, not the model."""
-    base = _make_pipeline_config(tmp_path, training=TrainingConfig(num_workers=0))
+    base = _make_pipeline_config(tmp_path, loaders={"num_workers": 0})
     tuned = _make_pipeline_config(
-        tmp_path,
-        training=TrainingConfig(num_workers=8, pin_memory=False, persistent_workers=False),
+        tmp_path, loaders={"num_workers": 8, "pin_memory": True, "persistent_workers": True}
     )
 
     assert build_experiment_spec(base).experiment_id == build_experiment_spec(tuned).experiment_id
     payload = canonical_experiment_payload(base)
-    for key in ("num_workers", "pin_memory", "persistent_workers", "seed"):
-        assert key not in payload["training"]
+    for key in ("num_workers", "pin_memory", "persistent_workers"):
+        assert key not in payload["loaders"]
+    assert payload["loaders"]["batch_size"] == 1
 
 
 def test_spacing_policy_is_always_part_of_identity(tmp_path: Path):
@@ -211,41 +202,24 @@ def test_spacing_policy_is_always_part_of_identity(tmp_path: Path):
 
 
 def test_null_class_request_ratios_are_explicit_in_sampling_identity(tmp_path: Path):
-    config = _make_segmentation_config(
+    plan = _make_segmentation_config(
         tmp_path,
-        training=TrainingConfig(
-            batch_size=4,
-            roi_batch_sampling="class_conditioned",
-            roi_draws_per_epoch=8,
-        ),
+        loaders={"batch_size": 4, "sampler": {"name": "class_conditioned", "params": {"draws_per_epoch": 8}}},
     )
 
-    assert canonical_experiment_payload(config)["training"][
-        "class_request_ratios"
-    ] is None
+    sampler = canonical_experiment_payload(plan)["loaders"]["sampler"]
+    assert sampler["params"]["class_request_ratios"] is None
 
 
 def test_explicit_class_request_ratios_define_experiment_identity(tmp_path: Path):
-    equal = _make_segmentation_config(
-        tmp_path,
-        training=TrainingConfig(
-            batch_size=4,
-            roi_batch_sampling="class_conditioned",
-            class_request_ratios=[1, 1],
-            roi_draws_per_epoch=8,
-        ),
-    )
-    weighted = _make_segmentation_config(
-        tmp_path,
-        training=TrainingConfig(
-            batch_size=4,
-            roi_batch_sampling="class_conditioned",
-            class_request_ratios=[1, 2],
-            roi_draws_per_epoch=8,
-        ),
-    )
+    def sampler(ratios):
+        params = {"class_request_ratios": ratios, "draws_per_epoch": 8}
+        return {"batch_size": 4, "sampler": {"name": "class_conditioned", "params": params}}
 
-    assert canonical_experiment_payload(equal)["training"][
+    equal = _make_segmentation_config(tmp_path, loaders=sampler([1, 1]))
+    weighted = _make_segmentation_config(tmp_path, loaders=sampler([1, 2]))
+
+    assert canonical_experiment_payload(equal)["loaders"]["sampler"]["params"][
         "class_request_ratios"
     ] == [1, 1]
     assert build_experiment_spec(equal).experiment_id != build_experiment_spec(
@@ -253,53 +227,45 @@ def test_explicit_class_request_ratios_define_experiment_identity(tmp_path: Path
     ).experiment_id
 
 
-def test_pipeline_config_rejects_roi_batch_sampling_outside_cached_segmentation(
-    tmp_path: Path,
-):
+def test_check_refuses_a_roi_sampler_outside_cached_segmentation(tmp_path: Path):
+    config = experiment(
+        tmp_path / "dataset.csv",
+        tmp_path / "splits.csv",
+        aggregator="abmil",
+        loaders={"batch_size": 4, "sampler": {"name": "class_conditioned", "params": {"draws_per_epoch": 8}}},
+    )
     with pytest.raises(ValueError, match="cached neural segmentation"):
-        _make_pipeline_config(
-            tmp_path,
-            training=TrainingConfig(
-                batch_size=4,
-                roi_batch_sampling="class_conditioned",
-                roi_draws_per_epoch=8,
-            ),
-        )
+        check(config)
 
 
 def test_build_experiment_spec_distinguishes_checkpoint_selection(tmp_path: Path):
     best = _make_pipeline_config(tmp_path)
     last = _make_pipeline_config(
         tmp_path,
-        training=TrainingConfig(
-            seed=7, epochs=10, learning_rate=1e-4, checkpoint_selection="last", patience=None
-        ),
+        trainer={"max_epochs": 10, "callbacks": [{"name": "checkpoint", "params": {"selection": "last"}}]},
     )
 
-    last_payload = canonical_experiment_payload(last)
-    assert last_payload["training"]["checkpoint_selection"] == "last"
+    assert _callback(canonical_experiment_payload(last), "checkpoint")["selection"] == "last"
     assert build_experiment_spec(best).experiment_id != build_experiment_spec(last).experiment_id
 
 
 def test_canonical_experiment_payload_names_default_normalization(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert payload["normalization"]["method"] == "none"
+    assert payload["learner"]["params"]["normalization"]["method"] == "none"
 
 
 def test_build_experiment_spec_distinguishes_normalization(tmp_path: Path):
     off = _make_pipeline_config(tmp_path)
-    zscore = _make_pipeline_config(
-        tmp_path, normalization=NormalizationConfig(method="zscore")
-    )
-    l2 = _make_pipeline_config(tmp_path, normalization=NormalizationConfig(method="l2"))
+    zscore = _make_pipeline_config(tmp_path, normalization={"method": "zscore"})
+    l2 = _make_pipeline_config(tmp_path, normalization={"method": "l2"})
 
-    assert canonical_experiment_payload(zscore)["normalization"] == {
+    assert canonical_experiment_payload(zscore)["learner"]["params"]["normalization"] == {
         "method": "zscore",
         "eps": 1e-6,
     }
     ids = {
-        build_experiment_spec(cfg).experiment_id for cfg in (off, zscore, l2)
+        build_experiment_spec(plan).experiment_id for plan in (off, zscore, l2)
     }
     assert len(ids) == 3
 
@@ -307,45 +273,34 @@ def test_build_experiment_spec_distinguishes_normalization(tmp_path: Path):
 def test_canonical_experiment_payload_names_default_projection(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert payload["projection"]["method"] == "none"
+    assert payload["learner"]["params"]["projection"]["method"] == "none"
 
 
 def test_build_experiment_spec_distinguishes_projection(tmp_path: Path):
     off = _make_pipeline_config(tmp_path)
-    pca = _make_pipeline_config(
-        tmp_path, projection=ProjectionConfig(method="pca", target_dim=64)
-    )
-    random = _make_pipeline_config(
-        tmp_path, projection=ProjectionConfig(method="random", target_dim=64)
-    )
-    narrower = _make_pipeline_config(
-        tmp_path, projection=ProjectionConfig(method="pca", target_dim=32)
-    )
+    pca = _make_pipeline_config(tmp_path, projection={"method": "pca", "target_dim": 64})
+    random = _make_pipeline_config(tmp_path, projection={"method": "random", "target_dim": 64})
+    narrower = _make_pipeline_config(tmp_path, projection={"method": "pca", "target_dim": 32})
     reseeded = _make_pipeline_config(
-        tmp_path, projection=ProjectionConfig(method="random", target_dim=64, seed=1)
+        tmp_path, projection={"method": "random", "target_dim": 64, "seed": 1}
     )
 
-    assert canonical_experiment_payload(pca)["projection"] == {
-        "method": "pca",
-        "target_dim": 64,
-        "seed": 0,
-    }
-    assert canonical_experiment_payload(random)["projection"] == {
-        "method": "random",
-        "target_dim": 64,
-        "seed": 0,
-    }
+    def projection(plan):
+        return canonical_experiment_payload(plan)["learner"]["params"]["projection"]
+
+    assert projection(pca) == {"method": "pca", "target_dim": 64, "seed": 0}
+    assert projection(random) == {"method": "random", "target_dim": 64, "seed": 0}
     ids = {
-        build_experiment_spec(cfg).experiment_id
-        for cfg in (off, pca, random, narrower, reseeded)
+        build_experiment_spec(plan).experiment_id
+        for plan in (off, pca, random, narrower, reseeded)
     }
     assert len(ids) == 5
 
 
 def test_build_experiment_spec_uses_slug_and_short_hash(tmp_path: Path):
-    config = _make_pipeline_config(tmp_path)
+    plan = _make_pipeline_config(tmp_path)
 
-    spec = build_experiment_spec(config)
+    spec = build_experiment_spec(plan)
 
     assert isinstance(spec, ExperimentSpec)
     assert spec.slug.startswith("dataset-uni2-abmil-binary-classification_")
@@ -355,24 +310,26 @@ def test_build_experiment_spec_uses_slug_and_short_hash(tmp_path: Path):
     assert spec.splits_checksum
 
 
-def test_build_experiment_spec_distinguishes_dataset_type(tmp_path: Path):
-    slide_config = _make_pipeline_config(tmp_path, aggregator=None, dataset_type="slide")
-    tile_config = _make_pipeline_config(tmp_path, aggregator=None, dataset_type="tile")
+def test_build_experiment_spec_distinguishes_how_the_cohort_is_split(tmp_path: Path):
+    def plan(**cohort):
+        return _make_config_with_manifests(
+            tmp_path,
+            dataset_csv_text=_TRAIN_TUNE_DATASET,
+            splits_csv_text=_TRAIN_TUNE_SPLITS,
+            cohort=cohort,
+        )
 
-    slide_spec = build_experiment_spec(slide_config)
-    tile_spec = build_experiment_spec(tile_config)
-
-    assert slide_spec.experiment_id != tile_spec.experiment_id
+    assert build_experiment_spec(plan()).experiment_id != build_experiment_spec(
+        plan(tune_is_test=True)
+    ).experiment_id
 
 
 def test_build_experiment_spec_distinguishes_dense_decoder_settings(tmp_path: Path):
     shallow_decoder = _make_segmentation_config(
-        tmp_path,
-        decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
+        tmp_path, decoder={"name": "lightweight_conv", "params": {"hidden_dim": 64}}
     )
     wider_decoder = _make_segmentation_config(
-        tmp_path,
-        decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 128}),
+        tmp_path, decoder={"name": "lightweight_conv", "params": {"hidden_dim": 128}}
     )
 
     shallow_spec = build_experiment_spec(shallow_decoder)
@@ -404,43 +361,40 @@ def test_build_experiment_spec_distinguishes_dense_composite_model_choices(tmp_p
 
 
 def test_build_experiment_spec_distinguishes_evaluation_metrics(tmp_path: Path):
-    auroc_config = _make_pipeline_config(tmp_path, evaluation=EvalConfig(metrics=["auroc"]))
-    f1_config = _make_pipeline_config(tmp_path, evaluation=EvalConfig(metrics=["f1"]))
+    auroc_plan = _make_pipeline_config(tmp_path, evaluation={"metrics": ["auroc"]})
+    f1_plan = _make_pipeline_config(tmp_path, evaluation={"metrics": ["f1"]})
 
-    auroc_spec = build_experiment_spec(auroc_config)
-    f1_spec = build_experiment_spec(f1_config)
+    auroc_spec = build_experiment_spec(auroc_plan)
+    f1_spec = build_experiment_spec(f1_plan)
 
     assert auroc_spec.experiment_id != f1_spec.experiment_id
 
 
 def test_evaluation_artifact_toggles_are_identity_neutral(tmp_path: Path):
     """What is *saved* alongside the evaluation is not what the experiment is."""
-    plain = _make_segmentation_config(
-        tmp_path,
-        evaluation=EvalConfig(metrics=["mean_dice"]),
-    )
+    plain = _make_segmentation_config(tmp_path, evaluation={"metrics": ["mean_dice"]})
     with_artifacts = _make_segmentation_config(
         tmp_path,
-        evaluation=EvalConfig(
-            metrics=["mean_dice"],
-            save_segmentation_probabilities=True,
-            save_segmentation_overlays=False,
-            save_detection_overlays=False,
-            save_detection_heatmaps=True,
-        ),
+        evaluation={
+            "metrics": ["mean_dice"],
+            "save_probabilities": True,
+            "save_overlays": False,
+            "save_heatmaps": True,
+            "overwrite_test": True,
+        },
     )
 
     assert build_experiment_spec(plain).experiment_id == build_experiment_spec(with_artifacts).experiment_id
     payload = canonical_experiment_payload(plain)
-    assert "save_segmentation_probabilities" not in payload["evaluation"]
+    assert "save_probabilities" not in payload["evaluation"]
     assert payload["evaluation"]["metrics"] == ["mean_dice"]
 
 
 def test_build_experiment_spec_distinguishes_heatmap_artifact_settings(tmp_path: Path):
-    disabled = _make_pipeline_config(tmp_path, heatmaps=HeatmapConfig(enabled=False))
+    disabled = _make_pipeline_config(tmp_path)
     enabled = _make_pipeline_config(
         tmp_path,
-        heatmaps=HeatmapConfig(enabled=True, cmap="viridis", alpha=0.75, blur_sigma=1.5),
+        evaluation={"attention_heatmaps": {"cmap": "viridis", "alpha": 0.75, "blur_sigma": 1.5}},
     )
 
     disabled_spec = build_experiment_spec(disabled)
@@ -506,7 +460,7 @@ def test_build_experiment_spec_distinguishes_live_augmentation_choices(tmp_path:
     horizontal_flip = _make_segmentation_config(
         tmp_path,
         features=_segmentation_features(kind="live"),
-        augmentation={"name": "segmentation", "params": {"horizontal_flip": 0.5}},
+        loaders={"augment": {"name": "segmentation", "params": {"horizontal_flip": 0.5}}},
     )
 
     no_aug_spec = build_experiment_spec(no_augmentation)
@@ -518,17 +472,11 @@ def test_build_experiment_spec_distinguishes_live_augmentation_choices(tmp_path:
 def test_build_experiment_spec_is_stable_for_equivalent_configurations(tmp_path: Path):
     first = _make_segmentation_config(
         tmp_path,
-        decoder=DecoderConfig(
-            name="lightweight_conv",
-            params={"hidden_dim": 64, "num_groups": 8},
-        ),
+        decoder={"name": "lightweight_conv", "params": {"hidden_dim": 64, "num_groups": 8}},
     )
     second = _make_segmentation_config(
         tmp_path,
-        decoder=DecoderConfig(
-            name="lightweight_conv",
-            params={"num_groups": 8, "hidden_dim": 64},
-        ),
+        decoder={"name": "lightweight_conv", "params": {"num_groups": 8, "hidden_dim": 64}},
     )
 
     first_spec = build_experiment_spec(first)
@@ -552,10 +500,11 @@ def test_a_config_and_its_saved_yaml_share_one_experiment_identity(tmp_path: Pat
     """The geometry left to the encoder preset or to ``dense`` is hashed as resolved, so
     resuming from the ``config.yaml`` a Python config saved (which spells it out) finds the
     same experiment."""
-    config = make(tmp_path, features=features)
-    save_config(config, tmp_path / "config.yaml")
+    plan = make(tmp_path, features=features)
+    plan.config.to_yaml(tmp_path / "config.yaml")
 
-    assert canonical_experiment_payload(load_config(tmp_path / "config.yaml")) == canonical_experiment_payload(config)
+    reloaded = _resolved(ExperimentConfig.from_yaml(tmp_path / "config.yaml"))
+    assert canonical_experiment_payload(reloaded) == canonical_experiment_payload(plan)
 
 
 @pytest.mark.parametrize(
@@ -594,25 +543,12 @@ def test_encoder_params_are_hashed_as_their_params_dataclass_holds_them(tmp_path
     """Encoder params left to their defaults, spelling them, or given as dataclasses rather
     than mappings define the same experiment, so a Python config and the ``config.yaml``
     it saves share one experiment id."""
-    config = make(tmp_path, features=features)
-    save_config(config, tmp_path / "config.yaml")
+    plan = make(tmp_path, features=features)
+    plan.config.to_yaml(tmp_path / "config.yaml")
 
-    reloaded = load_config(tmp_path / "config.yaml")
+    reloaded = _resolved(ExperimentConfig.from_yaml(tmp_path / "config.yaml"))
 
-    assert build_experiment_spec(reloaded).experiment_id == build_experiment_spec(config).experiment_id
-
-
-def test_build_experiment_spec_ignores_inactive_heatmap_rendering_settings(tmp_path: Path):
-    default_disabled = _make_pipeline_config(tmp_path, heatmaps=HeatmapConfig(enabled=False))
-    restyled_disabled = _make_pipeline_config(
-        tmp_path,
-        heatmaps=HeatmapConfig(enabled=False, cmap="viridis", alpha=0.75, blur_sigma=1.5),
-    )
-
-    default_spec = build_experiment_spec(default_disabled)
-    restyled_spec = build_experiment_spec(restyled_disabled)
-
-    assert default_spec.experiment_id == restyled_spec.experiment_id
+    assert build_experiment_spec(reloaded).experiment_id == build_experiment_spec(plan).experiment_id
 
 
 def test_resolve_managed_output_paths_groups_same_experiment_and_changes_run_dir(tmp_path: Path):
@@ -624,15 +560,15 @@ def test_resolve_managed_output_paths_groups_same_experiment_and_changes_run_dir
     assert first.experiment_dir == second.experiment_dir
     assert first.run_dir != second.run_dir
     assert first.run_dir.parent == first.experiment_dir / "runs"
-    assert first.index_dir == Path(config.output_root) / "indexes"
+    assert first.index_dir == Path(config.run.output_dir) / "indexes"
 
 
 def test_create_run_metadata_records_status_and_seed(tmp_path: Path):
-    config = _make_pipeline_config(tmp_path, training=TrainingConfig(seed=123, epochs=10))
+    config = _make_pipeline_config(tmp_path, seed=123)
     layout = resolve_managed_output_paths(config, run_id="2026-04-09_16-22-10__local")
 
     metadata = create_run_metadata(
-        config=config,
+        plan=config,
         experiment=layout.experiment,
         run_dir=layout.run_dir,
         run_id=layout.run_id,
@@ -652,7 +588,7 @@ def test_run_index_upserts_rows(tmp_path: Path):
     config = _make_pipeline_config(tmp_path)
     layout = resolve_managed_output_paths(config, run_id="2026-04-09_16-22-10__local")
     run = create_run_metadata(
-        config=config,
+        plan=config,
         experiment=layout.experiment,
         run_dir=layout.run_dir,
         run_id=layout.run_id,
@@ -682,7 +618,7 @@ def test_run_index_rewrites_when_header_schema_changes(tmp_path: Path):
     config = _make_pipeline_config(tmp_path)
     layout = resolve_managed_output_paths(config, run_id="2026-04-09_16-22-10__local")
     run = create_run_metadata(
-        config=config, experiment=layout.experiment, run_dir=layout.run_dir,
+        plan=config, experiment=layout.experiment, run_dir=layout.run_dir,
         run_id=layout.run_id, status="running",
     )
     index_path = layout.index_dir / "runs.csv"
@@ -700,11 +636,11 @@ def test_run_manifest_records_identity_version(tmp_path: Path):
     config = _make_pipeline_config(tmp_path)
     layout = resolve_managed_output_paths(config, run_id="r1")
     run = create_run_metadata(
-        config=config, experiment=layout.experiment, run_dir=layout.run_dir,
+        plan=config, experiment=layout.experiment, run_dir=layout.run_dir,
         run_id=layout.run_id, status="running",
     )
-    assert run.to_dict()["identity_version"] == 8
-    assert layout.experiment.to_dict()["identity_version"] == 8
+    assert run.to_dict()["identity_version"] == 9
+    assert layout.experiment.to_dict()["identity_version"] == 9
 
 
 def test_git_provenance_comes_from_the_soma_checkout_not_cwd(tmp_path: Path, monkeypatch):
@@ -735,7 +671,7 @@ def test_git_provenance_comes_from_the_soma_checkout_not_cwd(tmp_path: Path, mon
     config = _make_pipeline_config(tmp_path)
     layout = resolve_managed_output_paths(config, run_id="r1")
     run = create_run_metadata(
-        config=config, experiment=layout.experiment, run_dir=layout.run_dir,
+        plan=config, experiment=layout.experiment, run_dir=layout.run_dir,
         run_id=layout.run_id, status="running",
     )
     assert run.git_sha == sha and run.git_dirty is False
@@ -783,22 +719,22 @@ def test_read_csv_rows_handles_large_fields(tmp_path: Path):
 
 def _make_config_with_manifests(
     tmp_path: Path, *, dataset_csv_text: str, splits_csv_text: str, **overrides
-) -> PipelineConfig:
+) -> Plan:
+    """A plan over the given cohort files, unresolved: experiment identity digests the
+    files' train/tune slice, which these fixtures vary (a fold need not hold a test split)."""
     tmp_path.mkdir(parents=True, exist_ok=True)
     dataset_csv = _write_csv(tmp_path / "dataset.csv", dataset_csv_text)
     splits_csv = _write_csv(tmp_path / "splits.csv", splits_csv_text)
-    defaults = dict(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "outputs",
-        dataset_type="slide",
+    fields = dict(
+        output_dir=tmp_path / "outputs",
+        seed=7,
         features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
-        aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
+        aggregator={"name": "abmil", "params": {"hidden_dim": 128}},
+        optimizer={"name": "adam", "params": {"lr": 1e-4}},
+        trainer={"max_epochs": 10},
     )
-    defaults.update(overrides)
-    return PipelineConfig(**defaults)
+    fields.update(overrides)
+    return Plan(experiment(dataset_csv, splits_csv, **fields))
 
 
 _TRAIN_TUNE_DATASET = (
@@ -919,10 +855,10 @@ def test_segmentation_manifest_identity_ignores_label_mask_storage_root(
 ):
     common = {
         "splits_csv_text": "fold,sample_id,split\n0,s0,train\n",
-        "dataset_type": "segmentation",
         "aggregator": None,
-        "decoder": DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
-        "task": TaskConfig(name="segmentation", params={"num_classes": 2}),
+        "decoder": {"name": "lightweight_conv", "params": {"hidden_dim": 64}},
+        "head": "segmentation",
+        "head_params": {"num_classes": 2},
     }
     local = _make_config_with_manifests(
         tmp_path / "local",
@@ -954,10 +890,10 @@ def test_segmentation_roi_manifest_identity_ignores_mask_crop_storage_root(
     """Relocating an explicit ROI manifest's stored mask crops keeps its identity."""
     common = {
         "splits_csv_text": "fold,sample_id,split\n0,s0_0_0,train\n",
-        "dataset_type": "segmentation",
         "aggregator": None,
-        "decoder": DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
-        "task": TaskConfig(name="segmentation", params={"num_classes": 2}),
+        "decoder": {"name": "lightweight_conv", "params": {"hidden_dim": 64}},
+        "head": "segmentation",
+        "head_params": {"num_classes": 2},
     }
     header = (
         "sample_id,image_path,label_mask_path,slide_id,region_x,region_y,"
@@ -988,10 +924,10 @@ def test_segmentation_roi_manifest_identity_ignores_mask_crop_storage_root(
 def test_detection_manifest_identity_ignores_points_and_ignore_mask_storage_roots(tmp_path: Path):
     common = {
         "splits_csv_text": "fold,sample_id,split\n0,s0,train\n",
-        "dataset_type": "detection",
         "aggregator": None,
-        "decoder": DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
-        "task": TaskConfig(name="detection", params={"num_classes": 2}),
+        "decoder": {"name": "lightweight_conv", "params": {"hidden_dim": 64}},
+        "head": "detection",
+        "head_params": {"num_classes": 2},
     }
     local = _make_config_with_manifests(
         tmp_path / "local",
@@ -1146,14 +1082,14 @@ def test_run_metadata_keeps_semantic_identity_and_physical_file_provenance(
     relocated_experiment = build_experiment_spec(relocated)
 
     local_metadata = create_run_metadata(
-        config=local,
+        plan=local,
         experiment=local_experiment,
         run_dir=tmp_path / "local-run",
         run_id="local",
         status="running",
     )
     relocated_metadata = create_run_metadata(
-        config=relocated,
+        plan=relocated,
         experiment=relocated_experiment,
         run_dir=tmp_path / "relocated-run",
         run_id="relocated",
@@ -1253,13 +1189,13 @@ def test_overwrite_test_flag_is_not_part_of_identity(tmp_path: Path):
         tmp_path / "a",
         dataset_csv_text=_TRAIN_TUNE_DATASET,
         splits_csv_text=_TRAIN_TUNE_SPLITS,
-        evaluation=EvalConfig(overwrite_test=False),
+        evaluation={"overwrite_test": False},
     )
     on = _make_config_with_manifests(
         tmp_path / "b",
         dataset_csv_text=_TRAIN_TUNE_DATASET,
         splits_csv_text=_TRAIN_TUNE_SPLITS,
-        evaluation=EvalConfig(overwrite_test=True),
+        evaluation={"overwrite_test": True},
     )
 
     assert build_experiment_spec(off).experiment_id == build_experiment_spec(on).experiment_id
@@ -1293,7 +1229,7 @@ def test_run_metadata_records_test_and_file_provenance(tmp_path: Path):
     )
     experiment = build_experiment_spec(config)
     metadata = create_run_metadata(
-        config=config,
+        plan=config,
         experiment=experiment,
         run_dir=tmp_path / "run",
         run_id="r0",
@@ -1357,4 +1293,4 @@ def test_experiment_spec_roundtrips_through_yaml(tmp_path: Path):
 
     assert loaded["experiment_id"] == spec.experiment_id
     assert loaded["slug"] == spec.slug
-    assert loaded["canonical_spec"]["task"]["name"] == "binary_classification"
+    assert loaded["canonical_spec"]["learner"]["params"]["head"]["name"] == "binary_classification"

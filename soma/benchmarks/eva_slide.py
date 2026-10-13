@@ -6,7 +6,7 @@ the tile-classification (:mod:`soma.benchmarks.eva`) and segmentation
 (:mod:`soma.benchmarks.eva_segmentation`) members, sharing their encoder table, reference
 ledger and ``soma reproduce eva`` fan-out. They reproduce EVA's offline configs
 ``configs/vision/pathology/offline/classification/{camelyon16_small,panda_small}.yaml``
-on soma's slide path (``dataset_type="slide"``) with components that exist only for this
+on soma's slide path (a tile encoder's bags pooled by an aggregator) with components that exist only for this
 protocol:
 
 * ``eva_abmil`` — EVA's ``ABMIL`` bag encoder: ``Linear(D -> 128)`` projection, then
@@ -72,14 +72,17 @@ from hs2p import SegmentationConfig, TilingConfig
 from slide2vec import ExecutionOptions, PreprocessingConfig
 
 from soma.config import (
-    AggregatorConfig,
-    CacheConfig,
+    CacheOptions,
+    CohortConfig,
+    Component,
     EncoderLeaf,
-    EvalConfig,
+    EvaluationConfig,
+    ExperimentConfig,
     FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
+    LearnerConfig,
+    LoadersConfig,
+    RunConfig,
+    TrainerConfig,
 )
 from soma.curation.eva_slide import (
     PANDA_NUM_CLASSES,
@@ -302,7 +305,9 @@ class EvaMILMulticlassParams:
 
 def infer_class_count(cohort: "Cohort", params: "Mapping[str, Any]") -> dict[str, Any]:
     """``num_classes``: the largest class index plus one (the labels are class indices;
-    the benchmark config pins ``num_classes`` anyway)."""
+    the benchmark config pins ``num_classes`` anyway, and a cohort may not show them all)."""
+    if params.get("num_classes") is not None:
+        return {}
     return {"num_classes": max(int(record.targets["label"]) for record in cohort.records) + 1}
 
 
@@ -375,9 +380,9 @@ def _build_eva_slide_config(
     encoder_batch_size: int = 32,
     head_num_workers: int = 0,
     execution: ExecutionOptions | None = None,
-    cache: CacheConfig | None = None,
-) -> PipelineConfig:
-    """Assemble an EVA-faithful slide-level :class:`~soma.config.PipelineConfig`.
+    cache: CacheOptions | None = None,
+) -> ExperimentConfig:
+    """Assemble an EVA-faithful slide-level :class:`~soma.config.ExperimentConfig`.
 
     ``epochs`` defaults to EVA's :data:`EPOCHS` and ``patience`` to :data:`PATIENCE`.
     Pass overrides for smoke runs.
@@ -387,11 +392,10 @@ def _build_eva_slide_config(
     task_params: dict[str, Any] = {}
     if spec.task == MULTICLASS_HEAD_NAME:
         task_params["num_classes"] = spec.num_classes
-    return PipelineConfig(
-        dataset_csv=str(dataset_csv),
-        splits_csv=str(splits_csv),
-        output_root=Path(output_root),
-        dataset_type="slide",
+    monitor = {"monitor": "balanced_accuracy", "mode": "max"}
+    return ExperimentConfig(
+        run=RunConfig(output_dir=Path(output_root), seed=seed),
+        cohort=CohortConfig(records=str(dataset_csv), splits=str(splits_csv)),
         features=FeaturesConfig(
             # The spacing is EVA's, not the encoder's recommended regime.
             encoder=EncoderLeaf(
@@ -419,36 +423,32 @@ def _build_eva_slide_config(
                 segmentation=SegmentationConfig(method="otsu"),
             ),
             execution=_replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
-            cache=cache or CacheConfig(enabled=True),
+            cache=cache or CacheOptions(enabled=True),
         ),
-        aggregator=AggregatorConfig(name=AGGREGATOR_NAME),
-        task=TaskConfig(name=spec.task, params=task_params),
-        evaluation=EvalConfig(metrics=list(METRICS)),
-        training=TrainingConfig(
-            seed=seed,
-            epochs=EPOCHS if epochs is None else epochs,
-            max_steps=None,
-            learning_rate=LEARNING_RATE,
-            weight_decay=WEIGHT_DECAY,
-            optimizer="adamw",
-            # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
-            scheduler={
-                "name": "constant",
-                "params": {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS},
+        loaders=LoadersConfig(batch_size=BATCH_SIZE, num_workers=head_num_workers),
+        learner=LearnerConfig(
+            "mil",
+            {
+                "aggregator": Component(AGGREGATOR_NAME),
+                "head": Component(spec.task, task_params),
+                "optimizer": Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY}),
+                # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
+                "scheduler": [Component("constant", {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS})],
             },
-            patience=PATIENCE if patience is None else patience,
-            # EVA's Lightning EarlyStopping(min_delta=0) counts an initial plateau too:
-            # it stops at patience and keeps the first epoch.
-            hold_patience_until_monitor_moves=False,
-            monitor="balanced_accuracy",
-            monitor_mode="max",
-            batch_size=BATCH_SIZE,
-            tune_is_test=False,
-            num_workers=head_num_workers,
-            pin_memory=False,
-            persistent_workers=False,
         ),
-        tags=["eva", dataset, encoder, "slide"],
+        trainer=TrainerConfig(
+            max_epochs=EPOCHS if epochs is None else epochs,
+            callbacks=[
+                Component("checkpoint", monitor),
+                # EVA's Lightning EarlyStopping(min_delta=0) counts an initial plateau too:
+                # it stops at patience and keeps the first epoch.
+                Component(
+                    "early_stopping",
+                    {**monitor, "patience": PATIENCE if patience is None else patience, "hold_until_moves": False},
+                ),
+            ],
+        ),
+        evaluation=EvaluationConfig(metrics=list(METRICS)),
     )
 
 
@@ -489,7 +489,7 @@ class EvaSlideClassificationBenchmark:
         patience: int | None = None,
         encoder_batch_size: int = 32,
         execution: ExecutionOptions | None = None,
-    ) -> PipelineConfig:
+    ) -> ExperimentConfig:
         """Build the EVA-faithful config for this dataset and the ``encoder`` axis."""
         return _build_eva_slide_config(
             dataset=self.dataset,

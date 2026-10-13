@@ -21,7 +21,6 @@ from soma.tasks.survival import (
     SurvivalHead,
     SurvivalParams,
     infer_num_bins,
-    resolve_survival_head,
 )
 
 __all__ = [
@@ -42,7 +41,6 @@ __all__ = [
     "RegressionHead",
     "SurvivalHead",
     "CoxSurvivalHead",
-    "resolve_survival_head",
     "SegmentationHead",
     "DetectionHead",
     "load_mask",

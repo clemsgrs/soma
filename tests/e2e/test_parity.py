@@ -81,7 +81,7 @@ def _check_parity(artifact, run, hand_dir: Path, hand_metrics: dict) -> None:
 
 
 def _fit(learner, fold, *, epochs: int):
-    """Step 6 with the callbacks the YAML's training section describes."""
+    """Step 6 with the callbacks the YAML's trainer section describes."""
     return soma.fit(
         learner,
         fold.train,
@@ -100,6 +100,26 @@ def _optimizer(learning_rate: float) -> dict:
     return {"name": "adam", "params": {"lr": learning_rate, "weight_decay": 1e-5}}
 
 
+def _learner_and_trainer(name: str, model: dict, *, epochs: int, learning_rate: float) -> dict:
+    """The YAML's ``learner`` and ``trainer`` sections: ``model`` leaves, a z-score adaptor,
+    Adam with cosine annealing, checkpoint selection and early stopping at the budget."""
+    return {
+        "learner": {
+            "name": name,
+            "params": {
+                **model,
+                "normalization": {"method": "zscore"},
+                "optimizer": _optimizer(learning_rate),
+                "scheduler": "cosine",
+            },
+        },
+        "trainer": {
+            "max_epochs": epochs,
+            "callbacks": [{"name": "checkpoint"}, {"name": "early_stopping", "params": {"patience": epochs}}],
+        },
+    }
+
+
 def test_set_mil_classification_pipeline_equals_hand_composition(tmp_path, new_artifact):
     """Set shape: ABMIL over cached bags; one test sample is tile-less, so the pipeline
     and the hand composition must both score it with the training ``Baseline``."""
@@ -107,20 +127,17 @@ def test_set_mil_classification_pipeline_equals_hand_composition(tmp_path, new_a
     dataset_csv, splits_csv, feature_dir = write_cached_bags(tmp_path / "data")
     epochs, learning_rate, batch_size = 6, 5e-3, 2
     config = {
-        "run": {"output_root": str(tmp_path / "runs"), "seed": SEED},
-        "data": {"dataset_csv": str(dataset_csv), "splits_csv": str(splits_csv), "dataset_type": "slide"},
-        "execution": CPU_EXECUTION,
-        "aggregation": {"name": "abmil"},
-        "task": {"name": "binary_classification"},
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": SEED},
+        "cohort": {"records": str(dataset_csv), "splits": str(splits_csv)},
+        "features": {"execution": CPU_EXECUTION},
+        "loaders": {"batch_size": batch_size, **CPU_LOADER},
+        **_learner_and_trainer(
+            "mil",
+            {"aggregator": {"name": "abmil"}, "head": {"name": "binary_classification"}},
+            epochs=epochs,
+            learning_rate=learning_rate,
+        ),
         "evaluation": {"metrics": ["auroc", "balanced_accuracy"]},
-        "normalization": {"method": "zscore"},
-        "training": {
-            "epochs": epochs,
-            "learning_rate": learning_rate,
-            "batch_size": batch_size,
-            "patience": epochs,
-            **CPU_LOADER,
-        },
     }
     run = run_soma(config, tmp_path / "config.yaml", "--feature-dir", str(feature_dir))
 
@@ -175,32 +192,31 @@ def test_set_mil_classification_pipeline_equals_hand_composition(tmp_path, new_a
     artifact.assert_passed()
 
 
-def _grid_config(tmp_path, kind, dataset_csv, splits_csv, *, task, metrics, epochs, learning_rate):
+def _grid_config(tmp_path, dataset_csv, splits_csv, *, head, metrics, epochs, learning_rate):
     return {
-        "run": {"output_root": str(tmp_path / "runs"), "seed": SEED},
-        "data": {
-            "dataset_csv": str(dataset_csv),
-            "splits_csv": str(splits_csv),
-            "dataset_type": kind,
-            "feature_mode": "cached",
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": SEED},
+        "cohort": {"records": str(dataset_csv), "splits": str(splits_csv)},
+        "features": {
+            "kind": "cached",
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": ROI_PX,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
+            },
+            "execution": CPU_EXECUTION,
         },
-        "preprocessing": {
-            "backend": "openslide",
-            "requested_tile_size_px": ROI_PX,
-            "requested_spacing_um": SPACING_UM,
-        },
-        "execution": CPU_EXECUTION,
-        "decoder": {"name": "lightweight_conv"},
-        "task": task,
+        "loaders": {"batch_size": 4, **CPU_LOADER},
+        **_learner_and_trainer(
+            "dense",
+            {"decoder": {"name": "lightweight_conv"}, "head": head},
+            epochs=epochs,
+            learning_rate=learning_rate,
+        ),
         "evaluation": {"metrics": metrics},
-        "normalization": {"method": "zscore"},
-        "training": {
-            "epochs": epochs,
-            "learning_rate": learning_rate,
-            "batch_size": 4,
-            "patience": epochs,
-            **CPU_LOADER,
-        },
     }
 
 
@@ -224,10 +240,9 @@ def test_grid_segmentation_pipeline_equals_hand_composition(tmp_path, new_artifa
     metric_names = ["mean_dice", "mean_iou"]
     config = _grid_config(
         tmp_path,
-        "segmentation",
         dataset_csv,
         splits_csv,
-        task={"name": "segmentation", "params": {"num_classes": 3}},
+        head={"name": "segmentation", "params": {"num_classes": 3}},
         metrics=metric_names,
         epochs=epochs,
         learning_rate=learning_rate,
@@ -275,10 +290,9 @@ def test_grid_detection_pipeline_equals_hand_composition(tmp_path, new_artifact)
     metric_names = ["mean_f1", "f1_per_class"]
     config = _grid_config(
         tmp_path,
-        "detection",
         dataset_csv,
         splits_csv,
-        task={"name": "detection", "params": {"num_classes": 2, "match_distance": 3.0, "sigma": 1.5}},
+        head={"name": "detection", "params": {"num_classes": 2, "match_distance": 3.0, "sigma": 1.5}},
         metrics=metric_names,
         epochs=epochs,
         learning_rate=learning_rate,

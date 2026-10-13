@@ -21,6 +21,7 @@ import csv
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -28,7 +29,6 @@ import torch.nn.functional as F
 from hs2p.wsi.geometry import select_level_for_downsample
 from hs2p.wsi.reader import open_slide
 
-from soma.config import HeatmapConfig
 from soma.data._legacy import LegacySamples
 from soma.data import CachedSetSource
 
@@ -188,8 +188,11 @@ def render_heatmaps(
     run_dir: Path | str,
     dataset: LegacySamples,
     tiling_dir: Path | str,
-    heatmap_config: HeatmapConfig,
     seg_downsample: int,
+    *,
+    cmap: str = "coolwarm",
+    alpha: float = 0.5,
+    blur_sigma: float = 0.0,
 ) -> None:
     """Render attention heatmaps from persisted attention ``.npz`` files.
 
@@ -203,10 +206,11 @@ def render_heatmaps(
         run_dir: Root run directory containing fold sub-directories.
         dataset: LegacySamples for resolving WSI paths per sample.
         tiling_dir: Run-local tiling directory containing process_list.csv.
-        heatmap_config: Rendering parameters (colormap, alpha, blur).
         seg_downsample: Downsample factor for the WSI thumbnail — matches
             the preprocessing preview downsample so all visual outputs are
             consistent.
+        cmap, alpha, blur_sigma: Rendering parameters
+            (``evaluation.attention_heatmaps``).
     """
     run_dir = Path(run_dir)
     coord_map = _build_coordinate_map(Path(tiling_dir))
@@ -251,9 +255,9 @@ def render_heatmaps(
                 # Single-branch
                 img = render_attention_heatmap(
                     slide_path, x_lv0, y_lv0, attention, tile_size_lv0, seg_downsample,
-                    cmap=heatmap_config.cmap,
-                    alpha=heatmap_config.alpha,
-                    blur_sigma=heatmap_config.blur_sigma,
+                    cmap=cmap,
+                    alpha=alpha,
+                    blur_sigma=blur_sigma,
                 )
                 _save_heatmap(img, heatmap_path)
             else:
@@ -265,9 +269,9 @@ def render_heatmaps(
                     )
                     img = render_attention_heatmap(
                         slide_path, x_lv0, y_lv0, attention[k], tile_size_lv0, seg_downsample,
-                        cmap=heatmap_config.cmap,
-                        alpha=heatmap_config.alpha,
-                        blur_sigma=heatmap_config.blur_sigma,
+                        cmap=cmap,
+                        alpha=alpha,
+                        blur_sigma=blur_sigma,
                     )
                     _save_heatmap(img, branch_heatmap_path)
 
@@ -284,8 +288,8 @@ def generate_heatmaps(
     dataset: LegacySamples,
     feature_store: CachedSetSource,
     tiling_dir: Path | str,
-    heatmap_config: HeatmapConfig,
     seg_downsample: int,
+    **rendering: Any,
 ) -> None:
     """Run attention extraction over the fold bundles, then heatmap rendering.
 
@@ -297,11 +301,11 @@ def generate_heatmaps(
         dataset: LegacySamples for resolving WSI paths.
         feature_store: Feature store for loading features and coordinates.
         tiling_dir: Run-local tiling directory containing process_list.csv.
-        heatmap_config: Rendering parameters.
         seg_downsample: Downsample factor for the WSI thumbnail.
+        rendering: :func:`render_heatmaps`' ``cmap``, ``alpha`` and ``blur_sigma``.
     """
     save_attention(run_dir, feature_store)
-    render_heatmaps(run_dir, dataset, tiling_dir, heatmap_config, seg_downsample)
+    render_heatmaps(run_dir, dataset, tiling_dir, seg_downsample, **rendering)
 
 
 # ---------------------------------------------------------------------------

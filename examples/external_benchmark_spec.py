@@ -41,13 +41,15 @@ from PIL import Image
 
 from slide2vec import ExecutionOptions
 
-from soma import (
-    CacheConfig,
-    EvalConfig,
+from soma import CacheOptions, ExperimentConfig
+from soma.config import (
+    CohortConfig,
+    EvaluationConfig,
     FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
+    LearnerConfig,
+    LoadersConfig,
+    RunConfig,
+    TrainerConfig,
 )
 from soma.benchmarks import BenchmarkSpec, run_benchmark_spec, score_from_summary
 
@@ -89,7 +91,7 @@ pd.DataFrame({"sample_id": sample_ids, "split": split}).to_csv(splits_csv, index
 # --- 1. The external spec ---------------------------------------------------------
 # The config builder receives the exact keyword contract soma promises
 # (dataset_csv, splits_csv, output_root, seed, overrides, encoder) and returns a
-# complete PipelineConfig. The ``overrides`` dict carries the shared feature
+# complete ExperimentConfig. The ``overrides`` dict carries the shared feature
 # cache soma injects, so every seed reuses one extraction.
 
 
@@ -101,29 +103,28 @@ def build_config(
     seed: int,
     overrides: dict[str, Any],
     encoder: str,
-) -> PipelineConfig:
-    cache = replace(CacheConfig(), **overrides.get("cache", {}))
-    return PipelineConfig(
-        dataset_csv=str(dataset_csv),
-        splits_csv=str(splits_csv),
-        output_root=Path(output_root),
-        dataset_type="tile",
+) -> ExperimentConfig:
+    cache = replace(CacheOptions(), **overrides.get("cache", {}))
+    # One row is one tile image: a tile encoder without an aggregator embeds each whole.
+    return ExperimentConfig(
+        run=RunConfig(output_dir=Path(output_root), seed=seed),
+        cohort=CohortConfig(records=dataset_csv, splits=splits_csv),
         features=FeaturesConfig(
             encoder=encoder,
             cache=cache,
             # The dataset is tiny: skip dataloader worker processes.
             execution=ExecutionOptions(num_workers_per_gpu=0),
         ),
-        task=TaskConfig(name="binary_classification"),
-        evaluation=EvalConfig(metrics=["balanced_accuracy"]),
-        training=TrainingConfig(
-            seed=seed,
-            epochs=2,
-            batch_size=4,
-            learning_rate=1e-3,
-            pin_memory=False,
-            persistent_workers=False,
+        loaders=LoadersConfig(batch_size=4),
+        learner=LearnerConfig(
+            "mil",
+            {
+                "head": "binary_classification",
+                "optimizer": {"name": "adam", "params": {"lr": 1e-3}},
+            },
         ),
+        trainer=TrainerConfig(max_epochs=2),
+        evaluation=EvaluationConfig(metrics=["balanced_accuracy"]),
     )
 
 

@@ -30,7 +30,7 @@ from soma.cache import (
     resolve_image_cache,
 )
 from soma.cache.compute_key import resolved_output_variant
-from soma.config import CacheConfig, EncoderLeaf
+from soma.config import CacheOptions, EncoderLeaf
 from soma.data._legacy import LegacySamples, LegacyRecord
 from soma.cache._types import PACKED_FILENAME
 from soma.data import CachedSetSource
@@ -47,7 +47,7 @@ _ON_IMAGE_MISMATCH = "reencode"
 class _TileFeatureExtractor:
     """Encode individual tile images into 1D feature vectors using a tile encoder.
 
-    This is the entry point for ``dataset_type="tile"`` pipelines: each sample's
+    This is the entry point for tile-level runs: each sample's
     ``image_path`` points at one pre-cropped image, and the result is one 1-D ``.pt``
     feature vector per sample.
 
@@ -65,12 +65,12 @@ class _TileFeatureExtractor:
         encoder: EncoderLeaf,
         *,
         execution: ExecutionOptions | None = None,
-        cache: CacheConfig | None = None,
+        cache: CacheOptions | None = None,
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
         self._execution = execution if execution is not None else ExecutionOptions()
-        self._cache = cache or CacheConfig(enabled=False)
+        self._cache = cache or CacheOptions(enabled=False)
 
     def run(self, feature_dir: str | Path) -> CachedSetSource:
         """Encode all tile images and return a CachedSetSource over the results.

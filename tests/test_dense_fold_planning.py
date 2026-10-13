@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from soma.config import TrainingConfig
+from soma.config import CohortConfig
 from soma.data import FoldSplit
 from soma.data._legacy import LegacyRecord
 from soma.training.fold_planning import plan_dense_fold
@@ -34,7 +34,7 @@ def test_plan_dense_fold_selects_train_tune_and_test_records():
     plan = plan_dense_fold(
         dataset=dataset,
         fold_split=fold_split,
-        training=TrainingConfig(),
+        cohort=CohortConfig(records="d.csv", splits="s.csv"),
         fold_label="Run",
     )
 
@@ -57,7 +57,7 @@ def test_plan_dense_fold_holdout_test_drops_test_splits():
     plan = plan_dense_fold(
         dataset=dataset,
         fold_split=fold_split,
-        training=TrainingConfig(),
+        cohort=CohortConfig(records="d.csv", splits="s.csv"),
         fold_label="Run",
         holdout_test=True,
     )
@@ -82,7 +82,7 @@ def test_plan_dense_fold_holdout_test_keeps_tune_is_test_resolution():
     plan = plan_dense_fold(
         dataset=dataset,
         fold_split=fold_split,
-        training=TrainingConfig(tune_is_test=True),
+        cohort=CohortConfig(records="d.csv", splits="s.csv", tune_is_test=True),
         fold_label="Run",
         holdout_test=True,
     )
@@ -102,7 +102,7 @@ def test_plan_dense_fold_uses_single_test_split_as_tune_when_tune_is_test():
     plan = plan_dense_fold(
         dataset=dataset,
         fold_split=fold_split,
-        training=TrainingConfig(tune_is_test=True),
+        cohort=CohortConfig(records="d.csv", splits="s.csv", tune_is_test=True),
         fold_label="Run",
     )
 
@@ -125,7 +125,7 @@ def test_plan_dense_fold_rejects_tune_is_test_with_multiple_test_splits():
         plan_dense_fold(
             dataset=dataset,
             fold_split=fold_split,
-            training=TrainingConfig(tune_is_test=True),
+            cohort=CohortConfig(records="d.csv", splits="s.csv", tune_is_test=True),
             fold_label="Run",
         )
 
@@ -141,7 +141,7 @@ def test_plan_dense_fold_uses_train_as_tune_when_missing_tune_is_allowed():
     plan = plan_dense_fold(
         dataset=dataset,
         fold_split=fold_split,
-        training=TrainingConfig(allow_missing_tune=True),
+        cohort=CohortConfig(records="d.csv", splits="s.csv", allow_missing_tune=True),
         fold_label="Run",
     )
 
@@ -160,7 +160,7 @@ def test_plan_dense_fold_warns_when_missing_tune_uses_train(
     plan_dense_fold(
         dataset=dataset,
         fold_split=fold_split,
-        training=TrainingConfig(allow_missing_tune=True),
+        cohort=CohortConfig(records="d.csv", splits="s.csv", allow_missing_tune=True),
         fold_label="Run",
         logger=logger,
     )
@@ -180,7 +180,7 @@ def test_plan_dense_fold_rejects_missing_tune_by_default():
         plan_dense_fold(
             dataset=dataset,
             fold_split=fold_split,
-            training=TrainingConfig(),
+            cohort=CohortConfig(records="d.csv", splits="s.csv"),
             fold_label="Run",
         )
 
@@ -193,7 +193,7 @@ def test_plan_dense_fold_rejects_empty_train_split():
         plan_dense_fold(
             dataset=dataset,
             fold_split=fold_split,
-            training=TrainingConfig(),
+            cohort=CohortConfig(records="d.csv", splits="s.csv"),
             fold_label="Run",
         )
 
@@ -206,7 +206,7 @@ def test_plan_dense_fold_rejects_empty_test_split():
         plan_dense_fold(
             dataset=dataset,
             fold_split=fold_split,
-            training=TrainingConfig(),
+            cohort=CohortConfig(records="d.csv", splits="s.csv"),
             fold_label="Run",
         )
 
@@ -218,7 +218,7 @@ def test_plan_dense_fold_with_a_tune_split_is_not_a_train_fallback():
     plan = plan_dense_fold(
         dataset=dataset,
         fold_split=fold_split,
-        training=TrainingConfig(allow_missing_tune=True),
+        cohort=CohortConfig(records="d.csv", splits="s.csv", allow_missing_tune=True),
         fold_label="Run",
     )
 

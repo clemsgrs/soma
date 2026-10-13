@@ -33,7 +33,7 @@ from soma.benchmarks.registry import (
     expected_rows,
     register_benchmark,
 )
-from soma.config import PipelineConfig, load_config
+from soma.config import ExperimentConfig
 from soma.curation.manifest import CuratedManifest
 from soma.curation.ocelot import curate_ocelot_detection
 
@@ -100,7 +100,7 @@ def _locate_run_config(run_dir: Path) -> Path:
 
 
 def resolve_dense_cache_dir(
-    cfg: PipelineConfig, manifest: LegacySamples
+    cfg: ExperimentConfig, manifest: LegacySamples
 ) -> Path | None:
     """Prepare and return the exact dense-image cache directory described by ``cfg``."""
     from soma import FeatureExtractor
@@ -109,7 +109,7 @@ def resolve_dense_cache_dir(
     features = cfg.features
     cache = features.cache
     if cache.root_dir is None:
-        cache = replace(cache, root_dir=Path(cfg.output_root) / "feature_cache")
+        cache = replace(cache, root_dir=Path(cfg.run.output_dir) / "feature_cache")
     extraction = FeatureExtractor(
         manifest,
         features.encoder,
@@ -120,7 +120,7 @@ def resolve_dense_cache_dir(
         spacing_policy=features.spacing_policy,
         execution=features.execution,
         cache=cache,
-        output_root=Path(cfg.output_root) / "rescore_extraction",
+        output_root=Path(cfg.run.output_dir) / "rescore_extraction",
     ).extract()
     return extraction.artifacts.feature_dir.parent
 
@@ -189,7 +189,8 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
 
     config_path = _locate_run_config(Path(run_dir))
     folder = config_path.parent
-    cfg = load_config(str(config_path))
+    cfg = ExperimentConfig.from_yaml(config_path)
+    head = cfg.learner.params["head"]
     tune_path = folder / "predictions_tune.parquet"
     if not tune_path.is_file():
         raise FileNotFoundError(
@@ -201,11 +202,9 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
         for path in sorted(folder.glob("predictions_*.parquet"))
         if path != tune_path
     }
-    _, _, class_remap, dropped = resolve_classes(
-        cfg.task.params, excluded_key="drop", subject="detection"
-    )
+    _, _, class_remap, dropped = resolve_classes(head.params, excluded_key="drop", subject="detection")
     targets = PointSource.from_manifest(
-        AnnotationManifest.from_csv(cfg.dataset_csv), class_remap=class_remap, drop=dropped
+        AnnotationManifest.from_csv(cfg.cohort.records), class_remap=class_remap, drop=dropped
     )
     return build_greedy_report(
         tune=PointPredictions.from_parquet(tune_path),
@@ -285,48 +284,40 @@ class OcelotBenchmark:
         output_root: str | Path | None = None,
         seed: int | None = None,
         overrides: dict[str, Any] | None = None,
-    ) -> PipelineConfig:
+    ) -> ExperimentConfig:
         """Resolve a committed OCELOT config for the ``(encoder, spacing)`` axes.
 
         Loads the static YAML for the axes and repoints it at the caller's data/output
-        paths and seed (a committed config carries an author's machine paths). Extra
-        ``overrides`` are merged onto the user-facing config layout last.
+        paths and seed (a committed config carries an author's machine paths). The
+        ``overrides`` block (``{"cache": {...}}``) is merged into ``features.cache``.
         """
         config_path = _config_path_for(encoder, spacing)
         extends_encoder_roster = (encoder, round(float(spacing), 2)) not in _CONFIG_FILES
         merged: dict[str, Any] = {}
-        data_over: dict[str, Any] = {}
+        cohort_over: dict[str, Any] = {}
         if dataset_csv is not None:
-            data_over["dataset_csv"] = str(dataset_csv)
+            cohort_over["records"] = str(dataset_csv)
         if splits_csv is not None:
-            data_over["splits_csv"] = str(splits_csv)
-        if data_over:
-            merged["data"] = data_over
+            cohort_over["splits"] = str(splits_csv)
+        if cohort_over:
+            merged["cohort"] = cohort_over
         run_over: dict[str, Any] = {}
         if output_root is not None:
-            run_over["output_root"] = str(output_root)
+            run_over["output_dir"] = str(output_root)
         if seed is not None:
             run_over["seed"] = int(seed)
         if run_over:
             merged["run"] = run_over
         if extends_encoder_roster:
-            merged.setdefault("run", {})["tags"] = [
-                "ocelot",
-                "detection",
-                encoder,
-                "lightweight_conv",
-                f"spacing_{float(spacing):.2f}".replace(".", "p"),
-            ]
-            merged["encoder"] = {
+            # The benchmark intentionally fixes spacing across encoders, including when
+            # that spacing falls outside a new encoder's recommended operating regime.
+            merged.setdefault("features", {})["encoder"] = {
                 "name": encoder,
-                # The benchmark intentionally fixes spacing across encoders, including when
-                # that spacing falls outside a new encoder's recommended operating regime.
-                "allow_non_recommended_settings": True,
+                "params": {"allow_non_recommended_settings": True},
             }
-        if overrides:
-            for section, values in overrides.items():
-                merged.setdefault(section, {}).update(values)
-        return load_config(config_path, overrides=merged or None)
+        if overrides and overrides.get("cache"):
+            merged.setdefault("features", {})["cache"] = dict(overrides["cache"])
+        return ExperimentConfig.from_yaml(config_path, overrides=merged)
 
     def expected(self, **axes: Any) -> list[ReferenceRow]:
         """Reference rows for the resolved ``encoder`` axis.

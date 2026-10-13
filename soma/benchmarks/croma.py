@@ -22,12 +22,14 @@ from soma.benchmarks.registry import (
 from slide2vec import ExecutionOptions
 
 from soma.config import (
-    CacheConfig,
+    CacheOptions,
+    CohortConfig,
+    CRoMaOptions,
     EncoderLeaf,
+    EvaluationConfig,
+    ExperimentConfig,
     FeaturesConfig,
-    PipelineConfig,
-    RepresentationConfig,
-    TrainingConfig,
+    RunConfig,
 )
 from soma.benchmarks.reproduction import ResolvabilityPolicy
 from soma.curation.croma import curate_croma_view
@@ -149,7 +151,6 @@ REPORTED_METRICS = (
 RANKING_METRICS = (PRIMARY_METRIC, "test/croma_ltm10")
 DEFAULT_ENCODER = "uni2"
 REPRESENTATION_PROTOCOL = {
-    "kind": "croma",
     "confounder_column": "medical_center",
     "split": "test",
     "evaluation_design": "all",
@@ -184,7 +185,6 @@ class CromaBenchmark:
         self.facet = Facet(
             fixed={
                 "dataset": cohort,
-                "dataset_type": "tile",
                 **{
                     f"representation.{field}": value
                     for field, value in REPRESENTATION_PROTOCOL.items()
@@ -206,20 +206,20 @@ class CromaBenchmark:
         seed: int | None = None,
         overrides: dict[str, Any] | None = None,
         encoder_batch_size: int = 32,
-    ) -> PipelineConfig:
+    ) -> ExperimentConfig:
         panel_spec = _PANEL_BY_ENCODER.get(encoder)
         if panel_spec is not None:
             validate_croma_0_3_encoder_panel(encoders=[encoder])
         cache_overrides = (overrides or {}).get("cache")
-        return PipelineConfig(
-            dataset_csv=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
-            splits_csv=str(splits_csv) if splits_csv is not None else "splits.csv",
-            output_root=(
-                Path(output_root)
-                if output_root is not None
-                else Path("output/croma")
+        return ExperimentConfig(
+            run=RunConfig(
+                output_dir=Path(output_root) if output_root is not None else Path("output/croma"),
+                seed=0 if seed is None else int(seed),
             ),
-            dataset_type="tile",
+            cohort=CohortConfig(
+                records=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
+                splits=str(splits_csv) if splits_csv is not None else "splits.csv",
+            ),
             features=FeaturesConfig(
                 encoder=EncoderLeaf(
                     name=encoder,
@@ -231,15 +231,12 @@ class CromaBenchmark:
                 ),
                 execution=ExecutionOptions(batch_size=encoder_batch_size),
                 cache=(
-                    CacheConfig(**cache_overrides)
+                    CacheOptions(**cache_overrides)
                     if cache_overrides
-                    else CacheConfig(enabled=True)
+                    else CacheOptions(enabled=True)
                 ),
             ),
-            task=None,
-            representation=RepresentationConfig(**REPRESENTATION_PROTOCOL),
-            training=TrainingConfig(seed=0 if seed is None else int(seed)),
-            tags=["croma", self.cohort, encoder],
+            evaluation=EvaluationConfig(representation=CRoMaOptions(**REPRESENTATION_PROTOCOL)),
         )
 
     def expected(self, **axes: Any) -> list[ReferenceRow]:

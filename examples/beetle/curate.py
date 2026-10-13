@@ -39,7 +39,7 @@ _DEFAULT_BEETLE_ROOT = _REPO_ROOT / "data" / "beetle"
 
 # BEETLE pixel vocabulary (label_map.json): name -> raw mask pixel value. This is the
 # masks.pixel_mapping the soma config carries for ROI sampling; training ignores
-# "background" (0, unannotated) through task.params.ignore.
+# "background" (0, unannotated) through the segmentation head's ``ignore`` param.
 ANNOTATED_FRACTION_MIN = 0.05  # >=5% annotated to keep a tile
 CANONICAL_MPP = 0.5
 CROP_SIZE = 512

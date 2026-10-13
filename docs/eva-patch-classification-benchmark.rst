@@ -271,7 +271,7 @@ EVA's validation split, which is soma's ``test`` split (``tune_is_test``).
    * - samples
      - 224 px tiles and class-index masks materialised by the curator (MoNuSAC train: whole images)
    * - features
-     - CoNSeP: cached dense grids. MoNuSAC: re-encoded every step (``feature_mode: live``) because its train crops are random
+     - CoNSeP: cached dense grids. MoNuSAC: re-encoded every step (``features.kind: live``) because its train crops are random
    * - augmentation
      - MoNuSAC train only: ``crop_scale: [0.08, 1.0]`` (torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none
    * - decoder

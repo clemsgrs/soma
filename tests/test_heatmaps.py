@@ -13,7 +13,6 @@ import pandas as pd
 import pytest
 import torch
 
-from soma.config import HeatmapConfig
 from soma.heatmaps import (
     _build_coordinate_map,
     _prediction_files_for_fold,
@@ -305,7 +304,7 @@ def test_render_heatmaps_single_branch(tmp_path):
     with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
             tmp_path, dataset, tiling_dir,
-            HeatmapConfig(enabled=True), seg_downsample=4,
+            seg_downsample=4,
         )
 
     assert (fold_dir / "heatmaps" / "s1.png").is_file()
@@ -340,7 +339,7 @@ def test_render_heatmaps_single_branch_nested_split_dir(tmp_path):
     with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
             tmp_path, dataset, tiling_dir,
-            HeatmapConfig(enabled=True), seg_downsample=4,
+            seg_downsample=4,
         )
 
     assert (fold_dir / "heatmaps" / "test" / "s1.png").is_file()
@@ -374,7 +373,7 @@ def test_render_heatmaps_reads_nested_tiling_metadata(tmp_path):
     with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
             tmp_path, dataset, tiling_dir,
-            HeatmapConfig(enabled=True), seg_downsample=4,
+            seg_downsample=4,
         )
 
     assert (fold_dir / "heatmaps" / "test" / "s1.png").is_file()
@@ -412,7 +411,7 @@ def test_render_heatmaps_clam_mb_multi_branch(tmp_path):
     with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
             tmp_path, dataset, tiling_dir,
-            HeatmapConfig(enabled=True), seg_downsample=4,
+            seg_downsample=4,
         )
 
     heatmap_dir = fold_dir / "heatmaps"
@@ -437,7 +436,7 @@ def test_render_heatmaps_skips_unknown_sample(tmp_path):
 
     render_heatmaps(
         tmp_path, dataset, tiling_dir,
-        HeatmapConfig(enabled=True), seg_downsample=4,
+        seg_downsample=4,
     )
     # No error, no output files
     assert not list((fold_dir / "heatmaps").glob("*.png"))

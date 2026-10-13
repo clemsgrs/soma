@@ -20,7 +20,7 @@ The main entrypoint takes a config path directly::
 
 Override individual settings without editing the file::
 
-    soma config.yaml --set run.output_root=runs/local --set training.epochs=5
+    soma config.yaml --set run.output_dir=runs/local --set trainer.max_epochs=5
 
 Repeat ``--set KEY=VALUE`` for multiple overrides. Keys are dotted YAML
 paths and values are parsed as YAML, preserving numbers and booleans.
@@ -101,121 +101,149 @@ Benchmarking commands
 Full config reference
 ---------------------
 
-The YAML below is generated from ``soma/configs/default.yaml``, which
-:func:`soma.config.load_config` merges with your file. Set the data paths,
-encoder, and task-specific components for your run. The
-:doc:`getting-started` guide provides a runnable configuration shape.
-YAML uses ``aggregation`` for the Python ``aggregator`` argument.
+A config has seven sections, one per public callable: ``run`` holds
+:class:`~soma.pipeline.Pipeline`'s keywords, ``cohort`` the cohort's,
+``features`` the feature source's, ``loaders`` the data loaders', ``learner``
+the learner's, ``trainer`` the :class:`~soma.learn.Trainer`'s and
+``evaluation`` :func:`~soma.evaluate`'s. The YAML below is
+``examples/reference.yaml``: a slide-level classifier with every other field
+at its default. A config states only what differs; :func:`soma.resolve` fills
+in the rest and writes it to the run's ``plan.yaml``. Component params
+(``{name, params}``) are listed by ``soma list KIND``. See
+:doc:`configuration`.
 
 .. code-block:: yaml
 
    run:
-     output_root: runs
-     mirror_root: null
+     output_dir: runs
      seed: 0
-     tags:
-       - baseline
-
-   data:
-     dataset_csv: data/dataset.csv
-     splits_csv: data/splits.csv
-     dataset_type: slide
-     feature_mode: cached
-
-   preprocessing:
-     backend: auto
-     requested_tile_size_px: null
-     requested_spacing_um: null
-     requested_region_size_px: null
-     region_tile_multiple: null
-     tissue_method: hsv
-     min_coverage:
-       tissue: 0.1
-     overlap: 0.0
-     dense_window_size: null
-     dense_window_overlap: 0.0
-     seg_downsample: 64
-     sam2_device: cpu
-     sam2_num_workers: null
-     tolerance: 0.05
-     ref_tile_size_px: null
-     a_t: 4
-     tissue_mask_tissue_value: 1
-     preview:
-       save_mask_preview: true
-       save_tiling_preview: true
-       downsample: 32
-       tissue_contour_color: [37, 94, 59]
-
-   execution:
-     num_gpus: null
-     num_preprocessing_workers: null
-     prefetch_factor: null
-     precision: null
-
-   cache:
-     enabled: true
-     root_dir: null
-     reuse_policy: strict
-     validate_payloads: false
-
-   encoder: null
-
-   aggregation: null
-
-   task:
-     name: binary_classification
-     params: {}
-
-   evaluation:
-     metrics: []
-     subgroups:
-       columns: []
-     holdout_test: false
-     overwrite_test: false
-
-   training:
-     epochs: 50
-     learning_rate: 1.0e-4
-     weight_decay: 1.0e-5
-     optimizer: adam
-     scheduler: cosine
-     learner: null
-     checkpoint_selection: best
-     patience: 10
-     # Hold the early stop while the monitor sits at its first value; false = plain patience.
-     hold_patience_until_monitor_moves: true
-     # A validation_summary key: `loss` or one of the task's metrics.
-     monitor: loss
-     monitor_mode: min
-     batch_size: 1
-     roi_batch_sampling: null
-     class_request_ratios: null
-     roi_draws_per_epoch: null
-     gradient_accumulation: 1
+     folds: null
+     run_id: null
+     resume: false
+     mirror_root: null
+   cohort:
+     records: data/dataset.csv
+     splits: data/splits.csv
+     collapse: null
      tune_is_test: false
      allow_missing_tune: false
+   features:
+     kind: cached
+     encoder:
+       name: uni2
+       params: {}
+     extraction:
+       tiling: null
+       segmentation:
+         method: hsv
+         downsample: 64
+         sthresh: 8
+         sthresh_up: 255
+         mthresh: 7
+         close: 4
+         sam2_checkpoint_path: null
+         sam2_config_path: null
+         sam2_device: cpu
+         sam2_num_workers: null
+       filter: null
+       preview:
+         save_mask_preview: true
+         save_tiling_preview: true
+         downsample: 32
+         tissue_contour_color:
+         - 157
+         - 219
+         - 129
+         mask_overlay_alpha: 0.5
+       masks:
+         pixel_mapping:
+           background:
+           - 0
+           tissue:
+           - 1
+         colors:
+           background: null
+           tissue:
+           - 157
+           - 219
+           - 129
+         min_coverage:
+           tissue: 0.01
+         output_mode: per_annotation
+         strategy: joint
+       requested_region_size_px: null
+       region_tile_multiple: null
+       read_coordinates_from: null
+       read_tiles_from: null
+       on_the_fly: true
+       save_tiles: false
+       gpu_decode: false
+       adaptive_batching: false
+       use_supertiles: true
+       jpeg_backend: pil
+       num_cucim_workers: 4
+       resume: false
+     execution:
+       output_dir: null
+       output_format: pt
+       batch_size: 32
+       num_workers_per_gpu: null
+       num_preprocessing_workers: 8
+       num_gpus: 1
+       precision: null
+       output_dtype: null
+       prefetch_factor: 4
+       save_tile_embeddings: false
+       save_slide_embeddings: false
+       save_latents: false
+       on_image_mismatch: raise
+     dense: null
+     cache:
+       enabled: true
+       root_dir: null
+       reuse_policy: strict
+       validate_payloads: false
+       dtype: null
+       on_identity_mismatch: error
+     spacing_policy: strict
+   loaders:
+     batch_size: 1
      num_workers: 0
-     pin_memory: true
-     persistent_workers: true
-
-   augmentation: null
-
-   normalization:
-     method: none  # none | zscore | l2 | layernorm
-     eps: 1.0e-6  # finite > 0; must stay at this default when method=none
-
-   projection:
-     method: none  # none | pca | random
-     target_dim: null  # required when method != none
-     seed: 0  # configurable only for random; none/pca require 0
-
-   reports:
-     heatmaps:
-       enabled: false
-       cmap: coolwarm
-       alpha: 0.5
-       blur_sigma: 0.0
+     pin_memory: false
+     persistent_workers: false
+     sampler: null
+     augment: null
+   learner:
+     name: mil
+     params:
+       aggregator:
+         name: abmil
+         params: {}
+       head:
+         name: binary_classification
+         params: {}
+   trainer:
+     max_epochs: 50
+     max_steps: null
+     accumulate_grad_batches: 1
+     val_every_n_epochs: 1
+     device: auto
+     precision: fp32
+     callbacks:
+     - name: checkpoint
+       params: {}
+     - name: early_stopping
+       params: {}
+   evaluation:
+     metrics: []
+     subgroups: []
+     holdout_test: false
+     overwrite_test: false
+     save_overlays: true
+     save_probabilities: false
+     save_heatmaps: false
+     attention_heatmaps: null
+     representation: null
 
 See also
 --------

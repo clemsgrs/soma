@@ -7,11 +7,11 @@ helpers here, so the dependency on the bridge sits in one module. Slice 7 delete
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from soma.class_scheme import resolve_classes
-from soma.config import TaskConfig
 from soma.data import (
     AnnotationManifest,
     CachedLabelMapSource,
@@ -66,7 +66,7 @@ def patient_ids_for_records(records: list[LegacyRecord]) -> list[str]:
         if record.patient_id is None:
             raise ValueError(
                 f"Sample '{record.sample_id}' has no patient_id. "
-                "All samples must have a patient_id for dataset_type='patient'."
+                "All samples must have a patient_id for a patient run (cohort.collapse: patient_id)."
             )
         if record.patient_id not in seen:
             seen.add(record.patient_id)
@@ -124,10 +124,11 @@ def segmentation_label_maps(head, records: Sequence[LegacyRecord]):
     return LabelMapSource(entries, **params)
 
 
-def detection_points(task: TaskConfig, records: Sequence[LegacyRecord]):
-    """``(num_classes, class names, PointSource)`` of a detection run's records."""
+def detection_points(head_params: Mapping[str, Any], records: Sequence[LegacyRecord]):
+    """``(num_classes, class names, PointSource)`` of a detection run's records, from the
+    head's class scheme (``classes`` / ``drop`` / ``num_classes``)."""
     num_classes, class_names, class_remap, dropped = resolve_classes(
-        task.params, excluded_key="drop", subject="detection"
+        head_params, excluded_key="drop", subject="detection"
     )
     entries = []
     for record in records:

@@ -17,20 +17,12 @@ from pathlib import Path
 
 import pytest
 
+from tests.experiment_configs import experiment
 from soma.benchmarks import get_benchmark
 from soma.benchmarks import registry as registry_mod
 from soma.benchmarks.registry import Facet, ReferenceRow, register_benchmark
 from tests.extraction_configs import extraction
-from soma.config import (
-    AggregatorConfig,
-    CacheConfig,
-    FeaturesConfig,
-    EvalConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
-    save_config,
-)
+from soma.config import CacheOptions, FeaturesConfig
 from soma.leaderboard import (
     LeaderboardFacet,
     LeaderboardRow,
@@ -45,8 +37,10 @@ from soma.leaderboard import (
     run_primary_metric,
     write_leaderboard,
 )
+from soma import ExperimentConfig, Plan
 from soma.pipeline.layout import (
     create_run_metadata,
+    record_plan,
     resolve_managed_output_paths,
     write_experiment_metadata,
     write_run_metadata,
@@ -94,17 +88,19 @@ def _make_config(
     learning_rate: float = 1e-4,
     spacing: float = 0.5,
     hidden_dim: int = 128,
-) -> PipelineConfig:
-    return PipelineConfig(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=output_root,
-        dataset_type="slide",
+) -> ExperimentConfig:
+    return experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=output_root,
         features=FeaturesConfig(encoder=encoder, extraction=extraction(spacing, 224)),
-        aggregator=AggregatorConfig(name=aggregator, params={"hidden_dim": hidden_dim}),
-        task=TaskConfig(name=task),
-        evaluation=EvalConfig(metrics=_TASK_METRICS[task]),
-        training=TrainingConfig(seed=seed, epochs=5, learning_rate=learning_rate),
+        aggregator={"name": aggregator, "params": {'hidden_dim': hidden_dim}},
+        head=task,
+        seed=seed,
+        trainer={"max_epochs": 5},
+        evaluation={"metrics": _TASK_METRICS[task]},
+        optimizer={"name": "adam", "params": {"lr": learning_rate, "weight_decay": 1e-5}},
+        scheduler='cosine',
     )
 
 
@@ -112,7 +108,7 @@ _RUN_COUNTER = {"n": 0}
 
 
 def make_run_dir(
-    config: PipelineConfig,
+    config: ExperimentConfig,
     summary: dict[str, float],
     *,
     run_id: str | None = None,
@@ -122,15 +118,18 @@ def make_run_dir(
     """Materialise a completed run dir from a config + summary (production identity code)."""
     if run_id is None:
         _RUN_COUNTER["n"] += 1
-        run_id = f"2026-07-03_00-00-{_RUN_COUNTER['n']:02d}__seed{config.training.seed}"
-    layout = resolve_managed_output_paths(config, run_id=run_id)
+        run_id = f"2026-07-03_00-00-{_RUN_COUNTER['n']:02d}__seed{config.run.seed}"
+    # The fixture cohorts are not trainable (a train-only split), so the plan is the
+    # config as given: the identity code reads it the same way.
+    plan = Plan(config)
+    layout = resolve_managed_output_paths(plan, run_id=run_id)
     layout.experiment_dir.mkdir(parents=True, exist_ok=True)
     (layout.experiment_dir / "runs").mkdir(parents=True, exist_ok=True)
     layout.run_dir.mkdir(parents=True, exist_ok=True)
     write_experiment_metadata(layout.experiment_dir, layout.experiment)
-    save_config(config, layout.run_dir / "config.yaml")
+    record_plan(layout.run_dir, plan, config=config)
     metadata = create_run_metadata(
-        config=config,
+        plan=plan,
         experiment=layout.experiment,
         run_dir=layout.run_dir,
         run_id=run_id,
@@ -277,8 +276,8 @@ def test_unfixed_multivalued_axis_yields_one_row_per_combo_with_config_diff(tmp_
     assert {r.vary_values["encoder"] for r in table.rows} == {"uni2"}
     # Each row is annotated with the diff that distinguishes it (the hidden lr axis).
     for row in table.rows:
-        assert "training.learning_rate" in row.config_diff
-    lrs = {row.config_diff["training.learning_rate"] for row in table.rows}
+        assert "learner.params.optimizer.params.lr" in row.config_diff
+    lrs = {row.config_diff["learner.params.optimizer.params.lr"] for row in table.rows}
     assert lrs == {1e-4, 1e-3}
 
 

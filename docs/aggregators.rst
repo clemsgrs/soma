@@ -2,10 +2,10 @@ Aggregators
 ===========
 
 Aggregators combine a slide's tile features into a representation for
-multiple-instance learning (MIL). In YAML, select a preset with
-``aggregation.name``. In Python, pass ``AggregatorConfig(name=...)`` to
-``PipelineConfig(aggregator=...)``. Patient-level pipelines use a frozen
-patient encoder instead.
+multiple-instance learning (MIL). Select a preset as the ``mil`` learner's
+``aggregator`` leaf: ``learner.params.aggregator.name`` in YAML, ``{"aggregator":
+"abmil"}`` (or ``{"name": ..., "params": ...}``) in the Python
+``LearnerConfig``. Patient-level pipelines use a frozen patient encoder instead.
 
 .. figure:: /_static/figures/slide-level.svg
    :figclass: soma-figure
@@ -105,8 +105,9 @@ TransMIL
 HIPT
 ~~~~
 
-``hipt`` assumes hierarchical tiling; set ``preprocessing.region_tile_multiple``
-to control how many tiles fit along each side of a region.
+``hipt`` assumes hierarchical tiling; its ``tile_multiple`` param (or
+``features.extraction.region_tile_multiple``) controls how many tiles fit along
+each side of a region.
 
 .. autoclass:: soma.aggregators.mil.hipt.HIPT
    :members:

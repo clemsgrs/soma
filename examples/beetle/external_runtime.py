@@ -158,7 +158,7 @@ def validate_selected_run_recipe(
     protocol_resolution: str | Path, selected_arm: str, run_dir: str | Path
 ) -> dict[str, str]:
     """Bind the selected run config to the selected arm in protocol resolution."""
-    from soma.config import config_yaml_dict, load_config
+    from soma.config import ExperimentConfig
 
     resolution_path = Path(protocol_resolution)
     run_dir = Path(run_dir)
@@ -179,9 +179,9 @@ def validate_selected_run_recipe(
             "BEETLE resolved selected-arm config must be an existing absolute path"
         )
     run_config_path = run_dir / "config.yaml"
-    resolved_config = load_config(resolved_path)
-    run_config = load_config(run_config_path)
-    if config_yaml_dict(run_config) != config_yaml_dict(resolved_config):
+    resolved_config = ExperimentConfig.from_yaml(resolved_path)
+    run_config = ExperimentConfig.from_yaml(run_config_path)
+    if run_config.to_dict() != resolved_config.to_dict():
         raise ValueError(
             "BEETLE selected run config disagrees with the protocol-resolved selected arm"
         )
@@ -191,11 +191,11 @@ def validate_selected_run_recipe(
         raise ValueError(
             "BEETLE resolved selected arm must use the protocol's exact pixel vocabulary"
         )
-    task = resolved_config.task
+    head = None if resolved_config.learner is None else resolved_config.learner.params.get("head")
     if (
-        task is None
-        or task.params.get("classes") != CLASSES
-        or task.params.get("ignore") != IGNORE
+        head is None
+        or head.params.get("classes") != CLASSES
+        or head.params.get("ignore") != IGNORE
     ):
         raise ValueError(
             "BEETLE resolved selected arm must predict the four annotated pixel classes"
@@ -210,15 +210,16 @@ def validate_selected_run_recipe(
 def load_selected_fold_predictor(run_dir: Path, bundle_paths: tuple[Path, ...]):
     """Load the selected run recipe, one frozen encoder, and all five fold bundles."""
     from soma import load
-    from soma.config import load_config
+    from soma.config import ExperimentConfig
     from soma.dense.predict import SlidingWindowSegmentationPredictor
     from soma.pipeline.build import live_encoder_for
     from soma.preprocessing.resolution import resolve_pipeline_dense
 
-    config = load_config(run_dir / "config.yaml")
-    if config.decoder is None or config.task is None or config.features.encoder is None:
+    config = ExperimentConfig.from_yaml(run_dir / "config.yaml")
+    params = {} if config.learner is None else config.learner.params
+    if params.get("decoder") is None or params.get("head") is None or config.features.encoder is None:
         raise ValueError(
-            "BEETLE External inference requires encoder, decoder, and task config"
+            "BEETLE External inference requires encoder, decoder, and head config"
         )
     dense = resolve_pipeline_dense(config)
     # The folds trained on cached grids: the stage that extracted them re-encodes the ROIs.

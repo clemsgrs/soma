@@ -12,6 +12,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from soma.config import Component
+from soma.plan import sample_unit
+from tests.experiment_configs import callback
 from soma.aggregators.registry import aggregator_registry
 from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva_slide as slide
@@ -90,29 +93,30 @@ def test_config_transcribes_the_eva_offline_protocol(dataset, target_mpp, head, 
     config = get_benchmark(f"eva/{dataset}").build_config(
         encoder="virchow2", dataset_csv="d.csv", splits_csv="s.csv", output_root="out", seed=7
     )
-    assert config.dataset_type == "slide"
+    assert sample_unit(config) == "slide"
     assert config.features.extraction.tiling.requested_spacing_um == target_mpp
     assert config.features.extraction.tiling.requested_tile_size_px == 224
     assert config.features.encoder.output_variant == "cls"  # virchow2 CLS-only, as EVA
-    assert config.aggregator.name == "eva_abmil" and config.aggregator.params == {}
-    assert config.task.name == head and dict(config.task.params) == task_params
-    training = config.training
-    assert (training.epochs, training.max_steps) == (100, None)
-    assert training.learning_rate == pytest.approx(1e-3)
-    assert training.weight_decay == pytest.approx(0.01)
-    assert training.optimizer == "adamw"
+    params = config.learner.params
+    assert params["aggregator"] == Component("eva_abmil")
+    assert params["head"] == Component(head, task_params)
+    assert (config.trainer.max_epochs, config.trainer.max_steps) == (100, None)
+    optimizer = params["optimizer"]
+    assert optimizer.params["lr"] == pytest.approx(1e-3)
+    assert optimizer.params["weight_decay"] == pytest.approx(0.01)
+    assert optimizer.name == "adamw"
     # EVA's warm-up (ConstantLR, factor 1/3 for 5 epochs) is the only scheduler leaf.
-    assert training.scheduler["name"] == "constant"
-    assert training.scheduler["params"]["total_iters"] == 5
-    assert training.scheduler["params"]["factor"] == pytest.approx(1 / 3)
-    assert training.patience == 20
+    (scheduler,) = params["scheduler"]
+    assert scheduler.name == "constant"
+    assert scheduler.params["total_iters"] == 5
+    assert scheduler.params["factor"] == pytest.approx(1 / 3)
+    monitor = {"monitor": "balanced_accuracy", "mode": "max"}
+    assert callback(config, "checkpoint") == monitor  # best-checkpoint selection
     # EVA's Lightning EarlyStopping: plain patience, no hold on an initial plateau.
-    assert training.hold_patience_until_monitor_moves is False
-    assert (training.monitor, training.monitor_mode) == ("balanced_accuracy", "max")
-    assert training.batch_size == 32
-    assert training.tune_is_test is False
-    assert training.checkpoint_selection == "best"
-    assert training.seed == 7
+    assert callback(config, "early_stopping") == {**monitor, "patience": 20, "hold_until_moves": False}
+    assert config.loaders.batch_size == 32
+    assert config.cohort.tune_is_test is False
+    assert config.run.seed == 7
     assert "balanced_accuracy" in config.evaluation.metrics
 
 

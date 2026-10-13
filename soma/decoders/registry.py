@@ -33,7 +33,8 @@ def build_decoder_for_grid(
     it:
 
     * ``num_upsample_blocks``, derived from the geometry (``encoded_size / grid_shape`` per
-      axis) unless the decoder does not accept it (``LinearDecoder``) or the user pinned it;
+      axis) unless the decoder does not accept it (``LinearDecoder``) or the user pinned it
+      (a ``None`` param, as a plan spells an unpinned one, is derived);
     * ``input_dim``, which under an active feature-adaptor projection is the adaptor's
       ``output_dim``, **not** the encoder's native dim (issue #286).
 
@@ -44,7 +45,7 @@ def build_decoder_for_grid(
     decoder_cls = decoder_registry.resolve(decoder_name)
     params = decoder_registry.validate(decoder_name, decoder_params)
     ctor_params = inspect.signature(decoder_cls.__init__).parameters
-    if "num_upsample_blocks" in ctor_params and "num_upsample_blocks" not in params:
+    if "num_upsample_blocks" in ctor_params and params.get("num_upsample_blocks") is None:
         ratio = max(
             geometry.encoded_size[0] / geometry.grid_shape[0],
             geometry.encoded_size[1] / geometry.grid_shape[1],

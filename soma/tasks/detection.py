@@ -41,7 +41,7 @@ from soma.detection.encode import points_on_valid
 from soma.detection.matching import VALID_MATCHING, match_points, reduce_f1
 from soma.detection.peaks import extract_peaks
 from soma.evaluation.metrics import resolve_metrics
-from soma.params import check_choice, check_non_negative, check_positive, check_probability
+from soma.params import check_choice, check_non_negative, check_positive, check_probability, run_decided
 from soma.tasks.base import TaskHead, as_grid_geometry
 from soma.tasks.registry import task_registry
 
@@ -59,10 +59,13 @@ def _positive(name: str, value: float) -> float:
 
 @dataclass
 class DetectionParams:
-    """:class:`DetectionHead`'s params. ``num_classes`` and the class names follow from
-    the task's class scheme; ``geometry`` and ``spacing_um`` from the grid source;
-    ``metrics`` from evaluation. ``match_distance`` (µm) must be set."""
+    """:class:`DetectionHead`'s params. The class scheme is ``classes`` (class name -> the
+    raw point class(es) forming it) and ``drop`` (raw classes removed), or a bare
+    ``num_classes``; ``geometry`` and ``spacing_um`` come from the grid source, ``metrics``
+    from the evaluation section. ``match_distance`` (µm) must be set."""
 
+    classes: dict[str, Any] | None = run_decided()
+    drop: list[int] | int | None = run_decided()
     num_classes: int | None = None
     match_distance: float | None = None
     sigma: float | None = None
@@ -231,7 +234,7 @@ class DetectionHead(TaskHead):
             raise ValueError(
                 f"points for '{sample_id}' have class id(s) {invalid} outside "
                 f"[0, num_classes={self.num_classes}). Name the annotated ids in "
-                "task.params.classes (PointSource class_remap), or map them to 0-based ids."
+                "the head's 'classes' param (PointSource class_remap), or map them to 0-based ids."
             )
 
     def frame_points(self, points: Tensor, ignore: Tensor | None = None) -> tuple[Tensor, Tensor]:

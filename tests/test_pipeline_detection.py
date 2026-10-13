@@ -16,16 +16,8 @@ import pytest
 import torch
 
 from tests.extraction_configs import extraction
-from soma.config import (
-    FeaturesConfig,
-    CacheConfig,
-    DecoderConfig,
-    EvalConfig,
-    HeatmapConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
-)
+from soma.config import CacheOptions, FeaturesConfig
+from tests.experiment_configs import experiment
 from soma.dense import CachedGridSource
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
@@ -67,24 +59,20 @@ def _splits(root: Path, assign: dict[str, str]) -> Path:
     return path
 
 
-def _run(
-    tmp_path, manifest_csv, store, splits_csv, *, params=PARAMS, training=None, evaluation=None, heatmaps=None
-):
+def _run(tmp_path, manifest_csv, store, splits_csv, *, params=PARAMS, epochs=2, cohort=None, evaluation=None):
     """One detection ``Pipeline`` run; returns its fold result and the fold (run) dir."""
-    config = PipelineConfig(
-        dataset_csv=manifest_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "out",
-        dataset_type="detection",
-        task=TaskConfig(name="detection", params=dict(params)),
-        training=training or TrainingConfig(epochs=2, batch_size=2, pin_memory=False),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        evaluation=evaluation or EvalConfig(metrics=["mean_f1", "f1_per_class"]),
-        features=FeaturesConfig(
-            extraction=extraction(SPACING, TARGET),
-            cache=CacheConfig(enabled=False),
-        ),
-        heatmaps=heatmaps or HeatmapConfig(),
+    config = experiment(
+        manifest_csv,
+        splits_csv,
+        output_dir=tmp_path / "out",
+        head="detection",
+        head_params=dict(params),
+        decoder="lightweight_conv",
+        cohort=cohort,
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": epochs},
+        evaluation=evaluation or {"metrics": ["mean_f1", "f1_per_class"]},
+        features=FeaturesConfig(extraction=extraction(SPACING, TARGET), cache=CacheOptions(enabled=False)),
     )
     result = Pipeline(config, source=store).run()
     return result.fold_results[0], result.run_dir
@@ -122,7 +110,8 @@ def test_detection_run_without_a_tune_split_scores_at_the_validation_threshold(t
     result, _ = _run(
         tmp_path, manifest, store, fold_split,
         params={**PARAMS, "validation_threshold": 0.7},
-        training=TrainingConfig(epochs=1, batch_size=2, allow_missing_tune=True),
+        epochs=1,
+        cohort={"allow_missing_tune": True},
     )
     assert "mean_f1" in result.test_evaluations["test"].metrics
 
@@ -133,7 +122,7 @@ def test_detection_run_folds_the_class_scheme_into_its_point_source(tmp_path: Pa
     result, fold = _run(
         tmp_path, manifest, store, _splits(tmp_path, ASSIGN),
         params={"classes": {"cell": [0]}, "drop": [1], "match_distance": 0.6, "sigma": 0.3},
-        training=TrainingConfig(epochs=1, batch_size=2),
+        epochs=1,
     )
     assert set(result.test_evaluations["test"].metrics) == {"mean_f1", "f1_class_0"}
     predictions = PointPredictions.from_parquet(fold / "predictions_test.parquet")
@@ -144,8 +133,8 @@ def test_detection_run_holdout_test_never_touches_the_test_split(tmp_path: Path)
     manifest, store = _build(tmp_path / "data", IDS)
     result, fold = _run(
         tmp_path, manifest, store, _splits(tmp_path, ASSIGN),
-        evaluation=EvalConfig(metrics=["mean_f1"], holdout_test=True),
-        training=TrainingConfig(epochs=1, batch_size=2),
+        evaluation={"metrics": ["mean_f1"], "holdout_test": True},
+        epochs=1,
     )
     assert result.test_evaluations == {}
     assert not (fold / "predictions_test.parquet").exists()
@@ -175,8 +164,8 @@ def test_detection_run_writes_opt_in_heatmaps_and_point_overlays(tmp_path: Path)
     manifest_csv.write_text("sample_id,image_path,points_path,spacing_at_level_0\n" + "\n".join(rows) + "\n")
     _, fold = _run(
         tmp_path, manifest_csv, store, _splits(tmp_path, ASSIGN),
-        evaluation=EvalConfig(metrics=["mean_f1"], save_detection_heatmaps=True),
-        training=TrainingConfig(epochs=1, batch_size=2),
+        evaluation={"metrics": ["mean_f1"], "save_heatmaps": True},
+        epochs=1,
     )
     heatmap = np.load(fold / "heatmaps" / "test" / "s3.npz")["heatmap"]
     assert heatmap.shape == (NUM_CLASSES, TARGET, TARGET) and heatmap.dtype == np.float16
@@ -185,12 +174,12 @@ def test_detection_run_writes_opt_in_heatmaps_and_point_overlays(tmp_path: Path)
 
 
 def test_detection_run_with_attention_heatmaps_enabled_completes_without_attention(tmp_path: Path):
-    """A grid run has no tile attention: ``reporting.heatmaps`` is skipped, not fatal."""
+    """A grid run has no tile attention: ``evaluation.attention_heatmaps`` is skipped, not fatal."""
     manifest, store = _build(tmp_path / "data", IDS)
     _, fold = _run(
         tmp_path, manifest, store, _splits(tmp_path, ASSIGN),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        heatmaps=HeatmapConfig(enabled=True),
+        epochs=1,
+        evaluation={"metrics": ["mean_f1", "f1_per_class"], "attention_heatmaps": {}},
     )
     assert (fold / "summary.json").is_file()
     assert not (fold / "attention").exists()

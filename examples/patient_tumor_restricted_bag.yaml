@@ -5,46 +5,59 @@
 # tiles that are >= 50% tumor enter that slide's merged bag (tissue-only tiles are excluded).
 # Tiling and selection are identical to the slide path (#110); patient-level aggregation then
 # consumes those restricted slide bags to produce compartment-restricted patient features.
-# A patient pipeline uses a pretrained patient encoder (no trainable aggregator) — the masks
-# block changes *which* tiles enter each slide's bag, nothing else.
+# A patient run uses a pretrained patient encoder (no trainable aggregator): the masks
+# change *which* tiles enter each slide's bag, nothing else.
 run:
-  output_root: runs/patient_tumor_restricted_bag
+  output_dir: runs/patient_tumor_restricted_bag
   seed: 0
-  tags: []
 
-data:
+cohort:
   # dataset.csv rows are (sample_id, patient_id, image_path, mask_path, label): mask_path is
-  # the multi-class annotation raster named by preprocessing.masks.pixel_mapping; label is the
-  # ordinary patient-level classification target, and patient_id groups slides per patient.
-  dataset_csv: data/dataset.csv
-  splits_csv: data/splits.csv
-  dataset_type: patient
+  # the multi-class annotation raster named by features.extraction.masks.pixel_mapping;
+  # label is the ordinary patient-level classification target, and patient_id groups slides.
+  records: data/dataset.csv
+  splits: data/splits.csv
+  # One sample per patient: the patient encoder embeds each patient's slides together.
+  collapse: patient_id
 
-preprocessing:
-  requested_tile_size_px: 224
-  requested_spacing_um: 0.5
-  tissue_method: otsu
-  # The annotation masks block restricts each slide's bag to the tumor compartment. Tile
-  # selection gates on per-class min_coverage over the annotation mask (binary tissue
-  # filtering is bypassed under masks). pixel_mapping names the raster's classes by their
-  # exact pixel value; `background` is optional (omit it if the raster has no unannotated region).
-  masks:
-    pixel_mapping: {background: 0, tumor: 1}
-    min_coverage: {tumor: 0.5}   # keep tiles >= 50% tumor
-  sampling:
-    output_mode: merged          # one merged bag per slide (required for dataset_type: patient)
-    strategy: joint              # 'independent' tiles each class separately
-
-cache:
-  enabled: true
-
-encoder:
+features:
   # A patient-level encoder (pretrained); patient features aggregate from the restricted
-  # slide bags. No `aggregation:` block — patient pipelines do not use a trainable aggregator.
-  name: moozy
+  # slide bags. No aggregator: patient runs do not train one.
+  encoder:
+    name: moozy
+  extraction:
+    tiling:
+      requested_spacing_um: 0.5
+      requested_tile_size_px: 224
+      tolerance: 0.05
+      overlap: 0.0
+    segmentation:
+      method: otsu
+    # The annotation masks restrict each slide's bag to the tumor compartment (binary
+    # tissue filtering is bypassed). pixel_mapping names the raster's classes by their
+    # exact pixel value; `background` is optional.
+    masks:
+      pixel_mapping: {background: 0, tumor: 1}
+      min_coverage: {tumor: 0.5}  # keep tiles >= 50% tumor
+      output_mode: merged         # one merged bag per slide (required for a patient bag)
+      strategy: joint             # 'independent' tiles each class separately
 
-task:
-  name: binary_classification
+learner:
+  name: mil
+  params:
+    head:
+      name: binary_classification
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
+
+trainer:
+  max_epochs: 50
+  callbacks:
+    - name: checkpoint
+    - name: early_stopping
+      params: {patience: 10}
 
 evaluation:
   metrics:
@@ -52,8 +65,3 @@ evaluation:
     - balanced_accuracy
     - auprc
     - f1
-
-training:
-  epochs: 50
-  learning_rate: 1.0e-4
-  patience: 10
