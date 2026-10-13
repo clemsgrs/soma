@@ -12,7 +12,7 @@ from soma.cache.keys import _sample_identity_payload, sample_identity_signature
 import slide2vec
 
 from tests.extraction_configs import annotation_masks, extraction
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import ImageManifest
 from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 from tests.e2e.synthetic import write_coordinates_artifact
 
@@ -56,7 +56,7 @@ def _resolve_tile_cache(cache_root: Path, dataset: Dataset):
 
     return resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=_preprocessing(),
         execution=slide2vec.ExecutionOptions(precision="fp16"),
@@ -82,7 +82,7 @@ def _commit(resolution, sample_id: str, tensor):
 def test_changing_one_coordinate_changes_the_cache_key(tmp_path: Path):
     artifacts = tmp_path / "coordinates"
     paths = {s: _artifact(artifacts, s, tmp_path / f"{s}.tif") for s in ("a", "b")}
-    dataset = legacy_samples_from_csv(_manifest(tmp_path, paths))
+    dataset = ImageManifest.from_csv(_manifest(tmp_path, paths))
     before = _sample_identity_payload(dataset)
 
     _artifact(artifacts, "a", tmp_path / "a.tif")  # same tiles, rewritten
@@ -113,7 +113,7 @@ def test_staging_lists_a_snapshot_of_the_supplied_artifacts(tmp_path: Path):
 
     paths = {s: _artifact(tmp_path / "coordinates", s, tmp_path / f"{s}.tif") for s in ("a", "b")}
     tiling_dir = tmp_path / "tiling"
-    stage_supplied_coordinates(legacy_samples_from_csv(_manifest(tmp_path, paths)), tiling_dir, _preprocessing())
+    stage_supplied_coordinates(ImageManifest.from_csv(_manifest(tmp_path, paths)), tiling_dir, _preprocessing())
     rows = pd.read_csv(tiling_dir / "process_list.csv").set_index("sample_id")
     assert rows["num_tiles"].tolist() == [3, 3]
     assert set(rows["tiling_status"]) == {"success"}
@@ -129,7 +129,7 @@ def test_staging_lists_a_snapshot_of_the_supplied_artifacts(tmp_path: Path):
 def test_partially_filled_column_is_rejected(tmp_path: Path):
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
     with pytest.raises(ValueError, match="every row or for none.*'b'"):
-        legacy_samples_from_csv(_manifest(tmp_path, {"a": path, "b": None}))
+        ImageManifest.from_csv(_manifest(tmp_path, {"a": path, "b": None}))
 
 
 @pytest.mark.parametrize("dataset_type", ["tile", "segmentation", "detection"])
@@ -140,16 +140,20 @@ def test_column_is_rejected_outside_slide_datasets(tmp_path: Path, dataset_type:
     frame["label_mask_path"] = "/m.png"
     frame["points_path"] = "/p.csv"
     frame.to_csv(manifest, index=False)
-    from soma.extraction import FeatureExtractor
+    from slide2vec import DenseOptions
 
-    shape = "set" if dataset_type == "tile" else "grid"
+    import soma
+    from soma.config import CacheOptions
+
+    dense = None if dataset_type == "tile" else DenseOptions(spacing_um=0.5, target_size=32)
     with pytest.raises(ValueError, match="whole slides"):
-        FeatureExtractor(
-            legacy_samples_from_csv(manifest),
-            "phikon",
-            shape=shape,
+        soma.extract(
+            ImageManifest.from_csv(manifest),
+            encoder="phikon",
+            dense=dense,
             unit="tile",
-            output_root=tmp_path / "out",
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path / "out",
         )
 
 
@@ -161,17 +165,23 @@ def test_column_is_rejected_on_the_annotation_sampling_path(tmp_path: Path):
     frame = pd.read_csv(manifest)
     frame["label_mask_path"] = "/m.png"
     frame.to_csv(manifest, index=False)
-    from soma.extraction import FeatureExtractor
+    from slide2vec import DenseOptions
+
+    import soma
+    from soma.config import CacheOptions
+    from soma.data import AnnotationManifest
 
     masks = annotation_masks()
-    with pytest.raises(ValueError, match="coordinates_path.*shape='set', unit='slide'"):
-        FeatureExtractor(
-            legacy_samples_from_csv(manifest),
-            "phikon",
-            _preprocessing(masks=masks),
-            shape="grid",
+    with pytest.raises(ValueError, match="coordinates_path.*no dense options, unit='slide'"):
+        soma.extract(
+            ImageManifest.from_csv(manifest),
+            annotations=AnnotationManifest.from_csv(manifest),
+            encoder="phikon",
+            extraction=_preprocessing(masks=masks),
+            dense=DenseOptions(spacing_um=0.5, target_size=32),
             unit="slide",
-            output_root=tmp_path / "out",
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path / "out",
         )
 
 
@@ -188,7 +198,7 @@ def test_mismatched_artifact_fails_staging(tmp_path: Path, artifact_kwargs: dict
     sample_id = artifact_kwargs.pop("sample_id", "a")
     image_path = tmp_path / artifact_kwargs.pop("image_path", "a.tif")
     written = _artifact(tmp_path / "coordinates", sample_id, image_path, **artifact_kwargs)
-    dataset = legacy_samples_from_csv(_manifest(tmp_path, {"a": written}))
+    dataset = ImageManifest.from_csv(_manifest(tmp_path, {"a": written}))
     with pytest.raises(ValueError, match=message):
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing())
 
@@ -202,18 +212,18 @@ def test_artifact_made_for_another_source_spacing_fails_staging(tmp_path: Path):
     frame["spacing_at_level_0"] = 1.0
     frame.to_csv(manifest, index=False)
     with pytest.raises(ValueError, match=r"spacing_at_level_0 None .*manifest: 1.0"):
-        stage_supplied_coordinates(legacy_samples_from_csv(manifest), tmp_path / "tiling", _preprocessing())
+        stage_supplied_coordinates(ImageManifest.from_csv(manifest), tmp_path / "tiling", _preprocessing())
 
 
 def test_missing_artifact_fails_staging(tmp_path: Path):
-    dataset = legacy_samples_from_csv(_manifest(tmp_path, {"a": tmp_path / "a.coordinates.npz"}))
+    dataset = ImageManifest.from_csv(_manifest(tmp_path, {"a": tmp_path / "a.coordinates.npz"}))
     with pytest.raises(FileNotFoundError, match="'a'.*does not exist"):
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing())
 
 
 def test_annotation_masks_cannot_reselect_supplied_tiles(tmp_path: Path):
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
-    dataset = legacy_samples_from_csv(_manifest(tmp_path, {"a": path}))
+    dataset = ImageManifest.from_csv(_manifest(tmp_path, {"a": path}))
     masks = annotation_masks()
     with pytest.raises(ValueError, match="cannot be combined with annotation sampling"):
         stage_supplied_coordinates(dataset, tmp_path / "tiling", _preprocessing(masks=masks))
@@ -233,14 +243,14 @@ def test_unsigned_legacy_cache_is_not_adopted_for_supplied_coordinates(tmp_path:
     def resolve(dataset):
         return _resolve_tile_cache(tmp_path / "cache", dataset)
 
-    legacy = resolve(legacy_samples_from_csv(tmp_path / "soma_tiled.csv"))
+    legacy = resolve(ImageManifest.from_csv(tmp_path / "soma_tiled.csv"))
     metadata = json.loads(legacy.metadata_path.read_text())
     metadata.pop("sample_identity_signature_by_id", None)
     metadata["feature_dim"] = 16
     legacy.metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True))
     torch.save(torch.zeros(4, 16), legacy.feature_path_for_id("a"))
 
-    supplied = resolve(legacy_samples_from_csv(manifest))
+    supplied = resolve(ImageManifest.from_csv(manifest))
     assert supplied.missing_sample_ids() == ["a", "b"]
 
 
@@ -248,7 +258,7 @@ def test_staged_dataset_is_keyed_on_the_tiles_the_run_embeds(tmp_path: Path):
     """Once staged, the cache identity follows the run's copies, not the user's files."""
     paths = {s: _artifact(tmp_path / "coordinates", s, tmp_path / f"{s}.tif") for s in ("a", "b")}
     staged = stage_supplied_coordinates(
-        legacy_samples_from_csv(_manifest(tmp_path, paths)), tmp_path / "tiling", _preprocessing()
+        ImageManifest.from_csv(_manifest(tmp_path, paths)), tmp_path / "tiling", _preprocessing()
     )
     before = _sample_identity_payload(staged)
 
@@ -268,7 +278,7 @@ def test_each_supplied_tile_set_keeps_its_own_cached_features(tmp_path: Path):
     datasets = {}
     for name, x in tile_sets.items():
         written = _artifact(tmp_path / name, "a", tmp_path / "a.tif", x=x)
-        datasets[name] = legacy_samples_from_csv(_manifest(tmp_path / name, {"a": written}))
+        datasets[name] = ImageManifest.from_csv(_manifest(tmp_path / name, {"a": written}))
     features = {name: torch.full((len(x), 4), float(len(x))) for name, x in tile_sets.items()}
 
     for name, dataset in datasets.items():
@@ -289,7 +299,7 @@ def test_soma_tiled_payloads_keep_their_flat_layout(tmp_path: Path):
     paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
     frame = pd.read_csv(_manifest(tmp_path, paths)).drop(columns="coordinates_path")
     frame.to_csv(tmp_path / "soma_tiled.csv", index=False)
-    resolution = _resolve_tile_cache(tmp_path / "cache", legacy_samples_from_csv(tmp_path / "soma_tiled.csv"))
+    resolution = _resolve_tile_cache(tmp_path / "cache", ImageManifest.from_csv(tmp_path / "soma_tiled.csv"))
     assert resolution.feature_path_for_id("a").name == "a.pt"
 
 
@@ -304,16 +314,16 @@ def test_a_stale_empty_marker_does_not_hide_a_sample(tmp_path: Path, change: str
         _manifest(tmp_path, {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")})
     ).drop(columns="coordinates_path")
     frame.to_csv(tmp_path / "soma_tiled.csv", index=False)
-    empty = _resolve_tile_cache(tmp_path / "cache", legacy_samples_from_csv(tmp_path / "soma_tiled.csv"))
+    empty = _resolve_tile_cache(tmp_path / "cache", ImageManifest.from_csv(tmp_path / "soma_tiled.csv"))
     record_empty_sample_ids(empty, ["a"])
 
     if change == "image_path":
         frame["image_path"] = str(tmp_path / "a_rescanned.tif")
         frame.to_csv(tmp_path / "changed.csv", index=False)
-        changed = legacy_samples_from_csv(tmp_path / "changed.csv")
+        changed = ImageManifest.from_csv(tmp_path / "changed.csv")
     else:
         written = _artifact(tmp_path / "supplied", "a", tmp_path / "a.tif")
-        changed = legacy_samples_from_csv(_manifest(tmp_path / "supplied", {"a": written}))
+        changed = ImageManifest.from_csv(_manifest(tmp_path / "supplied", {"a": written}))
     resolution = _resolve_tile_cache(tmp_path / "cache", changed)
     assert resolution.empty_sample_ids == set()
     assert resolution.missing_sample_ids() == ["a"]
@@ -330,11 +340,11 @@ def test_resume_keeps_the_run_snapshot_when_the_artifact_is_gone(tmp_path: Path)
     paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
     manifest = _manifest(tmp_path, paths)
     tiling_dir = tmp_path / "tiling"
-    stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())
+    stage_supplied_coordinates(ImageManifest.from_csv(manifest), tiling_dir, _preprocessing())
 
     paths["a"].unlink()
-    resumed = stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())
-    snapshot = resumed.samples["a"].coordinates_path
+    resumed = stage_supplied_coordinates(ImageManifest.from_csv(manifest), tiling_dir, _preprocessing())
+    snapshot = resumed["a"].coordinates_path
     meta = snapshot.with_name("a.coordinates.meta.json")
     assert load_tiling_result(snapshot, meta).x.tolist() == [0, 32, 64]
 
@@ -346,13 +356,13 @@ def test_resume_rejects_an_artifact_changed_since_the_run_started(tmp_path: Path
     paths = {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")}
     manifest = _manifest(tmp_path, paths)
     tiling_dir = tmp_path / "tiling"
-    staged = stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())
+    staged = stage_supplied_coordinates(ImageManifest.from_csv(manifest), tiling_dir, _preprocessing())
 
-    stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())  # unchanged
+    stage_supplied_coordinates(ImageManifest.from_csv(manifest), tiling_dir, _preprocessing())  # unchanged
     _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif", x=(0, 96))
     with pytest.raises(ValueError, match="'a'.*changed after this run copied them"):
-        stage_supplied_coordinates(legacy_samples_from_csv(manifest), tiling_dir, _preprocessing())
-    snapshot = staged.samples["a"].coordinates_path
+        stage_supplied_coordinates(ImageManifest.from_csv(manifest), tiling_dir, _preprocessing())
+    snapshot = staged["a"].coordinates_path
     meta = snapshot.with_name("a.coordinates.meta.json")
     assert load_tiling_result(snapshot, meta).x.tolist() == [0, 32, 64]
 
@@ -360,16 +370,15 @@ def test_resume_rejects_an_artifact_changed_since_the_run_started(tmp_path: Path
 @pytest.mark.parametrize("encoder", ["prism", "moozy"])
 def test_supplied_coordinates_need_a_tile_encoder(tmp_path: Path, encoder: str):
     """Supplied tiles form bags of tile features; slide and patient encoders are refused."""
-    from soma import FeatureExtractor
+    import soma
     from soma.config import CacheOptions
 
     path = _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")
-    extractor = FeatureExtractor(
-        legacy_samples_from_csv(_manifest(tmp_path, {"a": path})),
-        encoder,
-        preprocessing=_preprocessing(),
-        cache=CacheOptions(enabled=False),
-        output_root=tmp_path / "output",
-    )
     with pytest.raises(ValueError, match="support tile encoders only"):
-        extractor.extract()
+        soma.extract(
+            ImageManifest.from_csv(_manifest(tmp_path, {"a": path})),
+            encoder=encoder,
+            extraction=_preprocessing(),
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path / "output",
+        )

@@ -69,7 +69,7 @@ from soma.extraction.reporters import (
 from soma.extraction.slide_aggregation_spawn import spawn_slide_aggregation_workers
 from soma.cache._types import PACKED_FILENAME
 from soma.cache.keys import _jsonable
-from soma.data import CachedSetSource
+from soma.data import CachedSetSource, ImageManifest
 from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 from soma.slide2vec_adapter import (
     LoadedTiling,
@@ -257,11 +257,11 @@ def _non_empty_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]) -> list[Lo
 
 
 class _PooledFeatureExtractor:
-    """Preprocesses slides and extracts features for all samples in a dataset."""
+    """Preprocesses slides and extracts features for every slide of an image manifest."""
 
     def __init__(
         self,
-        dataset: Dataset,
+        images: ImageManifest,
         encoder: EncoderLeaf,
         preprocessing: PreprocessingConfig | None = None,
         *,
@@ -269,7 +269,7 @@ class _PooledFeatureExtractor:
         execution: ExecutionOptions | None = None,
         cache: CacheOptions = CacheOptions(),
     ) -> None:
-        self._dataset = dataset
+        self._images = images
         self._encoder = encoder
         self._preprocessing = preprocessing if preprocessing is not None else PreprocessingConfig()
         self._execution = execution if execution is not None else ExecutionOptions()
@@ -297,7 +297,7 @@ class _PooledFeatureExtractor:
         """Resolve preprocessing, then prefer precomputed masks when every slide has one."""
         preprocessing = self._resolved_preprocessing()
         has_precomputed_masks = all(
-            record.mask_path is not None for record in self._dataset.samples.values()
+            record.mask_path is not None for record in self._images
         )
         if has_precomputed_masks and preprocessing.segmentation.method != "precomputed_mask":
             return replace(
@@ -334,7 +334,7 @@ class _PooledFeatureExtractor:
         """Preprocess all slides via slide2vec/hs2p tiling orchestration."""
         tiling_dir = Path(tiling_dir).resolve()
         tiling_dir.mkdir(parents=True, exist_ok=True)
-        if self._dataset.supplies_coordinates:
+        if self._images.supplies_coordinates:
             level = resolve_encoder_level(self._encoder.name, encoder_registry.info(self._encoder.name))
             if level != "tile":
                 raise ValueError(
@@ -349,10 +349,10 @@ class _PooledFeatureExtractor:
             execution=self._execution,
             preprocessing=cfg,
         )
-        if self._dataset.supplies_coordinates:
+        if self._images.supplies_coordinates:
             # The user tiled the slides: list their artifacts where hs2p's would be, and
             # key the run on the copies it embeds.
-            self._dataset = stage_supplied_coordinates(self._dataset, tiling_dir, cfg)
+            self._images = stage_supplied_coordinates(self._images, tiling_dir, cfg)
             return
         process_list_path = tiling_dir / "process_list.csv"
         if not self._cache.enabled:
@@ -377,11 +377,11 @@ class _PooledFeatureExtractor:
             )
             with _suppress_logger_noise_ctx("cucim"):
                 with _forward_tiling_progress_ctx():
-                    pipeline.run(slides=build_slide_specs(self._dataset), tiling_only=True)
+                    pipeline.run(slides=build_slide_specs(self._images), tiling_only=True)
             return
 
         backend_by_sample_id = probe_resolved_backends(
-            dataset=self._dataset,
+            images=self._images,
             requested_backend=cfg.tiling.backend,
         )
         backend_provenance = _backend_provenance_from_mapping(
@@ -395,7 +395,7 @@ class _PooledFeatureExtractor:
         )
         cache_resolution = resolve_tiling_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             preprocessing=cfg,
             backend_provenance=backend_provenance,
             encoder_name=self._encoder.name,
@@ -424,7 +424,7 @@ class _PooledFeatureExtractor:
         )
         with _suppress_logger_noise_ctx("cucim"):
             with _forward_tiling_progress_ctx():
-                pipeline.run(slides=build_slide_specs(self._dataset), tiling_only=True)
+                pipeline.run(slides=build_slide_specs(self._images), tiling_only=True)
         can_publish = str(cache_resolution.metadata.get("requested_backend")) == str(
             backend_provenance.get("requested_backend")
         )
@@ -435,7 +435,7 @@ class _PooledFeatureExtractor:
             )
             refreshed = resolve_tiling_cache(
                 cache_root=cache_root,
-                dataset=self._dataset,
+                images=self._images,
                 preprocessing=cfg,
                 backend_provenance=backend_provenance,
                 encoder_name=self._encoder.name,
@@ -477,7 +477,7 @@ class _PooledFeatureExtractor:
         is_hierarchical = resolved_preprocessing.region_tile_multiple is not None
 
         loaded_tilings = load_tilings(
-            dataset=self._dataset,
+            images=self._images,
             tiling_dir=tiling_dir,
             requested_seg_downsample=int(resolved_preprocessing.segmentation.downsample),
             annotation_sampling=is_annotation_sampling(resolved_preprocessing.masks),
@@ -982,7 +982,7 @@ class _PooledFeatureExtractor:
         )
         cache_resolution = resolve_tile_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
             execution=self._execution,
@@ -1014,7 +1014,7 @@ class _PooledFeatureExtractor:
         )
         refreshed = resolve_tile_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
             execution=self._execution,
@@ -1054,7 +1054,7 @@ class _PooledFeatureExtractor:
         )
         cache_resolution = resolve_hierarchical_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
             execution=self._execution,
@@ -1086,7 +1086,7 @@ class _PooledFeatureExtractor:
         )
         refreshed = resolve_hierarchical_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
             execution=self._execution,
@@ -1140,7 +1140,7 @@ class _PooledFeatureExtractor:
         )
         tile_cache = resolve_tile_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
             execution=self._execution,
@@ -1152,7 +1152,7 @@ class _PooledFeatureExtractor:
         )
         slide_cache = resolve_slide_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
@@ -1190,7 +1190,7 @@ class _PooledFeatureExtractor:
             )
             tile_cache = resolve_tile_cache(
                 cache_root=cache_root,
-                dataset=self._dataset,
+                images=self._images,
                 tile_encoder_name=tile_encoder_name,
                 preprocessing=resolved_preprocessing,
                 execution=self._execution,
@@ -1213,7 +1213,7 @@ class _PooledFeatureExtractor:
         )
         refreshed = resolve_slide_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
@@ -1266,7 +1266,7 @@ class _PooledFeatureExtractor:
         )
         tile_cache = resolve_tile_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
             execution=self._execution,
@@ -1278,7 +1278,7 @@ class _PooledFeatureExtractor:
         )
         patient_cache = resolve_patient_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             patient_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
@@ -1311,7 +1311,7 @@ class _PooledFeatureExtractor:
         )
         tile_cache = resolve_tile_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
             execution=self._execution,
@@ -1333,7 +1333,7 @@ class _PooledFeatureExtractor:
         )
         refreshed = resolve_patient_cache(
             cache_root=cache_root,
-            dataset=self._dataset,
+            images=self._images,
             patient_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
@@ -1436,18 +1436,13 @@ class _PooledFeatureExtractor:
             record_feature_dim(patient_cache, feature_dim)
 
     def _patient_id_map_for_patient_encoder(self) -> dict[str, str]:
-        try:
-            patient_groups = self._dataset.patient_groups
-        except ValueError as exc:
+        missing = [entry.sample_id for entry in self._images if entry.patient_id is None]
+        if missing:
             raise ValueError(
                 f"Encoder '{self._encoder.name}' is a patient-level encoder, so every "
-                "dataset row must have a patient_id."
-            ) from exc
-        return {
-            record.sample_id: patient_id
-            for patient_id, records in patient_groups.items()
-            for record in records
-        }
+                f"manifest row must have a patient_id; missing for {missing[:20]}."
+            )
+        return {entry.sample_id: str(entry.patient_id) for entry in self._images}
 
     def _write_artifacts_to_cache_resolution(
         self,

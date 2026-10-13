@@ -42,28 +42,27 @@ def _write_manifest(tmp_path: Path) -> tuple[Path, Path]:
 
 
 class _FakeExtractor:
+    """``soma.extract`` at the preflight's seam: writes each ROI's grid and sidecar where
+    slide2vec would, and records the call."""
+
     calls: list[dict] = []
     negate_fp16 = False
 
-    def __init__(self, roi_dataset, encoder, preprocessing=None, **kwargs):
-        self.roi_dataset = roi_dataset
-        self.encoder = encoder
-        self.kwargs = {"preprocessing": preprocessing, **kwargs}
-
-    def extract(self):
-        dtype = torch.float16 if self.kwargs["cache"].dtype == "fp16" else torch.float32
-        payload = Path(self.kwargs["output_root"]) / "features" / "dense_embeddings"
-        for record in self.roi_dataset.samples.values():
+    @classmethod
+    def extract(cls, images, *, rois, **kwargs):
+        dtype = torch.float16 if kwargs["cache"].dtype == "fp16" else torch.float32
+        payload = Path(kwargs["output_dir"]) / "features" / "dense_embeddings"
+        for record in rois:
             x, y = record.region
             sample_dir = payload / record.slide_id
             sample_dir.mkdir(parents=True, exist_ok=True)
             base = torch.arange(1280 * 37 * 37, dtype=torch.float32).reshape(1280, 37, 37)
             grid = (base / 4096).to(dtype)
-            if dtype == torch.float16 and self.negate_fp16:
+            if dtype == torch.float16 and cls.negate_fp16:
                 grid = -grid
             torch.save(grid, sample_dir / f"{x}_{y}.pt")
-            declared_spacing = max(0.5, record.spacing_at_level_0 or 0.5)
-            effective_spacing = record.spacing_at_level_0 or 0.485
+            declared_spacing = max(0.5, record.slide.spacing_at_level_0 or 0.5)
+            effective_spacing = record.slide.spacing_at_level_0 or 0.485
             metadata = {
                 "artifact_type": "dense_embeddings",
                 "sample_id": record.slide_id,
@@ -77,10 +76,10 @@ class _FakeExtractor:
                 "encoded_size": [518, 518],
                 "pad": [6, 6],
                 "declared_spacing_um": declared_spacing,
-                "source_spacing_um": record.spacing_at_level_0 or 0.485,
+                "source_spacing_um": record.slide.spacing_at_level_0 or 0.485,
                 "read_spacing_um": effective_spacing,
                 "effective_spacing_um": effective_spacing,
-                "spacing_at_level_0": record.spacing_at_level_0,
+                "spacing_at_level_0": record.slide.spacing_at_level_0,
                 "read_level": 0,
                 "read_size": [512, 512],
                 "output_size": [512, 512],
@@ -90,14 +89,8 @@ class _FakeExtractor:
                 "feature_kind": "patch_features",
             }
             (sample_dir / f"{x}_{y}.meta.json").write_text(json.dumps(metadata))
-        self.calls.append(
-            {
-                "sample_ids": list(self.roi_dataset.sample_ids),
-                "encoder": self.encoder,
-                **self.kwargs,
-            }
-        )
-        return SimpleNamespace(source=SimpleNamespace(feature_dir=payload))
+        cls.calls.append({"sample_ids": list(rois.sample_ids), **kwargs})
+        return SimpleNamespace(feature_dir=payload)
 
 
 _MASK_CROP_CALLS: list[dict] = []
@@ -120,7 +113,7 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
     dataset_csv, splits_csv = _write_manifest(tmp_path)
     sampled: list[list[str]] = []
 
-    def fake_sample(dataset, *, sample_ids, **_kwargs):
+    def fake_sample(images, annotations, *, sample_ids, **_kwargs):
         ids = list(sample_ids)
         sampled.append(ids)
         return {
@@ -144,7 +137,7 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
             return torch.full((512, 512), 2, dtype=torch.long)
 
     monkeypatch.setattr(module, "sample_slide_rois", fake_sample)
-    monkeypatch.setattr(module, "FeatureExtractor", _FakeExtractor)
+    monkeypatch.setattr(module, "extract", _FakeExtractor.extract)
     monkeypatch.setattr(module, "CachedLabelMapSource", FakeLabels)
     monkeypatch.setattr(module, "write_roi_mask_crops", _record_mask_crops)
     _MASK_CROP_CALLS.clear()
@@ -198,10 +191,10 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
         "fp32",
     ]
     assert all(
-        call["preprocessing"].tiling.tolerance == pytest.approx(0.1) for call in _FakeExtractor.calls
+        call["extraction"].tiling.tolerance == pytest.approx(0.1) for call in _FakeExtractor.calls
     )
     assert all(
-        call["preprocessing"].tiling.mask_backend == "openslide" for call in _FakeExtractor.calls
+        call["extraction"].tiling.mask_backend == "openslide" for call in _FakeExtractor.calls
     )
     assert all(call["spacing_policy"] == "native_if_coarser" for call in _FakeExtractor.calls)
     assert all(call["dense"].window_size == 224 for call in _FakeExtractor.calls)
@@ -219,7 +212,7 @@ def test_representative_extraction_rejects_fp16_cache_below_cosine_contract(
 
     dataset_csv, splits_csv = _write_manifest(tmp_path)
 
-    def fake_sample(dataset, *, sample_ids, **_kwargs):
+    def fake_sample(images, annotations, *, sample_ids, **_kwargs):
         return {sample_id: [(0, 0)] for sample_id in sample_ids}
 
     class FakeLabels:
@@ -230,7 +223,7 @@ def test_representative_extraction_rejects_fp16_cache_below_cosine_contract(
             return torch.zeros((512, 512), dtype=torch.long)
 
     monkeypatch.setattr(module, "sample_slide_rois", fake_sample)
-    monkeypatch.setattr(module, "FeatureExtractor", _FakeExtractor)
+    monkeypatch.setattr(module, "extract", _FakeExtractor.extract)
     monkeypatch.setattr(module, "CachedLabelMapSource", FakeLabels)
     monkeypatch.setattr(module, "write_roi_mask_crops", _record_mask_crops)
     _MASK_CROP_CALLS.clear()

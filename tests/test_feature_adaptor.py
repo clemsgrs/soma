@@ -19,7 +19,7 @@ import torch
 
 from soma.aggregators.pooling import MeanPool
 from soma.config import Component, FeaturesConfig
-from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+from soma.data import Cohort, ImageManifest
 from soma.data import CachedSetSource
 from soma.training.feature_adaptor import NormalizationParams, ProjectionParams
 from tests.experiment_configs import experiment
@@ -517,7 +517,7 @@ _TILE_DIM = 4
 
 def _synthetic_fold(
     tmp_path: Path, feature_dim: int = _TILE_DIM
-) -> tuple[Dataset, Splits, CachedSetSource]:
+) -> tuple[ImageManifest, Cohort, CachedSetSource]:
     """4 samples — 2 train, 1 tune, 1 test — whose feature scales differ wildly per
     split, so a leaked tune/test row would visibly move the fitted statistics."""
     tmp_path.mkdir(parents=True, exist_ok=True)
@@ -542,8 +542,8 @@ def _synthetic_fold(
     for sample_id, scale in scales.items():
         torch.save(torch.randn(6, feature_dim) * scale, feature_dir / f"{sample_id}.pt")
 
-    dataset = legacy_samples_from_csv(dataset_csv)
-    return dataset, legacy_folds_from_csv(splits_csv, dataset), CachedSetSource(feature_dir)
+    dataset = ImageManifest.from_csv(dataset_csv)
+    return dataset, Cohort.from_csv(dataset_csv, splits_csv), CachedSetSource(feature_dir)
 
 
 def _run_fold(
@@ -849,7 +849,7 @@ _EMBEDDING_DIM = 4
 
 def _synthetic_embedding_fold(
     tmp_path: Path, feature_dim: int = _EMBEDDING_DIM
-) -> tuple[Dataset, Splits, CachedSetSource]:
+) -> tuple[ImageManifest, Cohort, CachedSetSource]:
     """The slide-encoder path: **one** feature vector per slide, not a bag of tiles.
 
     4 slides — 2 Support, 1 tune, 1 test — whose embedding scales differ wildly per
@@ -879,8 +879,8 @@ def _synthetic_embedding_fold(
         # (D,) — a single embedding per slide is what makes this the slide-encoder path.
         torch.save(torch.randn(feature_dim) * scale, feature_dir / f"{sample_id}.pt")
 
-    dataset = legacy_samples_from_csv(dataset_csv)
-    return dataset, legacy_folds_from_csv(splits_csv, dataset), CachedSetSource(feature_dir)
+    dataset = ImageManifest.from_csv(dataset_csv)
+    return dataset, Cohort.from_csv(dataset_csv, splits_csv), CachedSetSource(feature_dir)
 
 
 def _run_embedding_fold(
@@ -1134,7 +1134,6 @@ def _synthetic_dense_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
     import numpy as np
     from PIL import Image
 
-    from soma.data._legacy import legacy_samples_from_csv
     from soma.dense import CachedGridSource
     from soma.dense.geometry import compute_dense_geometry
     from soma.dense.store import dense_grid_metadata, write_dense_grid
@@ -1175,8 +1174,8 @@ def _synthetic_dense_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
         "sample_id,split,fold\ns0,train,0\ns1,train,0\ns2,tune,0\ns3,test,0\n",
         encoding="utf-8",
     )
-    manifest = legacy_samples_from_csv(manifest_csv)
-    return manifest, legacy_folds_from_csv(splits_csv, manifest), CachedGridSource(dense_dir)
+    manifest = ImageManifest.from_csv(manifest_csv)
+    return manifest, Cohort.from_csv(manifest_csv, splits_csv), CachedGridSource(dense_dir)
 
 
 def _run_dense_fold(
@@ -1373,7 +1372,6 @@ _DETECTION_SPACING = 0.2  # µm/px; match_distance 0.6 µm -> 3 target-frame px
 
 def _synthetic_detection_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
     """The other single-encoder dense stream: same grids, point annotations."""
-    from soma.data._legacy import legacy_samples_from_csv
     from soma.dense import CachedGridSource
     from soma.dense.geometry import compute_dense_geometry
     from soma.dense.store import dense_grid_metadata, write_dense_grid
@@ -1412,8 +1410,8 @@ def _synthetic_detection_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
         "sample_id,split,fold\ns0,train,0\ns1,train,0\ns2,tune,0\ns3,test,0\n",
         encoding="utf-8",
     )
-    manifest = legacy_samples_from_csv(manifest_csv)
-    return manifest, legacy_folds_from_csv(splits_csv, manifest), CachedGridSource(dense_dir)
+    manifest = ImageManifest.from_csv(manifest_csv)
+    return manifest, Cohort.from_csv(manifest_csv, splits_csv), CachedGridSource(dense_dir)
 
 
 _DETECTION_HEAD = Component("detection", {"num_classes": 2, "match_distance": 0.6})

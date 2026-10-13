@@ -22,7 +22,7 @@ from soma.plan import sample_unit
 from tests.experiment_configs import callback
 from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva
-from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+from soma.data import Cohort
 
 
 EVA_DATASETS = ("bach", "breakhis", "crc", "mhist", "gleason_arvaniti", "patch_camelyon")
@@ -302,6 +302,5 @@ def test_gleason_arvaniti_curation_is_compatible_with_its_tune_is_test_config(tm
     )
     assert config.cohort.tune_is_test is True
 
-    dataset = legacy_samples_from_csv(manifest.dataset_csv)
     # Must not raise: single held-out split (EVA val ZT76) under tune_is_test.
-    legacy_folds_from_csv(manifest.splits_csv, dataset, tune_is_test=config.cohort.tune_is_test)
+    Cohort.from_csv(manifest.dataset_csv, manifest.splits_csv, allow_missing_test=True).with_test_from_tune()

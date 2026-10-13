@@ -23,9 +23,9 @@ from tests.extraction_configs import annotation_masks, extraction
 
 def _images(csv: Path):
     """The cache layer's input for the rows of ``csv``."""
-    from soma.data._legacy import legacy_samples_from_csv
+    from soma.data import ImageManifest
 
-    return legacy_samples_from_csv(csv)
+    return ImageManifest.from_csv(csv)
 
 
 # --------------------------------------------------------------------------- #
@@ -48,13 +48,13 @@ def test_a_synthetic_slide_keeps_its_tiling_and_feature_keys(tmp_path: Path):
 
     tiling = resolve_tiling_cache(
         cache_root=tmp_path / "cache",
-        dataset=_images(csv),
+        images=_images(csv),
         preprocessing=preprocessing,
         backend_provenance={"requested_backend": "openslide"},
     )
     features = resolve_tile_cache(
         cache_root=tmp_path / "cache",
-        dataset=_images(csv),
+        images=_images(csv),
         tile_encoder_name="uni",
         preprocessing=preprocessing,
         execution=slide2vec.ExecutionOptions(precision="fp32"),
@@ -82,7 +82,7 @@ def test_a_synthetic_tile_keeps_the_eva_bach_image_key(tmp_path: Path):
 
     features = resolve_image_cache(
         cache_root=tmp_path / "cache",
-        dataset=_images(csv),
+        images=_images(csv),
         tile_encoder_name="uni2",
         execution=slide2vec.ExecutionOptions(),
         output_variant="default",

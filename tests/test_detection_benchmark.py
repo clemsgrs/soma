@@ -716,16 +716,15 @@ def test_roi_threshold_sweep_uses_stitched_predictions():
     from soma.evaluation import PointPredictions
 
     m = _load_driver()
-    manifest = SimpleNamespace(
-        samples={
-            "roi_t0": SimpleNamespace(
-                metadata={"source_wsi": "roi", "tile_x": 0, "tile_y": 0, "roi_width": 512, "roi_height": 512}
-            ),
-            "roi_t1": SimpleNamespace(
-                metadata={"source_wsi": "roi", "tile_x": 100, "tile_y": 0, "roi_width": 512, "roi_height": 512}
-            ),
-        }
-    )
+    records = {
+        "roi_t0": SimpleNamespace(
+            metadata={"source_wsi": "roi", "tile_x": 0, "tile_y": 0, "roi_width": 512, "roi_height": 512}
+        ),
+        "roi_t1": SimpleNamespace(
+            metadata={"source_wsi": "roi", "tile_x": 100, "tile_y": 0, "roi_width": 512, "roi_height": 512}
+        ),
+    }
+    manifest = SimpleNamespace(record=records.__getitem__)
     # t1 holds an overlap copy of t0's GT point at ROI (100, 100), with a weak 0.1 peak on it.
     predictions = PointPredictions(
         pd.DataFrame(
@@ -851,7 +850,7 @@ def test_decode_split_points_drops_ignored_predictions_and_counts_valid_area():
         num_classes=1, delta_px=3.0, nms_distance_px=3.0, matching="hungarian",
         spacing=spacing, spacing_for_sample=lambda sid: spacing,
     )
-    manifest = SimpleNamespace(samples={"s": SimpleNamespace(metadata={})})
+    manifest = SimpleNamespace(record=lambda sample_id: SimpleNamespace(metadata={}))
 
     (sample,) = m._decode_split_points(predictions, targets, manifest, frame, threshold=[0.2], tile_px=32)
 

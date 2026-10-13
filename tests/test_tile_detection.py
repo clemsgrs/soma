@@ -348,10 +348,11 @@ def test_tiler_crops_pads_and_writes_tile_ignore_masks(tmp_path):
     assert _read_local(ds["points_path"][1]) == [(24.0, 50.0, 0)]
     assert len(pd.read_csv(out / "splits.csv")) == 2
     # The tiled manifest loads as a detection manifest that carries the tile masks.
-    from soma.data._legacy import legacy_samples_from_csv
+    from soma.data import AnnotationManifest, Cohort
 
-    record = legacy_samples_from_csv(out / "dataset.csv").samples["roi_A_t0001"]
-    assert record.ignore_mask_path == Path(ds["ignore_mask_path"][1])
+    annotation = AnnotationManifest.from_csv(out / "dataset.csv")["roi_A_t0001"]
+    assert annotation.ignore_mask_path == Path(ds["ignore_mask_path"][1])
+    record = Cohort.from_csv(out / "dataset.csv", out / "splits.csv", allow_missing_test=True).record("roi_A_t0001")
     assert record.metadata["roi_valid_area_px"] == 150 * 100
 
 

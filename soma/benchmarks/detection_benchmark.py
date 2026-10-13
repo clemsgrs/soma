@@ -428,11 +428,12 @@ def _greedy_point_nms(
 _GT_COPY_TOLERANCE_PX = 0.01
 
 
-def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) -> list[SamplePrediction]:
+def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], cohort, head) -> list[SamplePrediction]:
     """Fold per-tile detections back to their parent ROI for the native per-ROI metric.
 
     A tiled dataset (MIDOG/MONKEY) carries ``source_wsi`` / ``tile_x`` / ``tile_y`` per
-    sample (reserved metadata columns of the detection curators). Each tile's points are
+    sample (reserved metadata columns of the detection curators, read from ``cohort``'s
+    records). Each tile's points are
     already in the tile's level-0 (pixel) frame, so adding the tile origin lifts them into
     ROI coordinates; we then **dedup GT overlap copies** (the same annotation in two
     overlapping tiles lands at the same ROI coordinate, up to the float32 rounding of its
@@ -442,8 +443,10 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
     with no tile origins (e.g. OCELOT ships fixed patches) pass through unchanged, so the
     scorers see per-ROI samples for tiled datasets and per-image samples otherwise.
     """
-    records = manifest.samples
-    has_origin = [("source_wsi" in records[s.sample_id].metadata) for s in samples]
+    def metadata(sample_id: str) -> dict:
+        return cohort.record(sample_id).metadata
+
+    has_origin = [("source_wsi" in metadata(s.sample_id)) for s in samples]
     if not any(has_origin):
         return list(samples)
     if not all(has_origin):
@@ -454,7 +457,7 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], manifest, head) ->
 
     groups: dict[str, dict] = {}
     for s in samples:
-        md = records[s.sample_id].metadata
+        md = metadata(s.sample_id)
         roi = str(md["source_wsi"])
         x0, y0 = float(md["tile_x"]), float(md["tile_y"])
         roi_w, roi_h = md.get("roi_width"), md.get("roi_height")

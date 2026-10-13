@@ -89,16 +89,11 @@ def test_campaign_resolves_the_current_dense_image_cache_layout(monkeypatch, tmp
     )
     calls: list[dict] = []
 
-    class _FakeFeatureExtractor:
-        def __init__(self, *args, **kwargs):
-            calls.append({"args": args, "kwargs": kwargs})
+    def _fake_extract(*args, **kwargs):
+        calls.append({"args": args, "kwargs": kwargs})
+        return SimpleNamespace(feature_dir=feature_dir)
 
-        def extract(self):
-            return SimpleNamespace(
-                artifacts=SimpleNamespace(feature_dir=feature_dir)
-            )
-
-    monkeypatch.setattr(soma, "FeatureExtractor", _FakeFeatureExtractor)
+    monkeypatch.setattr(soma.extract, "extract", _fake_extract)
 
     path = m.dense_embeddings_dir(m.ANCHOR, tmp_path)
 
@@ -106,7 +101,7 @@ def test_campaign_resolves_the_current_dense_image_cache_layout(monkeypatch, tmp
     assert path.parts[-3] == "dense_image"
     assert path.name == "dense_image_embeddings"
     assert len(calls) == 1
-    assert calls[0]["kwargs"]["output_root"].name == "rescore_extraction"
+    assert calls[0]["kwargs"]["output_dir"].name == "rescore_extraction"
 
 
 def test_score_run_reuses_the_trained_runs_saved_config(monkeypatch, tmp_path: Path):

@@ -27,7 +27,7 @@ from PIL import Image  # noqa: E402
 from slide2vec import DenseOptions, ExecutionOptions  # noqa: E402
 
 from soma.config import CacheOptions, EncoderLeaf  # noqa: E402
-from soma.data._legacy import legacy_samples_from_csv, LegacyRecord  # noqa: E402
+from soma.data import ImageEntry, ImageManifest  # noqa: E402
 from soma.dense import CachedGridSource, compute_dense_geometry  # noqa: E402
 from soma.dense.store import DENSE_SIDECAR_SUFFIX  # noqa: E402
 from soma.dense_extraction import _DenseImageExtractor  # noqa: E402
@@ -36,21 +36,21 @@ FEATURE_DIM = 8
 PATCH = 16
 
 
-def _make_tiles(tmp_path: Path, n: int, size: int) -> list[LegacyRecord]:
+def _make_tiles(tmp_path: Path, n: int, size: int) -> list[ImageEntry]:
     records = []
     for i in range(n):
         path = tmp_path / f"tile{i}.png"
         Image.fromarray(np.full((size, size, 3), i, dtype=np.uint8)).save(path)
-        records.append(LegacyRecord(sample_id=f"s{i}", image_path=path, targets={"label": "x"}))
+        records.append(ImageEntry(sample_id=f"s{i}", image_path=path))
     return records
 
 
-def _dataset(tmp_path: Path, records: list[LegacyRecord]) -> Dataset:
+def _dataset(tmp_path: Path, records: list[ImageEntry]) -> ImageManifest:
     csv_path = tmp_path / "dataset.csv"
     pd.DataFrame(
         [{"sample_id": r.sample_id, "image_path": str(r.image_path), "label": "x"} for r in records]
     ).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return ImageManifest.from_csv(csv_path)
 
 
 def _dense_sidecar(dense, geometry, grid) -> dict:
@@ -207,7 +207,7 @@ def test_real_flat_raster_extraction_respects_manifest_source_spacing(
     ).to_csv(manifest, index=False)
 
     store = _DenseImageExtractor(
-        legacy_samples_from_csv(manifest),
+        ImageManifest.from_csv(manifest),
         EncoderLeaf(name=encoder_name),
         dense=DenseOptions(spacing_um=0.5, target_size=target_size),
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=1),

@@ -80,14 +80,15 @@ def _make_fixture(root: Path) -> tuple[Path, Path]:
 
 
 def _segmentation_manifest(root: Path, slide_path: Path, label_mask_path: Path):
-    from soma.data._legacy import legacy_samples_from_csv
+    """The slide's image and annotation manifests, as ROI sampling reads them."""
+    from soma.data import AnnotationManifest, ImageManifest
 
     manifest = root / "slides.csv"
     manifest.write_text(
         "sample_id,image_path,label_mask_path\n" f"s0,{slide_path},{label_mask_path}\n",
         encoding="utf-8",
     )
-    return legacy_samples_from_csv(manifest)
+    return ImageManifest.from_csv(manifest), AnnotationManifest.from_csv(manifest)
 
 
 def test_sample_slide_rois_runs_real_hs2p_merged_mode(tmp_path: Path):
@@ -98,7 +99,7 @@ def test_sample_slide_rois_runs_real_hs2p_merged_mode(tmp_path: Path):
     dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
     preprocessing = _roi_preprocessing()
 
-    coords_by_slide = sample_slide_rois(dataset, preprocessing=preprocessing)
+    coords_by_slide = sample_slide_rois(*dataset, preprocessing=preprocessing)
 
     assert set(coords_by_slide) == {"s0"}
     coords = coords_by_slide["s0"]
@@ -125,7 +126,7 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
     dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
     preprocessing = _roi_preprocessing()
 
-    coords = sample_slide_rois(dataset, preprocessing=preprocessing)["s0"]
+    coords = sample_slide_rois(*dataset, preprocessing=preprocessing)["s0"]
     # Read the label window registered to the first sampled ROI.
     x, y = coords[0]
     region = _roi_labels(
@@ -301,7 +302,7 @@ def _sample_split_tumor(tmp_path: Path, masks: MaskSamplingConfig) -> list[tuple
     tmp_path.mkdir()
     slide_path, label_mask_path = _make_split_tumor_fixture(tmp_path)
     dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
-    return sample_slide_rois(dataset, preprocessing=_roi_preprocessing(masks))["s0"]
+    return sample_slide_rois(*dataset, preprocessing=_roi_preprocessing(masks))["s0"]
 
 
 def test_merged_label_samples_a_tile_only_its_summed_coverage_qualifies(tmp_path: Path):
@@ -405,18 +406,18 @@ def test_stored_roi_mask_crop_is_the_in_slide_part_of_the_window_read(
     whole window for an interior ROI, 56x32 for one overhanging the slide's corner)."""
     from PIL import Image
 
-    from soma.data._legacy import LegacyRecord
+    from soma.data import ImageEntry
+    from soma.extraction.rois import RoiEntry
     from soma.dense.reader import read_mask_region_within_slide
     from soma.dense_slide_extraction import write_roi_mask_crops
 
     slide_path, label_mask_path, _ = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
     crop_path = tmp_path / "masks" / "s0" / f"{location[0]}_{location[1]}.png"
-    record = LegacyRecord(
+    record = RoiEntry(
         sample_id=f"s0__x{location[0]}_y{location[1]}",
-        image_path=slide_path,
+        slide=ImageEntry(sample_id="s0", image_path=slide_path),
         label_mask_path=label_mask_path,
         region=location,
-        slide_id="s0",
         label_mask_crop_path=crop_path,
     )
 
@@ -449,19 +450,19 @@ def test_roi_with_no_in_slide_pixel_stores_an_all_outside_crop(tmp_path: Path):
     """A ROI kept at x=255 on a 256 px slide and read at twice the slide's spacing has
     less than one target pixel on the slide: its crop is written, and reads back as the
     window read does (all outside, so the head's target is all ``ignore_index``)."""
-    from soma.data._legacy import LegacyRecord
+    from soma.data import ImageEntry
+    from soma.extraction.rois import RoiEntry
     from soma.dense.reader import read_mask_crop, read_mask_region_within_slide
     from soma.dense_slide_extraction import write_roi_mask_crops
 
     slide_path, label_mask_path, _ = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
     location, spacing_um = (255, 0), 2 * SPACING_UM
     crop_path = tmp_path / "masks" / "s0" / "255_0.png"
-    record = LegacyRecord(
+    record = RoiEntry(
         sample_id="s0__x255_y0",
-        image_path=slide_path,
+        slide=ImageEntry(sample_id="s0", image_path=slide_path),
         label_mask_path=label_mask_path,
         region=location,
-        slide_id="s0",
         label_mask_crop_path=crop_path,
     )
 

@@ -19,7 +19,7 @@ import torch
 from PIL import Image
 
 from soma.config import CacheOptions, FeaturesConfig
-from soma.data._legacy import LegacySamples, legacy_samples_from_csv, legacy_folds_from_csv
+from soma.data import Cohort, ImageManifest
 from soma.dense import CachedGridSource
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
@@ -99,8 +99,8 @@ def _build_dense_run(
         + "\n"
     )
 
-    manifest = legacy_samples_from_csv(manifest_csv)
-    splits = legacy_folds_from_csv(splits_csv, manifest)
+    manifest = ImageManifest.from_csv(manifest_csv)
+    splits = Cohort.from_csv(manifest_csv, splits_csv)
     store = CachedGridSource(dense_dir)
     return manifest, splits, store
 
@@ -468,7 +468,8 @@ def test_pipeline_uses_segmentation_manifest(tmp_path: Path):
 
     _build_dense_run(tmp_path, ["s0", "s1", "s2", "s3"])
     pipeline = Pipeline(_seg_pipeline_config(tmp_path), source=CachedGridSource(tmp_path / "dense"))
-    assert isinstance(pipeline.dataset, LegacySamples)
+    assert pipeline.annotation_manifest.has_label_masks
+    assert pipeline.image_manifest.sample_ids == pipeline.cohort.sample_ids
     assert pipeline.source.feature_dim == FEATURE_DIM
 
 

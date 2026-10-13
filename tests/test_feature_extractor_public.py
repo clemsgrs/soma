@@ -1,6 +1,11 @@
+"""``soma.extract``: the single way features enter (ADR 0021), at its public seam.
+
+slide2vec's model is stubbed at soma's import seams; every test reads what the verb
+returns (a source) and what it publishes (``extraction_provenance.json``).
+"""
+
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError, fields
 import inspect
 import json
 from pathlib import Path
@@ -12,9 +17,9 @@ import numpy as np
 
 from slide2vec import DenseOptions, ExecutionOptions
 
+import soma
 from soma.config import EncoderLeaf
-from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
-from soma.extraction import FeatureExtractor
+from soma.data import AnnotationManifest, ImageManifest
 from tests.extraction_configs import annotation_masks, extraction, tissue_masks
 
 
@@ -22,46 +27,41 @@ def _write_scalar_dataset(path: Path) -> None:
     path.write_text("sample_id,image_path,label\ns0,tile.png,1\n", encoding="utf-8")
 
 
-def test_feature_extraction_result_is_exact_immutable_four_part_contract() -> None:
-    from soma.extraction import (
-        ExtractionArtifacts,
-        FeatureExtractionResult,
-        FeatureProvenance,
-    )
+def _provenance(output_dir: Path) -> dict:
+    return json.loads((output_dir / "extraction_provenance.json").read_text(encoding="utf-8"))
 
-    source = object()
-    dataset = object()
-    provenance = FeatureProvenance(kind="pooled", zero_sample_ids=("empty",))
-    artifacts = ExtractionArtifacts(feature_dir=Path("features"))
 
-    result = FeatureExtractionResult(
-        source=source,
-        dataset=dataset,
-        provenance=provenance,
-        artifacts=artifacts,
-    )
-
-    assert [field.name for field in fields(result)] == [
-        "source",
-        "dataset",
-        "provenance",
-        "artifacts",
+def test_extract_is_the_root_verb_and_the_namespace_of_the_live_encoder() -> None:
+    assert callable(soma.extract) and soma.extract.extract is soma.extraction.extract
+    assert soma.extract.live_encoder is not None
+    parameters = inspect.signature(soma.extraction.extract).parameters
+    assert list(parameters) == [
+        "images",
+        "encoder",
+        "cache",
+        "annotations",
+        "unit",
+        "rois",
+        "execution",
+        "extraction",
+        "dense",
+        "spacing_policy",
+        "output_dir",
     ]
-    assert (result.source, result.dataset, result.provenance, result.artifacts) == (
-        source,
-        dataset,
-        provenance,
-        artifacts,
-    )
-    with pytest.raises(FrozenInstanceError):
-        result.source = object()  # type: ignore[misc]
+    assert all(p.kind is p.KEYWORD_ONLY for name, p in parameters.items() if name != "images")
+    assert not hasattr(soma, "FeatureExtractor")
 
 
-def test_feature_extractor_extract_accepts_no_runtime_arguments() -> None:
-    assert list(inspect.signature(FeatureExtractor.extract).parameters) == ["self"]
-    assert not hasattr(FeatureExtractor, "run")
-    assert not hasattr(FeatureExtractor, "preprocess")
+def test_extract_reads_an_image_manifest_never_records(tmp_path: Path) -> None:
+    from soma import CacheOptions, SampleRecord
 
+    with pytest.raises(TypeError, match="ImageManifest"):
+        soma.extract(
+            [SampleRecord("s0", {"label": 1})],
+            encoder="phikon",
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path,
+        )
 
 
 def test_tile_dataset_extracts_through_canonical_result(
@@ -73,7 +73,7 @@ def test_tile_dataset_extracts_through_canonical_result(
 
     dataset_csv = tmp_path / "dataset.csv"
     _write_scalar_dataset(dataset_csv)
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
 
     class BoundaryModel:
         @classmethod
@@ -94,26 +94,22 @@ def test_tile_dataset_extracts_through_canonical_result(
 
     monkeypatch.setattr("soma.tile_extraction.Model", BoundaryModel)
 
-    result = FeatureExtractor(
-        dataset,
-        "phikon",
+    source = soma.extract(
+        images,
+        encoder="phikon",
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, batch_size=7),
         cache=CacheOptions(enabled=False),
-        output_root=tmp_path / "output",
+        output_dir=tmp_path / "output",
         unit="tile",
-    ).extract()
-
-    assert result.dataset is dataset
-    assert result.provenance.kind == "pooled_image"
-    assert result.provenance.encoder_name == "phikon"
-    assert result.source.sample_ids == ["s0"]
-    assert torch.equal(result.source.load("s0"), torch.tensor([1.0, 2.0]))
-    assert result.artifacts.feature_dir == tmp_path / "output/features/image_embeddings"
-    assert (
-        result.artifacts.provenance_json
-        == tmp_path / "output/extraction_provenance.json"
     )
-    assert result.artifacts.provenance_json.is_file()
+
+    assert source.sample_ids == ["s0"]
+    assert torch.equal(source.load("s0"), torch.tensor([1.0, 2.0]))
+    assert source.feature_dir == tmp_path / "output/features/image_embeddings"
+    record = _provenance(tmp_path / "output")
+    assert (record["status"], record["provenance"]["kind"]) == ("completed", "pooled_image")
+    assert record["provenance"]["encoder_name"] == "phikon"
+    assert record["artifacts"]["feature_dir"] == str(source.feature_dir)
 
 
 def test_spatial_expression_extracts_through_canonical_result(
@@ -132,7 +128,7 @@ def test_spatial_expression_extracts_through_canonical_result(
     (tmp_path / "genes.json").write_text(
         json.dumps(["GENE_A", "GENE_B"]), encoding="utf-8"
     )
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
 
     class SpatialBoundaryModel:
         @classmethod
@@ -156,131 +152,33 @@ def test_spatial_expression_extracts_through_canonical_result(
 
     monkeypatch.setattr("soma.tile_extraction.Model", SpatialBoundaryModel)
 
-    result = FeatureExtractor(
-        dataset,
-        "phikon",
+    source = soma.extract(
+        images,
+        encoder="phikon",
         cache=CacheOptions(enabled=False),
-        output_root=tmp_path / "output",
+        output_dir=tmp_path / "output",
         unit="tile",
-    ).extract()
+    )
 
-    assert result.dataset is dataset
-    assert result.provenance.kind == "pooled_image"
-    assert result.source.sample_ids == ["spot-0"]
-    assert torch.equal(result.source.load("spot-0"), torch.tensor([5.0, 6.0]))
+    assert _provenance(tmp_path / "output")["provenance"]["kind"] == "pooled_image"
+    assert source.sample_ids == ["spot-0"]
+    assert torch.equal(source.load("spot-0"), torch.tensor([5.0, 6.0]))
 
 
-def test_unsupported_extraction_shape_fails_during_construction(tmp_path: Path) -> None:
+def test_unsupported_extraction_unit_fails_before_anything_runs(tmp_path: Path) -> None:
+    from soma import CacheOptions
 
-    with pytest.raises(ValueError, match="shape must be"):
-        FeatureExtractor(
-            object(),
-            "phikon",
-            shape="blob",
-            output_root=tmp_path,
+    dataset_csv = tmp_path / "dataset.csv"
+    _write_scalar_dataset(dataset_csv)
+    with pytest.raises(ValueError, match="unit must be"):
+        soma.extract(
+            ImageManifest.from_csv(dataset_csv),
+            encoder="phikon",
+            unit="blob",
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path / "output",
         )
-
-
-def test_splits_project_preserves_direct_ids_and_inherits_explicit_slide_id(
-    tmp_path: Path,
-) -> None:
-
-    parent_csv = tmp_path / "parents.csv"
-    parent_csv.write_text(
-        "sample_id,image_path,label\ns0,s0.svs,0\ns1,s1.svs,1\n",
-        encoding="utf-8",
-    )
-    splits_csv = tmp_path / "splits.csv"
-    splits_csv.write_text(
-        "sample_id,split\ns0,train\ns1,test\n",
-        encoding="utf-8",
-    )
-    effective_csv = tmp_path / "effective.csv"
-    effective_csv.write_text(
-        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
-        "s0,,s0.svs,s0-mask.tif,,\n"
-        "roi-1,s1,s1.svs,s1-mask.tif,12,34\n",
-        encoding="utf-8",
-    )
-
-    splits = legacy_folds_from_csv(splits_csv, legacy_samples_from_csv(parent_csv))
-    projected = splits.project(legacy_samples_from_csv(effective_csv))
-
-    assert projected.folds[0].train == ("s0",)
-    assert projected.folds[0].tune == ()
-    assert projected.folds[0].tests == {"test": ("roi-1",)}
-
-
-def test_splits_project_rejects_unresolved_roi_ancestry(tmp_path: Path) -> None:
-
-    parent_csv = tmp_path / "parents.csv"
-    parent_csv.write_text(
-        "sample_id,image_path,label\ns0,s0.svs,0\n",
-        encoding="utf-8",
-    )
-    splits_csv = tmp_path / "splits.csv"
-    splits_csv.write_text("sample_id,split\ns0,test\n", encoding="utf-8")
-    effective_csv = tmp_path / "effective.csv"
-    effective_csv.write_text(
-        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
-        "roi-x,missing,missing.svs,mask.tif,0,0\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="Unresolved split ancestry.*missing"):
-        legacy_folds_from_csv(splits_csv, legacy_samples_from_csv(parent_csv)).project(
-            legacy_samples_from_csv(effective_csv)
-        )
-
-
-def test_splits_project_rejects_unassigned_sample_without_ancestry(
-    tmp_path: Path,
-) -> None:
-
-    parent_csv = tmp_path / "parents.csv"
-    parent_csv.write_text(
-        "sample_id,image_path,label\ns0,s0.svs,0\n",
-        encoding="utf-8",
-    )
-    splits_csv = tmp_path / "splits.csv"
-    splits_csv.write_text("sample_id,split\ns0,test\n", encoding="utf-8")
-    effective_csv = tmp_path / "effective.csv"
-    effective_csv.write_text(
-        "sample_id,image_path,label_mask_path\n" "orphan,orphan.png,mask.png\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="Unresolved split ancestry.*orphan"):
-        legacy_folds_from_csv(splits_csv, legacy_samples_from_csv(parent_csv)).project(
-            legacy_samples_from_csv(effective_csv)
-        )
-
-
-def test_splits_project_rejects_conflicting_direct_and_parent_assignments(
-    tmp_path: Path,
-) -> None:
-
-    parent_csv = tmp_path / "parents.csv"
-    parent_csv.write_text(
-        "sample_id,image_path,label\nroi,roi.png,0\nslide,slide.svs,1\n",
-        encoding="utf-8",
-    )
-    splits_csv = tmp_path / "splits.csv"
-    splits_csv.write_text(
-        "sample_id,split\nroi,train\nslide,test\n",
-        encoding="utf-8",
-    )
-    effective_csv = tmp_path / "effective.csv"
-    effective_csv.write_text(
-        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
-        "roi,slide,slide.svs,mask.tif,0,0\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="Conflicting split ancestry.*roi"):
-        legacy_folds_from_csv(splits_csv, legacy_samples_from_csv(parent_csv)).project(
-            legacy_samples_from_csv(effective_csv)
-        )
+    assert not (tmp_path / "output").exists()
 
 
 def test_given_image_segmentation_extracts_dense_source(
@@ -295,7 +193,7 @@ def test_given_image_segmentation_extracts_dense_source(
         "sample_id,image_path,label_mask_path\ns0,tile.png,mask.png\n",
         encoding="utf-8",
     )
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
 
     class DenseBoundaryModel:
         @classmethod
@@ -331,47 +229,47 @@ def test_given_image_segmentation_extracts_dense_source(
         "soma.dense_extraction.resolve_patch_size", lambda _name: (16, 16)
     )
 
-    result = FeatureExtractor(
-        dataset,
-        "phikon",
+    source = soma.extract(
+        images,
+        encoder="phikon",
         execution=ExecutionOptions(precision="fp32", batch_size=5),
-        preprocessing=extraction(0.5, 32),
+        extraction=extraction(0.5, 32),
+        dense=DenseOptions(spacing_um=0.5, target_size=32),
         cache=CacheOptions(enabled=False),
-        output_root=tmp_path / "output",
-        shape="grid",
+        output_dir=tmp_path / "output",
         unit="tile",
-    ).extract()
-
-    assert result.dataset is dataset
-    assert result.provenance.kind == "dense_image"
-    assert result.source.sample_ids == ["s0"]
-    assert tuple(result.source.load("s0").shape) == (3, 2, 2)
-    assert result.source.spacing("s0") == 0.5
-    assert result.source.geometry("s0").level0_px_per_token_px == 1.0
-    assert (
-        result.artifacts.feature_dir
-        == tmp_path / "output/features/dense_image_embeddings"
     )
 
+    assert _provenance(tmp_path / "output")["provenance"]["kind"] == "dense_image"
+    assert source.sample_ids == ["s0"]
+    assert tuple(source.load("s0").shape) == (3, 2, 2)
+    assert source.spacing("s0") == 0.5
+    assert source.geometry("s0").level0_px_per_token_px == 1.0
+    assert source.feature_dir == tmp_path / "output/features/dense_image_embeddings"
+    assert source.rois is None
 
-def test_roi_addressed_rows_are_refused_without_annotation_sampling(tmp_path: Path) -> None:
-    """A persisted ROI manifest used as pre-cropped images would read each parent slide
-    whole and ignore the ROI address; the facade refuses it at construction."""
 
-    dataset_csv = tmp_path / "rois.csv"
+def test_rois_are_refused_as_pre_cropped_images(tmp_path: Path) -> None:
+    """ROIs are windows of whole slides: read as pre-cropped images, each would be its
+    whole parent slide with its address lost, so the verb refuses it before running."""
+    from soma import CacheOptions
+    from soma.extraction import RoiSet
+    from soma.extraction.rois import roi_entries
+
+    dataset_csv = tmp_path / "slides.csv"
     dataset_csv.write_text(
-        "sample_id,slide_id,image_path,label_mask_path,region_x,region_y\n"
-        "s0__x0_y0,s0,s0.svs,s0-mask.tif,0,0\n",
-        encoding="utf-8",
+        "sample_id,image_path,label_mask_path\ns0,s0.svs,s0-mask.tif\n", encoding="utf-8"
     )
-    with pytest.raises(TypeError, match="explicit slide regions.*unit='slide'"):
-        FeatureExtractor(
-            legacy_samples_from_csv(dataset_csv),
-            "phikon",
-            extraction(0.5, 224),
-            shape="grid",
+    images = ImageManifest.from_csv(dataset_csv)
+    rois = RoiSet(roi_entries(images, AnnotationManifest.from_csv(dataset_csv), {"s0": [(0, 0)]}))
+    with pytest.raises(TypeError, match="unit='slide'"):
+        soma.extract(
+            images,
+            encoder="phikon",
+            rois=rois,
             unit="tile",
-            output_root=tmp_path / "out",
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path / "out",
         )
 
 
@@ -385,7 +283,7 @@ def test_given_image_detection_selects_dense_extraction(
         "sample_id,image_path,points_path\ns0,tile.png,points.csv\n",
         encoding="utf-8",
     )
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
     expected = torch.arange(12, dtype=torch.float32).reshape(3, 2, 2)
 
     class DenseStoreBoundary:
@@ -398,23 +296,23 @@ def test_given_image_detection_selects_dense_extraction(
             return expected
 
     def fake_run(self, feature_dir):
-        assert self._dataset is dataset
+        assert self._images is images
         return DenseStoreBoundary()
 
     monkeypatch.setattr(_DenseImageExtractor, "run", fake_run)
 
-    result = FeatureExtractor(
-        dataset,
-        "phikon",
-        preprocessing=extraction(0.5, 32),
-        output_root=tmp_path / "output",
-        shape="grid",
+    source = soma.extract(
+        images,
+        encoder="phikon",
+        extraction=extraction(0.5, 32),
+        dense=DenseOptions(spacing_um=0.5, target_size=32),
+        cache=soma.CacheOptions(),
+        output_dir=tmp_path / "output",
         unit="tile",
-    ).extract()
+    )
 
-    assert result.dataset is dataset
-    assert result.provenance.kind == "dense_image"
-    assert torch.equal(result.source.load("s0"), expected)
+    assert _provenance(tmp_path / "output")["provenance"]["kind"] == "dense_image"
+    assert torch.equal(source.load("s0"), expected)
 
 
 def test_dense_facade_reuses_existing_cache_key_for_explicit_preprocessing(
@@ -430,7 +328,7 @@ def test_dense_facade_reuses_existing_cache_key_for_explicit_preprocessing(
         "sample_id,image_path,label_mask_path\ns0,tile.png,mask.png\n",
         encoding="utf-8",
     )
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
 
     class CacheIdentityModel:
         loads = 0
@@ -468,30 +366,30 @@ def test_dense_facade_reuses_existing_cache_key_for_explicit_preprocessing(
     )
     cache = CacheOptions(enabled=True, root_dir=tmp_path / "cache")
 
-    # The engine handed slide2vec's dense options explicitly, and the facade deriving
-    # them from the extraction's tiling, key the same cache.
+    # The engine run directly and the verb, from another output directory, key the
+    # same cache: the extraction's tiling does not enter a dense-image key.
     existing = _DenseImageExtractor(
-        dataset,
+        images,
         EncoderLeaf(name="phikon"),
         dense=DenseOptions(spacing_um=0.5, target_size=32),
         cache=cache,
-    ).run(tmp_path / "legacy-output")
-    result = FeatureExtractor(
-        dataset,
-        "phikon",
-        preprocessing=extraction(0.5, 32),
+    ).run(tmp_path / "engine-output")
+    source = soma.extract(
+        images,
+        encoder="phikon",
+        extraction=extraction(0.5, 32),
+        dense=DenseOptions(spacing_um=0.5, target_size=32),
         cache=cache,
-        output_root=tmp_path / "canonical-output",
-        shape="grid",
+        output_dir=tmp_path / "canonical-output",
         unit="tile",
-    ).extract()
+    )
 
     assert CacheIdentityModel.loads == 1
-    assert result.artifacts.feature_dir == existing.feature_dir
-    assert torch.equal(result.source.load("s0"), existing.load("s0"))
+    assert source.feature_dir == existing.feature_dir
+    assert torch.equal(source.load("s0"), existing.load("s0"))
 
 
-def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero_provenance(
+def test_annotation_sampled_slides_return_roi_keyed_grids_whose_rois_name_their_slide(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from slide2vec.artifacts import write_dense_region
@@ -505,7 +403,6 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
         "s1,s1.svs,s1-mask.tif\n",
         encoding="utf-8",
     )
-    dataset = legacy_samples_from_csv(dataset_csv)
 
     def fake_tile_slide(slide, **_kwargs):
         coords = [(0, 0)] if slide.sample_id == "s0" else []
@@ -567,37 +464,36 @@ def test_annotation_sampled_wsi_returns_deterministic_effective_dataset_and_zero
         masks=annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0}, strategy="joint"),
     )
 
-    result = FeatureExtractor(
-        dataset,
-        "phikon",
-        preprocessing=preprocessing,
+    source = soma.extract(
+        ImageManifest.from_csv(dataset_csv),
+        annotations=AnnotationManifest.from_csv(dataset_csv),
+        encoder="phikon",
+        extraction=preprocessing,
+        dense=DenseOptions(spacing_um=0.5, target_size=32),
         cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache"),
-        output_root=tmp_path / "output",
-        shape="grid",
-    ).extract()
-
-    assert result.dataset.sample_ids == ["s0__x0_y0"]
-    roi = result.dataset.samples["s0__x0_y0"]
-    assert (roi.slide_id, roi.region) == ("s0", (0, 0))
-    assert result.provenance.zero_roi_sample_ids == ("s1",)
-    assert result.source.sample_ids == ["s0__x0_y0"]
-    assert (
-        result.artifacts.dataset_csv
-        == tmp_path / "output/segmentation_rois/dataset.csv"
+        output_dir=tmp_path / "output",
     )
-    crop_path = roi.label_mask_crop_path
+
+    # The grids are keyed by ROI; the ROIs name their slide (and nothing about where they
+    # lie in it). s1 sampled no ROI.
+    assert source.sample_ids == ["s0__x0_y0"]
+    assert source.rois.children == {"s0__x0_y0": "s0"}
+    record = _provenance(tmp_path / "output")
+    assert record["provenance"]["zero_sample_ids"] == ["s1"]
+    roi_table = tmp_path / "output/segmentation_rois/dataset.csv"
+    assert record["artifacts"]["dataset_csv"] == str(roi_table)
+    # The label maps read the crop ROI sampling stored in its cache entry.
+    label_maps = source.rois.label_maps(size=(32, 32))
+    crop_path = label_maps.crops["s0__x0_y0"]
     assert crop_path.parent.parent.parent.parent == tmp_path / "cache" / "roi_sampling"
     assert crop_path.parent.parent.name == "masks" and crop_path.name == "0_0.png"
-    from PIL import Image
-
-    with Image.open(crop_path) as crop:
-        assert np.asarray(crop).tolist() == [[1] * 32] * 32
+    assert label_maps.load("s0__x0_y0").tolist() == [[1] * 32] * 32
     expected_csv = (
         "sample_id,slide_id,image_path,mask_path,label_mask_path,patient_id,"
         "spacing_at_level_0,region_x,region_y,label_mask_crop_path\n"
         f"s0__x0_y0,s0,s0.svs,,s0-mask.tif,,,0,0,{crop_path}\n"
     )
-    assert result.artifacts.dataset_csv.read_text(encoding="utf-8") == expected_csv
+    assert roi_table.read_text(encoding="utf-8") == expected_csv
 
 
 def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
@@ -629,25 +525,24 @@ def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
             raise AssertionError("all-zero ROI extraction must not load the encoder")
 
     monkeypatch.setattr("soma.dense_slide_extraction.Model", EncoderMustNotLoad)
-    result = FeatureExtractor(
-        legacy_samples_from_csv(dataset_csv),
-        "phikon",
-        preprocessing=extraction(
+    source = soma.extract(
+        ImageManifest.from_csv(dataset_csv),
+        annotations=AnnotationManifest.from_csv(dataset_csv),
+        encoder="phikon",
+        extraction=extraction(
             0.5, 32, masks=annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0})
         ),
+        dense=DenseOptions(spacing_um=0.5, target_size=32),
         cache=CacheOptions(enabled=False),
-        output_root=tmp_path / "output",
-        shape="grid",
-    ).extract()
-
-    assert result.dataset.sample_ids == []
-    assert result.source.sample_ids == []
-    assert result.source.feature_dim == 0
-    assert result.provenance.zero_roi_sample_ids == ("s0",)
-    assert (
-        result.artifacts.dataset_csv
-        == tmp_path / "output/segmentation_rois/dataset.csv"
+        output_dir=tmp_path / "output",
     )
+
+    assert source.sample_ids == []
+    assert source.rois.children == {}
+    assert source.feature_dim == 0
+    record = _provenance(tmp_path / "output")
+    assert record["provenance"]["zero_sample_ids"] == ["s0"]
+    assert record["artifacts"]["dataset_csv"] == str(tmp_path / "output/segmentation_rois/dataset.csv")
 
 
 def test_annotation_sampling_samples_rois_at_the_geometry_the_grid_reads_them_at(
@@ -674,15 +569,15 @@ def test_annotation_sampling_samples_rois_at_the_geometry_the_grid_reads_them_at
     masks = annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0})
 
     def extract(preprocessing):
-        return FeatureExtractor(
-            legacy_samples_from_csv(dataset_csv),
-            "phikon",
-            preprocessing=preprocessing,
+        return soma.extract(
+            ImageManifest.from_csv(dataset_csv),
+            annotations=AnnotationManifest.from_csv(dataset_csv),
+            encoder="phikon",
+            extraction=preprocessing,
             dense=DenseOptions(spacing_um=1.0, target_size=512, tolerance=0.1),
             cache=CacheOptions(enabled=False),
-            output_root=tmp_path / "output",
-            shape="grid",
-        ).extract()
+            output_dir=tmp_path / "output",
+        )
 
     extract(extraction(None, None, masks=masks))
     assert [
@@ -704,7 +599,7 @@ def test_tile_extraction_missing_returned_outputs_commits_nothing_and_publishes_
         "sample_id,image_path,label\ns0,s0.png,0\ns1,s1.png,1\n",
         encoding="utf-8",
     )
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
 
     class PartialBoundaryModel:
         calls: list[list[str]] = []
@@ -734,23 +629,22 @@ def test_tile_extraction_missing_returned_outputs_commits_nothing_and_publishes_
 
     monkeypatch.setattr("soma.tile_extraction.Model", PartialBoundaryModel)
     kwargs = dict(
-        dataset=dataset,
         unit="tile",
         encoder="phikon",
         cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache"),
-        output_root=tmp_path / "output",
+        output_dir=tmp_path / "output",
     )
 
     # slide2vec returned no output for s1: nothing is signed, nothing is published.
     with pytest.raises(RuntimeError, match="nothing is committed"):
-        FeatureExtractor(**kwargs).extract()
+        soma.extract(images, **kwargs)
     assert not (tmp_path / "output/extraction_provenance.json").exists()
 
-    result = FeatureExtractor(**kwargs).extract()
+    source = soma.extract(images, **kwargs)
 
     # Unsigned outputs go back to slide2vec, which owns per-image resume.
     assert PartialBoundaryModel.calls == [["s0", "s1"], ["s0", "s1"]]
-    assert result.source.sample_ids == ["s0", "s1"]
+    assert source.sample_ids == ["s0", "s1"]
     assert (tmp_path / "output/extraction_provenance.json").is_file()
 
 
@@ -763,7 +657,7 @@ def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
 
     dataset_csv = tmp_path / "dataset.csv"
     _write_scalar_dataset(dataset_csv)
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
 
     class OneShotBoundaryModel:
         loads = 0
@@ -790,21 +684,20 @@ def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
 
     monkeypatch.setattr("soma.tile_extraction.Model", OneShotBoundaryModel)
     kwargs = dict(
-        dataset=dataset,
         unit="tile",
         encoder="phikon",
         cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache"),
-        output_root=tmp_path / "output",
+        output_dir=tmp_path / "output",
     )
-    first = FeatureExtractor(**kwargs).extract()
-    payload = first.source.feature_dir / "s0.pt"
+    first = soma.extract(images, **kwargs)
+    payload = first.feature_dir / "s0.pt"
     before = (payload.read_bytes(), payload.stat().st_mtime_ns)
 
-    second = FeatureExtractor(**kwargs).extract()
+    second = soma.extract(images, **kwargs)
 
     assert OneShotBoundaryModel.loads == 1
     assert (payload.read_bytes(), payload.stat().st_mtime_ns) == before
-    assert torch.equal(second.source.load("s0"), torch.tensor([3.0, 4.0]))
+    assert torch.equal(second.load("s0"), torch.tensor([3.0, 4.0]))
 
 
 def test_pooled_slide_extracts_through_the_same_public_interface(
@@ -845,12 +738,11 @@ def test_pooled_slide_extracts_through_the_same_public_interface(
         f"s0,{image_path},1,{mask_path},0.5\n",
         encoding="utf-8",
     )
-    dataset = legacy_samples_from_csv(dataset_csv)
 
-    result = FeatureExtractor(
-        dataset,
-        encoder_name,
-        preprocessing=extraction(0.5, 32, method="precomputed_mask", masks=tissue_masks(0.0)),
+    source = soma.extract(
+        ImageManifest.from_csv(dataset_csv),
+        encoder=encoder_name,
+        extraction=extraction(0.5, 32, method="precomputed_mask", masks=tissue_masks(0.0)),
         execution=ExecutionOptions(
             num_gpus=1,
             num_workers_per_gpu=0,
@@ -859,14 +751,14 @@ def test_pooled_slide_extracts_through_the_same_public_interface(
             batch_size=1,
         ),
         cache=CacheOptions(enabled=False),
-        output_root=tmp_path / "output",
-    ).extract()
+        output_dir=tmp_path / "output",
+    )
 
-    assert result.dataset is dataset
-    assert result.provenance.kind == "pooled_bag"
-    assert result.source.sample_ids == ["s0"]
-    assert tuple(result.source.load("s0").shape) == (49, 3)
-    assert result.artifacts.tiling_dir == tmp_path / "output/tiling"
+    record = _provenance(tmp_path / "output")
+    assert record["provenance"]["kind"] == "pooled_bag"
+    assert source.sample_ids == ["s0"]
+    assert tuple(source.load("s0").shape) == (49, 3)
+    assert record["artifacts"]["tiling_dir"] == str(tmp_path / "output/tiling")
 
 
 def test_hierarchical_extracts_through_the_same_public_interface(
@@ -881,7 +773,6 @@ def test_hierarchical_extracts_through_the_same_public_interface(
         "sample_id,image_path,label\ns0,slide.svs,1\n",
         encoding="utf-8",
     )
-    dataset = legacy_samples_from_csv(dataset_csv)
     expected = torch.arange(24, dtype=torch.float16).reshape(2, 3, 4)
 
     def fake_run(self, *, feature_dir):
@@ -892,16 +783,106 @@ def test_hierarchical_extracts_through_the_same_public_interface(
 
     monkeypatch.setattr(_PooledFeatureExtractor, "run", fake_run)
 
-    result = FeatureExtractor(
-        dataset,
-        "phikon",
-        preprocessing=extraction(None, None, requested_region_size_px=448, region_tile_multiple=2),
+    source = soma.extract(
+        ImageManifest.from_csv(dataset_csv),
+        encoder="phikon",
+        extraction=extraction(None, None, requested_region_size_px=448, region_tile_multiple=2),
         cache=CacheOptions(enabled=False),
-        output_root=tmp_path / "output",
-    ).extract()
+        output_dir=tmp_path / "output",
+    )
 
-    assert result.dataset is dataset
-    assert result.provenance.kind == "hierarchical"
-    assert result.source.rank == 3
-    assert result.source.feature_dim == 4
-    assert torch.equal(result.source.load("s0"), expected.float())
+    assert _provenance(tmp_path / "output")["provenance"]["kind"] == "hierarchical"
+    assert source.rank == 3
+    assert source.feature_dim == 4
+    assert torch.equal(source.load("s0"), expected.float())
+
+
+def test_rois_of_an_earlier_extraction_are_encoded_again_without_sampling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``rois=`` re-encodes the ROIs an annotation-sampled extraction drew (another
+    encoder or recipe over the same ROIs): no sampling, the same ROI ids."""
+    from slide2vec.artifacts import write_dense_region
+
+    from soma import CacheOptions
+
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label_mask_path\ns0,s0.svs,s0-mask.tif\n", encoding="utf-8"
+    )
+    images = ImageManifest.from_csv(dataset_csv)
+    sampled: list[str] = []
+
+    def fake_tile_slide(slide, **_kwargs):
+        sampled.append(slide.sample_id)
+        xs = np.asarray([0, 32])
+        return {None: SimpleNamespace(tiles=SimpleNamespace(x=xs, y=np.zeros_like(xs)))}
+
+    class RegionModel:
+        encoded: list[list[tuple[int, int]]] = []
+
+        @classmethod
+        def from_preset(cls, _name: str, **_kwargs):
+            return cls()
+
+        def embed_regions_dense(self, regions, *, dense, execution):
+            type(self).encoded.append([tuple(c) for r in regions for c in r.coordinates])
+            return [
+                write_dense_region(
+                    np.ones((4, 2, 2), dtype=np.float32),
+                    output_dir=execution.output_dir,
+                    sample_id=region.sample_id,
+                    annotation=None,
+                    x=int(x),
+                    y=int(y),
+                    metadata={
+                        "artifact_type": "dense_embeddings",
+                        "feature_dim": 4,
+                        "grid_shape": [2, 2],
+                        "target_size": [32, 32],
+                        "encoded_size": [32, 32],
+                        "patch_size": [16, 16],
+                        "pad": [0, 0],
+                        "crop_box": [0, 0, 32, 32],
+                        "channel_dim": 0,
+                        "source_spacing_um": 0.5,
+                        "effective_spacing_um": 0.5,
+                    },
+                )
+                for region in regions
+                for x, y in region.coordinates
+            ]
+
+    monkeypatch.setattr("hs2p.tile_slide", fake_tile_slide)
+    monkeypatch.setattr("soma.dense_slide_extraction.Model", RegionModel)
+    monkeypatch.setattr(
+        "soma.dense.reader.read_mask_regions_within_slide",
+        lambda path, *, regions, size, **_: [np.zeros((size[1], size[0]), np.uint8) for _ in regions],
+    )
+    dense = DenseOptions(spacing_um=0.5, target_size=32)
+    masks = annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0})
+    sampled_source = soma.extract(
+        images,
+        annotations=AnnotationManifest.from_csv(dataset_csv),
+        encoder="phikon",
+        extraction=extraction(0.5, 32, masks=masks),
+        dense=dense,
+        cache=CacheOptions(enabled=False),
+        output_dir=tmp_path / "sampled",
+    )
+
+    again = soma.extract(
+        images,
+        rois=sampled_source.rois,
+        encoder="phikon",
+        extraction=extraction(0.5, 32, masks=masks),
+        dense=dense,
+        cache=CacheOptions(enabled=False),
+        output_dir=tmp_path / "again",
+    )
+
+    assert sampled == ["s0"]
+    assert RegionModel.encoded == [[(0, 0), (32, 0)], [(0, 0), (32, 0)]]
+    assert again.sample_ids == sampled_source.sample_ids == ["s0__x0_y0", "s0__x32_y0"]
+    assert again.rois.children == {"s0__x0_y0": "s0", "s0__x32_y0": "s0"}
+    assert _provenance(tmp_path / "again")["provenance"]["kind"] == "slide_region_dense"

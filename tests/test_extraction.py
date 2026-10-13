@@ -19,7 +19,7 @@ import soma.extraction.orchestration as orchestration_mod
 from soma.data import require_coverage
 from soma.cache import record_empty_sample_ids, record_feature_dim, record_sample_identity_signatures
 from soma.config import CacheOptions, EncoderLeaf
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import ImageManifest
 from soma.data import CachedSetSource
 from slide2vec.encoders.registry import encoder_registry
 from soma.extraction import _embed_tiles, _load_model, _run_with_coordinates, _validate_runtime
@@ -132,7 +132,7 @@ def _force_cpu_for_default_extraction_paths():
         yield
 
 
-def _make_dataset(tmp_path: Path, *, with_mask: bool = False) -> Dataset:
+def _make_dataset(tmp_path: Path, *, with_mask: bool = False) -> ImageManifest:
     rows: dict[str, list[object]] = {
         "sample_id": ["s0"],
         "image_path": [str(tmp_path / "s0.svs")],
@@ -142,10 +142,10 @@ def _make_dataset(tmp_path: Path, *, with_mask: bool = False) -> Dataset:
         rows["mask_path"] = [str(tmp_path / "s0-mask.tif")]
     csv_path = tmp_path / "dataset.csv"
     pd.DataFrame(rows).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return ImageManifest.from_csv(csv_path)
 
 
-def _make_patient_dataset(tmp_path: Path) -> Dataset:
+def _make_patient_dataset(tmp_path: Path) -> ImageManifest:
     csv_path = tmp_path / "patient-dataset.csv"
     pd.DataFrame(
         [
@@ -157,10 +157,10 @@ def _make_patient_dataset(tmp_path: Path) -> Dataset:
             }
         ]
     ).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return ImageManifest.from_csv(csv_path)
 
 
-def _make_two_slide_patient_dataset(tmp_path: Path) -> Dataset:
+def _make_two_slide_patient_dataset(tmp_path: Path) -> ImageManifest:
     csv_path = tmp_path / "two-slide-patient-dataset.csv"
     pd.DataFrame(
         [
@@ -178,7 +178,7 @@ def _make_two_slide_patient_dataset(tmp_path: Path) -> Dataset:
             },
         ]
     ).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return ImageManifest.from_csv(csv_path)
 
 
 def _tiling(sample_id: str = "s0") -> object:
@@ -831,7 +831,7 @@ def test_load_tilings_skips_tissue_value_provenance_under_masks(
     monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", _fake_validate)
 
     load_tilings(
-        dataset=dataset,
+        images=dataset,
         tiling_dir=tiling_dir,
         requested_seg_downsample=64,
         annotation_sampling=True,
@@ -873,7 +873,7 @@ def test_load_tilings_records_requested_and_actual_backend(tmp_path: Path, monke
     monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", lambda *args, **kwargs: None)
 
     loaded = load_tilings(
-        dataset=dataset,
+        images=dataset,
         tiling_dir=tiling_dir,
         requested_seg_downsample=64,
     )
@@ -893,7 +893,7 @@ def test_load_tilings_consumes_merged_mode_sampling_dir(tmp_path: Path, monkeypa
             {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "mask_path": str(tmp_path / "s1-mask.tif"), "label": "x"},
         ]
     ).to_csv(csv_path, index=False)
-    dataset = legacy_samples_from_csv(csv_path)
+    dataset = ImageManifest.from_csv(csv_path)
 
     tiling_dir = tmp_path / "tiling"
     tiling_dir.mkdir()
@@ -935,7 +935,7 @@ def test_load_tilings_consumes_merged_mode_sampling_dir(tmp_path: Path, monkeypa
     monkeypatch.setattr("soma.slide2vec_adapter.validate_tiling_result_provenance", lambda *a, **k: None)
 
     loaded = load_tilings(
-        dataset=dataset,
+        images=dataset,
         tiling_dir=tiling_dir,
         requested_seg_downsample=64,
     )
@@ -991,7 +991,7 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
     assert store.load("s0").shape == (2, 8)
 
 
-def _make_tile_dataset(tmp_path: Path, sample_ids=("s0",)) -> Dataset:
+def _make_tile_dataset(tmp_path: Path, sample_ids=("s0",)) -> ImageManifest:
     from PIL import Image
 
     rows = []
@@ -1001,7 +1001,7 @@ def _make_tile_dataset(tmp_path: Path, sample_ids=("s0",)) -> Dataset:
         rows.append({"sample_id": sample_id, "image_path": str(image_path), "label": "tumor"})
     dataset_csv = tmp_path / "dataset.csv"
     pd.DataFrame(rows).to_csv(dataset_csv, index=False)
-    return legacy_samples_from_csv(dataset_csv)
+    return ImageManifest.from_csv(dataset_csv)
 
 
 class _RecordingModel:
@@ -1178,7 +1178,7 @@ def test_internal_tile_engine_reencodes_a_sample_whose_identity_changed(
     ).to_csv(moved_csv, index=False)
 
     _TileFeatureExtractor(
-        legacy_samples_from_csv(moved_csv), EncoderLeaf(name=_TEST_TILE), cache=cache
+        ImageManifest.from_csv(moved_csv), EncoderLeaf(name=_TEST_TILE), cache=cache
     ).run(feature_dir=tmp_path / "features")
 
     assert [call["sample_ids"] for call in recording_model.calls] == [["s0"], ["s0"]]
@@ -2121,7 +2121,7 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
     resolved_preprocessing = _resolved(extraction(0.5, 224))
     cache_resolution = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
         execution=extractor._execution,
@@ -2195,7 +2195,7 @@ def test_tile_cache_population_records_all_empty_without_embedding(tmp_path: Pat
     resolved_preprocessing = _resolved(extraction(0.5, 224))
     cache_resolution = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
         execution=extractor._execution,
@@ -2246,7 +2246,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
     resolved_preprocessing = _resolved(extraction(0.5, 224))
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
         execution=extractor._execution,
@@ -2259,7 +2259,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
     )
     patient_cache = cache_mod.resolve_patient_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         patient_encoder_name=_TEST_PATIENT,
         tile_encoder_name=_TEST_TILE,
         tile_preprocessing=resolved_preprocessing,
@@ -2278,7 +2278,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
     record_sample_identity_signatures(tile_cache, ["s0"])
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
         execution=extractor._execution,
@@ -2351,7 +2351,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
     tile_execution = extractor._execution
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
         execution=tile_execution,
@@ -2364,7 +2364,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
     )
     patient_cache = cache_mod.resolve_patient_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         patient_encoder_name=_TEST_PATIENT,
         tile_encoder_name=_TEST_TILE,
         tile_preprocessing=resolved_preprocessing,
@@ -2384,7 +2384,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
     record_empty_sample_ids(tile_cache, ["s1"])
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
         execution=tile_execution,
@@ -2451,7 +2451,7 @@ def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
     tile_execution = extractor._execution
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
         execution=tile_execution,
@@ -2464,7 +2464,7 @@ def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
     )
     patient_cache = cache_mod.resolve_patient_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         patient_encoder_name=_TEST_PATIENT,
         tile_encoder_name=_TEST_TILE,
         tile_preprocessing=resolved_preprocessing,
@@ -2481,7 +2481,7 @@ def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
     record_empty_sample_ids(tile_cache, ["s0"])
     tile_cache = cache_mod.resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=resolved_preprocessing,
         execution=tile_execution,
@@ -2518,7 +2518,7 @@ def test_patient_encoder_requires_every_sample_to_have_patient_id(tmp_path: Path
             {"sample_id": "s1", "patient_id": None, "image_path": str(tmp_path / "s1.svs"), "label": "tumor"},
         ]
     ).to_csv(csv_path, index=False)
-    dataset = legacy_samples_from_csv(csv_path)
+    dataset = ImageManifest.from_csv(csv_path)
     extractor = _PooledFeatureExtractor(
         dataset,
         EncoderLeaf(name=_TEST_PATIENT),
@@ -2527,7 +2527,7 @@ def test_patient_encoder_requires_every_sample_to_have_patient_id(tmp_path: Path
         output_root=tmp_path / "outputs",
     )
 
-    with pytest.raises(ValueError, match="every dataset row must have a patient_id"):
+    with pytest.raises(ValueError, match="every manifest row must have a patient_id"):
         extractor._patient_id_map_for_patient_encoder()
 
 
@@ -2550,7 +2550,7 @@ def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_
     ]
     cache_resolution = cache_mod.resolve_hierarchical_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=preprocessing,
         execution=extractor._execution,
@@ -2613,7 +2613,7 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
             {"sample_id": "s1", "image_path": str(tmp_path / "s1.svs"), "label": "tumor"},
         ]
     ).to_csv(csv_path, index=False)
-    dataset = legacy_samples_from_csv(csv_path)
+    dataset = ImageManifest.from_csv(csv_path)
     cache_root = tmp_path / "shared-cache"
     preprocessing = extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2)
     extractor = _PooledFeatureExtractor(
@@ -2644,7 +2644,7 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
     ]
     cache_resolution = cache_mod.resolve_hierarchical_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=preprocessing,
         execution=extractor._execution,
@@ -2720,7 +2720,7 @@ def test_hierarchical_cache_population_records_all_empty_without_embedding(tmp_p
     ]
     cache_resolution = cache_mod.resolve_hierarchical_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=_TEST_TILE,
         preprocessing=preprocessing,
         execution=extractor._execution,
@@ -2921,7 +2921,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         ]
     ).to_csv(csv_path, index=False)
     extractor = _PooledFeatureExtractor(
-        legacy_samples_from_csv(csv_path),
+        ImageManifest.from_csv(csv_path),
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
         cache=CacheOptions(root_dir=cache_root),
@@ -3118,7 +3118,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         ]
     ).to_csv(csv_path, index=False)
     extractor = _PooledFeatureExtractor(
-        legacy_samples_from_csv(csv_path),
+        ImageManifest.from_csv(csv_path),
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
         cache=CacheOptions(root_dir=cache_root),
@@ -3675,13 +3675,14 @@ def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
         ]).to_csv(root / "dataset.csv", index=False)
         preprocessing = extraction(0.5, 224, **({"region_tile_multiple": 2} if kind == "hierarchical" else {}))
         extractors[run] = _PooledFeatureExtractor(
-            legacy_samples_from_csv(root / "dataset.csv"), EncoderLeaf(name=encoder), preprocessing,
+            ImageManifest.from_csv(root / "dataset.csv"), EncoderLeaf(name=encoder), preprocessing,
             cache=CacheOptions(root_dir=tmp_path / "shared-cache"), output_root=root,
         )
 
     def resolve(**kwargs):
-        ids = (list(kwargs["dataset"].patient_groups) if kind == "patient"
-               else list(kwargs["dataset"].sample_ids))
+        images = kwargs["images"]
+        ids = (list(dict.fromkeys(entry.patient_id for entry in images)) if kind == "patient"
+               else list(images.sample_ids))
         return SimpleNamespace(
             complete=complete or kwargs.get("complete_state") == "populated",
             cache_dir=cache_dir, features_dir=payload_dir, cache_kind=kind,
@@ -3692,7 +3693,9 @@ def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
         )
 
     def populate(self, **kwargs):
-        for sid in (self._dataset.patient_groups if kind == "patient" else self._dataset.sample_ids):
+        for sid in (
+            dict.fromkeys(entry.patient_id for entry in self._images) if kind == "patient" else self._images.sample_ids
+        ):
             if sid in paths:
                 torch.save(expected[sid], paths[sid])
 
@@ -3700,7 +3703,7 @@ def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
         return [LoadedTiling(
             slide=SlideSpec(sample_id=sid, image_path=tmp_path / f"{sid}.svs"),
             tiling_result=_empty_tiling(sid) if "empty-" in sid else _tiling(sid),
-        ) for sid in kwargs["dataset"].sample_ids]
+        ) for sid in kwargs["images"].sample_ids]
 
     monkeypatch.setattr("soma.extraction.extractor.load_tilings", tilings)
     monkeypatch.setattr("soma.extraction.extractor._validate_runtime", lambda **kwargs: None)

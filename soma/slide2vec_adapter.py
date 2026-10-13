@@ -12,7 +12,7 @@ import slide2vec.api as slide2vec_api
 import slide2vec.progress as slide2vec_progress
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
-from soma.data._legacy import LegacySamples, LegacyRecord
+from soma.data.manifests import ImageEntry, ImageManifest
 from soma.encoders.validation import resolve_encoder_precision
 
 
@@ -24,7 +24,7 @@ class LoadedTiling:
     backend: str | None = None
 
 
-def to_slide_spec(record: LegacyRecord) -> SlideSpec:
+def to_slide_spec(record: ImageEntry) -> SlideSpec:
     return SlideSpec(
         sample_id=record.sample_id,
         image_path=record.image_path,
@@ -33,8 +33,8 @@ def to_slide_spec(record: LegacyRecord) -> SlideSpec:
     )
 
 
-def build_slide_specs(dataset: LegacySamples) -> list[SlideSpec]:
-    return [to_slide_spec(record) for record in dataset.samples.values()]
+def build_slide_specs(images: ImageManifest) -> list[SlideSpec]:
+    return [to_slide_spec(entry) for entry in images]
 
 
 def tiling_num_tiles(tiling_result: object) -> int:
@@ -112,7 +112,7 @@ def execution_options(
 
 def load_tilings(
     *,
-    dataset: LegacySamples,
+    images: ImageManifest,
     tiling_dir: Path,
     requested_seg_downsample: int,
     annotation_sampling: bool = False,
@@ -133,7 +133,7 @@ def load_tilings(
         str(row["sample_id"]): row
         for row in process_df.to_dict("records")
     }
-    records = list(dataset.samples.values())
+    records = list(images)
     progress = _CachedTilingLoadProgress(total=len(records))
     progress.start()
     loaded: list[LoadedTiling] = []

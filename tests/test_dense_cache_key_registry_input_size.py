@@ -30,7 +30,7 @@ from soma.cache import (
     record_sample_identity_signatures,
     resolve_dense_cache,
 )
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import ImageManifest
 from soma.dense import compute_dense_geometry, dense_grid_metadata, write_dense_grid
 from tests.extraction_configs import extraction
 
@@ -171,13 +171,13 @@ def _dataset(tmp_path: Path):
             {"sample_id": "s2", "image_path": "/tiles/s2.png", "mask_path": "/masks/s2.png", "label": "b"},
         ]
     ).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return ImageManifest.from_csv(csv_path)
 
 
 def _resolve(tmp_path: Path, dataset):
     return resolve_dense_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="stub-encoder",
         patch_size=(16, 16),
         dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=64, window_size=32, overlap=0.5),

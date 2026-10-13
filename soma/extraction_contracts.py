@@ -1,4 +1,5 @@
-"""Public contracts for persistent frozen-feature extraction."""
+"""Contracts of persistent frozen-feature extraction: the loading surface of a feature
+source, and what an extraction records in ``extraction_provenance.json``."""
 
 from __future__ import annotations
 
@@ -7,11 +8,6 @@ from pathlib import Path
 from typing import Protocol, runtime_checkable
 
 import torch
-
-from soma.data._legacy import LegacySamples
-
-#: Delete in slice 7 (#581): extraction still consumes the legacy fat records.
-FeatureDataset = LegacySamples
 
 
 @runtime_checkable
@@ -37,7 +33,7 @@ class PooledFeatureSource(FeatureSource, Protocol):
 
 @dataclass(frozen=True)
 class FeatureProvenance:
-    """Completed extraction facts needed to interpret an extraction result."""
+    """Completed extraction facts ``extraction_provenance.json`` records."""
 
     kind: str
     encoder_name: str | None = None
@@ -57,13 +53,3 @@ class ExtractionArtifacts:
     tiling_dir: Path | None = None
     dataset_csv: Path | None = None
     provenance_json: Path | None = None
-
-
-@dataclass(frozen=True)
-class FeatureExtractionResult:
-    """The exact result returned by :meth:`FeatureExtractor.extract`."""
-
-    source: FeatureSource
-    dataset: FeatureDataset
-    provenance: FeatureProvenance
-    artifacts: ExtractionArtifacts

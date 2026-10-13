@@ -29,8 +29,7 @@ import torch.nn.functional as F
 from hs2p.wsi.geometry import select_level_for_downsample
 from hs2p.wsi.reader import open_slide
 
-from soma.data._legacy import LegacySamples
-from soma.data import CachedSetSource
+from soma.data import CachedSetSource, ImageManifest
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +185,7 @@ class SaveAttention:
 
 def render_heatmaps(
     run_dir: Path | str,
-    dataset: LegacySamples,
+    images: ImageManifest,
     tiling_dir: Path | str,
     seg_downsample: int,
     *,
@@ -204,7 +203,7 @@ def render_heatmaps(
 
     Args:
         run_dir: Root run directory containing fold sub-directories.
-        dataset: LegacySamples for resolving WSI paths per sample.
+        images: The image manifest each sample's whole-slide image path is read from.
         tiling_dir: Run-local tiling directory containing process_list.csv.
         seg_downsample: Downsample factor for the WSI thumbnail — matches
             the preprocessing preview downsample so all visual outputs are
@@ -229,14 +228,14 @@ def render_heatmaps(
 
         for npz_path in sorted(attention_dir.rglob("*.npz")):
             sample_id = npz_path.stem
-            if sample_id not in dataset.samples:
-                logger.warning("render_heatmaps: sample_id %s not in dataset, skipping", sample_id)
+            if sample_id not in images:
+                logger.warning("render_heatmaps: sample_id %s not in the image manifest, skipping", sample_id)
                 continue
             if sample_id not in coord_map:
                 logger.warning("render_heatmaps: no coordinates found for %s, skipping", sample_id)
                 continue
 
-            slide_path = dataset.samples[sample_id].image_path
+            slide_path = images[sample_id].image_path
             coords_npz_path, coords_meta_path = coord_map[sample_id]
 
             coords = np.load(coords_npz_path)
@@ -285,7 +284,7 @@ def render_heatmaps(
 
 def generate_heatmaps(
     run_dir: Path | str,
-    dataset: LegacySamples,
+    images: ImageManifest,
     feature_store: CachedSetSource,
     tiling_dir: Path | str,
     seg_downsample: int,
@@ -298,14 +297,14 @@ def generate_heatmaps(
 
     Args:
         run_dir: Root run directory containing fold sub-directories.
-        dataset: LegacySamples for resolving WSI paths.
+        images: The image manifest the whole-slide image paths are read from.
         feature_store: Feature store for loading features and coordinates.
         tiling_dir: Run-local tiling directory containing process_list.csv.
         seg_downsample: Downsample factor for the WSI thumbnail.
         rendering: :func:`render_heatmaps`' ``cmap``, ``alpha`` and ``blur_sigma``.
     """
     save_attention(run_dir, feature_store)
-    render_heatmaps(run_dir, dataset, tiling_dir, seg_downsample, **rendering)
+    render_heatmaps(run_dir, images, tiling_dir, seg_downsample, **rendering)
 
 
 # ---------------------------------------------------------------------------

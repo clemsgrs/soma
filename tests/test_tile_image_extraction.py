@@ -28,8 +28,8 @@ from soma.cache.keys import build_tile_cache_key
 from slide2vec import ExecutionOptions
 
 from soma.config import CacheOptions, EncoderLeaf
-from soma.data._legacy import legacy_samples_from_csv
-from soma.extraction import FeatureExtractor
+import soma
+from soma.data import ImageManifest
 from soma.tile_extraction import _TileFeatureExtractor
 from tests.test_extraction import (
     _TEST_TILE,
@@ -91,13 +91,13 @@ def _write_dataset(root: Path, colours: dict[str, tuple[int, int, int]], *, name
         rows.append({"sample_id": sample_id, "image_path": str(image_path), "label": 0})
     dataset_csv = root / f"{name}.csv"
     pd.DataFrame(rows).to_csv(dataset_csv, index=False)
-    return legacy_samples_from_csv(dataset_csv)
+    return ImageManifest.from_csv(dataset_csv)
 
 
-def _assert_vectors(result, expected: dict[str, torch.Tensor]) -> None:
+def _assert_vectors(source, expected: dict[str, torch.Tensor]) -> None:
     """The requested samples load the expected vectors (the cache may hold others)."""
     for sample_id, vector in expected.items():
-        assert torch.allclose(result.source.load(sample_id).float(), vector, atol=1e-5), sample_id
+        assert torch.allclose(source.load(sample_id).float(), vector, atol=1e-5), sample_id
 
 
 # --- One upstream call ------------------------------------------------------------------
@@ -234,14 +234,14 @@ def test_repointed_sample_is_not_served_from_a_pack_of_the_old_features(tmp_path
 
 
 def _extract_images_uncached(dataset, root: Path):
-    return FeatureExtractor(
+    return soma.extract(
         dataset,
-        STUB_ENCODER,
+        encoder=STUB_ENCODER,
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=2),
         cache=CacheOptions(enabled=False),
-        output_root=root / "run",
+        output_dir=root / "run",
         unit="tile",
-    ).extract()
+    )
 
 
 def test_uncached_repointed_sample_is_not_served_from_a_pack_of_the_old_features(

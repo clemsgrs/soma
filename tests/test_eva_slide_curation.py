@@ -302,10 +302,10 @@ def test_camelyon16_small_rows_on_the_real_reference_table():
 
 def _stage(manifest, target_mpp: float, tmp_path: Path):
     from tests.extraction_configs import extraction
-    from soma.data._legacy import legacy_samples_from_csv
+    from soma.data import ImageManifest
     from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 
-    dataset = legacy_samples_from_csv(manifest.dataset_csv)
+    dataset = ImageManifest.from_csv(manifest.dataset_csv)
     preprocessing = extraction(target_mpp, 224)
     return stage_supplied_coordinates(dataset, tmp_path / "tiling", preprocessing)
 
@@ -337,7 +337,7 @@ def test_camelyon16_small_curator_writes_eva_tiles_and_a_slide_manifest(tmp_path
     assert summary["read_tile_size_px_counts"] == {"230": 15}
     # soma's bring-your-own-coordinates staging accepts every artifact as is.
     staged = _stage(manifest, 0.25, tmp_path)
-    assert len(staged.samples) == 15
+    assert len(staged) == 15
 
 
 def eva_slide_artifact(coordinates_path: str):
@@ -368,7 +368,7 @@ def test_panda_small_curator_follows_eva_split_and_sampling(tmp_path):
 
     summary = json.loads(manifest.summary_json.read_text())
     assert summary["labels_csv_matches_eva"] is False
-    assert len(_stage(manifest, 0.5, tmp_path).samples) == 18
+    assert len(_stage(manifest, 0.5, tmp_path)) == 18
 
 
 def test_panda_small_curator_refuses_a_missing_image(tmp_path):
@@ -402,7 +402,7 @@ def test_curated_spacing_survives_the_manifest_round_trip(tmp_path, monkeypatch,
     monkeypatch.setattr(eva_slide, "eva_slide_mpp", lambda properties: mpp)
     manifest = eva_slide.curate_camelyon16_small(raw, tmp_path / "curated", workers=1)
     staged = _stage(manifest, 0.25, tmp_path)
-    record = next(iter(staged.samples.values()))
+    record = next(iter(staged))
     assert record.spacing_at_level_0 == pytest.approx(mpp, rel=1e-12)
     # The tiles are still EVA's, sampled at EVA's exact spacing.
     assert eva_slide_artifact(str(record.coordinates_path)).tile_size_lv0 == int(0.25 / mpp * 224)

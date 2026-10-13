@@ -16,7 +16,7 @@ from soma.config import FeaturesConfig
 from soma.plan import check
 from tests.experiment_configs import experiment
 from soma.data import SampleRecord
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import Cohort
 from soma.evaluation import Predictions
 from soma.evaluation.metrics import compute_survival_metrics, resolve_metrics
 from soma.pipeline import Pipeline, PipelineResult
@@ -194,11 +194,12 @@ class TestSurvivalMetrics:
 # ---------------------------------------------------------------------------
 
 
-def _survival_dataset(tmp_path: Path, rows: list[dict]) -> Dataset:
-    df = pd.DataFrame(rows)
-    path = tmp_path / "dataset.csv"
-    df.to_csv(path, index=False)
-    return legacy_samples_from_csv(path)
+def _survival_dataset(tmp_path: Path, rows: list[dict]) -> Cohort:
+    """The survival records of ``rows``: their ``time`` / ``event`` / ``bin`` columns as
+    targets (a cohort read straight from the table)."""
+    frame = pd.DataFrame(rows)
+    targets = [key for key in ("time", "event", "bin") if key in frame.columns]
+    return Cohort.from_frames(frame.assign(split="test"), targets=targets)
 
 
 class TestValidateSurvivalDataset:
@@ -434,7 +435,7 @@ def test_explicit_bin_width_accepts_sparse_indices_unchanged(tmp_path):
         {"sample_id": "b", "image_path": "/b.svs", "time": 7., "event": 0, "bin": 3},
     ])
     validate_survival_dataset(dataset.records, "slide", num_bins=4)
-    assert [r.targets["bin"] for r in dataset.samples.values()] == [0, 3]
+    assert [r.targets["bin"] for r in dataset.records] == [0, 3]
 
 
 def test_explicit_bin_width_rejects_an_index_at_the_width(tmp_path):

@@ -25,7 +25,7 @@ from soma.cache import (
 import slide2vec
 
 from tests.extraction_configs import extraction
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import ImageManifest
 
 # phikon is 224 px native and cannot take a variable encoder input; uni is 224 px native
 # and can, so a larger request reaches the encoder at that larger size.
@@ -33,7 +33,7 @@ FIXED_ENCODER = "phikon"
 VARIABLE_ENCODER = "uni"
 
 
-def _dataset(tmp_path: Path) -> Dataset:
+def _dataset(tmp_path: Path) -> ImageManifest:
     csv_path = tmp_path / "dataset.csv"
     pd.DataFrame(
         [
@@ -41,7 +41,7 @@ def _dataset(tmp_path: Path) -> Dataset:
             {"sample_id": "s2", "image_path": "/slides/s2.svs", "label": "normal"},
         ]
     ).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return ImageManifest.from_csv(csv_path)
 
 
 def test_pooled_geometry_records_the_declared_preset_size():
@@ -100,7 +100,7 @@ def test_tile_cache_records_the_geometry(tmp_path: Path):
     dataset = _dataset(tmp_path)
     resolution = resolve_tile_cache(
         cache_root=tmp_path / "feature_cache",
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=VARIABLE_ENCODER,
         preprocessing=extraction(0.5, 224),
         execution=None,
@@ -120,7 +120,7 @@ def test_reusing_a_cache_under_a_changed_encoder_input_is_a_hard_error(tmp_path:
     dataset = _dataset(tmp_path)
     kwargs = dict(
         cache_root=tmp_path / "feature_cache",
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=VARIABLE_ENCODER,
         preprocessing=extraction(0.5, 224),
         execution=None,
@@ -149,7 +149,7 @@ def test_an_unchanged_encoder_input_reuses_the_cache(tmp_path: Path):
     dataset = _dataset(tmp_path)
     kwargs = dict(
         cache_root=tmp_path / "feature_cache",
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=VARIABLE_ENCODER,
         preprocessing=extraction(0.5, 224),
         execution=None,
@@ -180,7 +180,7 @@ def test_a_cache_predating_the_record_is_still_reusable(tmp_path: Path):
     dataset = _dataset(tmp_path)
     kwargs = dict(
         cache_root=tmp_path / "feature_cache",
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=VARIABLE_ENCODER,
         preprocessing=extraction(0.5, 224),
         execution=None,
@@ -200,7 +200,7 @@ def test_dense_cache_records_the_geometry(tmp_path: Path):
     dataset = _dataset(tmp_path)
     resolution = resolve_dense_cache(
         cache_root=tmp_path / "feature_cache",
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name=FIXED_ENCODER,
         patch_size=(16, 16),
         dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=512, window_size=224),

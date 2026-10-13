@@ -5,8 +5,8 @@ Everything a :class:`~soma.plan.Plan` decides lives here, so
 plan sections: the learner's shape picks the builder, the head's task family the grid
 task, and the cohort's ``collapse`` the patient path:
 
-* :func:`attach_source` — the supplied source, or one extracted (or built live) from the
-  plan;
+* :func:`extraction_options` — :func:`soma.extract`'s keywords for the plan's features
+  (the :class:`~soma.pipeline.Pipeline` extracts through the verb);
 * :func:`build_set_model` / :func:`build_grid_model` — the two model builders. They are
   also what :func:`soma.load` calls to rebuild a bundle, so a bundle is rebuilt by the
   same code that built the model;
@@ -37,6 +37,7 @@ from soma.aggregators.registry import aggregator_registry
 from soma.cache import resolve_cache_root
 from slide2vec import DenseOptions, PreprocessingConfig
 
+from soma.class_scheme import resolve_classes
 from soma.config import (
     Component,
     EvaluationConfig,
@@ -50,18 +51,22 @@ from soma.data import (
     Cohort,
     FoldSplit,
     GridGeometry,
-    GridSource,
     ImageManifest,
+    LabelMapSource,
+    PointSource,
+    SampleRecord,
     TileImageSource,
     require_coverage,
 )
 from soma.data.cohort import targets_frame
+from soma.data.records import targets_equal
 from soma.decoders.registry import build_decoder_for_grid
 from soma.dense.composite import CompositeDenseFeatureStore
 from soma.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
 from soma.evaluation import Baseline
 from soma.evaluation.metrics import resolve_metrics
-from soma.extraction import FeatureExtractor, _release_parent_cuda_state
+from soma.extraction import _release_parent_cuda_state
+from soma.extraction.rois import RoiSet, label_map_identity
 from soma.learn import (
     Learner,
     Progress,
@@ -71,8 +76,6 @@ from soma.learn import (
     resolve_leaf,
 )
 from soma.learn.grid import grid_loaders
-from soma.pipeline import _legacy
-from soma.pipeline._legacy import LegacyFolds, LegacyRecord, LegacySamples
 from soma.plan import LEARNER_OWN_EXCLUDED, Plan, load_cohort
 from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 from soma.tasks.classification import BranchAwareClassificationHead, MulticlassClassificationHead
@@ -97,15 +100,14 @@ __all__ = [
     "FoldLoaders",
     "FoldSetup",
     "RunInputs",
-    "SourceContext",
     "SplitPlan",
-    "attach_source",
     "build_composite_dense_store",
     "build_fold",
     "build_grid_fold",
     "build_grid_model",
     "build_set_fold",
     "build_set_model",
+    "extraction_options",
     "extraction_unit",
     "live_encoder_for",
     "live_encoder_spec",
@@ -181,15 +183,20 @@ class FoldSetup:
 
 @dataclass
 class RunInputs:
-    """What every fold of a run shares: the plan, the attached source, the records."""
+    """What every fold of a run shares: the plan, the source, the cohort it serves.
+
+    ``cohort`` is the one the source is keyed by: an annotation-sampled run's ROI cohort
+    (:meth:`~soma.data.Cohort.derived`), whose ``rois`` the source carries. ``images`` and
+    ``annotations`` are the cohort CSV's manifests, read by the target sources.
+    """
 
     plan: Plan
     preprocessing: PreprocessingConfig
     evaluation: EvaluationConfig
     source: Any
     cohort: Cohort
-    dataset: LegacySamples
-    splits: LegacyFolds
+    images: ImageManifest
+    annotations: AnnotationManifest | None
     run_id: str
     run_dir: Path
     source_identity: dict[str, Any]
@@ -199,12 +206,14 @@ class RunInputs:
     roi_population_cache_root: Path | None = None
     #: ``{top-level package: version}`` of the plan's dotted-path components.
     packages: dict[str, str | None] = field(default_factory=dict)
+    #: The ROIs of an annotation-sampled run, keyed like the source (``source.rois``).
+    rois: RoiSet | None = None
     _roi_population: Any = field(default=None, repr=False)
     _roi_caches: tuple[dict, dict] = field(default_factory=lambda: ({}, {}), repr=False)
 
     @property
     def num_folds(self) -> int:
-        return self.splits.num_folds
+        return self.cohort.num_folds
 
     @property
     def provenance(self) -> dict[str, Any]:
@@ -221,13 +230,17 @@ class RunInputs:
         """The run's segmentation ROI population (explicit ROI batch sampling only),
         resolved once and shared by every fold."""
         if self._roi_population is None:
-            records = _legacy.segmentation_run_records(self.dataset, self.splits)
-            head = _build_segmentation_head(self, self.source.geometry(records[0].sample_id))
+            named = {sid for fold in self.cohort.folds for sid in fold.all_sample_ids}
+            # Every ROI a fold names, once, in cohort order.
+            sample_ids = [sid for sid in self.cohort.sample_ids if sid in named]
+            head = _build_segmentation_head(self, self.source.geometry(sample_ids[0]))
             self._roi_population = _resolve_segmentation_roi_population(
                 cache_root=self.roi_population_cache_root or self.run_dir / "segmentation_roi_population",
-                records=records,
+                identity=label_map_identity(
+                    sample_ids, images=self.images, annotations=self.annotations, rois=self.rois
+                ),
                 head=head,
-                label_maps=_legacy.segmentation_label_maps(head, records),
+                label_maps=_label_maps(self, head, sample_ids),
                 source_fingerprint_cache=self._roi_caches[0],
                 resolved_backend_cache=self._roi_caches[1],
             )
@@ -679,8 +692,44 @@ class _SetFoldRecords:
     tune_placeholders: list[str]
     test_output_ids: dict[str, tuple[str, ...]]
     test_placeholders: dict[str, list[str]]
-    records_by_id: dict[str, LegacyRecord]
-    train_records: list[LegacyRecord]
+    records_by_id: dict[str, SampleRecord]
+    train_records: list[SampleRecord]
+
+
+def _patient_ids(records: Sequence[SampleRecord]) -> list[str]:
+    """The patients of ``records``, in order of first appearance."""
+    seen: set[str] = set()
+    patient_ids: list[str] = []
+    for record in records:
+        if record.patient_id is None:
+            raise ValueError(
+                f"Sample '{record.sample_id}' has no patient_id. "
+                "All samples must have a patient_id for a patient run (cohort.collapse: patient_id)."
+            )
+        if record.patient_id not in seen:
+            seen.add(record.patient_id)
+            patient_ids.append(record.patient_id)
+    return patient_ids
+
+
+def _patient_records(cohort: Cohort) -> dict[str, SampleRecord]:
+    """One representative record per patient, its first sample in cohort order, as
+    :meth:`~soma.data.Cohort.collapse` keeps it; a patient's samples must share targets."""
+    representatives: dict[str, SampleRecord] = {}
+    for record in cohort.records:
+        if record.patient_id is None:
+            raise ValueError(
+                f"Sample '{record.sample_id}' is missing a patient_id. "
+                "All rows must have a patient_id for patient-level pipelines."
+            )
+        head = representatives.setdefault(record.patient_id, record)
+        if not targets_equal(head.targets, record.targets):
+            raise ValueError(
+                f"Patient '{record.patient_id}' has inconsistent targets across slides: "
+                f"{head.targets} vs {record.targets}. "
+                "All slides for a patient must share the same targets."
+            )
+    return representatives
 
 
 def _feature_statuses(source) -> dict[str, str] | None:
@@ -698,7 +747,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
     and are scored with the training baseline; ``tune_is_test``, ``allow_missing_tune``
     and ``evaluation.holdout_test`` reshape the splits as their docs say.
     """
-    plan, dataset, feature_store = inputs.plan, inputs.dataset, inputs.source
+    plan, samples, feature_store = inputs.plan, inputs.cohort, inputs.source
     cohort, evaluation = plan.cohort, inputs.evaluation
     patient = plan.unit == "patient"
     all_test_ids = {sid for ids in fold_split.tests.values() for sid in ids}
@@ -706,16 +755,14 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
     statuses = _feature_statuses(feature_store)
     if patient:
         # Patient-level: features are indexed by patient_id; splits are slide-based.
-        train_records = [dataset.samples[sid] for sid in fold_split.train]
-        tune_records = [dataset.samples[sid] for sid in fold_split.tune]
+        train_records = [samples.record(sid) for sid in fold_split.train]
+        tune_records = [samples.record(sid) for sid in fold_split.tune]
         test_records_by_split = {
-            name: [dataset.samples[sid] for sid in ids] for name, ids in fold_split.tests.items()
+            name: [samples.record(sid) for sid in ids] for name, ids in fold_split.tests.items()
         }
-        train_ids = _legacy.patient_ids_for_records(train_records)
-        tune_ids = _legacy.patient_ids_for_records(tune_records)
-        test_ids = {
-            name: _legacy.patient_ids_for_records(records) for name, records in test_records_by_split.items()
-        }
+        train_ids = _patient_ids(train_records)
+        tune_ids = _patient_ids(tune_records)
+        test_ids = {name: _patient_ids(records) for name, records in test_records_by_split.items()}
         raw_train_ids, raw_tune_ids = list(train_ids), list(tune_ids)
         raw_test_ids = {name: list(ids) for name, ids in test_ids.items()}
         split_ids = set(train_ids) | set(tune_ids) | {pid for ids in test_ids.values() for pid in ids}
@@ -764,17 +811,17 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
             "tune": [sid for sid in fold_split.tune if sid in empty],
             **{name: [sid for sid in ids if sid in empty] for name, ids in fold_split.tests.items()},
         }
-        train_records = _legacy.records_for_sample_ids(dataset, fold_split.train, expected)
-        tune_records = _legacy.records_for_sample_ids(dataset, fold_split.tune, expected)
+        train_records = [samples.record(sid) for sid in fold_split.train if sid in expected]
+        tune_records = [samples.record(sid) for sid in fold_split.tune if sid in expected]
         test_records_by_split = {
-            name: _legacy.records_for_sample_ids(dataset, ids, expected) for name, ids in fold_split.tests.items()
+            name: [samples.record(sid) for sid in ids if sid in expected] for name, ids in fold_split.tests.items()
         }
     else:
         # No manifest: every listed sample must have a feature file.
-        train_records = [dataset.samples[sid] for sid in fold_split.train]
-        tune_records = [dataset.samples[sid] for sid in fold_split.tune]
+        train_records = [samples.record(sid) for sid in fold_split.train]
+        tune_records = [samples.record(sid) for sid in fold_split.tune]
         test_records_by_split = {
-            name: [dataset.samples[sid] for sid in ids] for name, ids in fold_split.tests.items()
+            name: [samples.record(sid) for sid in ids] for name, ids in fold_split.tests.items()
         }
         empty_by_split = None
 
@@ -843,7 +890,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
         # Cohort.collapse does.
         tune_output = tuple(raw_train_ids if fallback_to_train else raw_tune_ids)
         test_output = {name: tuple(raw_test_ids[name]) for name in tests_items}
-        records_by_id = dataset.patient_record_map
+        records_by_id = _patient_records(samples)
     else:
         if fallback_to_train:
             tune_output = tuple(fold_split.train)
@@ -852,7 +899,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
         else:
             tune_output = tuple(fold_split.tune)
         test_output = {name: tuple(fold_split.tests[name]) for name in tests_items}
-        records_by_id = dataset.samples
+        records_by_id = {record.sample_id: record for record in samples.records}
     return _SetFoldRecords(
         train=list(train_items),
         tune=list(tune_items),
@@ -868,13 +915,13 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
 
 def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldSetup:
     """One set-shape fold (slide, patient, tile, hierarchical): bags or embeddings."""
-    plan, dataset, feature_store = inputs.plan, inputs.dataset, inputs.source
+    plan, feature_store = inputs.plan, inputs.source
     evaluation, head = inputs.evaluation, plan.learner.params["head"]
     aggregator = plan.learner.params.get("aggregator")
     records = _set_fold_records(inputs, fold, fold_split)
 
     if evaluation.subgroups:
-        sample = next(iter(dataset.samples.values()))
+        sample = inputs.cohort.records[0]
         missing = [c for c in evaluation.subgroups if c not in sample.metadata]
         if missing:
             raise ValueError(
@@ -993,7 +1040,7 @@ def _set_loaders(inputs: RunInputs, records: _SetFoldRecords, head, *, kind: str
     target_fn = head.extract_targets
     patient = plan.unit == "patient"
     if patient:
-        record_map = inputs.dataset.patient_record_map
+        record_map = _patient_records(inputs.cohort)
         collate = functools.partial(patient_collate_fn, target_dtypes=head.target_dtypes)
 
         def dataset(items):
@@ -1107,10 +1154,25 @@ def _build_segmentation_head(inputs: RunInputs, geometry):
     return task_registry.resolve(spec["name"])(**spec["params"])
 
 
+def _label_maps(inputs: RunInputs, head, sample_ids: Sequence[str]):
+    """The label-map target source of a segmentation run's samples, the class scheme
+    folded in: an annotation-sampled run's ROIs read the mask crops ROI sampling stored
+    (``rois.label_maps``); pre-cropped tiles read their rasters through
+    :meth:`~soma.data.LabelMapSource.from_manifests`."""
+    params = head.label_map_read_params
+    if inputs.rois is not None:
+        return inputs.rois.subset(sample_ids).label_maps(
+            size=params["size"], label_remap=params["label_remap"], ignore_index=head.ignore_index
+        )
+    if inputs.annotations is None:
+        raise ValueError("a segmentation run needs the cohort's annotation manifest (label_mask_path).")
+    return LabelMapSource.from_manifests(inputs.annotations, inputs.images, **params).subset(sample_ids)
+
+
 def _resolve_segmentation_roi_population(
     *,
     cache_root: str | Path,
-    records: list[LegacyRecord],
+    identity: list[dict[str, Any]],
     head,
     label_maps,
     source_fingerprint_cache: dict[str, dict[str, object]] | None,
@@ -1121,8 +1183,8 @@ def _resolve_segmentation_roi_population(
 
     return resolve_segmentation_roi_population(
         cache_root,
-        records,
-        lambda record: {"mask": label_maps.load(record.sample_id)},
+        identity,
+        lambda sample_id: {"mask": label_maps.load(sample_id)},
         num_classes=head.num_classes,
         target_identity=head.target_identity,
         workers=max(1, min(8, os.cpu_count() or 1)),
@@ -1202,7 +1264,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
         has_composite=isinstance(feature_store, CompositeDenseFeatureStore),
     )
     fold_plan = plan_dense_fold(
-        dataset=inputs.dataset,
+        samples=inputs.cohort,
         fold_split=fold_split,
         cohort=plan.cohort,
         fold_label=_fp,
@@ -1228,13 +1290,13 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
         geometry = reference
         feature_dim = int(feature_store.feature_dim)
         if family == "segmentation":
-            _require_configured_spacing(inputs, all_records)
+            _require_configured_spacing(inputs, all_ids)
 
     if family == "segmentation":
         head_spec = _segmentation_head_spec(inputs, geometry)
         point_source = None
     else:
-        head_spec, point_source = _detection_head_spec(inputs, geometry, all_records, all_ids)
+        head_spec, point_source = _detection_head_spec(inputs, geometry, all_ids)
     encoder_identity = _encoder_identity(plan)
     model_spec = {
         "feature_dim": feature_dim,
@@ -1272,17 +1334,17 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
     def build_loaders(learner: Learner, fold_dir: Path) -> FoldLoaders:
         head, consumes_image = learner.head, learner.model.consumes_image
         if family == "segmentation":
-            targets = _legacy.segmentation_label_maps(head, all_records)
+            targets = _label_maps(inputs, head, all_ids)
         else:
             targets = point_source
         images = None
         if consumes_image and not live:
-            images = _legacy.flat_tile_images(all_records, size=geometry.target_size)
-            if images is None:
+            if inputs.rois is not None:
                 raise ValueError(
                     f"decoder '{decoder.name}' reads each tile's pixels; slide-manifest ROIs "
                     "carry no flat tile to read"
                 )
+            images = TileImageSource.from_manifest(inputs.images, size=geometry.target_size).subset(all_ids)
         sampler = None
         if plan.loaders.sampler is not None:
             if live or family != "segmentation":
@@ -1323,12 +1385,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
                 tests_counts={name: len(recs) for name, recs in test_records_by_split.items()},
             )
         )
-        overlays = images or _legacy.overlay_images(
-            all_records,
-            size=geometry.target_size,
-            dense=inputs.dense,
-            spacing_policy=plan.features.spacing_policy,
-        )
+        overlays = images or _overlay_images(inputs, all_ids, size=geometry.target_size)
 
         def split_plan(name: str, loader, records) -> SplitPlan:
             return SplitPlan(
@@ -1406,9 +1463,40 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
     )
 
 
-def _require_configured_spacing(inputs: RunInputs, records) -> None:
+def _overlay_images(inputs: RunInputs, sample_ids: Sequence[str], *, size):
+    """The pixels :class:`~soma.evaluation.SaveOverlays` blends over: the flat tiles, or
+    each slide-manifest ROI's window of its whole slide at the run spacing (read as the
+    grid run's slide2vec ``DenseOptions`` read it)."""
+    dense, spacing_policy = inputs.dense, inputs.plan.features.spacing_policy
+    spacing_um = dense.spacing_um if dense is not None else None
+    backend = dense.backend if dense is not None else "auto"
+    tolerance = float(dense.tolerance) if dense is not None else 0.05
+    if inputs.rois is not None and spacing_um is not None:
+        return inputs.rois.subset(sample_ids).pixels(
+            size=size, spacing_um=spacing_um, spacing_policy=spacing_policy, backend=backend, tolerance=tolerance
+        )
+    if inputs.rois is not None:
+        return None
+    return TileImageSource.from_manifest(
+        inputs.images,
+        size=size,
+        spacing_um=spacing_um,
+        spacing_policy=spacing_policy,
+        backend=backend,
+        tolerance=tolerance,
+    ).subset(sample_ids)
+
+
+def _spacing_at_level_0(inputs: RunInputs, sample_id: str) -> float | None:
+    """A sample's declared level-0 spacing: an ROI's is its slide's."""
+    if inputs.rois is not None and sample_id in inputs.rois:
+        sample_id = inputs.rois.children[sample_id]
+    return inputs.images[sample_id].spacing_at_level_0
+
+
+def _require_configured_spacing(inputs: RunInputs, sample_ids: Sequence[str]) -> None:
     """Cached segmentation grids must be extracted at the spacing the config reads masks
-    at (per record under ``native_if_coarser``); see :func:`soma.dense.require_declared_spacing`."""
+    at (per sample under ``native_if_coarser``); see :func:`soma.dense.require_declared_spacing`."""
     from soma.dense import require_declared_spacing
 
     from soma.spacing import resolve_effective_spacing_um
@@ -1417,27 +1505,35 @@ def _require_configured_spacing(inputs: RunInputs, records) -> None:
     require_declared_spacing(
         inputs.source,
         {
-            record.sample_id: (
+            sample_id: (
                 None
                 if dense is None
                 else resolve_effective_spacing_um(
                     requested_spacing_um=dense.spacing_um,
-                    spacing_at_level_0=record.spacing_at_level_0,
+                    spacing_at_level_0=_spacing_at_level_0(inputs, sample_id),
                     tolerance=dense.tolerance,
                     policy=inputs.plan.features.spacing_policy,
                 )
             )
-            for record in records
+            for sample_id in sample_ids
         },
     )
 
 
-def _detection_head_spec(inputs: RunInputs, geometry, records, sample_ids):
+def _detection_head_spec(inputs: RunInputs, geometry, sample_ids):
     """``({name, params}, PointSource)`` of a detection run: classes from the head's class
-    scheme, distances converted at the run's one spacing."""
+    scheme (``classes`` / ``drop`` / ``num_classes``), distances converted at the run's
+    one spacing."""
     head = inputs.plan.learner.params["head"]
     scheme = head_params(head)
-    num_classes, class_names, point_source = _legacy.detection_points(scheme, records)
+    num_classes, class_names, class_remap, dropped = resolve_classes(
+        scheme, excluded_key="drop", subject="detection"
+    )
+    if inputs.annotations is None:
+        raise ValueError("a detection run needs the cohort's annotation manifest (points_path).")
+    point_source = PointSource.from_manifest(
+        inputs.annotations, class_remap=class_remap, drop=dropped
+    ).subset(sample_ids)
     params = {k: v for k, v in scheme.items() if k not in ("num_classes", "classes", "drop")}
     if params.get("match_distance") is None:
         raise ValueError(
@@ -1510,8 +1606,17 @@ def load_pipeline_data(config: ExperimentConfig) -> tuple[Cohort, ImageManifest,
     """
     from soma.plan import head_family
 
-    cohort = load_cohort(config)
     records = config.cohort.records
+    roi_columns = sorted({"region_x", "region_y"} & set(pd.read_csv(records, nrows=0).columns))
+    if roi_columns:
+        # ROIs are extraction-internal (ADR 0021): their table is provenance, and its rows
+        # read as whole slides would be sampled again.
+        raise ValueError(
+            f"cohort.records {str(records)!r} has the ROI columns {roi_columns}: it is the ROI "
+            "table an annotation-sampled extraction wrote. Point cohort.records at the slide "
+            "manifest the ROIs were sampled from; each ROI inherits its slide's splits."
+        )
+    cohort = load_cohort(config)
     image_manifest = ImageManifest.from_csv(records)
     annotation_manifest = None
     family = head_family(config)
@@ -1528,108 +1633,24 @@ def load_pipeline_data(config: ExperimentConfig) -> tuple[Cohort, ImageManifest,
     return cohort, image_manifest, annotation_manifest
 
 
-@dataclass(frozen=True)
-class SourceContext:
-    """The run's feature source and the records it trains against.
-
-    Extraction may change the records (annotation sampling turns slides into ROIs), so
-    ``dataset`` / ``splits`` are the ones the source serves. On the live grid path
-    ``source`` is the pixels' image source and ``encoder_stage`` the frozen encoder.
-    """
-
-    source: Any
-    dataset: LegacySamples
-    splits: LegacyFolds
-    encoder_stage: Any = None
-
-
-def attach_source(
-    plan: Plan,
-    *,
-    source: Any,
-    dataset: LegacySamples,
-    splits: LegacyFolds,
-    image_manifest: ImageManifest,
-    run_dir: Path,
-) -> SourceContext:
-    """Attach the supplied ``source``, or extract one from the config.
-
-    A supplied image source on the live grid path gets the run's frozen encoder stage; a
-    supplied :class:`~soma.data.GridSource` (cached grids) takes the cached path, so it
-    cannot be augmented. Without a source: the live grid path builds its frozen encoder
-    stage and an image source; a composite extracts every member; otherwise the
-    configured encoder extracts (or reuses from the feature cache) set or grid features.
-    """
-    is_dense = plan.shape == "grid"
+def extraction_options(plan: Plan, *, run_dir: Path) -> dict[str, Any]:
+    """:func:`soma.extract`'s keywords for the plan's ``features``: its encoder, the
+    extraction (tiling, segmentation, masks) and execution, a grid run's dense options,
+    what one manifest row is, and the cache rooted for this run."""
     features = plan.features
-    roi_sampled = annotation_sampled(plan)
-    if roi_sampled and source is not None:
-        raise ValueError(
-            "a supplied source is not supported for annotation-sampled segmentation; "
-            "FeatureExtractor owns the effective ROI dataset and cache identity."
-        )
-    if roi_sampled and features.kind == "live":
-        raise NotImplementedError(
-            "Live extraction over annotation-sampled segmentation ROIs is outside "
-            "the persistent FeatureExtractor contract."
-        )
-    if roi_sampled and features.is_composite:
-        raise NotImplementedError(
-            "Multi-encoder extraction over annotation-sampled segmentation ROIs is not implemented."
-        )
-    live = is_dense and features.kind == "live"
-    if source is not None:
-        # A supplied image source under ``feature_mode: live`` is re-encoded by the
-        # run's frozen encoder stage, like the one built below; supplied grids are cached.
-        cached_grids = isinstance(source, GridSource)
-        if live and cached_grids and plan.loaders.augment is not None:
-            raise ValueError(
-                "loaders.augment needs pixels re-encoded by an encoder stage, but the supplied "
-                "source is cached grids (frozen features); supply an ImageSource or clear "
-                "loaders.augment."
-            )
-        stage = live_encoder_for(plan) if live and not cached_grids else None
-        return SourceContext(source=source, dataset=dataset, splits=splits, encoder_stage=stage)
-    if live:
-        dense = resolve_pipeline_dense(plan)
-        images = TileImageSource.from_manifest(
-            image_manifest,
-            size=int(dense.target_size),
-            spacing_um=float(dense.spacing_um),
-            spacing_policy=features.spacing_policy,
-            backend=dense.backend,
-            tolerance=float(dense.tolerance),
-        )
-        return SourceContext(source=images, dataset=dataset, splits=splits, encoder_stage=live_encoder_for(plan))
-    if is_dense and features.is_composite:
-        from soma.dense import DenseSourceProvenance
-
-        store = build_composite_dense_store(plan, dataset, output_root=run_dir / "features")
-        store.provenance = DenseSourceProvenance(kind="composite_dense_cache", dataset_csv=plan.cohort.records)
-        return SourceContext(source=store, dataset=dataset, splits=splits)
-    if features.encoder is None:
-        raise ValueError("features.encoder is required when no source is supplied.")
-    cache_config = replace(
-        features.cache,
-        root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=plan.run.output_dir),
-    )
-    extraction = FeatureExtractor(
-        dataset,
-        features.encoder,
-        resolve_pipeline_preprocessing(plan),
-        shape=plan.shape,
-        unit=extraction_unit(plan),
-        dense=resolve_pipeline_dense(plan) if is_dense else None,
-        spacing_policy=features.spacing_policy,
-        output_root=run_dir,
-        execution=features.execution,
-        cache=cache_config,
-    ).extract()
-    return SourceContext(
-        source=extraction.source,
-        dataset=extraction.dataset,
-        splits=splits.project(extraction.dataset),
-    )
+    return {
+        "encoder": features.encoder,
+        "cache": replace(
+            features.cache,
+            root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=plan.run.output_dir),
+        ),
+        "unit": extraction_unit(plan),
+        "execution": features.execution,
+        "extraction": resolve_pipeline_preprocessing(plan),
+        "dense": resolve_pipeline_dense(plan) if plan.shape == "grid" else None,
+        "spacing_policy": features.spacing_policy,
+        "output_dir": run_dir,
+    }
 
 
 def live_encoder_spec(plan: Plan) -> dict[str, Any]:
@@ -1688,20 +1709,22 @@ def log_cuda_memory(tag: str) -> None:
     torch.cuda.reset_peak_memory_stats()
 
 
-def build_composite_dense_store(plan: Plan | ExperimentConfig, dataset: LegacySamples, *, output_root: Path):
-    """Extract every composite member into its own cache; return the concat view.
+def build_composite_dense_store(plan: Plan | ExperimentConfig, images: ImageManifest, *, output_root: Path):
+    """Extract every composite member of ``images`` into its own cache; return the concat
+    view.
 
     Public so that out-of-core consumers (a project protocol's rescore step) rebuild the
-    exact store a composite run trained on. Each member extracts with the run's slide2vec
-    ``DenseOptions`` and ``ExecutionOptions`` plus its own overrides, exactly as that
-    encoder does in a single-encoder run, so its dense cache is the one a single-encoder
-    run of it uses. The token grids are combined at load time by
-    :class:`CompositeDenseFeatureStore` per ``concat_resolution`` / ``concat_grid_size``.
+    exact store a composite run trained on. Each member extracts through
+    :func:`soma.extract` with the run's slide2vec ``DenseOptions`` and
+    ``ExecutionOptions`` plus its own overrides, exactly as that encoder does in a
+    single-encoder run, so its dense cache is the one a single-encoder run of it uses. The
+    token grids are combined at load time by :class:`CompositeDenseFeatureStore` per
+    ``concat_resolution`` / ``concat_grid_size``.
     """
-    from soma.dense_extraction import _DenseImageExtractor
     from soma.encoders import CompositeParams
     from soma.encoders.composite import member_norm_for
     from soma.config import EncoderLeaf
+    from soma.extraction import extract
 
     features = plan.features
     if not features.is_composite:
@@ -1717,15 +1740,17 @@ def build_composite_dense_store(plan: Plan | ExperimentConfig, dataset: LegacySa
         for index, member in enumerate(composite.members):
             member_dense = member.dense_options(dense)
             member_norms.append(member_norm_for(member, member_dense))
-            extractor = _DenseImageExtractor(
-                dataset,
-                EncoderLeaf(name=member.name, params=dict(member.params)),
-                dense=member_dense,
-                execution=member.execution_options(features.execution),
-                cache=cache_config,
+            member_stores.append(
+                extract(
+                    images,
+                    encoder=EncoderLeaf(name=member.name, params=dict(member.params)),
+                    cache=cache_config,
+                    unit="tile",
+                    dense=member_dense,
+                    execution=member.execution_options(features.execution),
+                    output_dir=Path(output_root) / f"member_{index}_{member.name}",
+                )
             )
-            member_dir = Path(output_root) / f"member_{index}_{member.name}"
-            member_stores.append(extractor.run(feature_dir=member_dir))
     finally:
         _release_parent_cuda_state()
         log_cuda_memory("after composite dense extraction release")

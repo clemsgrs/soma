@@ -12,8 +12,8 @@ from hs2p import FilterConfig
 
 from soma.config import CacheOptions
 from tests.extraction_configs import extraction
-from soma.data._legacy import legacy_samples_from_csv
-from soma.extraction import FeatureExtractor
+import soma
+from soma.data import ImageManifest
 
 
 TESTS_DIR = Path(__file__).parent
@@ -42,7 +42,7 @@ def _build_dataset(tmp_path: Path) -> Dataset:
         + "\n",
         encoding="utf-8",
     )
-    return legacy_samples_from_csv(dataset_csv)
+    return ImageManifest.from_csv(dataset_csv)
 
 
 def _regression_preprocessing() -> slide2vec.PreprocessingConfig:
@@ -72,21 +72,18 @@ def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
     torch = pytest.importorskip("torch", reason="torch is required for PRISM regression")
     pytest.importorskip("transformers", reason="transformers is required for PRISM regression")
 
-    dataset = _build_dataset(tmp_path)
-    extractor = FeatureExtractor(
-        dataset,
-        "prism",
-        preprocessing=_regression_preprocessing(),
-        cache=CacheOptions(enabled=False),
-        output_root=tmp_path,
-    )
-
     try:
-        result = extractor.extract()
+        source = soma.extract(
+            _build_dataset(tmp_path),
+            encoder="prism",
+            extraction=_regression_preprocessing(),
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path,
+        )
     except (ImportError, OSError) as exc:
         pytest.skip(f"PRISM regression unavailable in this environment: {exc}")
 
-    emb = result.source.load("test-wsi")
+    emb = source.load("test-wsi")
     gt_emb = torch.load(_fixture_path("gt", "test-wsi.pt"), map_location="cpu", weights_only=True)
 
     assert emb.shape == gt_emb.shape

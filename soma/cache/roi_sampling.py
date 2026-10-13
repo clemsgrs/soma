@@ -44,6 +44,8 @@ from soma.cache.keys import (
 )
 from slide2vec import PreprocessingConfig
 
+from soma.data.manifests import AnnotationManifest, ImageManifest
+
 COORDS_DIR_NAME = "coords"
 MASKS_DIR_NAME = "masks"
 _COORDS_FIELDNAMES = ("x", "y")
@@ -101,24 +103,25 @@ def _has_mask_crops(crop_dir: Path, coords: list[tuple[int, int]]) -> bool:
 def resolve_roi_sampling_cache(
     *,
     cache_root: Path,
-    dataset: Any,
+    images: ImageManifest,
+    annotations: AnnotationManifest,
     preprocessing: PreprocessingConfig,
     spacing_policy: str = "strict",
 ) -> RoiSamplingCacheResolution:
-    """Resolve the ``roi_sampling`` cache entry for ``dataset`` under ``cache_root``.
+    """Resolve the ``roi_sampling`` cache entry for the slides of ``images`` (their
+    annotation rasters in ``annotations``) under ``cache_root``.
 
     Initializes a fresh directory (metadata + manifest) when none exists, hard-errors
     on a metadata mismatch (the existing cache-metadata contract), and otherwise loads
     every slide's coords artifact and checks its ROIs' mask crops — hits land in
-    ``coords_by_id``, the rest are misses to re-sample. ``dataset`` is duck-typed over ``samples``/``sample_ids`` so the
-    segmentation slide manifest fits.
+    ``coords_by_id``, the rest are misses to re-sample.
     """
     metadata = _build_roi_sampling_cache_metadata(
         preprocessing=preprocessing, spacing_policy=spacing_policy
     )
     key = str(metadata["cache_key"])
-    cache_ids = tuple(sorted(str(sample_id) for sample_id in dataset.sample_ids))
-    cache_stem_by_id = _sample_stems_for_roi_sampling(dataset)
+    cache_ids = tuple(sorted(str(sample_id) for sample_id in images.sample_ids))
+    cache_stem_by_id = _sample_stems_for_roi_sampling(images, annotations)
     cache_dir = cache_root / "roi_sampling" / key
     metadata_path = cache_dir / CACHE_METADATA_NAME
     manifest_path = cache_dir / MANIFEST_NAME
@@ -146,7 +149,7 @@ def resolve_roi_sampling_cache(
             raise ValueError(mismatch_message)
         metadata = existing
     else:
-        _write_manifest(manifest_path, dataset_manifest_rows(dataset))
+        _write_manifest(manifest_path, dataset_manifest_rows(images))
         _write_metadata(metadata_path, metadata)
 
     coords_by_id: dict[str, list[tuple[int, int]]] = {}

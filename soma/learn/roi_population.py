@@ -12,11 +12,10 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import torch
 from hs2p.wsi.reader import resolve_backend
-
-from soma.data._legacy import LegacyRecord
 
 logger = logging.getLogger(__name__)
 
@@ -170,8 +169,8 @@ def _load_population(
 
 def resolve_segmentation_roi_population(
     cache_root: str | Path,
-    records: Sequence[LegacyRecord],
-    target_fn: Callable[[LegacyRecord], dict[str, torch.Tensor]],
+    identity: Sequence[Mapping[str, Any]],
+    target_fn: Callable[[str], dict[str, torch.Tensor]],
     *,
     num_classes: int,
     target_identity: Mapping[str, object],
@@ -181,22 +180,24 @@ def resolve_segmentation_roi_population(
 ) -> SegmentationRoiPopulation:
     """Load exact ROI class counts, or compute and publish them atomically once.
 
-    The key fingerprints what each target is read from: a slide-manifest ROI's stored
-    mask crop (``label_mask_crop_path``), never its annotation raster, and any other
-    record's mask (``label_mask_path``).
+    ``identity`` says, per sample and in population order, what its target is read from
+    (``sample_id``, ``slide_id``, ``label_mask_path``, ``label_mask_crop_path``,
+    ``region``, ``spacing_at_level_0``: :func:`soma.extraction.rois.label_map_identity`);
+    ``target_fn(sample_id)`` reads it. The key fingerprints a slide-manifest ROI's stored
+    mask crop, never its annotation raster, and any other sample's mask.
     """
     mask_paths = sorted(
         {
-            str(record.label_mask_path)
-            for record in records
-            if record.region is None and record.label_mask_path is not None
+            str(row["label_mask_path"])
+            for row in identity
+            if row["region"] is None and row["label_mask_path"] is not None
         }
     )
     crop_paths = sorted(
         {
-            str(record.label_mask_crop_path)
-            for record in records
-            if record.region is not None and record.label_mask_crop_path is not None
+            str(row["label_mask_crop_path"])
+            for row in identity
+            if row["region"] is not None and row["label_mask_crop_path"] is not None
         }
     )
     fingerprints = source_fingerprint_cache if source_fingerprint_cache is not None else {}
@@ -232,20 +233,20 @@ def resolve_segmentation_roi_population(
         "records": sorted(
             [
                 {
-                    "sample_id": record.sample_id,
-                    "slide_id": record.slide_id,
+                    "sample_id": row["sample_id"],
+                    "slide_id": row["slide_id"],
                     "label_mask_path": (
-                        None if record.label_mask_path is None else str(record.label_mask_path)
+                        None if row["label_mask_path"] is None else str(row["label_mask_path"])
                     ),
                     "label_mask_crop_path": (
                         None
-                        if record.label_mask_crop_path is None
-                        else str(record.label_mask_crop_path)
+                        if row["label_mask_crop_path"] is None
+                        else str(row["label_mask_crop_path"])
                     ),
-                    "region": None if record.region is None else list(record.region),
-                    "spacing_at_level_0": record.spacing_at_level_0,
+                    "region": None if row["region"] is None else list(row["region"]),
+                    "spacing_at_level_0": row["spacing_at_level_0"],
                 }
-                for record in records
+                for row in identity
             ],
             key=lambda row: str(row["sample_id"]),
         ),
@@ -257,7 +258,7 @@ def resolve_segmentation_roi_population(
     )
     cache_key = hashlib.sha256(canonical_identity.encode("utf-8")).hexdigest()[:16]
     path = Path(cache_root) / cache_key / "population.json"
-    sample_ids = tuple(record.sample_id for record in records)
+    sample_ids = tuple(str(row["sample_id"]) for row in identity)
     cached = _load_population(
         path, sample_ids=sample_ids, num_classes=num_classes, cache_key=cache_key
     )
@@ -265,7 +266,7 @@ def resolve_segmentation_roi_population(
         logger.info("ROI population cache hit: %s (%d ROIs)", path, len(cached.sample_ids))
         return cached
 
-    logger.info("Resolving ROI population cache: %s (%d ROIs)", path, len(records))
+    logger.info("Resolving ROI population cache: %s (%d ROIs)", path, len(sample_ids))
     with _exclusive_lock(path.with_suffix(f"{path.suffix}.lock")):
         cached = _load_population(
             path, sample_ids=sample_ids, num_classes=num_classes, cache_key=cache_key
@@ -281,8 +282,8 @@ def resolve_segmentation_roi_population(
         if workers < 1:
             raise ValueError(f"workers must be >= 1, got {workers}")
 
-        def count_record(record: LegacyRecord) -> tuple[int, ...]:
-            mask = target_fn(record)["mask"].reshape(-1)
+        def count_record(sample_id: str) -> tuple[int, ...]:
+            mask = target_fn(sample_id)["mask"].reshape(-1)
             annotated = mask[(mask >= 0) & (mask < num_classes)].to(torch.int64)
             return tuple(
                 int(value)
@@ -291,23 +292,23 @@ def resolve_segmentation_roi_population(
 
         def iter_rows():
             if workers == 1:
-                yield from map(count_record, records)
+                yield from map(count_record, sample_ids)
                 return
             # Python 3.11's Executor.map submits its entire iterable eagerly. Bound
             # submissions so a 125k-ROI population does not allocate 125k Futures.
             with ThreadPoolExecutor(max_workers=workers) as executor:
-                for start in range(0, len(records), 1000):
-                    yield from executor.map(count_record, records[start : start + 1000])
+                for start in range(0, len(sample_ids), 1000):
+                    yield from executor.map(count_record, sample_ids[start : start + 1000])
 
         rows = []
-        progress_every = max(1, min(1000, len(records)))
+        progress_every = max(1, min(1000, len(sample_ids)))
         for completed, row in enumerate(iter_rows(), start=1):
             rows.append(row)
-            if completed % progress_every == 0 or completed == len(records):
+            if completed % progress_every == 0 or completed == len(sample_ids):
                 logger.info(
                     "Building ROI population: %d/%d masks counted",
                     completed,
-                    len(records),
+                    len(sample_ids),
                 )
         population = SegmentationRoiPopulation(
             sample_ids=sample_ids,

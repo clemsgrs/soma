@@ -23,26 +23,14 @@ def test_extract_cache_prepares_features_without_starting_training(
         sample_ids = ["roi-a", "roi-b"]
         feature_dim = 1280
         grid_shape = (37, 37)
+        rois = SimpleNamespace(children={"roi-a": "slide-a", "roi-b": "slide-b"})
 
-    class FakeFeatureExtractor:
-        def __init__(self, dataset, encoder, preprocessing, **kwargs):
-            assert dataset.sample_ids == ["slide-a", "slide-b", "slide-c"]
-            # Annotation-sampled ROI grids over whole slides, as the pipeline selects them.
-            assert kwargs["shape"] == "grid"
-            assert kwargs["unit"] == "slide"
-
-        def extract(self):
-            return SimpleNamespace(
-                source=FakeStore(),
-                dataset=SimpleNamespace(
-                    sample_ids=["roi-a", "roi-b"],
-                    samples={
-                        "roi-a": SimpleNamespace(slide_id="slide-a"),
-                        "roi-b": SimpleNamespace(slide_id="slide-b"),
-                    },
-                ),
-                provenance=SimpleNamespace(zero_roi_sample_ids=("slide-c",)),
-            )
+    def fake_extract(images, *, annotations, unit, dense, **_options):
+        assert images.sample_ids == ["slide-a", "slide-b", "slide-c"]
+        # Annotation-sampled ROI grids over whole slides, as the pipeline selects them.
+        assert annotations is parent_annotations
+        assert unit == "slide" and dense is not None
+        return FakeStore()
 
     output = tmp_path / "cache_extraction.json"
     config_path = tmp_path / "uniform.yaml"
@@ -57,18 +45,22 @@ def test_extract_cache_prepares_features_without_starting_training(
         ),
         run=SimpleNamespace(output_dir=tmp_path / "output"),
     )
-    parent_dataset = SimpleNamespace(sample_ids=["slide-a", "slide-b", "slide-c"])
+    parent_images = SimpleNamespace(sample_ids=["slide-a", "slide-b", "slide-c"])
+    parent_annotations = object()
     monkeypatch.setattr(
         extract_cache, "ExperimentConfig", SimpleNamespace(from_yaml=lambda _path: config)
     )
     monkeypatch.setattr(extract_cache, "check", lambda _config: None)
     monkeypatch.setattr(extract_cache, "learner_shape", lambda _config: "grid")
-    monkeypatch.setattr(extract_cache, "legacy_samples_from_csv", lambda _path: parent_dataset)
+    monkeypatch.setattr(extract_cache, "ImageManifest", SimpleNamespace(from_csv=lambda _path: parent_images))
+    monkeypatch.setattr(
+        extract_cache, "AnnotationManifest", SimpleNamespace(from_csv=lambda _path: parent_annotations)
+    )
     monkeypatch.setattr(extract_cache, "resolve_pipeline_preprocessing", lambda _config: object())
     monkeypatch.setattr(extract_cache, "resolve_pipeline_dense", lambda _config: object())
     # The pipeline's own input-mode inference decides the unit (asserted by the fake).
     monkeypatch.setattr(extract_cache, "extraction_unit", lambda _config: "slide")
-    monkeypatch.setattr(extract_cache, "FeatureExtractor", FakeFeatureExtractor)
+    monkeypatch.setattr(extract_cache, "extract", fake_extract)
 
     payload = extract_cache.extract_verified_cache(
         config_path=config_path,

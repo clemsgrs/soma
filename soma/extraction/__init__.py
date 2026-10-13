@@ -25,20 +25,13 @@ from soma.extraction.extractor import (
     _release_parent_cuda_state,
     _run_with_coordinates,
 )
-from soma.extraction.facade import FeatureExtractor
-from soma.extraction_contracts import (
-    ExtractionArtifacts,
-    FeatureExtractionResult,
-    FeatureProvenance,
-    FeatureSource,
-    PooledFeatureSource,
-)
+from soma.extraction.facade import extract
+from soma.extraction.rois import RoiSet
+from soma.extraction_contracts import FeatureSource, PooledFeatureSource
 
 __all__ = [
-    "FeatureExtractor",
-    "ExtractionArtifacts",
-    "FeatureExtractionResult",
-    "FeatureProvenance",
+    "extract",
+    "RoiSet",
     "FeatureSource",
     "PooledFeatureSource",
     "_validate_runtime",

@@ -11,8 +11,7 @@ import torch
 import yaml
 
 from soma.config import CRoMaOptions, EncoderLeaf, ExperimentConfig, FeaturesConfig
-from soma.data._legacy import legacy_samples_from_csv
-from soma.data._legacy import legacy_folds_from_csv
+from soma.data import Cohort, ImageManifest
 from soma.data import CachedSetSource
 from soma.pipeline.layout import (
     build_experiment_spec,
@@ -172,8 +171,10 @@ def test_dataset_populates_literal_optional_group_id(tmp_path: Path):
         "sample_id,image_path,label\ns0,/slides/s0.png,A\n", encoding="utf-8"
     )
 
-    grouped = legacy_samples_from_csv(with_group).samples["s0"]
-    ordinary = legacy_samples_from_csv(without_group).samples["s0"]
+    def record(csv):
+        return Cohort.from_frames(pd.read_csv(csv).assign(split="test"), targets=["label"]).record("s0")
+
+    grouped, ordinary = record(with_group), record(without_group)
 
     # group_id is plain metadata now: the representation protocol reads it from there.
     assert grouped.metadata == {"group_id": "patient-7", "site": "north"}
@@ -373,8 +374,8 @@ def _representation_inputs(
             sample_id, torch.tensor([float(index), float(index + 10)])
         )
         torch.save(tensor, feature_dir / f"{sample_id}.pt")
-    dataset = legacy_samples_from_csv(dataset_csv)
-    return dataset, legacy_folds_from_csv(splits_csv, dataset), CachedSetSource(feature_dir)
+    cohort = Cohort.from_csv(dataset_csv, splits_csv, targets=["label"])
+    return cohort, ImageManifest.from_csv(dataset_csv), CachedSetSource(feature_dir)
 
 
 def _croma_cohort(
@@ -405,7 +406,7 @@ def _croma_tensors(rows: list[tuple[str, str, str, str]]) -> dict[str, torch.Ten
 def test_representation_forwards_manifest_order_and_maps_croma_result(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    dataset, splits, store = _representation_inputs(
+    cohort, images, store = _representation_inputs(
         tmp_path,
         rows=[
             ("z", "A", "g0", "north"),
@@ -428,8 +429,8 @@ def test_representation_forwards_manifest_order_and_maps_croma_result(
     monkeypatch.setattr("croma.CRoMa.compute", staticmethod(fake_compute))
     result = evaluate_representation(
         feature_store=store,
-        dataset=dataset,
-        splits=splits,
+        cohort=cohort,
+        images=images,
         representation=CRoMaOptions(confounder_column="site", split="test"),
         run_dir=tmp_path / "run",
     )
@@ -462,7 +463,7 @@ def test_representation_forwards_manifest_order_and_maps_croma_result(
 
 def test_representation_runs_the_installed_croma(tmp_path: Path):
     rows = _croma_cohort()
-    dataset, splits, store = _representation_inputs(
+    cohort, images, store = _representation_inputs(
         tmp_path,
         rows=rows,
         split_rows=[(0, row[0], "test") for row in rows],
@@ -471,8 +472,8 @@ def test_representation_runs_the_installed_croma(tmp_path: Path):
 
     result = evaluate_representation(
         feature_store=store,
-        dataset=dataset,
-        splits=splits,
+        cohort=cohort,
+        images=images,
         representation=CRoMaOptions(confounder_column="site", split="test"),
         run_dir=tmp_path / "run",
     )
@@ -502,7 +503,7 @@ def test_representation_rejects_nonfinite_croma_results(
     result_overrides: dict[str, float],
     message: str,
 ):
-    dataset, splits, store = _representation_inputs(
+    cohort, images, store = _representation_inputs(
         tmp_path,
         rows=[("s0", "A", "g0", "north")],
         split_rows=[(0, "s0", "test")],
@@ -519,8 +520,8 @@ def test_representation_rejects_nonfinite_croma_results(
     with pytest.raises(ValueError, match=message):
         evaluate_representation(
             feature_store=store,
-            dataset=dataset,
-            splits=splits,
+            cohort=cohort,
+            images=images,
             representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=tmp_path / "run",
         )
@@ -530,7 +531,7 @@ def test_representation_rejects_nonfinite_croma_results(
 def test_invalid_representation_rerun_removes_stale_summary(tmp_path: Path):
     # A single site leaves no other-confounder neighbours, so CRoMa cannot score any sample.
     rows = _croma_cohort(sites=("north",))
-    dataset, splits, store = _representation_inputs(
+    cohort, images, store = _representation_inputs(
         tmp_path,
         rows=rows,
         split_rows=[(0, row[0], "test") for row in rows],
@@ -545,8 +546,8 @@ def test_invalid_representation_rerun_removes_stale_summary(tmp_path: Path):
     with pytest.raises(RuntimeError, match="scoreable"):
         evaluate_representation(
             feature_store=store,
-            dataset=dataset,
-            splits=splits,
+            cohort=cohort,
+            images=images,
             representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=run_dir,
         )
@@ -575,7 +576,7 @@ def test_representation_rejects_invalid_selected_rows_or_features(
     # A blank label is now rejected by Dataset itself; the other rows reach the
     # representation evaluator, which owns the group/confounder/rank checks.
     with pytest.raises(ValueError, match=message):
-        dataset, splits, store = _representation_inputs(
+        cohort, images, store = _representation_inputs(
             tmp_path,
             rows=rows,
             split_rows=[(0, "s0", "test")],
@@ -583,15 +584,15 @@ def test_representation_rejects_invalid_selected_rows_or_features(
         )
         evaluate_representation(
             feature_store=store,
-            dataset=dataset,
-            splits=splits,
+            cohort=cohort,
+            images=images,
             representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=tmp_path / "run",
         )
 
 
 def test_representation_split_must_be_nonempty_and_in_exactly_one_fold(tmp_path: Path):
-    dataset, splits, store = _representation_inputs(
+    cohort, images, store = _representation_inputs(
         tmp_path,
         rows=[("s0", "A", "g0", "north"), ("s1", "B", "g1", "south")],
         split_rows=[(0, "s0", "test"), (1, "s1", "test")],
@@ -600,15 +601,15 @@ def test_representation_split_must_be_nonempty_and_in_exactly_one_fold(tmp_path:
     with pytest.raises(ValueError, match="exactly one fold"):
         evaluate_representation(
             feature_store=store,
-            dataset=dataset,
-            splits=splits,
+            cohort=cohort,
+            images=images,
             representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=tmp_path / "run",
         )
 
 
 def test_representation_split_must_exist(tmp_path: Path):
-    dataset, splits, store = _representation_inputs(
+    cohort, images, store = _representation_inputs(
         tmp_path,
         rows=[("s0", "A", "g0", "north")],
         split_rows=[(0, "s0", "test")],
@@ -617,8 +618,8 @@ def test_representation_split_must_exist(tmp_path: Path):
     with pytest.raises(ValueError, match="non-empty cohort in exactly one fold"):
         evaluate_representation(
             feature_store=store,
-            dataset=dataset,
-            splits=splits,
+            cohort=cohort,
+            images=images,
             representation=CRoMaOptions(confounder_column="site", split="test_external"),
             run_dir=tmp_path / "run",
         )
@@ -638,11 +639,11 @@ def test_representation_rejects_duplicate_split_membership(tmp_path: Path):
     )
 
     with pytest.raises(ValueError, match="Duplicate sample_id.*s0"):
-        legacy_folds_from_csv(splits_csv, legacy_samples_from_csv(dataset_csv))
+        Cohort.from_csv(dataset_csv, splits_csv, targets=["label"])
 
 
 def test_representation_rejects_missing_selected_feature(tmp_path: Path):
-    dataset, splits, store = _representation_inputs(
+    cohort, images, store = _representation_inputs(
         tmp_path,
         rows=[("s0", "A", "g0", "north")],
         split_rows=[(0, "s0", "test")],
@@ -652,8 +653,8 @@ def test_representation_rejects_missing_selected_feature(tmp_path: Path):
     with pytest.raises(ValueError, match="Missing features.*s0"):
         evaluate_representation(
             feature_store=store,
-            dataset=dataset,
-            splits=splits,
+            cohort=cohort,
+            images=images,
             representation=CRoMaOptions(confounder_column="site", split="test"),
             run_dir=tmp_path / "run",
         )
@@ -716,12 +717,12 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
 
     monkeypatch.setattr("soma.pipeline.layout.datetime", FrozenDateTime)
     monkeypatch.setattr("importlib.metadata.version", lambda name: "9.8.7")
-    dataset, _splits, store = _representation_inputs(
+    cohort, _images, store = _representation_inputs(
         tmp_path,
         rows=[("s0", "A", "g0", "north")],
         split_rows=[(0, "s0", "test")],
     )
-    del dataset, store
+    del cohort, store
     config = experiment(
         tmp_path / 'dataset.csv',
         tmp_path / 'splits.csv',

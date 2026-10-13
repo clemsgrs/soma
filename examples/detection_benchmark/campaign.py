@@ -728,15 +728,15 @@ def _decode_cell_points(
     from soma.benchmarks.ocelot import _locate_run_config
     from soma.class_scheme import resolve_classes
     from soma.config import ExperimentConfig
-    from soma.data import AnnotationManifest, PointSource
-    from soma.data._legacy import legacy_samples_from_csv
+    from soma.data import AnnotationManifest, Cohort, PointSource
     from soma.evaluation import PointPredictions, sweep_threshold
 
     spec = dataset_spec(dataset)
     config_path = _locate_run_config(run_dir)
     cfg = ExperimentConfig.from_yaml(config_path)
     folder = config_path.parent if fold_index is None else config_path.parent / f"fold_{fold_index}"
-    manifest = legacy_samples_from_csv(cfg.cohort.records)
+    # The tile origins stitching folds back to ROIs are the cohort's record metadata.
+    manifest = Cohort.from_csv(cfg.cohort.records, cfg.cohort.splits, allow_missing_test=True)
     _, _, class_remap, dropped = resolve_classes(
         cfg.learner.params["head"].params, excluded_key="drop", subject="detection"
     )
