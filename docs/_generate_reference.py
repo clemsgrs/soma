@@ -279,11 +279,11 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 # ``soma/benchmark/<name>/reference.csv``) and rendered as a readable ``list-table`` — the
 # gate band beside the measured cells, a linked source instead of dumping the CSV's verbose
 # ``source`` column (no hand-typed numbers, no drift, no ``TBD``). A generator + a
-# checked-in file kept in sync by ``tests/test_docs.py`` mirrors the ``cli.rst`` mechanism.
+# checked-in file kept in sync by ``tests/repo/test_docs.py`` mirrors the ``cli.rst`` mechanism.
 
 # Maintainers: edit this file for prose, the ``soma/benchmark/<name>/`` package for a protocol, and
 # ``soma/benchmark/<name>/reference.csv`` for references. Regenerate the pages with
-# ``python docs/_generate_reference.py``; ``tests/test_docs.py`` checks parity.
+# ``python docs/_generate_reference.py``; ``tests/repo/test_docs.py`` checks parity.
 
 # Upstream provenance for each benchmark family's published reference band — the leaderboard
 # the numbers were captured from, rendered as one clickable link next to the reference

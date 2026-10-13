@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tests.dense_literal_encoder import _LiteralPatchEncoder, register_literal_encoder
+from tests.dense_literal_encoder import LiteralPatchEncoder, register_literal_encoder
 from tests.e2e.harness import Artifact
 
 
@@ -45,13 +45,13 @@ def encoded_images(monkeypatch) -> list[int]:
     """Counts images the encoder sees, so a scenario can prove a cache hit encoded nothing."""
     seen: list[int] = []
     for method in ("encode_tiles", "encode_tiles_dense", "encode_tiles_dense_prenorm"):
-        original = getattr(_LiteralPatchEncoder, method)
+        original = getattr(LiteralPatchEncoder, method)
 
         def counting(self, batch, _original=original):
             seen.append(int(batch.shape[0]))
             return _original(self, batch)
 
-        monkeypatch.setattr(_LiteralPatchEncoder, method, counting)
+        monkeypatch.setattr(LiteralPatchEncoder, method, counting)
     return seen
 
 

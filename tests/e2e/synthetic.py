@@ -18,7 +18,7 @@ from PIL import Image
 
 SPACING_UM = 0.5
 _RESOLUTION = (1e4 / SPACING_UM, 1e4 / SPACING_UM)  # pixels per cm
-_BACKGROUND = np.array([240, 238, 240])
+BACKGROUND = np.array([240, 238, 240])
 _LIGHT = np.array([215, 150, 205])
 _DARK = np.array([95, 40, 125])
 
@@ -41,7 +41,7 @@ def _tissue_colour(severity: float) -> np.ndarray:
     return _LIGHT + severity * (_DARK - _LIGHT)
 
 
-def _noisy(image: np.ndarray, rng: np.random.Generator, amplitude: int) -> np.ndarray:
+def noisy(image: np.ndarray, rng: np.random.Generator, amplitude: int) -> np.ndarray:
     noise = rng.integers(-amplitude, amplitude, image.shape)
     return np.clip(image.astype(np.int16) + noise, 0, 255).astype(np.uint8)
 
@@ -136,9 +136,9 @@ def make_slide_cohort(root: Path, n: int = 32, size: int = 384, seed: int = 0) -
     disc = ((xx - size / 2) ** 2 + (yy - size / 2) ** 2) < (size * 0.4) ** 2
     for sample_id, z in zip(sample_ids, severity):
         image = np.empty((size, size, 3), dtype=np.int16)
-        image[:] = _BACKGROUND
+        image[:] = BACKGROUND
         image[disc] = _tissue_colour(z)
-        write_tiff(slides / f"{sample_id}.tif", _noisy(image, rng, 15))
+        write_tiff(slides / f"{sample_id}.tif", noisy(image, rng, 15))
 
     # Deal the severity-ranked slides round-robin: 1/2 train, 1/4 tune, 1/4 test.
     ranked = np.argsort(severity)
@@ -231,7 +231,7 @@ def make_marker_cohort(root: Path, n_pairs: int = 24, seed: int = 0) -> MarkerCo
                 where = rng.choice(n_tiles, n_markers, replace=False)
                 colours[where] = _MARKER + rng.integers(-10, 11, (n_markers, 3))
             image = np.empty((size, size, 3), dtype=np.int16)
-            image[:] = _BACKGROUND
+            image[:] = BACKGROUND
             for k, colour in enumerate(colours):
                 y = 2 * tile + (k // cols) * tile
                 x = 2 * tile + (k % cols) * tile
@@ -267,7 +267,7 @@ def make_tile_dataset(root: Path, n: int = 32, size: int = 64, seed: int = 0) ->
         severity = rng.uniform(0.6, 1.0) if label else rng.uniform(0.0, 0.4)
         image = np.empty((size, size, 3), dtype=np.int16)
         image[:] = _tissue_colour(severity)
-        Image.fromarray(_noisy(image, rng, 30)).save(tiles / f"{sample_id}.png")
+        Image.fromarray(noisy(image, rng, 30)).save(tiles / f"{sample_id}.png")
     dataset_csv = root / "dataset.csv"
     pd.DataFrame(
         {
@@ -282,7 +282,7 @@ def make_tile_dataset(root: Path, n: int = 32, size: int = 64, seed: int = 0) ->
     return dataset_csv, splits_csv
 
 
-_CLASS_COLOURS = {1: _LIGHT, 2: _DARK}
+CLASS_COLOURS = {1: _LIGHT, 2: _DARK}
 
 
 def make_dense_dataset(
@@ -304,7 +304,7 @@ def make_dense_dataset(
     yy, xx = np.ogrid[:size, :size]
     for sample_id in sample_ids:
         image = np.empty((size, size, 3), dtype=np.int16)
-        image[:] = _BACKGROUND
+        image[:] = BACKGROUND
         mask = np.zeros((size, size), dtype=np.uint8)
         points = []
         for cls in (1, 2):
@@ -314,11 +314,11 @@ def make_dense_dataset(
                     radius = int(rng.integers(8, 16))
                     disc = (xx - x) ** 2 + (yy - y) ** 2 < radius**2
                     mask[disc] = cls
-                    image[disc] = _CLASS_COLOURS[cls]
+                    image[disc] = CLASS_COLOURS[cls]
                 else:
-                    image[y - 5 : y + 6, x - 5 : x + 6] = _CLASS_COLOURS[cls]
+                    image[y - 5 : y + 6, x - 5 : x + 6] = CLASS_COLOURS[cls]
                     points.append((x, y, cls - 1))
-        write_tiff(rois / f"{sample_id}.tif", _noisy(image, rng, 10))
+        write_tiff(rois / f"{sample_id}.tif", noisy(image, rng, 10))
         if kind == "segmentation":
             Image.fromarray(mask).save(labels / f"{sample_id}.png")
         else:

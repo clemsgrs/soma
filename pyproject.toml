@@ -113,9 +113,10 @@ markers = [
     "e2e: end-to-end scenario through the soma CLI on synthetic data (tests/e2e/)",
 ]
 
-# The import rule (design §2, ADR 0022). CI runs `lint-imports` before the suite.
+# The import rule (design §2, ADR 0022). CI runs `lint-imports` before the suite. The tests
+# are a second root package so contract 5 can hold them to the public API (ADR 0023).
 [tool.importlinter]
-root_package = "soma"
+root_packages = ["soma", "tests"]
 
 [[tool.importlinter.contracts]]
 id = "layers"
@@ -174,4 +175,19 @@ source_modules = [
     "soma.discovery",
 ]
 forbidden_modules = ["soma.config", "soma.plan"]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+id = "tests-public-api"
+name = "The tests import no private module"
+type = "forbidden"
+source_modules = ["tests"]
+forbidden_modules = [
+    "soma._internal",
+    "soma.extract.cache._types",
+    "soma.testing._encoder",
+    "soma.testing._errors",
+    "soma.testing._learner",
+    "soma.testing._task_head",
+]
 allow_indirect_imports = true

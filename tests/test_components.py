@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import gc
 import inspect
 import os
@@ -16,7 +15,6 @@ import pytest
 import soma
 import soma.benchmark  # noqa: F401  (registers the benchmarks kind: option C)
 from soma import discovery
-from soma._internal.params import is_run_decided
 from soma.registry import Registry
 
 
@@ -144,34 +142,6 @@ def test_the_cli_imports_soma_benchmark_at_startup():
     assert result.stdout.strip() == "True"
 
 
-def _soma_entries():
-    for kind in DOMAINS:
-        if kind == "encoders":  # slide2vec's, not soma's
-            continue
-        for entry in soma.components(kind):
-            yield pytest.param(kind, entry["name"], id=f"{kind}:{entry['name']}")
-
-
-@pytest.mark.parametrize(("kind", "name"), list(_soma_entries()))
-def test_every_soma_entry_declares_params_mirroring_its_constructor(kind, name):
-    registry = discovery.registry(kind)
-    target = registry.get(name)
-    signature = inspect.signature(target.build_config if kind == "benchmarks" else target)
-    defaults = registry.info(name)["params"]
-
-    assert defaults is not None, f"{kind} '{name}' is registered without params"
-    # A field the run decides (a class scheme, a derived size) is the documented exception.
-    run_decided = {f.name for f in dataclasses.fields(registry._entries[name].params) if is_run_decided(f)}
-    for field, default in defaults.items():
-        if field in run_decided:
-            continue
-        assert field in signature.parameters, f"{kind} '{name}': {field!r} is not a constructor keyword"
-        declared = signature.parameters[field].default
-        if declared is not inspect.Parameter.empty:
-            assert default == declared, f"{kind} '{name}': {field} defaults to {default!r}, not {declared!r}"
-    assert registry.validate(name, {}) == {}  # the defaults validate
-
-
 def test_a_domain_lists_its_entries_with_params_and_defaults():
     abmil = _entry("aggregators", "abmil")
 
@@ -281,26 +251,6 @@ def _plan(tmp_path, **kwargs):
     return resolve(config, load_cohort(config))
 
 
-def test_a_dotted_path_naming_a_registered_class_is_that_entry(tmp_path):
-    """The plan keeps the name as written, so it reloads in a fresh process (importing the
-    path registers the class); its params take the entry's defaults, and name-keyed
-    routing (``clam_mb``'s branch-aware head) sees the entry's key."""
-    from soma.models.aggregators.registry import aggregator_registry
-    from soma.pipeline.build import _bag_head_class
-    from soma.models.heads import BranchAwareClassificationHead, MulticlassClassificationHead
-
-    dotted = "soma.models.aggregators.mil.clam.CLAM_MB"
-    plan = _plan(tmp_path, aggregator=dotted, head="multiclass_classification")
-
-    aggregator = plan.learner.params["aggregator"]
-    assert aggregator.name == dotted
-    assert aggregator.params == aggregator_registry.canonical_params("clam_mb")
-    key = aggregator_registry.key_of(aggregator.name)
-    assert key == "clam_mb"
-    head_cls = _bag_head_class(MulticlassClassificationHead, task_name="multiclass_classification", aggregator_key=key)
-    assert head_cls is BranchAwareClassificationHead
-
-
 def test_a_dotted_survival_head_selects_its_objective_by_class(tmp_path):
     from soma.models.heads.survival import CoxSurvivalHead, resolve_survival_task
 
@@ -309,18 +259,6 @@ def test_a_dotted_survival_head_selects_its_objective_by_class(tmp_path):
 
     assert plan.learner.params["head"].name == dotted
     assert resolve_survival_task(dotted) == (CoxSurvivalHead, "cox")
-
-
-def test_a_dotted_registered_decoder_takes_its_entry_s_defaults():
-    from soma.config import Component
-    from soma.models.decoders.registry import decoder_registry
-    from soma.plan import _expand
-
-    dotted = "soma.models.decoders.lightweight_conv.LightweightConvDecoder"
-    leaf = _expand(decoder_registry, Component(dotted))
-    assert leaf.name == dotted
-    assert leaf.params == decoder_registry.canonical_params("lightweight_conv")
-    assert decoder_registry.key_of(dotted) == "lightweight_conv"
 
 
 def test_an_unregistered_dotted_path_keeps_its_name_and_params_verbatim(aggregators, tmp_path):

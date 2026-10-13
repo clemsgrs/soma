@@ -17,9 +17,8 @@ import yaml
 from PIL import Image
 
 from soma.benchmark import get_benchmark
-from soma.benchmark.run import _from_run_dir_axes
 from slide2vec import ExecutionOptions
-from soma.benchmark.leaderboard import load_run_record
+from soma.benchmark.leaderboard import axis_value, load_run_record
 from tests.e2e.harness import CPU_EXECUTION
 
 GENES = ["ERBB2", "ESR1", "MKI67"]
@@ -93,7 +92,8 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
     status = yaml.safe_load(run_yaml.read_text())["status"] if run_yaml.is_file() else None
     artifact.check_equal("metadata/run_status", status, "completed")
     artifact.check_equal("metadata/run_record", load_run_record(run) is not None, True)
-    artifact.check_equal("metadata/encoder_axis", _from_run_dir_axes(benchmark, run), {"encoder": encoder_name})
+    axes = {axis: axis_value(load_run_record(run).canonical_spec, axis) for axis in benchmark.facet.varied}
+    artifact.check_equal("metadata/encoder_axis", axes, {"encoder": encoder_name})
     artifact.assert_passed()
 
 
