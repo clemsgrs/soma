@@ -25,7 +25,7 @@ class Registry:
 
     ``bundled_module`` names a module that registers components shipped with soma but
     defined outside the registry's own package (the benchmark-private heads and decoders
-    under :mod:`soma.benchmarks`). It is imported once, on the first lookup that misses,
+    under :mod:`soma.benchmark`). It is imported once, on the first lookup that misses,
     so a saved config naming one of those components loads in a fresh process without the
     caller importing that module first.
     """

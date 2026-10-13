@@ -10,7 +10,7 @@ from typing import Any, cast
 import pytest
 from slide2vec.encoders import encoder_registry
 
-from soma.benchmarks.croma import (
+from soma.benchmark.croma import (
     CROMA_0_3_ENCODER_PANEL,
     validate_croma_0_3_encoder_panel,
 )

@@ -18,12 +18,12 @@ from pathlib import Path
 import pytest
 
 from tests.experiment_configs import experiment
-from soma.benchmarks import get_benchmark
-from soma.benchmarks import registry as registry_mod
-from soma.benchmarks.registry import Facet, ReferenceRow, register_benchmark
+from soma.benchmark import get_benchmark
+from soma.benchmark import registry as registry_mod
+from soma.benchmark.registry import Facet, ReferenceRow, register_benchmark
 from tests.extraction_configs import extraction
 from soma.config import CacheOptions, FeaturesConfig
-from soma.leaderboard import (
+from soma.benchmark.leaderboard import (
     LeaderboardFacet,
     LeaderboardRow,
     LeaderboardTable,

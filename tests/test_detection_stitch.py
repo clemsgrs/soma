@@ -1,4 +1,4 @@
-"""Tests for the per-ROI tile stitch (soma.benchmarks.detection_benchmark)."""
+"""Tests for the per-ROI tile stitch (soma.benchmark.detection)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import numpy as np
 
 import pytest
 
-from soma.benchmarks.detection_benchmark import (
+from soma.benchmark.detection import (
     SamplePrediction,
     _greedy_point_nms,
     score_dataset_points,

@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from soma.benchmarks.froc import (
+from soma.benchmark.monkey.froc import (
     DEFAULT_FP_THRESHOLDS,
     MNL_CLASS_NAME,
     MONKEY_CLASS_NAMES,

@@ -11,7 +11,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import soma.curation.segmentation_coverage as cov
+import soma.benchmark.coverage as cov
 
 PIXEL_MAPPING = {"background": 0, "tumor": 1, "stroma": 2}
 _CANNED_SUMMARY = {

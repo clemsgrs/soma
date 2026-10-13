@@ -1,6 +1,6 @@
 """Importable ``run_benchmark()`` orchestration extracted from the reproduce CLI (#370).
 
-``soma.benchmarks.run_benchmark`` must carry everything ``soma reproduce`` provides —
+``soma.benchmark.run_benchmark`` must carry everything ``soma reproduce`` provides —
 the canonical-seed loop, reference-row resolution and tolerance status, provenance
 stamping, and the results-ledger append — with a parameterizable ``results_root`` so an
 external harness (the FMTF benchmark leaderboard) can host its own committed ledger.
@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-import soma.benchmarks.run as run_mod
-from soma.benchmarks import (
+import soma.benchmark.run as run_mod
+from soma.benchmark import (
     BenchmarkRunResult,
     MeasuredRow,
     MetricResult,
@@ -24,8 +24,8 @@ from soma.benchmarks import (
     reproduced_rows,
     run_benchmark,
 )
-from soma.benchmarks import registry as registry_mod
-from soma.benchmarks.registry import Facet, ReferenceRow, register_benchmark
+from soma.benchmark import registry as registry_mod
+from soma.benchmark.registry import Facet, ReferenceRow, register_benchmark
 
 
 class _LedgerBenchmark:
@@ -42,7 +42,7 @@ class _LedgerBenchmark:
         self.curate_calls = 0
 
     def curate(self, raw_root, out_dir):
-        from soma.curation.manifest import CuratedManifest
+        from soma.benchmark.curation import CuratedManifest
 
         self.curate_calls += 1
         out_dir = Path(out_dir)
@@ -104,10 +104,10 @@ def _run_dir_with_summary(tmp_path, accuracy: float) -> Path:
 
 
 def test_run_benchmark_is_public_api():
-    import soma.benchmarks
+    import soma.benchmark
 
-    assert "run_benchmark" in soma.benchmarks.__all__
-    assert soma.benchmarks.run_benchmark is run_benchmark
+    assert "run_benchmark" in soma.benchmark.__all__
+    assert soma.benchmark.run_benchmark is run_benchmark
 
 
 def test_run_benchmark_unknown_name_fails_fast_with_known_names():

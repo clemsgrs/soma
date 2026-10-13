@@ -6,9 +6,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-import soma.curation as curation
-from soma.curation.manifest import CuratedManifest, Curator
-from soma.curation.croma import curate_croma_views
+import soma.benchmark.croma.curate as curation
+from soma.benchmark.curation import CuratedManifest, Curator
+from soma.benchmark.croma.curate import curate_croma_views
 
 
 COHORTS = {

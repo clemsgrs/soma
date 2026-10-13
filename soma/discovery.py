@@ -19,7 +19,7 @@ __all__ = ["components", "register", "registry"]
 _DOMAINS: dict[str, tuple[str, str]] = {
     "aggregators": ("soma.models.aggregators", "aggregator_registry"),
     "augmentations": ("soma.learn", "augment_registry"),
-    "benchmarks": ("soma.benchmarks", "benchmark_registry"),
+    "benchmarks": ("soma.benchmark", "benchmark_registry"),
     "callbacks": ("soma.learn", "callback_registry"),
     "decoders": ("soma.models.decoders", "decoder_registry"),
     "encoders": ("soma.models.encoders", "encoder_registry"),

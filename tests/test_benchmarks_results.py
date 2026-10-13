@@ -1,6 +1,6 @@
 """Reproduced-results ledger: the counterpart to the reference table (issue-driven).
 
-``soma/benchmarks/results/<name>.csv`` records soma's OWN produced numbers with the
+``soma/benchmark/<name>/results.csv`` records soma's OWN produced numbers with the
 provenance that makes a reproduced value meaningful. These tests cover the loader
 (``load_results``/``reproduced_rows``), the append-only ``append_result`` ledger, and one
 consistency guard: every committed ``results/eva.csv`` row must join a gate reference band
@@ -10,18 +10,19 @@ target it claims to reproduce.
 
 from __future__ import annotations
 
+from importlib import resources
 from pathlib import Path
 
 import pytest
 
-from soma.benchmarks import (
+from soma.benchmark import (
     MeasuredRow,
     append_result,
     expected_rows,
     load_results,
     reproduced_rows,
 )
-from soma.benchmarks import registry
+from soma.benchmark import registry
 
 
 # --- loader: schema + absent table ----------------------------------------------------
@@ -78,10 +79,14 @@ def test_ocelot_spacing_migration_rows_are_provenance_pinned():
         "0.25": (0.7148, "c5d36b5"),
         "0.5": (0.6085, "c5d36b5"),
     }
+    # The migration-validation ledger sits beside the OCELOT ledger, outside the registry's
+    # one-ledger-per-protocol lookup, so it is read through the results_root seam.
+    ocelot = Path(str(resources.files("soma.benchmark.ocelot")))
 
     for spacing, (measured, commit) in expected.items():
         rows = reproduced_rows(
-            "ocelot-spacing-migration",
+            "spacing-migration",
+            results_root=ocelot,
             encoder="virchow2",
             spacing=spacing,
             metric="mean_f1",

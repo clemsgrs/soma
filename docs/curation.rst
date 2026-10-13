@@ -17,7 +17,7 @@ once::
 
 Or from Python::
 
-    from soma.robustness import prepare_croma
+    from soma.benchmark.croma.robustness import prepare_croma
 
     prepared = prepare_croma("/data/croma")
 
@@ -28,7 +28,7 @@ CC-BY-NC-SA-4.0 for TCGA, and CC-BY-SA-4.0 for Tolkach-ESCA.
 
 Curate one cohort, or all three with family-wide sample-ID validation::
 
-    from soma.curation import curate_croma_view, curate_croma_views
+    from soma.benchmark.croma.curate import curate_croma_view, curate_croma_views
 
     camelyon = curate_croma_view(
         "/data/croma",
@@ -57,7 +57,7 @@ Use the curator from Python:
 
 .. code-block:: python
 
-   from soma.curation import curate_eva_patch_dataset
+   from soma.benchmark.eva.curate import curate_eva_patch_dataset
 
    manifest = curate_eva_patch_dataset(
        "mhist",
@@ -76,12 +76,12 @@ orientation for binary tasks.
 :doc:`EVA benchmark <eva-patch-classification-benchmark>`).
 
 The EVA segmentation datasets have their own curators, ``curate_consep`` and
-``curate_monusac`` (``soma.curation.eva_segmentation``). They write 224 px
+``curate_monusac`` (``soma.benchmark.eva.curate_segmentation``). They write 224 px
 tiles and class-index masks that reproduce EVA's sample geometry, so the
 curated directory holds images as well as the manifest.
 
 The EVA slide-level datasets have ``curate_camelyon16_small`` and
-``curate_panda_small`` (``soma.curation.eva_slide``). They choose each slide's
+``curate_panda_small`` (``soma.benchmark.eva.curate_slide``). They choose each slide's
 tiles with EVA's sampler and write one hs2p tiling artifact per slide; the
 slide manifest names it in ``coordinates_path`` (see
 :ref:`preprocessing-supplied-coordinates`). The curated directory holds these
@@ -155,13 +155,13 @@ it first (see ``examples/ocelot/README.md``).
 
 Curate from Python::
 
-    from soma.curation.ocelot import curate_ocelot_detection
+    from soma.benchmark.ocelot.curate import curate_ocelot_detection
 
     curate_ocelot_detection("<raw>/ocelot2023_v1.0.1", "<out>/curated")
 
 or from the command line::
 
-    python -m soma.curation.ocelot \
+    python -m soma.benchmark.ocelot.curate \
         --raw-root <raw>/ocelot2023_v1.0.1 \
         --output-dir <out>/curated
 
@@ -217,7 +217,7 @@ The curator expects this layout under ``<raw_root>``::
 
 Curate from Python::
 
-    from soma.benchmarks import get_benchmark
+    from soma.benchmark import get_benchmark
 
     get_benchmark("detection/midog").curate("<raw_root>", "<out>/curated")
 
@@ -232,7 +232,7 @@ This runs two steps:
    128 px overlap. Each tile keeps its image's split, tumour type and scanner,
    and the benchmark stitches tile predictions back to the image before scoring.
 
-``python -m soma.curation.midog`` runs only the first step, without the nominal
+``python -m soma.benchmark.midog.curate`` runs only the first step, without the nominal
 0.25 µm/px.
 
 Split policy
@@ -269,13 +269,13 @@ It fails with the download command when a folder or a file is missing.
 
 Curate from Python::
 
-    from soma.curation.monkey import curate_monkey_detection
+    from soma.benchmark.monkey.curate import curate_monkey_detection
 
     curate_monkey_detection("<raw_root>", "<out>/roi")
 
 or from the command line::
 
-    python -m soma.curation.monkey --raw-root <raw_root> --output-dir <out>/roi
+    python -m soma.benchmark.monkey.curate --raw-root <raw_root> --output-dir <out>/roi
 
 Cells are annotated only inside ROI polygons, so the curator writes one sample
 per ROI. It reads the polygon's level-0 bounding box from the slide, writes it as
@@ -287,7 +287,7 @@ the valid area and the annotated ``area_rois``. ``dataset.csv`` also records the
 source slide (``source_slide``) and the crop offset (``crop_x``, ``crop_y``).
 
 The ROIs are larger than a training tile. The ``detection/monkey`` benchmark tiles
-them with :func:`soma.curation.tile_detection.tile_detection_manifest` into
+them with :func:`soma.benchmark.tiles.tile_detection_manifest` into
 1024 px tiles with 128 px overlap, as for MIDOG, and the tiles carry the ignore
 masks.
 

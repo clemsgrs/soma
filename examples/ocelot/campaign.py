@@ -29,7 +29,7 @@ Design decisions that make this cheap and resumable:
   from identical models.
 
 Each cell's config is the committed benchmark YAML under
-``soma/benchmarks/configs/ocelot/`` — the same files the registered ``ocelot`` benchmark's
+``soma/benchmark/ocelot/configs/`` — the same files the registered ``ocelot`` benchmark's
 ``build_config`` loads — resolved here by ``(encoder, spacing)``. It supplies the
 output_root, encoder, decoder, and detection protocol; this driver only writes the dataset
 paths (from ``--data-root``), the seed, and the holdout flag into it and runs the result
@@ -71,8 +71,8 @@ class Cell:
     def config_path(self) -> Path:
         # Reuse the OCELOT benchmark's own (encoder, spacing) -> path resolver so the
         # campaign and ``soma reproduce ocelot`` load byte-identical committed YAML from
-        # ``soma/benchmarks/configs/ocelot/`` — a single source of truth for the configs.
-        from soma.benchmarks.ocelot import _config_path_for
+        # ``soma/benchmark/ocelot/configs/`` — a single source of truth for the configs.
+        from soma.benchmark.ocelot import _config_path_for
 
         return _config_path_for(self.encoder, self.spacing)
 
@@ -378,7 +378,7 @@ def test_headline_metrics(report: dict) -> dict:
 
 def dense_embeddings_dir(cell: Cell, data_root: Path) -> Path | None:
     """Resolve the exact current dense-grid directory for a campaign cell."""
-    from soma.benchmarks.ocelot import OCELOT, resolve_dense_cache_dir
+    from soma.benchmark.ocelot import OCELOT, resolve_dense_cache_dir
     from soma.data import ImageManifest
     from soma.extract.dense import DENSE_IMAGE_PAYLOAD_SUBDIR
 

@@ -1,0 +1,76 @@
+# detection-benchmark — MONKEY inflammatory-cell detection, native spacing (0.242 µm/px).
+#
+# Per-dataset BASE config for the encoder-ranking sweep (#246). Recipe backbone fixed —
+# frozen encoder -> dense token grid -> lightweight_conv decoder -> per-class peak heatmap,
+# scored with the MONKEY-native FROC (mean of the per-class FROC scores; lymphocytes 4 µm /
+# monocytes 5 µm matching margins). Only ``features.encoder.name`` varies across the roster.
+#
+# MONKEY annotates cells only inside ROI polygons on whole slides. The curator crops one
+# flat PNG per ROI with an ignore mask (the polygon dilated by 5 µm), and the manifest the
+# sweep consumes (``curated``) is the TILED one (soma.benchmark.tiles), produced
+# from that ROI-level output (kept alongside as ``curated/roi/``). The geometry is MIDOG's:
+# fixed 1024² tiles at 128 px overlap, supervised at a 1024 px target size with a 448 px
+# encoder sliding window. The score path stitches per-tile detections back to each ROI,
+# and FROC divides false positives by the ROI's valid area. The splits are a 5-fold
+# patient cross-validation, so each fold is one replicate. Data paths are the curator's
+# author-machine defaults; the driver repoints them per replicate.
+
+run:
+  output_dir: output/detection_benchmark/monkey
+  seed: 0
+
+cohort:
+  records: /data/pathology/projects/clement/code/soma/data/monkey/curated/dataset.csv
+  splits: /data/pathology/projects/clement/code/soma/data/monkey/curated/splits.csv
+
+features:
+  encoder:
+    name: virchow2
+    params:
+      allow_non_recommended_settings: true
+  execution:
+    batch_size: 8
+  dense:
+    spacing_um: 0.242
+    target_size: 1024     # tile/supervision size (MIDOG geometry; tiled ROIs)
+    window_size: 448      # encoder sliding window within each 1024 tile
+    overlap: 0.25
+  cache:
+    # fp16 dense grids halve the on-disk cache for the larger encoders (as for MIDOG);
+    # frozen features are numerically ~identical. The driver sets cache.root_dir.
+    dtype: fp16
+
+loaders:
+  batch_size: 1
+  num_workers: 4
+  pin_memory: true
+
+learner:
+  name: dense
+  params:
+    decoder:
+      name: lightweight_conv
+    head:
+      name: detection
+      params:
+        num_classes: 2            # 0 = lymphocytes, 1 = monocytes (merged MNL pooled at score time)
+        match_distance: 5.0       # δ in µm — per-class margins (4/5 µm) are applied by the FROC scorer
+        sigma: 1.7                # target Gaussian σ in µm (≈ δ/3)
+        matching: greedy          # FROC uses greedy-by-confidence matching
+        foreground_weight: 10.0
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
+
+trainer:
+  max_epochs: 50
+  accumulate_grad_batches: 8
+  callbacks:
+    - name: checkpoint
+      params: {monitor: mean_f1, mode: max}
+    - name: early_stopping
+      params: {monitor: mean_f1, mode: max, patience: 10}
+
+evaluation:
+  metrics: [mean_f1, f1_per_class, precision, recall]

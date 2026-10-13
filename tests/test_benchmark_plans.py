@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from soma.benchmarks import get_benchmark
+from soma.benchmark import get_benchmark
 from soma.plan import load_cohort, resolve
 
 FIXTURE = Path(__file__).parent / "fixtures" / "benchmark_plans.yaml"

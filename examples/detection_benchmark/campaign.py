@@ -11,7 +11,7 @@ all encoders are ranked by mean test metric, and the tune ranks are reported alo
 ``examples/ocelot/campaign.py``'s **seed loop becomes a replicate loop**: a dataset whose
 ``splits.csv`` ships >1 fold has its folds as replicates (1 seed × F); a single-fold dataset
 uses seeds (K, default 3). The harness aggregates over whichever axis a dataset declares —
-``soma.benchmarks.detection_benchmark.replicate_plan`` resolves it from the splits.
+``soma.benchmark.detection.replicate_plan`` resolves it from the splits.
 
 Two idempotent phases, each with a per-cell skip guard so an interrupted sweep resumes by
 re-invocation:
@@ -32,7 +32,7 @@ stratification (#248) and the stability bootstrap are pure later re-aggregations
 retrain, no re-extract.
 
 Each cell's config is the committed per-dataset benchmark YAML under
-``soma/benchmarks/configs/detection/`` (loaded by the registered ``detection-benchmark``'s
+``soma/benchmark/configs/detection/`` (loaded by the registered ``detection-benchmark``'s
 ``build_config``, with the roster encoder swapped in); this driver only overrides the
 dataset paths (from ``--data-root``), the encoder, the replicate seed/fold, and the output
 dir. Needs a GPU + HF token for the gated encoders. Run from the soma repo root.
@@ -70,7 +70,7 @@ from typing import Any, Sequence
 # examples/ocelot/eval_greedy.py's rationale so the dense cache key agrees with training.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from soma.benchmarks.detection_benchmark import (  # noqa: E402
+from soma.benchmark.detection import (  # noqa: E402
     DATASET_ORDER,
     DEFAULT_ROSTER,
     DEFAULT_SEEDS,
@@ -103,7 +103,7 @@ def dataset_replicate_ids(
 
     Reads only the fold count (never loads a dataset), so it is cheap and offline. Multi-fold
     → the folds are the replicates; single-fold → the seeds are. Delegates the policy to
-    :func:`~soma.benchmarks.detection_benchmark.replicate_plan`.
+    :func:`~soma.benchmark.detection.replicate_plan`.
     """
     import pandas as pd
 
@@ -300,7 +300,7 @@ def collect_robustness(
     manifest's ``scanner`` / ``tumor_type`` (or fallback ``domain``) columns; datasets with
     no usable axis or no persisted predictions are simply absent from the result.
     """
-    from soma.benchmarks.detection_benchmark import resolve_stratify_maps, stratify_robustness
+    from soma.benchmark.detection import resolve_stratify_maps, stratify_robustness
 
     out: dict[str, dict] = {}
     for dataset in datasets:
@@ -440,7 +440,7 @@ def cell_config(
 
 
 def _config_path(dataset: str) -> Path:
-    from soma.benchmarks.detection_benchmark import config_path_for
+    from soma.benchmark.detection import config_path_for
 
     return config_path_for(dataset)
 
@@ -554,7 +554,7 @@ def score_cell(
     (the per-sample cache) and ``metrics.json`` (native-metric blocks, the score threshold,
     and both selection frames).
     """
-    from soma.benchmarks.detection_benchmark import score_dataset_points, write_cell_predictions
+    from soma.benchmark.detection import score_dataset_points, write_cell_predictions
 
     directory = cell_dir(out_root, dataset, encoder, replicate)
     fold_index = replicate if axis == "folds" else None
@@ -598,8 +598,8 @@ def _decode_split_points(predictions, targets, manifest, frame, *, threshold=Non
     """
     import numpy as np
 
-    from soma.benchmarks.detection_benchmark import SamplePrediction, stitch_tiles_to_rois
-    from soma.benchmarks.froc import patch_area_mm2
+    from soma.benchmark.detection import SamplePrediction, stitch_tiles_to_rois
+    from soma.benchmark.monkey.froc import patch_area_mm2
     from soma.models.detection_targets import points_on_valid
     from soma.evaluation.detection.matching import match_assignment
 
@@ -665,7 +665,7 @@ def _sweep_thresholds_on_rois(tune, targets, manifest, frame, *, tile_px: int) -
     ``checkpoint_selection_frame='tile_proxy'``; final operating-point selection is stitched
     per ROI.
     """
-    from soma.benchmarks.detection_benchmark import _per_image_arrays
+    from soma.benchmark.detection import _per_image_arrays
     from soma.evaluation.detection.matching import sweep_score_thresholds
 
     roi_samples = _decode_split_points(tune, targets, manifest, frame, threshold=None, tile_px=tile_px)
@@ -724,8 +724,8 @@ def _decode_cell_points(
     stitched per-ROI frame; untiled ones with soma's sample-native
     :func:`~soma.evaluation.sweep_threshold`), then decodes tune + test at those knobs.
     """
-    from soma.benchmarks.detection_benchmark import CellPredictions, dataset_spec
-    from soma.benchmarks.ocelot import _locate_run_config
+    from soma.benchmark.detection import CellPredictions, dataset_spec
+    from soma.benchmark.ocelot import _locate_run_config
     from soma._internal.class_scheme import resolve_classes
     from soma.config import ExperimentConfig
     from soma.data import AnnotationManifest, Cohort, PointSource

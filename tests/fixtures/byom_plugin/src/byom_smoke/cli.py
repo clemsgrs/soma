@@ -9,7 +9,7 @@ from PIL import Image
 import timm
 import torch
 
-from soma.benchmarks import (
+from soma.benchmark import (
     Facet,
     ReferenceRow,
     register_benchmark,
@@ -27,7 +27,7 @@ from soma.config import (
     RunConfig,
     TrainerConfig,
 )
-from soma.curation.manifest import write_manifest
+from soma.benchmark.curation import write_manifest
 from slide2vec import ExecutionOptions
 from slide2vec.encoders import encoder_registry
 

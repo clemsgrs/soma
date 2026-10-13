@@ -20,8 +20,8 @@ import pytest
 
 from soma.plan import sample_unit
 from tests.experiment_configs import callback
-from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
-from soma.benchmarks import eva
+from soma.benchmark import Benchmark, benchmark_registry, get_benchmark
+from soma.benchmark import eva
 from soma.data import Cohort
 
 
@@ -196,7 +196,7 @@ def test_build_config_accepts_encoder_without_packaged_reference(tmp_path):
 
 
 def test_reference_csv_is_keyed_schema():
-    with resources.files("soma.benchmarks.reference").joinpath("eva.csv").open(newline="") as fh:
+    with resources.files("soma.benchmark.eva").joinpath("reference.csv").open(newline="") as fh:
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
         rows = list(reader)
@@ -261,7 +261,7 @@ def test_curate_delegates_to_eva_curator(monkeypatch, tmp_path):
 
     def _fake_curate(name, raw_root, output_dir):
         calls["args"] = (name, str(raw_root), str(output_dir))
-        from soma.curation.manifest import CuratedManifest
+        from soma.benchmark.curation import CuratedManifest
 
         return CuratedManifest(
             dataset_csv=Path(output_dir) / "dataset.csv",

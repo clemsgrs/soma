@@ -3,11 +3,11 @@
 The external benchmark API (soma 1.12.0) lets a project outside soma own its
 benchmark protocol as a typed object and hand it to soma for execution:
 
-1. build a :class:`soma.benchmarks.BenchmarkSpec` — a config builder, the
+1. build a :class:`soma.benchmark.BenchmarkSpec` — a config builder, the
    canonical seed set, and a scorer;
-2. execute it with :func:`soma.benchmarks.run_benchmark_spec`, which runs every
+2. execute it with :func:`soma.benchmark.run_benchmark_spec`, which runs every
    canonical seed with a shared feature cache;
-3. read the aggregated :class:`soma.benchmarks.BenchmarkRunResult` and the
+3. read the aggregated :class:`soma.benchmark.BenchmarkRunResult` and the
    per-seed evidence roots.
 
 Self-contained: fabricates a tiny synthetic tile dataset, uses the ungated
@@ -52,7 +52,7 @@ from soma.config import (
     RunConfig,
     TrainerConfig,
 )
-from soma.benchmarks import BenchmarkSpec, run_benchmark_spec, score_from_summary
+from soma.benchmark import BenchmarkSpec, run_benchmark_spec, score_from_summary
 
 # --- Scaffolding (not soma API): a toy tile dataset -------------------------------
 # One row per tile image; the on-disk contract is the same one every soma tile

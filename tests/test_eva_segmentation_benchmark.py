@@ -11,10 +11,10 @@ import torch.nn.functional as F
 from soma.config import Component
 from soma.plan import head_family
 from tests.experiment_configs import callback
-from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
-from soma.benchmarks import eva_segmentation as seg
-from soma.benchmarks.eva import EvaTileClassificationBenchmark
-from soma.curation.manifest import CuratedManifest
+from soma.benchmark import Benchmark, benchmark_registry, get_benchmark
+from soma.benchmark.eva import segmentation as seg
+from soma.benchmark.eva import EvaTileClassificationBenchmark
+from soma.benchmark.curation import CuratedManifest
 from soma.models.decoders.registry import decoder_registry
 from soma.data.geometry import compute_dense_geometry
 from soma.models.heads.dense_metrics import dense_confusion_counts, reduce_foreground_dice
@@ -147,7 +147,7 @@ def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):
 
 
 def test_saved_benchmark_config_loads_in_a_fresh_process(tmp_path: Path):
-    """The private head/decoder resolve without the caller importing ``soma.benchmarks``."""
+    """The private head/decoder resolve without the caller importing ``soma.benchmark``."""
     import os
     import subprocess
     import sys
@@ -165,7 +165,7 @@ def test_saved_benchmark_config_loads_in_a_fresh_process(tmp_path: Path):
         "from soma.plan import check\n"
         f"config = ExperimentConfig.from_yaml({str(path)!r})\n"
         "check(config)\n"
-        "assert 'soma.benchmarks' in sys.modules, 'registries import the bundled module'\n"
+        "assert 'soma.benchmark' in sys.modules, 'registries import the bundled module'\n"
         "params = config.learner.params\n"
         "print(params['head'].name, params['decoder'].name)\n"
     )

@@ -79,7 +79,7 @@ def detect_gpus() -> list[int]:
 
 def default_roster_names() -> list[str]:
     """The canonical Paper-1 roster, imported (not copied) from soma so it stays in sync."""
-    from soma.benchmarks.detection_benchmark import DEFAULT_ROSTER
+    from soma.benchmark.detection import DEFAULT_ROSTER
 
     return [entry.name for entry in DEFAULT_ROSTER]
 

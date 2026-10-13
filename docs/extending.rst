@@ -383,5 +383,5 @@ registry.
 Components that ship with soma's benchmarks (for example the EVA segmentation
 head ``eva_segmentation``, decoder ``eva_conv_ms`` and aggregator ``eva_abmil``)
 need no such import: the task, decoder and aggregator registries import
-:mod:`soma.benchmarks` the first time a lookup misses, so a saved benchmark
+:mod:`soma.benchmark` the first time a lookup misses, so a saved benchmark
 config loads in a fresh process as is.

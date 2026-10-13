@@ -3,7 +3,7 @@
 # Frozen CONCH -> dense token grid -> conv decoder -> per-class peak heatmap, scored
 # with class-aware F1@δ (δ = 3 µm = 15 px at 0.2 µm/px, OCELOT's official tolerance).
 # See examples/ocelot/README.md for the full workflow. Curate the dataset first:
-#   python -m soma.curation.ocelot \
+#   python -m soma.benchmark.ocelot.curate \
 #     --raw-root   /data/pathology/projects/clement/code/soma/data/ocelot \
 #     --output-dir /data/pathology/projects/clement/code/soma/data/ocelot/curated
 # Then run:  python -m soma run examples/ocelot/ocelot.yaml

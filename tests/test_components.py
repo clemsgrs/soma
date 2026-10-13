@@ -242,7 +242,7 @@ def test_an_unregistered_dotted_path_keeps_its_name_and_params_verbatim(aggregat
 
 def test_components_is_the_only_discovery_surface():
     import soma.models.aggregators
-    import soma.benchmarks
+    import soma.benchmark
     import soma.models.decoders
     import soma.models.encoders
     import soma.models.heads
@@ -257,7 +257,7 @@ def test_components_is_the_only_discovery_surface():
         (soma.models.aggregators, "list_aggregators"),
         (soma.models.decoders, "list_decoders"),
         (soma.models.heads, "list_task_heads"),
-        (soma.benchmarks, "list_benchmarks"),
+        (soma.benchmark, "list_benchmarks"),
     ]:
         assert not hasattr(module, name), f"{module.__name__}.{name} is still exported"
     assert not hasattr(Registry, "list_with_metadata")

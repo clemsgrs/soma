@@ -21,10 +21,10 @@ import pytest
 from PIL import Image
 from scipy.io import savemat
 
-from soma.benchmarks import eva_segmentation as seg
-from soma.benchmarks import eva_slide as eva_slide_bench
+from soma.benchmark.eva import segmentation as seg
+from soma.benchmark.eva import slide as eva_slide_bench
 from soma.cli import main as soma_main
-from soma.curation.eva_segmentation import CONSEP_TILE_PX, OUTPUT_PX
+from soma.benchmark.eva.curate_segmentation import CONSEP_TILE_PX, OUTPUT_PX
 from tests.e2e.harness import Run
 from tests.eva_slide_raw import write_fake_camelyon16, write_fake_panda
 from tests.e2e.synthetic import _BACKGROUND, _CLASS_COLOURS, _noisy

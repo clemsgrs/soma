@@ -240,10 +240,6 @@ Dockerfile.save
 TODO.md
 TODO.html
 eva.csv
-# …but the bundled EVA benchmark reference + reproduced-results tables are package data,
-# not scratch.
-!soma/benchmarks/reference/eva.csv
-!soma/benchmarks/results/eva.csv
 review.md
 scratch_logs/
 

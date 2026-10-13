@@ -37,7 +37,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from soma.benchmarks.detection_benchmark import DATASET_ORDER, dataset_spec
+from soma.benchmark.detection import DATASET_ORDER, dataset_spec
 
 # --- protocol constants ------------------------------------------------------------
 

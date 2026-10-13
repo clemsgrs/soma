@@ -16,13 +16,13 @@ from soma.config import ExperimentConfig
 from soma.discovery import components
 from soma.pipeline import Pipeline
 
-# The reproduce orchestration lives in soma.benchmarks.run (issue #370): the CLI is a
-# thin caller of the same importable code (`soma.benchmarks.run_benchmark`). The aliases
+# The reproduce orchestration lives in soma.benchmark.run (issue #370): the CLI is a
+# thin caller of the same importable code (`soma.benchmark.run_benchmark`). The aliases
 # below remain the CLI's patchable module-level seams — `_reproduce_one` threads them back
 # through the shared implementation so replacing e.g. ``soma.cli._provenance`` or
 # ``soma.cli.Pipeline`` still takes effect.
-from soma.benchmarks import run as _reproduce_impl
-from soma.benchmarks.run import (
+from soma.benchmark import run as _reproduce_impl
+from soma.benchmark.run import (
     ReportedScoreError,  # noqa: F401  (kept importable from soma.cli)
     _MissingReproduceSourceError,
     _PanelCellRuntimeFailure,
@@ -306,7 +306,7 @@ def _resolve_reproduce_targets(name: str) -> list[Any]:
     prefix (``eva``) that fans out over every registered ``NAME/<member>``. Returns an empty
     list when nothing matches (fail-fast handled by the caller).
     """
-    from soma.benchmarks import benchmark_registry, get_benchmark
+    from soma.benchmark import benchmark_registry, get_benchmark
 
     try:
         return [get_benchmark(name)]
@@ -333,8 +333,8 @@ def _reproduce_one(
 ) -> int:
     """Curate → run → score one benchmark (thin caller of the importable orchestration).
 
-    Delegates to :func:`soma.benchmarks.run._reproduce_one` — the same code behind the
-    public :func:`soma.benchmarks.run_benchmark` (issue #370) — threading this module's
+    Delegates to :func:`soma.benchmark.run._reproduce_one` — the same code behind the
+    public :func:`soma.benchmark.run_benchmark` (issue #370) — threading this module's
     collaborators through the seams so the CLI's behavior (and its monkeypatchable
     ``Pipeline`` / ``_provenance`` / ``_reproduce_manifest`` / ``_runtime_croma_version``
     globals) stays byte-identical.
@@ -528,7 +528,7 @@ def _panel_runtime_failure_context(exc: BaseException) -> str:
 
 def _completed_run_dirs(output_root: Path) -> set[Path]:
     """Return completed Run directories currently visible to a Leaderboard scan."""
-    from soma.leaderboard import discover_triples
+    from soma.benchmark.leaderboard import discover_triples
 
     return {
         run_dir
@@ -603,7 +603,7 @@ def _run_reproduce_panel(
 
 
 def _cmd_reproduce(args: argparse.Namespace) -> int:
-    from soma.benchmarks import get_benchmark
+    from soma.benchmark import get_benchmark
 
     encoders = getattr(args, "encoders", None)
     if encoders is not None:
@@ -719,7 +719,7 @@ def _cmd_leaderboard(args: argparse.Namespace) -> int:
     the ``(dataset, splits, task)`` triples under the root and requires disambiguation when
     several exist. ``--vary``/``--fix``/``--like`` shape the facet on top of either.
     """
-    from soma.leaderboard import (
+    from soma.benchmark.leaderboard import (
         LeaderboardFacet,
         _AXIS_ALIASES,
         _MISSING,
@@ -733,7 +733,7 @@ def _cmd_leaderboard(args: argparse.Namespace) -> int:
 
     benchmark = None
     if args.name is not None:
-        from soma.benchmarks import get_benchmark
+        from soma.benchmark import get_benchmark
 
         try:
             benchmark = get_benchmark(args.name)
@@ -747,7 +747,7 @@ def _cmd_leaderboard(args: argparse.Namespace) -> int:
 
     include_incomplete = False
     if benchmark is not None and args.metric is None:
-        from soma.benchmarks import get_reported_metrics
+        from soma.benchmark import get_reported_metrics
 
         include_incomplete = len(get_reported_metrics(benchmark)) > 1
     triples = discover_triples(args.root, include_incomplete=include_incomplete)
@@ -889,14 +889,14 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
         "--record",
         action="store_true",
         help="Append the measured number + provenance to the results ledger "
-        "(soma/benchmarks/results/<name>.csv) so 'reproduced' becomes a committed fact.",
+        "(soma/benchmark/<name>/results.csv) so 'reproduced' becomes a committed fact.",
     )
     parser.set_defaults(func=_cmd_reproduce)
     return parser
 
 
 def _cmd_prepare_croma(args: argparse.Namespace) -> None:
-    from soma.robustness import prepare_croma
+    from soma.benchmark.croma.robustness import prepare_croma
 
     prepared = prepare_croma(args.raw_root, rebuild=args.rebuild)
     counts = ", ".join(f"{cohort.name}: {cohort.rows}" for cohort in prepared)

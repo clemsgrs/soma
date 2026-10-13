@@ -573,5 +573,5 @@ for _name in dict.fromkeys(name for names in VALID_METRICS.values() for name in 
     metric_registry.register(
         _name, _fn, families=_families, higher_is_better=_name not in _LOWER_IS_BETTER
     )
-# The representation-quality path's CRoMa score (soma.robustness): direction only.
+# The representation-quality path's CRoMa score (soma.benchmark.croma.robustness): direction only.
 metric_registry.register("croma_f0", families={"representation"}, higher_is_better=False)

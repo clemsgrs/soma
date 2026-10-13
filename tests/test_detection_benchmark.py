@@ -23,9 +23,9 @@ from PIL import Image
 
 from soma import Plan
 from soma.config import ExperimentConfig
-from soma.benchmarks import get_benchmark
-from soma.benchmarks.registry import Benchmark
-from soma.benchmarks.detection_benchmark import (
+from soma.benchmark import get_benchmark
+from soma.benchmark.registry import Benchmark
+from soma.benchmark.detection import (
     DETECTION_BENCHMARK,
     DetectionDatasetBenchmark,
     DATASET_ORDER,
@@ -545,7 +545,7 @@ def test_report_reference_bands_scaffolds():
     [("midog", ("f1",), True), ("monkey", ("froc_inflammatory", "froc_lymphocytes", "froc_monocytes", "mean_froc"), False)],
 )
 def test_reference_scaffold_shape(dataset, metrics, gated):
-    with resources.files("soma.benchmarks.reference").joinpath(f"{dataset}.csv").open(newline="") as fh:
+    with resources.files(f"soma.benchmark.{dataset}").joinpath("reference.csv").open(newline="") as fh:
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
         rows = list(reader)
@@ -768,7 +768,7 @@ def test_point_frame_reads_the_runs_detection_head_and_dense_geometry(tmp_path: 
     from soma.config import ExperimentConfig
 
     m = _load_driver()
-    committed = resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml"
+    committed = resources.files("soma.benchmark.midog") / "configs" / "detection.yaml"
     # A run read at 0.5 µm/px (not the dataset's nominal 0.25) with its own NMS radius.
     ExperimentConfig.from_yaml(
         committed,
@@ -800,7 +800,7 @@ def test_point_frame_reads_a_null_nms_radius_as_the_match_distance(tmp_path: Pat
     from soma.config import ExperimentConfig
 
     m = _load_driver()
-    committed = resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml"
+    committed = resources.files("soma.benchmark.midog") / "configs" / "detection.yaml"
     ExperimentConfig.from_yaml(
         committed, overrides={"learner": {"params": {"head": {"params": {"nms_distance": None}}}}}
     ).to_yaml(tmp_path / "config.yaml")
@@ -1230,7 +1230,7 @@ def test_ensemble_configs_load_with_agreed_semantics(dataset, comp, members):
     assert cfg.learner.params["decoder"].name == "lightweight_conv"
     # The recipe below the composite matches the dataset base config.
     base = ExperimentConfig.from_yaml(
-        resources.files("soma.benchmarks") / "configs" / "detection" / f"{dataset}.yaml"
+        resources.files(f"soma.benchmark.{dataset}") / "configs" / "detection.yaml"
     )
     assert cfg.learner == base.learner
     assert cfg.features.extraction == base.features.extraction
@@ -1256,7 +1256,7 @@ def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
     overrides = {"features": {"cache": {"root_dir": str(tmp_path)}}}
 
     single = ExperimentConfig.from_yaml(
-        resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml",
+        resources.files("soma.benchmark.midog") / "configs" / "detection.yaml",
         overrides={"features": {"encoder": {"name": "virchow2"}, "cache": {"root_dir": str(tmp_path)}}},
     )
     key_single = _DenseImageExtractor(
@@ -1320,7 +1320,7 @@ def test_main_composite_config_guards(monkeypatch, tmp_path: Path):
         m.main(base + ["--out-root", str(tmp_path), "--datasets", "midog", "ocelot"])
     with pytest.raises(SystemExit, match="drop --encoders"):
         m.main(base + ["--out-root", str(tmp_path), "--encoders", "uni2"])
-    single = str(resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml")
+    single = str(resources.files("soma.benchmark.midog") / "configs" / "detection.yaml")
     with pytest.raises(SystemExit, match="no composite"):
         m.main(["extract", "--config", single, "--datasets", "midog",
                 "--out-root", str(tmp_path)])

@@ -4,7 +4,7 @@ Matching only affects evaluation, so nothing is retrained or re-encoded: the run
 persisted point predictions (``predictions_tune.parquet`` / ``predictions_<test>.parquet``,
 every peak above the head's ``min_score``) are re-swept for per-class score thresholds on
 tune and scored once on each test split — the leakage-free headline a real submitter
-reports. A thin CLI over :func:`soma.benchmarks.ocelot._greedy_report_for_run`, which
+reports. A thin CLI over :func:`soma.benchmark.ocelot._greedy_report_for_run`, which
 ``soma reproduce ocelot`` uses too; ``campaign.py`` drives it per (cell, seed).
 
 Usage (from the soma repo, in soma's Python environment):
@@ -25,7 +25,7 @@ from pathlib import Path
 # runs as a script sys.path[0] is examples/ocelot/.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from soma.benchmarks.ocelot import _greedy_report_for_run  # noqa: E402
+from soma.benchmark.ocelot import _greedy_report_for_run  # noqa: E402
 
 
 def main() -> None:

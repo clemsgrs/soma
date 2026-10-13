@@ -7,7 +7,7 @@ COCO JSON (``MIDOG2022_training_png.json``) and a SlideRunner ``.sqlite`` that a
 stripped of per-image domain metadata** -- only ``file_name`` / ``width`` / ``height`` /
 ``id`` survive. MIDOG's entire role in this benchmark is the *domain-shift axis*
 (scanner / tumor type), so we must recover tumor type + scanner per image from an external
-source before :mod:`soma.curation.midog` (which reads those fields from the JSON) can emit
+source before :mod:`soma.benchmark.midog.curate` (which reads those fields from the JSON) can emit
 a domain-aware manifest.
 
 RECOVERY SOURCE

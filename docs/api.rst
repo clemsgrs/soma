@@ -309,7 +309,7 @@ comparable to the CLI's:
    import statistics
 
    import soma
-   from soma.benchmarks import get_benchmark
+   from soma.benchmark import get_benchmark
    from soma.pipeline import Pipeline
 
    [entry["name"] for entry in soma.components("benchmarks")]  # [..., "eva/bach", "hest/IDC", "ocelot"]
@@ -339,7 +339,7 @@ comparable to the CLI's:
 compare against, and ``benchmark.score(run_dir)`` alone re-scores an existing run
 without retraining (the ``--from-run-dir`` fast path).
 
-The one-call equivalent is ``soma.benchmarks.run_benchmark``, the importable
+The one-call equivalent is ``soma.benchmark.run_benchmark``, the importable
 orchestration behind ``soma reproduce`` itself: the canonical-seed loop, the
 reference-row tolerance status, provenance stamping (git commit, slide2vec/croma
 versions), and the results-ledger append used by the CLI. Its keywords
@@ -348,7 +348,7 @@ mirror the CLI flags, plus ``results_root`` so an external repository can append
 
 .. code-block:: python
 
-   from soma.benchmarks import run_benchmark
+   from soma.benchmark import run_benchmark
 
    run_benchmark(
        "eva/bach",
@@ -365,8 +365,8 @@ Run an external benchmark specification
 ---------------------------------------
 
 A project outside soma can own its benchmark protocol as a typed
-``soma.benchmarks.BenchmarkSpec`` — a config builder, the canonical seed set,
-and a scorer — and hand it to ``soma.benchmarks.run_benchmark_spec`` for
+``soma.benchmark.BenchmarkSpec`` — a config builder, the canonical seed set,
+and a scorer — and hand it to ``soma.benchmark.run_benchmark_spec`` for
 execution. soma runs every canonical seed with one shared feature cache and
 returns the aggregated ``BenchmarkRunResult`` together with the per-seed
 evidence roots, without touching the registry, reference tables, or ledger.

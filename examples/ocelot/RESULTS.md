@@ -2,7 +2,7 @@
 
 This is the recorded reference for the OCELOT cell-detection anchor: the exact recipe,
 environment, and metrics that `soma reproduce ocelot` checks an independent run against.
-Machine-readable band + per-row tolerance: `soma/benchmarks/reference/ocelot.csv`.
+Machine-readable band + per-row tolerance: `soma/benchmark/ocelot/reference.csv`.
 
 ## Recipe (the anchor)
 
@@ -10,7 +10,7 @@ Frozen **Virchow2 @ 0.2 µm/px native** → dense token grid → `lightweight_co
 per-class peak heatmap, scored with class-aware **F1 @ δ = 3 µm** (OCELOT's official
 tolerance). Per-class score thresholds are swept on **tune**, frozen, and applied once to
 **test** (leakage-free). Config:
-[`ocelot_virchow2_0.20.yaml`](../../soma/benchmarks/configs/ocelot/ocelot_virchow2_0.20.yaml),
+[`ocelot_virchow2_0.20.yaml`](../../soma/benchmark/ocelot/configs/ocelot_virchow2_0.20.yaml),
 **canonical seed 0**.
 
 ## Headline
@@ -58,7 +58,7 @@ The native anchor was reproduced from a fresh cache at soma `ba8e529` with relea
 slide2vec 5.7.0 on an RTX 3080 Ti. Seed 0 reached greedy test mean_F1 **0.7030**
 (Δ **+0.0035** from the 0.6995 anchor), tune mean_F1 0.7149, and Hungarian test
 mean_F1 0.7031. Training again selected epoch 29 and stopped at epoch 39. The result is
-recorded in `soma/benchmarks/results/ocelot.csv`.
+recorded in `soma/benchmark/ocelot/results.csv`.
 
 ## Spacing-aware migration validation
 
@@ -107,7 +107,7 @@ The native 0.2 fresh-cache release reproduction above independently remained wit
 published tolerance (0.7030 versus the 0.6995 anchor). Together, these runs show no
 benchmark regression from collapsing the rendered variants onto spacing-aware reads.
 The two coarse on-read results and their code/version provenance are recorded separately
-in `soma/benchmarks/results/ocelot-spacing-migration.csv`; they are validation evidence,
+in `soma/benchmark/ocelot/spacing-migration.csv`; they are validation evidence,
 not cells in the canonical encoder-only benchmark facet.
 
 ## Reproducing

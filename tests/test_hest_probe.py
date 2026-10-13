@@ -18,7 +18,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
 import soma
-from soma.benchmarks.hest.probe import DEFAULT_PCA_COMPONENTS, RidgePCAProbe, gene_pearson, ridge_alpha
+from soma.benchmark.hest.probe import DEFAULT_PCA_COMPONENTS, RidgePCAProbe, gene_pearson, ridge_alpha
 
 
 def _toy_fold(seed: int, *, n_train: int, n_test: int, feature_dim: int, n_genes: int):

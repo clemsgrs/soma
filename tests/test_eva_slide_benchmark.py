@@ -16,8 +16,8 @@ from soma.config import Component
 from soma.plan import sample_unit
 from tests.experiment_configs import callback
 from soma.models.aggregators.registry import aggregator_registry
-from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
-from soma.benchmarks import eva_slide as slide
+from soma.benchmark import Benchmark, benchmark_registry, get_benchmark
+from soma.benchmark.eva import slide as slide
 from soma.models.heads.registry import task_family_of, task_registry
 from tests import eva_reference as eva
 

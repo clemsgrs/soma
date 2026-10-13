@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from soma.curation.eva import (
+from soma.benchmark.eva.curate import (
     _gleason_arvaniti_core_archives,
     _gleason_arvaniti_raw_present,
     curate_eva_patch_dataset,

@@ -44,7 +44,7 @@ The benchmark trains no model through the pipeline; it composes soma's
 verbs itself. It extracts each spot's tile features once into the feature
 cache, then, for each fold:
 
-1. fits :class:`~soma.benchmarks.hest.probe.RidgePCAProbe`
+1. fits :class:`~soma.benchmark.hest.probe.RidgePCAProbe`
    (``StandardScaler`` → ``PCA`` → ``Ridge``) on the train spots;
 2. predicts the test spots as :class:`~soma.evaluation.Predictions` with one
    ``value_<k>`` column per gene;
@@ -116,7 +116,7 @@ Protocol details
    * - Setting
      - Value
    * - predictor
-     - ``soma.benchmarks.hest.probe.RidgePCAProbe``: a closed-form Ridge probe, no trained head, no gradient loop
+     - ``soma.benchmark.hest.probe.RidgePCAProbe``: a closed-form Ridge probe, no trained head, no gradient loop
    * - features
      - ``StandardScaler`` → ``PCA(n_components=256)`` fit on the fold's train spots (X only)
    * - estimator

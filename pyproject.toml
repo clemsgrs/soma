@@ -62,7 +62,7 @@ croma = [
     "pyarrow>=17,<26",  # 26 needs NumPy 2; the torch stack still resolves NumPy 1.26
 ]
 # Curation-only dependencies for the HEST-Benchmark curator
-# (soma.curation.hest). Lazy-imported inside curate_hest so `import soma` and core CI
+# (soma.benchmark.hest.curate). Lazy-imported inside curate_hest so `import soma` and core CI
 # never require them: anndata reads the per-slide gene-expression .h5ad, h5py the patch
 # HDF5. log1p targets are computed with numpy (already a core dep).
 hest = [
@@ -89,11 +89,12 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["soma"]
+# Each benchmark protocol's package data: its committed configs, reference rows (and
+# their provenance) and results ledgers.
 include = [
-    "soma/benchmarks/configs/**/*.yaml",
-    "soma/benchmarks/reference/*.csv",
-    "soma/benchmarks/reference/*.json",
-    "soma/benchmarks/results/*.csv",
+    "soma/benchmark/*/configs/*.yaml",
+    "soma/benchmark/*/*.csv",
+    "soma/benchmark/*/*.json",
 ]
 
 [tool.hatch.build.targets.sdist]

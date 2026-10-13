@@ -19,13 +19,13 @@ import pytest
 import tifffile
 from PIL import Image
 
-from soma.benchmarks.detection_benchmark import DetectionBenchmark
-from soma.curation.monkey import (
+from soma.benchmark.detection import DetectionBenchmark
+from soma.benchmark.monkey.curate import (
     DOWNLOAD_COMMAND,
     MONKEY_SPACING_LEVEL0,
     curate_monkey_detection,
 )
-from soma.curation.tile_detection import tile_detection_manifest
+from soma.benchmark.tiles import tile_detection_manifest
 from soma.data import AnnotationManifest, Cohort
 from tests.eva_slide_raw import write_pyramid
 

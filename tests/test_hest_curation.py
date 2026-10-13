@@ -29,7 +29,7 @@ from PIL import Image
 anndata = pytest.importorskip("anndata", minversion="0.11")
 h5py = pytest.importorskip("h5py")
 
-from soma.curation.hest import curate_hest  # noqa: E402
+from soma.benchmark.hest.curate import curate_hest  # noqa: E402
 from soma.data import Cohort, ImageManifest  # noqa: E402
 
 # Silence anndata's pandas>=3 Arrow-string write guard when building fixtures.
@@ -270,7 +270,7 @@ def test_summary_reports_folds_and_spot_counts(tmp_path: Path):
 def test_hest_module_import_does_not_eagerly_load_curation_deps():
     """Importing the curator module must not import anndata/h5py (lazy inside the fn)."""
     code = (
-        "import sys, soma.curation.hest;"
+        "import sys, soma.benchmark.hest.curate;"
         "print('anndata' in sys.modules, 'h5py' in sys.modules)"
     )
     result = subprocess.run(
