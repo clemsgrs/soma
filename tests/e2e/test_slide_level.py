@@ -22,6 +22,8 @@ from tests.e2e.synthetic import (
 )
 
 TILE_PX = 32
+#: The tiling and pooled feature cache keys of the flagship scenario (pinned in slice 6c).
+PINNED_SLIDE_CACHE_KEYS = ["tile/c697067066e03831"]
 
 
 @pytest.fixture(scope="module")
@@ -103,6 +105,9 @@ def test_slide_classification_is_learned_cached_and_repeatable(
     artifact.check_training_reduced_loss("cold", cold)
     artifact.facts["tiles_encoded_cold"] = tiles_encoded_cold
     artifact.facts["cache_keys"] = sorted(p.name for p in (tmp_path / "cache").glob("*/*"))
+    # Cache keys derive from the features config alone; a config-layout change must not move them.
+    cache_keys = sorted(p.relative_to(tmp_path / "cache").as_posix() for p in (tmp_path / "cache").glob("*/*"))
+    artifact.check_equal("cold/cache_keys", cache_keys, PINNED_SLIDE_CACHE_KEYS)
     artifact.check_at_least("cold/test/auroc", cold.summary["test/auroc"], 0.95)
     artifact.check_at_least(
         "cold/test/balanced_accuracy", cold.summary["test/balanced_accuracy"], 0.8

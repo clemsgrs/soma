@@ -47,6 +47,8 @@ FEATURE_DIM = 4
 PIXEL_MAPPING = {"background": 0, "tumor": 1}
 #: hs2p's MaskSamplingConfig holds every label's raw values as a tuple.
 HELD_PIXEL_MAPPING = {"background": (0,), "tumor": (1,)}
+#: The ROI sampling key and the dense grid key(s) of the end-to-end run (pinned in slice 6c).
+PINNED_ROI_CACHE_KEYS = ("cb1a198125e6e918", ["4ac5f23b27809824"])
 
 
 def _roi_extraction(*, min_cov: float = 0.0, **tiling_fields) -> slide2vec.PreprocessingConfig:
@@ -379,6 +381,10 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
 
     # One raw-value crop per ROI under the ROI sampling entry, addressed by the dataset.
     (sampling_entry,) = (tmp_path / "out").rglob("roi_sampling/*")
+    # The ROI sampling and dense grid keys derive from the features config alone; a
+    # config-layout change must not move them (pinned in slice 6c).
+    dense_entries = sorted(path.name for path in (tmp_path / "out").rglob("dense/*") if path.is_dir())
+    assert (sampling_entry.name, dense_entries) == PINNED_ROI_CACHE_KEYS
     from PIL import Image
 
     for row in roi_df.itertuples():

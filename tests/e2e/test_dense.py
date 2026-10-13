@@ -15,6 +15,10 @@ from soma.testing import FakeEncoder
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset
 
+#: The dense grid cache keys of the cached scenarios (pinned in slice 6c).
+PINNED_SEGMENTATION_CACHE_KEYS = ["dense_image/3906c7b95e5c888c"]
+PINNED_DETECTION_CACHE_KEYS = ["dense_image/3906c7b95e5c888c"]
+
 
 def _config(
     tmp_path, encoder_name, kind, *, roi_px, task, metrics, epochs, live=False, augmentation=None,
@@ -83,6 +87,9 @@ def test_segmentation_is_learned(tmp_path, encoder_name, encoded_images, new_art
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)
     artifact.check_equal("rois_encoded", sum(encoded_images), 12)
+    # Cache keys derive from the features config alone; a config-layout change must not move them.
+    cache_keys = sorted(p.relative_to(tmp_path / "cache").as_posix() for p in (tmp_path / "cache").glob("*/*"))
+    artifact.check_equal("cache_keys", cache_keys, PINNED_SEGMENTATION_CACHE_KEYS)
     artifact.check_at_least("test/mean_dice", run.summary["test/mean_dice"], 0.8)
     artifact.check_at_least("test/mean_iou", run.summary["test/mean_iou"], 0.7)
     predictions = LabelMapPredictions.load(run.run_dir / "predictions_test")
@@ -110,6 +117,8 @@ def test_detection_is_learned(tmp_path, encoder_name, encoded_images, new_artifa
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)
     artifact.check_equal("rois_encoded", sum(encoded_images), 12)
+    cache_keys = sorted(p.relative_to(tmp_path / "cache").as_posix() for p in (tmp_path / "cache").glob("*/*"))
+    artifact.check_equal("cache_keys", cache_keys, PINNED_DETECTION_CACHE_KEYS)
     artifact.check_at_least("test/mean_f1", run.summary["test/mean_f1"], 0.6)
     predictions = PointPredictions.from_parquet(run.run_dir / "predictions_test.parquet")
     artifact.check_equal("predictions_test/ids", sorted(predictions.sample_ids), ["roi10", "roi11"])

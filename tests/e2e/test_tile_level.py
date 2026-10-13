@@ -5,6 +5,9 @@ from __future__ import annotations
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma
 from tests.e2e.synthetic import make_tile_dataset
 
+#: The tile feature cache key of the tile scenario (pinned in slice 6c).
+PINNED_TILE_CACHE_KEYS = ["image/84e4e51bb8b8651d"]
+
 
 def test_tile_classification_is_learned(tmp_path, encoder_name, encoded_images, new_artifact):
     artifact = new_artifact("tile_binary_classification")
@@ -34,6 +37,9 @@ def test_tile_classification_is_learned(tmp_path, encoder_name, encoded_images, 
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)
     artifact.check_equal("tiles_encoded", sum(encoded_images), 32)
+    # Cache keys derive from the features config alone; a config-layout change must not move them.
+    cache_keys = sorted(p.relative_to(tmp_path / "cache").as_posix() for p in (tmp_path / "cache").glob("*/*"))
+    artifact.check_equal("cache_keys", cache_keys, PINNED_TILE_CACHE_KEYS)
     artifact.check_equal("test/num_samples", run.summary["test/num_samples"], 8.0)
     artifact.check_at_least("test/auroc", run.summary["test/auroc"], 0.95)
     artifact.check_at_least("test/balanced_accuracy", run.summary["test/balanced_accuracy"], 0.85)
