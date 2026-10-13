@@ -1,0 +1,1800 @@
+croma/camelyon@uni2:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: false
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics: []
+    overwrite_test: false
+    representation:
+      alpha: 0.1
+      confounder_column: medical_center
+      evaluation_design: all
+      m: 5
+      split: test
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: null
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: uni2
+      params:
+        allow_non_recommended_settings: false
+        output_variant: default
+    execution:
+      batch_size: 32
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling: null
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner: null
+  loaders:
+    augment: null
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 0
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: min
+        monitor: loss
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: min
+        monitor: loss
+        patience: 10
+    device: auto
+    max_epochs: 50
+    max_steps: null
+    precision: fp32
+    val_every_n_epochs: 1
+croma/tcga-4x4@virchow2+knobs:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: false
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics: []
+    overwrite_test: false
+    representation:
+      alpha: 0.1
+      confounder_column: medical_center
+      evaluation_design: all
+      m: 5
+      split: test
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: /cache
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: virchow2
+      params:
+        allow_non_recommended_settings: false
+        output_variant: cls_patch_mean
+    execution:
+      batch_size: 16
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling: null
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner: null
+  loaders:
+    augment: null
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 0
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: min
+        monitor: loss
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: min
+        monitor: loss
+        patience: 10
+    device: auto
+    max_epochs: 50
+    max_steps: null
+    precision: fp32
+    val_every_n_epochs: 1
+eva/bach@uni2:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: true
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - balanced_accuracy
+    - accuracy
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: null
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: uni2
+      params:
+        allow_non_recommended_settings: false
+        output_variant: null
+    execution:
+      batch_size: 32
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling: null
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner:
+    name: mil
+    params:
+      head:
+        name: multiclass_classification
+        params:
+          dropout: 0.0
+          label_map:
+            a: 0
+            b: 1
+            c: 2
+            d: 3
+          num_classes: 4
+          targets:
+            label: label
+      loss: null
+      normalization:
+        eps: 1.0e-06
+        method: none
+      optimizer:
+        name: adamw
+        params:
+          amsgrad: false
+          betas:
+          - 0.9
+          - 0.999
+          capturable: false
+          differentiable: false
+          eps: 1.0e-08
+          foreach: null
+          fused: null
+          lr: 0.0003
+          maximize: false
+          weight_decay: 0.01
+      projection:
+        method: none
+        seed: 0
+        target_dim: null
+      scheduler: []
+  loaders:
+    augment: null
+    batch_size: 256
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 0
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: max
+        monitor: balanced_accuracy
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: max
+        monitor: balanced_accuracy
+        patience: 1250
+    device: auto
+    max_epochs: null
+    max_steps: 12500
+    precision: fp32
+    val_every_n_epochs: 1
+eva/bach@virchow2+knobs:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: true
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - balanced_accuracy
+    - accuracy
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: fp16
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: /cache
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: virchow2
+      params:
+        allow_non_recommended_settings: false
+        output_variant: cls
+    execution:
+      batch_size: 8
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling: null
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner:
+    name: mil
+    params:
+      head:
+        name: multiclass_classification
+        params:
+          dropout: 0.0
+          label_map:
+            a: 0
+            b: 1
+            c: 2
+            d: 3
+          num_classes: 4
+          targets:
+            label: label
+      loss: null
+      normalization:
+        eps: 1.0e-06
+        method: none
+      optimizer:
+        name: adamw
+        params:
+          amsgrad: false
+          betas:
+          - 0.9
+          - 0.999
+          capturable: false
+          differentiable: false
+          eps: 1.0e-08
+          foreach: null
+          fused: null
+          lr: 0.0003
+          maximize: false
+          weight_decay: 0.01
+      projection:
+        method: none
+        seed: 0
+        target_dim: null
+      scheduler: []
+  loaders:
+    augment: null
+    batch_size: 256
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 3
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: max
+        monitor: balanced_accuracy
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: max
+        monitor: balanced_accuracy
+        patience: 5
+    device: auto
+    max_epochs: null
+    max_steps: 100
+    precision: fp32
+    val_every_n_epochs: 1
+eva/camelyon16_small@uni2:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: false
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - balanced_accuracy
+    - accuracy
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: null
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: uni2
+      params:
+        allow_non_recommended_settings: true
+        output_variant: null
+    execution:
+      batch_size: 32
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: otsu
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling:
+        backend: auto
+        mask_backend: auto
+        overlap: 0.0
+        requested_backend: auto
+        requested_mask_backend: auto
+        requested_spacing_um: 0.25
+        requested_tile_size_px: 224
+        tolerance: 0.05
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner:
+    name: mil
+    params:
+      aggregator:
+        name: eva_abmil
+        params:
+          hidden_dim: 128
+          projected_dim: 128
+      head:
+        name: eva_mil_binary
+        params:
+          num_classes: 2
+          targets:
+            label: label
+      loss: null
+      normalization:
+        eps: 1.0e-06
+        method: none
+      optimizer:
+        name: adamw
+        params:
+          amsgrad: false
+          betas:
+          - 0.9
+          - 0.999
+          capturable: false
+          differentiable: false
+          eps: 1.0e-08
+          foreach: null
+          fused: null
+          lr: 0.001
+          maximize: false
+          weight_decay: 0.01
+      projection:
+        method: none
+        seed: 0
+        target_dim: null
+      scheduler:
+      - name: constant
+        params:
+          factor: 0.3333333333333333
+          last_epoch: -1
+          total_iters: 5
+  loaders:
+    augment: null
+    batch_size: 32
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 0
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: max
+        monitor: balanced_accuracy
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: false
+        mode: max
+        monitor: balanced_accuracy
+        patience: 20
+    device: auto
+    max_epochs: 100
+    max_steps: null
+    precision: fp32
+    val_every_n_epochs: 1
+eva/consep@uni2:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: true
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - foreground_mean_dice
+    - mean_dice
+    - mean_iou
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: null
+      validate_payloads: false
+    dense:
+      attention_blocks:
+      - -1
+      attention_include_registers: false
+      backend: auto
+      feature_kind: patch_features_prenorm
+      image_pad_value: null
+      overlap: 0.0
+      pad_mode: reflect
+      spacing_um: 0.25
+      target_size: 224
+      tolerance: 0.05
+      window_size: null
+    encoder:
+      name: uni2
+      params:
+        allow_non_recommended_settings: true
+        output_variant: null
+    execution:
+      batch_size: 32
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling:
+        backend: auto
+        mask_backend: auto
+        overlap: 0.0
+        requested_backend: auto
+        requested_mask_backend: auto
+        requested_spacing_um: 0.25
+        requested_tile_size_px: 224
+        tolerance: 0.05
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner:
+    name: dense
+    params:
+      decoder:
+        name: eva_conv_with_image
+        params: {}
+      head:
+        name: eva_segmentation
+        params:
+          ce_gamma: 0.0
+          class_weights: null
+          classes: null
+          dice_weight: 1.0
+          ignore: null
+          ignore_index: 255
+          num_classes: 5
+          targets: {}
+          tversky_alpha: 0.5
+          tversky_beta: 0.5
+          tversky_gamma: 1.0
+      normalization:
+        eps: 1.0e-06
+        method: none
+      optimizer:
+        name: adamw
+        params:
+          amsgrad: false
+          betas:
+          - 0.9
+          - 0.999
+          capturable: false
+          differentiable: false
+          eps: 1.0e-08
+          foreach: null
+          fused: null
+          lr: 0.002
+          maximize: false
+          weight_decay: 0.01
+      projection:
+        method: none
+        seed: 0
+        target_dim: null
+      scheduler:
+      - name: constant
+        params:
+          factor: 0.3333333333333333
+          last_epoch: -1
+          total_iters: 5
+  loaders:
+    augment: null
+    batch_size: 64
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 0
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: max
+        monitor: foreground_mean_dice
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: max
+        monitor: foreground_mean_dice
+        patience: 200
+    device: auto
+    max_epochs: null
+    max_steps: 2000
+    precision: fp32
+    val_every_n_epochs: 1
+eva/monusac@virchow2+knobs:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: true
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - foreground_mean_dice
+    - mean_dice
+    - mean_iou
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: null
+      validate_payloads: false
+    dense:
+      attention_blocks:
+      - -1
+      attention_include_registers: false
+      backend: auto
+      feature_kind: patch_features_prenorm
+      image_pad_value: null
+      overlap: 0.0
+      pad_mode: reflect
+      spacing_um: 0.25
+      target_size: 224
+      tolerance: 0.05
+      window_size: null
+    encoder:
+      name: virchow2
+      params:
+        allow_non_recommended_settings: true
+        output_variant: null
+    execution:
+      batch_size: 4
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling:
+        backend: auto
+        mask_backend: auto
+        overlap: 0.0
+        requested_backend: auto
+        requested_mask_backend: auto
+        requested_spacing_um: 0.25
+        requested_tile_size_px: 224
+        tolerance: 0.05
+      use_supertiles: true
+    kind: live
+    spacing_policy: strict
+  learner:
+    name: dense
+    params:
+      decoder:
+        name: eva_conv_with_image
+        params: {}
+      head:
+        name: eva_segmentation
+        params:
+          ce_gamma: 0.0
+          class_weights: null
+          classes: null
+          dice_weight: 1.0
+          ignore: null
+          ignore_index: 5
+          num_classes: 5
+          targets: {}
+          tversky_alpha: 0.5
+          tversky_beta: 0.5
+          tversky_gamma: 1.0
+      normalization:
+        eps: 1.0e-06
+        method: none
+      optimizer:
+        name: adamw
+        params:
+          amsgrad: false
+          betas:
+          - 0.9
+          - 0.999
+          capturable: false
+          differentiable: false
+          eps: 1.0e-08
+          foreach: null
+          fused: null
+          lr: 0.002
+          maximize: false
+          weight_decay: 0.01
+      projection:
+        method: none
+        seed: 0
+        target_dim: null
+      scheduler:
+      - name: constant
+        params:
+          factor: 0.3333333333333333
+          last_epoch: -1
+          total_iters: 5
+  loaders:
+    augment:
+      name: segmentation
+      params:
+        brightness: 0.0
+        contrast: 0.0
+        crop_scale:
+        - 0.08
+        - 1.0
+        horizontal_flip: 0.0
+        hue: 0.0
+        ignore_index: null
+        rotation_degrees: 0.0
+        saturation: 0.0
+        scale: 0.0
+        target_size: null
+        translate: 0.0
+        vertical_flip: 0.0
+    batch_size: 64
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 1
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: max
+        monitor: foreground_mean_dice
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: max
+        monitor: foreground_mean_dice
+        patience: 4
+    device: auto
+    max_epochs: null
+    max_steps: 50
+    precision: fp32
+    val_every_n_epochs: 1
+eva/panda_small@virchow2+knobs:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: false
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - balanced_accuracy
+    - accuracy
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: /cache
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: virchow2
+      params:
+        allow_non_recommended_settings: true
+        output_variant: cls
+    execution:
+      batch_size: 32
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: otsu
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling:
+        backend: auto
+        mask_backend: auto
+        overlap: 0.0
+        requested_backend: auto
+        requested_mask_backend: auto
+        requested_spacing_um: 0.5
+        requested_tile_size_px: 224
+        tolerance: 0.05
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner:
+    name: mil
+    params:
+      aggregator:
+        name: eva_abmil
+        params:
+          hidden_dim: 128
+          projected_dim: 128
+      head:
+        name: eva_mil_multiclass
+        params:
+          num_classes: 6
+          targets:
+            label: label
+      loss: null
+      normalization:
+        eps: 1.0e-06
+        method: none
+      optimizer:
+        name: adamw
+        params:
+          amsgrad: false
+          betas:
+          - 0.9
+          - 0.999
+          capturable: false
+          differentiable: false
+          eps: 1.0e-08
+          foreach: null
+          fused: null
+          lr: 0.001
+          maximize: false
+          weight_decay: 0.01
+      projection:
+        method: none
+        seed: 0
+        target_dim: null
+      scheduler:
+      - name: constant
+        params:
+          factor: 0.3333333333333333
+          last_epoch: -1
+          total_iters: 5
+  loaders:
+    augment: null
+    batch_size: 32
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 2
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: max
+        monitor: balanced_accuracy
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: false
+        mode: max
+        monitor: balanced_accuracy
+        patience: 2
+    device: auto
+    max_epochs: 3
+    max_steps: null
+    precision: fp32
+    val_every_n_epochs: 1
+eva/patch_camelyon@virchow2:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: false
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - balanced_accuracy
+    - accuracy
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: null
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: virchow2
+      params:
+        allow_non_recommended_settings: false
+        output_variant: cls
+    execution:
+      batch_size: 32
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling: null
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner:
+    name: mil
+    params:
+      head:
+        name: binary_classification
+        params:
+          dropout: 0.0
+          label_map:
+            0: 0
+            1: 1
+          num_classes: 2
+          targets:
+            label: label
+      loss: null
+      normalization:
+        eps: 1.0e-06
+        method: none
+      optimizer:
+        name: adamw
+        params:
+          amsgrad: false
+          betas:
+          - 0.9
+          - 0.999
+          capturable: false
+          differentiable: false
+          eps: 1.0e-08
+          foreach: null
+          fused: null
+          lr: 0.0003
+          maximize: false
+          weight_decay: 0.01
+      projection:
+        method: none
+        seed: 0
+        target_dim: null
+      scheduler: []
+  loaders:
+    augment: null
+    batch_size: 256
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 0
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: max
+        monitor: balanced_accuracy
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: max
+        monitor: balanced_accuracy
+        patience: 3
+    device: auto
+    max_epochs: null
+    max_steps: 12500
+    precision: fp32
+    val_every_n_epochs: 1
+hest/IDC@uni2:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: false
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - mean_pearson
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: null
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: uni2
+      params:
+        allow_non_recommended_settings: false
+        output_variant: null
+    execution:
+      batch_size: 32
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling:
+        backend: auto
+        mask_backend: auto
+        overlap: 0.0
+        requested_backend: auto
+        requested_mask_backend: auto
+        requested_spacing_um: 0.5
+        requested_tile_size_px: 224
+        tolerance: 0.05
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner:
+    name: hest_probe
+    params:
+      alpha: null
+      pca_components: 256
+  loaders:
+    augment: null
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 0
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: min
+        monitor: loss
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: min
+        monitor: loss
+        patience: 10
+    device: auto
+    max_epochs: 50
+    max_steps: null
+    precision: fp32
+    val_every_n_epochs: 1
+hest/LUNG@virchow2+knobs:
+  cohort:
+    allow_missing_tune: false
+    collapse: null
+    records: <records>
+    splits: <splits>
+    tune_is_test: false
+  evaluation:
+    attention_heatmaps: null
+    holdout_test: false
+    metrics:
+    - mean_pearson
+    overwrite_test: false
+    representation: null
+    save_heatmaps: false
+    save_overlays: true
+    save_probabilities: false
+    subgroups: []
+  features:
+    cache:
+      dtype: null
+      enabled: true
+      on_identity_mismatch: error
+      reuse_policy: strict
+      root_dir: /cache
+      validate_payloads: false
+    dense: null
+    encoder:
+      name: virchow2
+      params:
+        allow_non_recommended_settings: false
+        output_variant: cls_patch_mean
+    execution:
+      batch_size: 32
+      num_workers_per_gpu: null
+      on_image_mismatch: raise
+      output_dir: null
+      output_dtype: null
+      output_format: pt
+      precision: null
+      prefetch_factor: 4
+      save_latents: false
+      save_slide_embeddings: false
+      save_tile_embeddings: false
+    extraction:
+      adaptive_batching: false
+      filter: null
+      gpu_decode: false
+      jpeg_backend: pil
+      masks:
+        colors:
+          background: null
+          tissue:
+          - 157
+          - 219
+          - 129
+        min_coverage:
+          tissue: 0.01
+        output_mode: per_annotation
+        pixel_mapping:
+          background:
+          - 0
+          tissue:
+          - 1
+        strategy: joint
+      num_cucim_workers: 4
+      on_the_fly: true
+      preview:
+        downsample: 32
+        mask_overlay_alpha: 0.5
+        save_mask_preview: true
+        save_tiling_preview: true
+        tissue_contour_color:
+        - 157
+        - 219
+        - 129
+      read_coordinates_from: null
+      read_tiles_from: null
+      region_tile_multiple: null
+      requested_region_size_px: null
+      resume: false
+      save_tiles: false
+      segmentation:
+        close: 4
+        downsample: 64
+        method: hsv
+        mthresh: 7
+        sam2_checkpoint_path: null
+        sam2_config_path: null
+        sam2_device: cpu
+        sam2_num_workers: null
+        sthresh: 8
+        sthresh_up: 255
+      tiling:
+        backend: auto
+        mask_backend: auto
+        overlap: 0.0
+        requested_backend: auto
+        requested_mask_backend: auto
+        requested_spacing_um: 0.5
+        requested_tile_size_px: 224
+        tolerance: 0.05
+      use_supertiles: true
+    kind: cached
+    spacing_policy: strict
+  learner:
+    name: hest_probe
+    params:
+      alpha: null
+      pca_components: 64
+  loaders:
+    augment: null
+    batch_size: 1
+    num_workers: 0
+    persistent_workers: false
+    pin_memory: false
+    sampler: null
+  run:
+    seed: 1
+  trainer:
+    accumulate_grad_batches: 1
+    callbacks:
+    - name: checkpoint
+      params:
+        dirpath: null
+        mode: min
+        monitor: loss
+        selection: best
+    - name: early_stopping
+      params:
+        hold_until_moves: true
+        mode: min
+        monitor: loss
+        patience: 10
+    device: auto
+    max_epochs: 50
+    max_steps: null
+    precision: fp32
+    val_every_n_epochs: 1
