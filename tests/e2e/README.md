@@ -1,7 +1,7 @@
 # End-to-end scenarios
 
 Each scenario writes synthetic images to disk, then runs them through the real
-`soma <config.yaml>` entry point: tiling, feature extraction, caching, training and
+`soma run <config.yaml>` entry point: tiling, feature extraction, caching, training and
 evaluation. Nothing is mocked except the encoder, which is weight-free: it returns
 the mean RGB of each tile or 8x8 patch (`tests/dense_literal_encoder.py`, or
 `soma.testing.FakeEncoder` as the frozen encoder stage of the live grid path). The

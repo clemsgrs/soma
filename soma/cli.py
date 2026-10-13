@@ -35,38 +35,6 @@ from soma.benchmarks.run import (
 )
 
 
-def _parse_set_overrides(pairs: list[str]) -> dict[str, Any]:
-    """Turn ``--set a.b.c=value`` strings into a nested override dict.
-
-    Keys are dotted paths into the config sections (``cohort.records``,
-    ``run.output_dir``, ``trainer.max_epochs`` …). Values are parsed as YAML scalars so
-    types come through naturally (``max_epochs=2`` → int, ``pin_memory=false`` → bool,
-    paths stay strings). Lets a committed config be repointed at a new machine without
-    editing it on disk.
-    """
-    overrides: dict[str, Any] = {}
-    for pair in pairs:
-        if "=" not in pair:
-            print(f"Error: --set expects key=value, got {pair!r}", file=sys.stderr)
-            sys.exit(2)
-        key, _, raw_value = pair.partition("=")
-        key = key.strip()
-        if not key:
-            print(f"Error: --set has an empty key in {pair!r}", file=sys.stderr)
-            sys.exit(2)
-        value = yaml.safe_load(raw_value)
-        cursor = overrides
-        parts = key.split(".")
-        for part in parts[:-1]:
-            existing = cursor.get(part)
-            if not isinstance(existing, dict):
-                existing = {}
-                cursor[part] = existing
-            cursor = existing
-        cursor[parts[-1]] = value
-    return overrides
-
-
 def _cached_source(config: ExperimentConfig, feature_dir: Path):
     """The cached source a ``--feature-dir`` holds: grids for the grid shape, else features."""
     from soma.data import CachedSetSource
@@ -83,24 +51,152 @@ def _cached_source(config: ExperimentConfig, feature_dir: Path):
     return CachedSetSource(feature_dir)
 
 
-def _run_config_path(
-    config_path: Path, overrides: dict[str, Any] | None = None, feature_dir: Path | None = None
-) -> None:
+def _load_config(config_path: Path) -> ExperimentConfig:
     if not config_path.exists():
         print(f"Error: config file not found: {config_path}", file=sys.stderr)
         sys.exit(1)
-
     try:
-        config = ExperimentConfig.from_yaml(config_path, overrides=overrides)
+        return ExperimentConfig.from_yaml(config_path)
     except Exception as exc:
         print(f"Error: failed to load config from {config_path}: {exc}", file=sys.stderr)
         sys.exit(1)
 
+
+def _preset_arguments() -> dict[str, list[str]]:
+    """Each preset argument (a flag of ``soma run --preset`` and ``soma init``) and the
+    presets that take it, from :func:`soma.components`."""
+    arguments: dict[str, list[str]] = {}
+    for entry in components("presets"):
+        for name in entry["params"]:
+            arguments.setdefault(name, []).append(entry["name"])
+    return arguments
+
+
+def _add_preset_arguments(parser: argparse.ArgumentParser) -> None:
+    group = parser.add_argument_group("preset arguments", "The chosen preset's own arguments (soma list presets).")
+    for name, takers in _preset_arguments().items():
+        group.add_argument(
+            f"--{name.replace('_', '-')}", dest=f"preset_{name}", metavar=name.upper(), default=None,
+            help=f"Taken by: {', '.join(takers)}.",
+        )
+
+
+def _build_preset(parser: argparse.ArgumentParser, name: str, args: argparse.Namespace) -> ExperimentConfig:
+    """The preset ``name`` called with the flags ``args`` gives: exactly its own arguments,
+    every required one present."""
+    entry = next(entry for entry in components("presets") if entry["name"] == name)
+    given = {key: getattr(args, f"preset_{key}") for key in _preset_arguments()}
+    given = {key: value for key, value in given.items() if value is not None}
+    flag = lambda key: f"--{key.replace('_', '-')}"  # noqa: E731
+    foreign = sorted(set(given) - set(entry["params"]))
+    if foreign:
+        parser.error(f"preset {name} takes no {', '.join(map(flag, foreign))}")
+    missing = [key for key in entry["required"] if key not in given]
+    if missing:
+        parser.error(f"preset {name} needs {', '.join(map(flag, missing))}")
+    from soma.presets import preset_registry
+
+    try:
+        return preset_registry.get(name)(**given)
+    except (TypeError, ValueError) as exc:
+        parser.error(f"preset {name}: {exc}")
+
+
+def _cmd_run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    preset_only = {"--cohort": args.cohort, "--splits": args.splits, "--out": args.out, "--seed": args.seed}
+    if args.preset is None:
+        if args.config is None:
+            parser.error("pass a config path or --preset NAME")
+        given = [flag for flag, value in preset_only.items() if value is not None]
+        given += [f"--{key.replace('_', '-')}" for key in _preset_arguments() if getattr(args, f"preset_{key}") is not None]
+        if given:
+            parser.error(f"{', '.join(given)} only go with --preset: edit the config instead")
+        config = _load_config(Path(args.config))
+    else:
+        if args.config is not None:
+            parser.error("pass a config path or --preset NAME, not both")
+        missing = [flag for flag in ("--cohort", "--splits", "--out") if preset_only[flag] is None]
+        if missing:
+            parser.error(f"--preset needs {', '.join(missing)}")
+        config = _build_preset(parser, args.preset, args)
+        config.cohort.records = args.cohort
+        config.cohort.splits = args.splits
+        config.run.output_dir = args.out
+        if args.seed is not None:
+            config.run.seed = args.seed
+    feature_dir = args.feature_dir
     if feature_dir is not None and not feature_dir.is_dir():
         print(f"Error: --feature-dir is not a directory: {feature_dir}", file=sys.stderr)
         sys.exit(1)
     source = _cached_source(config, feature_dir) if feature_dir is not None else None
     Pipeline(config, source=source).run()
+
+
+def _build_run_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="soma run",
+        description=(
+            "Run an experiment: a YAML config (soma init writes one; a run's config.yaml or "
+            "plan.yaml replays it), or a preset on a cohort. The run directory keeps the "
+            "config as given (config.yaml) and its resolved plan (plan.yaml)."
+        ),
+    )
+    parser.add_argument("config", nargs="?", default=None, help="Experiment YAML.")
+    parser.add_argument(
+        "--preset", choices=[entry["name"] for entry in components("presets")], default=None,
+        help="Build the experiment from this preset instead of a YAML file.",
+    )
+    parser.add_argument("--cohort", default=None, help="dataset.csv of the samples and their targets (with --preset).")
+    parser.add_argument("--splits", default=None, help="splits.csv (with --preset).")
+    parser.add_argument("--out", default=None, help="Output directory (with --preset).")
+    parser.add_argument("--seed", type=int, default=None, help="Seed (with --preset; default 0).")
+    parser.add_argument(
+        "--feature-dir", type=Path, default=None,
+        help="Train on features already extracted: a pooled feature cache or dense grids directory.",
+    )
+    _add_preset_arguments(parser)
+    parser.set_defaults(func=_cmd_run)
+    return parser
+
+
+def _init_yaml(name: str, args: argparse.Namespace, config: ExperimentConfig) -> str:
+    """``config`` with every default spelled out, as an editable YAML document."""
+    from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS, expand
+
+    data = expand(config).to_dict()
+    for field in MACHINE_RESOLVED_EXECUTION_FIELDS:  # slide2vec resolves them where a run starts
+        data["features"]["execution"][field] = None
+    flags = " ".join(
+        f"--{key.replace('_', '-')} {getattr(args, f'preset_{key}')}"
+        for key in _preset_arguments()
+        if getattr(args, f"preset_{key}") is not None
+    )
+    header = (
+        f"# soma init {name} {flags}".rstrip() + "\n"
+        "# Every field at the preset's value or its default; null ones are decided by the\n"
+        "# cohort or the machine at run time. Point cohort.records and cohort.splits at your\n"
+        "# files, edit what you need, then: soma run <this file>\n"
+    )
+    return header + yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+
+
+def _cmd_init(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    config = _build_preset(parser, args.preset, args)
+    sys.stdout.write(_init_yaml(args.preset, args, config))
+
+
+def _build_init_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="soma init",
+        description=(
+            "Print a preset as an editable experiment YAML with every default filled in: "
+            "soma init NAME [arguments] > exp.yaml, edit, then soma run exp.yaml."
+        ),
+    )
+    parser.add_argument("preset", choices=[entry["name"] for entry in components("presets")], help="Preset name.")
+    _add_preset_arguments(parser)
+    parser.set_defaults(func=_cmd_init)
+    return parser
 
 
 def _print_table(title: str, columns: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
@@ -957,7 +1053,9 @@ def _build_compact_index_parser() -> argparse.ArgumentParser:
 
 def _print_top_level_help() -> None:
     print(
-        "usage: soma CONFIG [--set KEY=VALUE ...] [--feature-dir DIR]\n"
+        "usage: soma run CONFIG [--feature-dir DIR]\n"
+        "       soma run --preset NAME --cohort CSV --splits CSV --out DIR [--seed N] [PRESET ARGUMENTS]\n"
+        "       soma init NAME [PRESET ARGUMENTS]\n"
         "       soma list [KIND] [--level {tile,slide,patient}]\n"
         "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
@@ -966,7 +1064,9 @@ def _print_top_level_help() -> None:
         "       soma compact-index OUTPUT_ROOT\n"
         "\n"
         "commands:\n"
-        "  CONFIG       run a pipeline from a YAML config file (--feature-dir: on cached features)\n"
+        "  run          run an experiment from a YAML config (--feature-dir: on cached features),\n"
+        "               or from a preset (--preset) on a cohort\n"
+        "  init         print a preset as an editable YAML config with every default filled in\n"
         "  list         list the component kinds, or one kind's components and their params\n"
         "  prepare-croma  acquire and decode the pinned PathoROB tile sources\n"
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
@@ -975,8 +1075,11 @@ def _print_top_level_help() -> None:
         "  compact-index  rewrite the append-only runs.csv with one row per run\n"
         "\n"
         "examples:\n"
-        "  soma /path/to/config.yaml\n"
-        "  python -m soma /path/to/config.yaml\n"
+        "  soma run /path/to/config.yaml\n"
+        "  python -m soma run /path/to/config.yaml\n"
+        "  soma init mil_classification --encoder uni2 > exp.yaml\n"
+        "  soma run --preset mil_classification --encoder uni2 --cohort dataset.csv --splits splits.csv --out runs\n"
+        "  soma list presets\n"
         "  soma list benchmarks\n"
         "  soma prepare-croma /data/croma\n"
         "  soma reproduce ocelot --from-run-dir /runs/ocelot\n"
@@ -1054,54 +1157,17 @@ def main(argv: list[str] | None = None) -> None:
         parsed.func(parsed)
         return
 
-    if args[0] == "run":
-        print(
-            "Error: pass the config path directly.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    if args[0] in {"run", "init"}:
+        parser = _build_run_parser() if args[0] == "run" else _build_init_parser()
+        parsed = parser.parse_args(args[1:])
+        parsed.func(parser, parsed)
+        return
 
-    # Config-run form: one config path, then any number of `--set key=value` overrides.
-    config_path = args[0]
-    if config_path.startswith("-"):
-        print(
-            "Error: expected one config path or the 'list' subcommand.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-
-    set_pairs: list[str] = []
-    feature_dir: Path | None = None
-    rest = args[1:]
-    i = 0
-    while i < len(rest):
-        token = rest[i]
-        if token in {"--set", "--feature-dir"}:
-            if i + 1 >= len(rest):
-                expected = "a key=value argument" if token == "--set" else "a directory"
-                print(f"Error: {token} requires {expected}", file=sys.stderr)
-                sys.exit(2)
-            if token == "--set":
-                set_pairs.append(rest[i + 1])
-            else:
-                feature_dir = Path(rest[i + 1])
-            i += 2
-        elif token.startswith("--set="):
-            set_pairs.append(token[len("--set="):])
-            i += 1
-        elif token.startswith("--feature-dir="):
-            feature_dir = Path(token[len("--feature-dir="):])
-            i += 1
-        else:
-            print(
-                f"Error: unexpected argument {token!r} "
-                "(expected one config path, optional --set key=value and --feature-dir DIR)",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-
-    overrides = _parse_set_overrides(set_pairs) if set_pairs else None
-    _run_config_path(Path(config_path), overrides, feature_dir)
+    print(
+        f"Error: unknown command {args[0]!r}; run a config with 'soma run CONFIG' (soma --help lists the commands).",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 if __name__ == "__main__":

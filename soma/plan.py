@@ -38,6 +38,7 @@ __all__ = [
     "Plan",
     "check",
     "dotted_packages",
+    "expand",
     "head_family",
     "learner_shape",
     "load_cohort",
@@ -357,7 +358,8 @@ def _check(config: ExperimentConfig) -> None:
     masks = features.extraction.masks
     if family == "segmentation":
         annotation = is_annotation_sampling(masks)
-        if annotation or "classes" in head_params or "ignore" in head_params:
+        # A null field is unset, like an omitted one (``soma init`` spells them as null).
+        if annotation or head_params.get("classes") is not None or head_params.get("ignore") is not None:
             from soma.dense.reader import check_classes_declared, resolve_class_scheme
 
             resolve_class_scheme(head_params, annotation_rasters=annotation)
@@ -563,12 +565,22 @@ def resolve(config: ExperimentConfig, cohort: Any) -> Plan:
     normalized through its YAML form, so a Python config and the YAML it saves resolve to
     one plan.
     """
+    return Plan(_spelled_out(config, cohort, infer=True))
+
+
+def expand(config: ExperimentConfig) -> ExperimentConfig:
+    """``config`` with every ``{name, params}`` leaf's registered defaults spelled out and
+    nothing the cohort decides: what ``soma init`` prints. Its plan is ``config``'s."""
+    return _spelled_out(config, None, infer=False)
+
+
+def _spelled_out(config: ExperimentConfig, cohort: Any, *, infer: bool) -> ExperimentConfig:
     config = revalidated(config)
     _check(config)
     registries = _registries()
     learner = config.learner
     if learner is not None:
-        learner = _resolve_learner(config, learner, cohort, registries)
+        learner = _resolve_learner(config, learner, cohort, registries, infer=infer)
     encoder = config.features.encoder
     if encoder is not None:
         from soma.encoders import encoder_registry
@@ -588,7 +600,7 @@ def resolve(config: ExperimentConfig, cohort: Any) -> Plan:
             config.trainer, callbacks=[_expand(registries["callback"], leaf) for leaf in config.trainer.callbacks]
         ),
     )
-    return Plan(ExperimentConfig.from_dict(plain(resolved)))
+    return ExperimentConfig.from_dict(plain(resolved))
 
 
 def _expand(registry: Any, leaf: Any) -> Any:
@@ -600,7 +612,9 @@ def _expand(registry: Any, leaf: Any) -> Any:
     return replace(leaf, params=registry.canonical_params(leaf.name, leaf.params))
 
 
-def _resolve_learner(config: ExperimentConfig, learner: LearnerConfig, cohort: Any, registries) -> LearnerConfig:
+def _resolve_learner(
+    config: ExperimentConfig, learner: LearnerConfig, cohort: Any, registries, *, infer: bool
+) -> LearnerConfig:
     cls = registries["learner"].resolve(learner.name)
     params = dict(learner.params)
     if not _is_learner(cls):
@@ -609,7 +623,12 @@ def _resolve_learner(config: ExperimentConfig, learner: LearnerConfig, cohort: A
     for key in ("aggregator", "decoder"):
         if params.get(key) is not None:
             resolved[key] = _expand(registries[key], params[key])
-    resolved["head"] = _resolve_head(config, params["head"], cohort, registries["head"])
+    head = params["head"]
+    if infer:
+        resolved["head"] = _resolve_head(config, head, cohort, registries["head"])
+    else:
+        defaults = registries["head"].canonical_params(head.name, _head_params(head))
+        resolved["head"] = replace(head, params={**defaults, "targets": target_columns(config)[0]})
     normalization, projection = _adaptor_params(params)
     resolved["normalization"] = dataclasses.asdict(normalization)
     resolved["projection"] = dataclasses.asdict(projection)

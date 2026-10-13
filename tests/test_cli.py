@@ -3,10 +3,13 @@
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 import yaml
 
-from soma.config import FeaturesConfig
+from soma import presets
+from soma.config import ExperimentConfig, FeaturesConfig
+from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS, check, load_cohort, resolve
 from tests.experiment_configs import experiment
 
 
@@ -25,100 +28,73 @@ def _make_valid_config(tmp_path: Path) -> Path:
     return path
 
 
-def test_run_shorthand_passes_config_and_runs_pipeline(tmp_path: Path):
-    config_path = _make_valid_config(tmp_path)
-
-    with patch("soma.cli.Pipeline") as MockPipeline:
-        from soma.cli import main
-        main([str(config_path)])
-
-    MockPipeline.assert_called_once()
-    MockPipeline.return_value.run.assert_called_once()
-    config_arg = MockPipeline.call_args[0][0]
-    assert config_arg.features.encoder.name == "uni2"
-    assert config_arg.learner.params["head"].name == "binary_classification"
-
-
-# --- --set overrides ---
-
-
-def _run_with_args(config_args: list[str]):
-    """Run main() with Pipeline patched; return the ExperimentConfig it received."""
+def _pipeline_call(args: list[str]):
+    """Run main() with Pipeline patched; return the (config, source) it was constructed with."""
     with patch("soma.cli.Pipeline") as MockPipeline:
         MockPipeline.return_value = MagicMock()
         from soma.cli import main
-        main(config_args)
-    return MockPipeline.call_args[0][0]
+
+        main(args)
+    MockPipeline.return_value.run.assert_called_once()
+    return MockPipeline.call_args[0][0], MockPipeline.call_args.kwargs["source"]
 
 
-def test_set_override_repoints_scalar(tmp_path: Path):
-    config_path = _make_valid_config(tmp_path)
-    config_arg = _run_with_args([str(config_path), "--set", "features.encoder.name=phikon"])
-    assert config_arg.features.encoder.name == "phikon"
-
-
-def test_set_override_parses_value_type(tmp_path: Path):
-    config_path = _make_valid_config(tmp_path)
-    config_arg = _run_with_args([str(config_path), "--set", "trainer.max_epochs=3"])
-    # YAML-parsed, so it lands as an int, not the string "3".
-    assert config_arg.trainer.max_epochs == 3
-    assert isinstance(config_arg.trainer.max_epochs, int)
-
-
-def test_set_override_equals_form_and_paths(tmp_path: Path):
-    config_path = _make_valid_config(tmp_path)
-    config_arg = _run_with_args(
-        [str(config_path), "--set=cohort.records=/elsewhere/dataset.csv"]
-    )
-    assert str(config_arg.cohort.records) == "/elsewhere/dataset.csv"
-
-
-def test_multiple_set_overrides(tmp_path: Path):
-    config_path = _make_valid_config(tmp_path)
-    config_arg = _run_with_args(
-        [str(config_path), "--set", "features.encoder.name=phikon", "--set", "run.output_dir=/out"]
-    )
-    assert config_arg.features.encoder.name == "phikon"
-    assert str(config_arg.run.output_dir) == "/out"
-
-
-def test_parse_set_overrides_builds_nested_dict():
-    from soma.cli import _parse_set_overrides
-
-    out = _parse_set_overrides(["a.b.c=1", "a.b.d=hello", "x=true"])
-    assert out == {"a": {"b": {"c": 1, "d": "hello"}}, "x": True}
-
-
-def test_set_without_value_exits(tmp_path: Path, capsys):
-    config_path = _make_valid_config(tmp_path)
+def _exit_code(args: list[str], capsys) -> tuple[int, str]:
     from soma.cli import main
 
-    with pytest.raises(SystemExit) as exc_info:
-        main([str(config_path), "--set"])
-    assert exc_info.value.code == 2
-    assert "--set requires" in capsys.readouterr().err
+    with patch("soma.cli.Pipeline") as MockPipeline, pytest.raises(SystemExit) as exc_info:
+        main(args)
+    MockPipeline.assert_not_called()
+    return exc_info.value.code, capsys.readouterr().err
 
 
-def test_set_malformed_pair_exits(tmp_path: Path, capsys):
-    config_path = _make_valid_config(tmp_path)
-    from soma.cli import main
+# --- soma run CONFIG ---
 
-    with pytest.raises(SystemExit) as exc_info:
-        main([str(config_path), "--set", "noequalssign"])
-    assert exc_info.value.code == 2
-    assert "key=value" in capsys.readouterr().err
+
+def test_run_takes_a_config_path_and_runs_the_pipeline(tmp_path: Path):
+    config, source = _pipeline_call(["run", str(_make_valid_config(tmp_path))])
+
+    assert config.features.encoder.name == "uni2"
+    assert config.learner.params["head"].name == "binary_classification"
+    assert source is None
+
+
+def test_a_bare_config_path_is_not_a_command(tmp_path: Path, capsys):
+    code, err = _exit_code([str(_make_valid_config(tmp_path))], capsys)
+    assert code == 2
+    assert "soma run" in err
+
+
+def test_run_takes_no_overrides(tmp_path: Path, capsys):
+    # A config is edited, not overridden: there is no --set.
+    code, _ = _exit_code(["run", str(_make_valid_config(tmp_path)), "--set", "trainer.max_epochs=3"], capsys)
+    assert code == 2
+
+
+def test_run_missing_config_file_exits(tmp_path: Path, capsys):
+    code, err = _exit_code(["run", str(tmp_path / "nonexistent.yaml")], capsys)
+    assert code != 0
+    assert "nonexistent.yaml" in err
+
+
+def test_run_invalid_yaml_exits(tmp_path: Path, capsys):
+    bad_yaml = tmp_path / "bad.yaml"
+    bad_yaml.write_text(": invalid: yaml: [")
+    code, _ = _exit_code(["run", str(bad_yaml)], capsys)
+    assert code != 0
+
+
+def test_run_invalid_config_content_exits(tmp_path: Path, capsys):
+    # Valid YAML but an unknown section.
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        yaml.safe_dump({"cohort": {"records": "data.csv", "splits": "splits.csv"}, "data": {"dataset_type": "case"}})
+    )
+    code, _ = _exit_code(["run", str(config_path)], capsys)
+    assert code != 0
 
 
 # --- --feature-dir ---
-
-
-def _source_for(config_args: list[str]):
-    """Run main() with Pipeline patched; return the ``source`` it was constructed with."""
-    with patch("soma.cli.Pipeline") as MockPipeline:
-        from soma.cli import main
-
-        main(config_args)
-    return MockPipeline.call_args.kwargs["source"]
 
 
 def test_feature_dir_attaches_a_cached_set_source(tmp_path: Path):
@@ -131,10 +107,9 @@ def test_feature_dir_attaches_a_cached_set_source(tmp_path: Path):
     features.mkdir()
     torch.save(torch.randn(3, 4), features / "s0.pt")
 
-    source = _source_for([str(config_path), "--feature-dir", str(features)])
+    _, source = _pipeline_call(["run", str(config_path), "--feature-dir", str(features)])
 
     assert isinstance(source, CachedSetSource) and source.feature_dir == features
-    assert _source_for([str(config_path)]) is None
 
 
 def test_feature_dir_attaches_a_cached_grid_source_for_a_dense_task(tmp_path: Path):
@@ -151,77 +126,155 @@ def test_feature_dir_attaches_a_cached_grid_source_for_a_dense_task(tmp_path: Pa
     grids = tmp_path / "grids"
     grids.mkdir()
 
-    source = _source_for([str(config_path), f"--feature-dir={grids}"])
+    _, source = _pipeline_call(["run", str(config_path), f"--feature-dir={grids}"])
 
     assert isinstance(source, CachedGridSource)
     assert source.provenance.to_dict()["kind"] == "dense_cache"
 
 
 def test_feature_dir_must_be_a_directory(tmp_path: Path, capsys):
-    config_path = _make_valid_config(tmp_path)
+    code, err = _exit_code(["run", str(_make_valid_config(tmp_path)), "--feature-dir", str(tmp_path / "missing")], capsys)
+    assert code == 1
+    assert "--feature-dir" in err
+
+
+# --- soma run --preset ---
+
+
+def _preset_args(tmp_path: Path, *extra: str) -> list[str]:
+    return [
+        "run",
+        "--preset",
+        "mil_classification",
+        "--cohort",
+        str(tmp_path / "dataset.csv"),
+        "--splits",
+        str(tmp_path / "splits.csv"),
+        "--out",
+        str(tmp_path / "runs"),
+        *extra,
+    ]
+
+
+def test_run_preset_builds_the_config_from_the_preset_and_the_cohort(tmp_path: Path):
+    config, source = _pipeline_call(_preset_args(tmp_path, "--encoder", "uni2", "--aggregator", "transmil", "--seed", "3"))
+
+    expected = presets.mil_classification("uni2", aggregator="transmil")
+    expected.cohort.records = str(tmp_path / "dataset.csv")
+    expected.cohort.splits = str(tmp_path / "splits.csv")
+    expected.run.output_dir = str(tmp_path / "runs")
+    expected.run.seed = 3
+    assert config.to_dict() == expected.to_dict()
+    assert source is None
+
+
+def test_run_preset_takes_the_preset_s_defaults(tmp_path: Path):
+    config, _ = _pipeline_call(_preset_args(tmp_path, "--encoder", "uni2"))
+    assert config.learner.params["aggregator"].name == "abmil"
+    assert config.run.seed == 0
+
+
+@pytest.mark.parametrize(
+    ("extra", "message"),
+    [
+        (("--aggregator", "abmil"), "--encoder"),  # a required preset argument
+        (("--encoder", "uni2", "--decoder", "linear"), "--decoder"),  # another preset's argument
+    ],
+)
+def test_run_preset_takes_exactly_its_own_arguments(tmp_path: Path, capsys, extra, message):
+    code, err = _exit_code(_preset_args(tmp_path, *extra), capsys)
+    assert code == 2
+    assert message in err
+
+
+def test_run_preset_needs_the_cohort_splits_and_output_dir(tmp_path: Path, capsys):
+    code, err = _exit_code(["run", "--preset", "tile_classification", "--encoder", "uni2"], capsys)
+    assert code == 2
+    assert "--cohort" in err and "--splits" in err and "--out" in err
+
+
+def test_run_takes_a_config_or_a_preset_not_both(tmp_path: Path, capsys):
+    config_path = str(_make_valid_config(tmp_path))
+    code, _ = _exit_code([*_preset_args(tmp_path, "--encoder", "uni2"), config_path], capsys)
+    assert code == 2
+    # The preset's flags are not overrides of a config.
+    code, err = _exit_code(["run", config_path, "--seed", "3"], capsys)
+    assert code == 2 and "--preset" in err
+    code, _ = _exit_code(["run"], capsys)
+    assert code == 2
+
+
+def test_run_preset_reports_a_bad_preset_argument(tmp_path: Path, capsys):
+    code, err = _exit_code(_preset_args(tmp_path, "--encoder", "not-an-encoder"), capsys)
+    assert code == 2
+    assert "not-an-encoder" in err
+
+
+# --- soma init ---
+
+
+def _init(args: list[str], capsys) -> str:
+    from soma.cli import main
+
+    main(["init", *args])
+    return capsys.readouterr().out
+
+
+def test_init_prints_an_editable_yaml_with_every_default(capsys):
+    from soma import components
+
+    data = yaml.safe_load(_init(["mil_classification", "--encoder", "uni2"], capsys))
+
+    config = ExperimentConfig.from_dict(data)
+    check(config)
+    assert data["cohort"]["records"] == "dataset.csv" and data["cohort"]["splits"] == "splits.csv"
+    model = data["learner"]["params"]
+    abmil = next(entry for entry in components("aggregators") if entry["name"] == "abmil")
+    assert model["aggregator"] == {"name": "abmil", "params": abmil["params"]}
+    # What the cohort decides is left for the run.
+    assert model["head"]["params"]["num_classes"] is None and model["head"]["params"]["label_map"] is None
+    assert model["optimizer"]["params"]["lr"] == 1e-4 and model["optimizer"]["params"]["eps"] == 1e-8
+    assert data["trainer"]["callbacks"][1]["params"]["patience"] == 10
+    # slide2vec resolves these for the machine a run starts on.
+    assert all(data["features"]["execution"][name] is None for name in MACHINE_RESOLVED_EXECUTION_FIELDS)
+
+
+def test_init_output_resolves_to_the_preset_s_plan(tmp_path: Path, capsys):
+    ids = [f"s{index}" for index in range(8)]
+    records, splits = tmp_path / "dataset.csv", tmp_path / "splits.csv"
+    pd.DataFrame({"sample_id": ids, "image_path": [f"/x/{s}.tif" for s in ids], "label": ["a", "b"] * 4}).to_csv(records, index=False)
+    pd.DataFrame({"sample_id": ids, "split": ["train"] * 5 + ["tune"] + ["test"] * 2}).to_csv(splits, index=False)
+    path = tmp_path / "exp.yaml"
+    path.write_text(_init(["mil_classification", "--encoder", "uni2", "--aggregator", "transmil"], capsys))
+
+    # The user points the cohort at their files; everything else is the preset's.
+    edited = ExperimentConfig.from_yaml(path)
+    edited.cohort.records, edited.cohort.splits = str(records), str(splits)
+    preset = presets.mil_classification("uni2", aggregator="transmil")
+    preset.cohort.records, preset.cohort.splits = str(records), str(splits)
+
+    assert resolve(edited, load_cohort(edited)).comparable() == resolve(preset, load_cohort(preset)).comparable()
+
+
+@pytest.mark.parametrize("name", ["mil_classification", "tile_classification", "survival", "segmentation", "detection"])
+def test_init_output_of_every_preset_passes_check(capsys, name):
+    arguments = {"aggregator": "abmil", "decoder": "lightweight_conv"}
+    from soma import components
+
+    entry = next(entry for entry in components("presets") if entry["name"] == name)
+    flags = ["--encoder", "uni2"] + [
+        token for key in entry["params"] if key in arguments for token in (f"--{key}", arguments[key])
+    ]
+    check(ExperimentConfig.from_dict(yaml.safe_load(_init([name, *flags], capsys))))
+
+
+def test_init_requires_the_preset_s_arguments(capsys):
     from soma.cli import main
 
     with pytest.raises(SystemExit) as exc_info:
-        main([str(config_path), "--feature-dir", str(tmp_path / "missing")])
-    assert exc_info.value.code == 1
-    assert "--feature-dir" in capsys.readouterr().err
-
-
-# --- Error cases ---
-
-
-def test_run_missing_config_file_exits(tmp_path: Path, capsys):
-    from soma.cli import main
-
-    with pytest.raises(SystemExit) as exc_info:
-        main([str(tmp_path / "nonexistent.yaml")])
-
-    assert exc_info.value.code != 0
-    captured = capsys.readouterr()
-    assert "nonexistent.yaml" in captured.err
-
-
-def test_run_invalid_yaml_exits(tmp_path: Path, capsys):
-    bad_yaml = tmp_path / "bad.yaml"
-    bad_yaml.write_text(": invalid: yaml: [")
-
-    from soma.cli import main
-
-    with pytest.raises(SystemExit) as exc_info:
-        main([str(bad_yaml)])
-
-    assert exc_info.value.code != 0
-
-
-def test_run_invalid_config_content_exits(tmp_path: Path, capsys):
-    # Valid YAML but an unknown section.
-    raw = {
-        "cohort": {"records": "data.csv", "splits": "splits.csv"},
-        "data": {"dataset_type": "case"},
-    }
-    config_path = tmp_path / "config.yaml"
-    with config_path.open("w") as f:
-        yaml.safe_dump(raw, f)
-
-    from soma.cli import main
-
-    with pytest.raises(SystemExit) as exc_info:
-        main([str(config_path)])
-
-    assert exc_info.value.code != 0
-
-
-def test_run_subcommand_is_rejected(tmp_path: Path, capsys):
-    config_path = _make_valid_config(tmp_path)
-
-    from soma.cli import main
-
-    with pytest.raises(SystemExit) as exc_info:
-        main(["run", str(config_path)])
-
+        main(["init", "segmentation", "--encoder", "uni2"])
     assert exc_info.value.code == 2
-    captured = capsys.readouterr()
-    assert "pass the config path directly" in captured.err
+    assert "--decoder" in capsys.readouterr().err
 
 
 def _rows(out: str) -> list[list[str]]:
@@ -316,4 +369,5 @@ def test_help_prints_structured_block(capsys):
     out = capsys.readouterr().out
     assert "commands:" in out
     assert "examples:" in out
-    assert "soma /path/to/config.yaml" in out
+    assert "soma run /path/to/config.yaml" in out
+    assert "soma init" in out

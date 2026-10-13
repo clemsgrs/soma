@@ -150,7 +150,7 @@ def test_the_soma_cli_prints_info_logs(tmp_path: Path, capsys):
             logging.getLogger("soma.pipeline").info("fold summary")
 
     with no_logging_setup(), patch("soma.cli.Pipeline", LoggingPipeline):
-        main([str(config_path)])
+        main(["run", str(config_path)])
 
     assert capsys.readouterr().err.count("fold summary") == 1
 

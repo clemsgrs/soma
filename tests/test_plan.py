@@ -413,6 +413,14 @@ def test_a_segmentation_class_scheme_is_checked_against_the_mask_vocabulary(file
         check(_grid(files, features=features, head_params={"classes": {"tumor": [1], "stroma": [2]}}))
 
 
+def test_a_null_class_scheme_is_checked_like_an_omitted_one(files):
+    # ``soma init`` spells the scheme's fields as null for the user to fill in.
+    unset = {"classes": None, "ignore": None, "num_classes": None}
+    check(_grid(files, head_params={}))
+    check(_grid(files, head_params=unset))
+    check(_grid(files, head="detection", head_params={"classes": None, "drop": None}))
+
+
 def test_patient_runs_take_no_aggregator(files):
     with pytest.raises(ValueError, match="take no aggregator"):
         check(experiment(*files, aggregator="abmil", cohort={"collapse": "patient_id"}))
