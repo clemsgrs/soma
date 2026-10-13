@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import sys
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -63,56 +64,71 @@ def _load_config(config_path: Path) -> ExperimentConfig:
         sys.exit(1)
 
 
-def _preset_arguments() -> dict[str, list[str]]:
-    """Each preset argument (a flag of ``soma run --preset`` and ``soma init``) and the
-    presets that take it, from :func:`soma.components`."""
-    arguments: dict[str, list[str]] = {}
-    for entry in components("presets"):
-        for name in entry["params"] or {}:  # an entry registered without params takes none
-            arguments.setdefault(name, []).append(entry["name"])
-    return arguments
+def _preset_parameters(name: str) -> list[inspect.Parameter]:
+    """The preset ``name``'s arguments, from its signature: soma.register supplies no metadata."""
+    from soma.presets import preset_registry
+
+    parameters = inspect.signature(preset_registry.get(name)).parameters.values()
+    return [p for p in parameters if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+
+
+def _selected_preset(argv: Sequence[str], *, positional: bool) -> str | None:
+    """The registered preset ``argv`` selects, read before the parser that takes its
+    arguments exists: ``soma init``'s first argument naming one (its flags may come
+    first), ``soma run``'s ``--preset NAME``."""
+    from soma.presets import preset_registry
+
+    if positional:
+        return next((argument for argument in argv if argument in preset_registry), None)
+    selector = argparse.ArgumentParser(add_help=False, exit_on_error=False)
+    selector.add_argument("--preset")
+    try:
+        name = selector.parse_known_args(list(argv))[0].preset
+    except argparse.ArgumentError:  # the full parser reports it
+        return None
+    return name if name is not None and name in preset_registry else None
 
 
 def _flag(argument: str) -> str:
     return f"--{argument.replace('_', '-')}"
 
 
-def _add_preset_arguments(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_argument_group("preset arguments", "The chosen preset's own arguments (soma list presets).")
-    for name, takers in _preset_arguments().items():
-        group.add_argument(
-            _flag(name), dest=f"preset_{name}", metavar=name.upper(), default=None,
-            help=f"Taken by: {', '.join(takers)}.",
-        )
+def _add_preset_arguments(parser: argparse.ArgumentParser, name: str | None) -> None:
+    """The selected preset's own arguments as flags, an ``int``/``float`` annotation as the
+    flag's type; one named like the command's own flag is a usage error."""
+    if name is None:
+        return
+    group = parser.add_argument_group(f"{name} arguments", "The preset's own arguments (soma list presets).")
+    for p in _preset_parameters(name):
+        kind = next((kind for kind in (int, float) if p.annotation in (kind, kind.__name__)), None)
+        try:
+            group.add_argument(
+                _flag(p.name), dest=f"preset_{p.name}", metavar=p.name.upper(), type=kind, default=None,
+                help="Required." if p.default is p.empty else f"Default: {p.default!r}.".replace("%", "%%"),
+            )
+        except argparse.ArgumentError:
+            parser.error(f"preset {name}: argument {p.name} clashes with a {parser.prog} flag")
 
 
-def _given_preset_arguments(args: argparse.Namespace) -> dict[str, str]:
+def _given_preset_arguments(args: argparse.Namespace) -> dict[str, Any]:
     """The preset-argument flags given on the command line, by argument name."""
-    given = {name: getattr(args, f"preset_{name}") for name in _preset_arguments()}
-    return {name: value for name, value in given.items() if value is not None}
+    return {
+        key.removeprefix("preset_"): value for key, value in vars(args).items()
+        if key.startswith("preset_") and value is not None
+    }
 
 
 def _build_preset(parser: argparse.ArgumentParser, name: str, args: argparse.Namespace) -> ExperimentConfig:
-    """The preset ``name`` called with the flags ``args`` gives: exactly its own arguments,
-    every required one present."""
+    """The preset ``name`` called with the flags ``args`` gives, every required one present
+    (the parser took only its own arguments)."""
     from soma.presets import preset_registry
 
-    entry = next(entry for entry in components("presets") if entry["name"] == name)
-    preset = preset_registry.get(name)
     given = _given_preset_arguments(args)
-    foreign = sorted(set(given) - set(entry["params"] or {}))
-    if foreign:
-        parser.error(f"preset {name} takes no {', '.join(map(_flag, foreign))}")
-    # From the signature, not registration metadata: soma.register supplies none.
-    required = [
-        p.name for p in inspect.signature(preset).parameters.values()
-        if p.default is p.empty and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
-    ]
-    missing = [argument for argument in required if argument not in given]
+    missing = [p.name for p in _preset_parameters(name) if p.default is p.empty and p.name not in given]
     if missing:
         parser.error(f"preset {name} needs {', '.join(map(_flag, missing))}")
     try:
-        return preset(**given)
+        return preset_registry.get(name)(**given)
     except (TypeError, ValueError) as exc:
         parser.error(f"preset {name}: {exc}")
 
@@ -123,7 +139,6 @@ def _cmd_run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         if args.config is None:
             parser.error("pass a config path or --preset NAME")
         given = [flag for flag, value in preset_only.items() if value is not None]
-        given += [_flag(argument) for argument in _given_preset_arguments(args)]
         if given:
             parser.error(f"{', '.join(given)} only go with --preset: edit the config instead")
         config = _load_config(Path(args.config))
@@ -147,13 +162,15 @@ def _cmd_run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     Pipeline(config, source=source).run()
 
 
-def _build_run_parser() -> argparse.ArgumentParser:
+def _build_run_parser(argv: Sequence[str] = ()) -> argparse.ArgumentParser:
+    """The ``soma run`` parser for ``argv``: with the flags of the preset it selects, if any."""
     parser = argparse.ArgumentParser(
         prog="soma run",
         description=(
             "Run an experiment: a YAML config (soma init writes one; a run's config.yaml or "
             "plan.yaml replays it), or a preset on a cohort. The run directory keeps the "
-            "config as given (config.yaml) and its resolved plan (plan.yaml)."
+            "config as given (config.yaml) and its resolved plan (plan.yaml). "
+            "soma run --preset NAME --help lists the preset's own arguments."
         ),
     )
     parser.add_argument("config", nargs="?", default=None, help="Experiment YAML.")
@@ -169,7 +186,7 @@ def _build_run_parser() -> argparse.ArgumentParser:
         "--feature-dir", type=Path, default=None,
         help="Train on features already extracted: a pooled feature cache or dense grids directory.",
     )
-    _add_preset_arguments(parser)
+    _add_preset_arguments(parser, _selected_preset(argv, positional=False))
     parser.set_defaults(func=_cmd_run)
     return parser
 
@@ -201,16 +218,18 @@ def _cmd_init(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
     sys.stdout.write(text)
 
 
-def _build_init_parser() -> argparse.ArgumentParser:
+def _build_init_parser(argv: Sequence[str] = ()) -> argparse.ArgumentParser:
+    """The ``soma init`` parser for ``argv``: with the flags of the preset it names, if any."""
     parser = argparse.ArgumentParser(
         prog="soma init",
         description=(
             "Print a preset as an editable experiment YAML with every default filled in: "
-            "soma init NAME [arguments] > exp.yaml, edit, then soma run exp.yaml."
+            "soma init NAME [arguments] > exp.yaml, edit, then soma run exp.yaml. "
+            "soma init NAME --help lists the preset's own arguments."
         ),
     )
     parser.add_argument("preset", choices=[entry["name"] for entry in components("presets")], help="Preset name.")
-    _add_preset_arguments(parser)
+    _add_preset_arguments(parser, _selected_preset(argv, positional=True))
     parser.set_defaults(func=_cmd_init)
     return parser
 
@@ -1174,7 +1193,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args[0] in {"run", "init"}:
-        parser = _build_run_parser() if args[0] == "run" else _build_init_parser()
+        parser = (_build_run_parser if args[0] == "run" else _build_init_parser)(args[1:])
         parsed = parser.parse_args(args[1:])
         parsed.func(parser, parsed)
         return

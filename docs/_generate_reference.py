@@ -151,8 +151,9 @@ def build_cli_rst() -> str:
 
         ``soma run --preset NAME --cohort CSV --splits CSV --out DIR [--seed N] [PRESET ARGUMENTS] [--feature-dir DIR]``
            Run a preset on a cohort: the preset's own arguments are flags
-           (``--encoder``, ``--aggregator``, ``--decoder``), its required ones are
-           required, and ``--seed`` defaults to 0. The registered presets:
+           (``--encoder``, ``--aggregator``, ``--decoder``; ``soma run --preset NAME
+           --help`` lists them), its required ones are required, and ``--seed``
+           defaults to 0. The registered presets:
 
         __PRESETS__
 

@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from soma import presets
-from soma.config import ExperimentConfig, FeaturesConfig
+from soma.config import Component, ExperimentConfig, FeaturesConfig
 from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS, check, load_cohort, resolve
 from tests.experiment_configs import experiment
 
@@ -268,6 +268,11 @@ def test_init_output_of_every_preset_passes_check(capsys, name):
     check(ExperimentConfig.from_dict(yaml.safe_load(_init([name, *flags], capsys))))
 
 
+def test_init_takes_the_preset_s_flags_before_its_name(capsys):
+    data = yaml.safe_load(_init(["--encoder", "uni2", "--aggregator", "transmil", "mil_classification"], capsys))
+    assert data["learner"]["params"]["aggregator"]["name"] == "transmil"
+
+
 def test_init_requires_the_preset_s_arguments(capsys):
     from soma.cli import main
 
@@ -331,6 +336,58 @@ def test_a_publicly_registered_preset_inits_and_runs(tmp_path: Path, capsys, use
 def test_a_preset_registered_without_params_leaves_run_working(tmp_path: Path, user_presets):
     config, _ = _pipeline_call(["run", str(_make_valid_config(tmp_path))])
     assert config.features.encoder.name == "uni2"
+
+
+def _seeded_preset(encoder: str, seed: int = 3) -> ExperimentConfig:
+    """A user's preset whose argument is named like soma run's own --seed."""
+    config = presets.mil_classification(encoder)
+    config.run.seed = seed
+    return config
+
+
+def _typed_preset(encoder: str, epochs: int = 50, lr: "float" = 1e-4) -> ExperimentConfig:
+    """A user's preset with typed arguments (``lr`` annotated as under postponed annotations)."""
+    config = presets.mil_classification(encoder)
+    config.trainer.max_epochs = epochs
+    config.learner.params["optimizer"] = Component("adamw", {"lr": lr})
+    return config
+
+
+@pytest.fixture()
+def typed_presets():
+    from soma import register
+    from soma.registry import signature_params
+
+    for name, preset in (("seeded", _seeded_preset), ("typed", _typed_preset)):
+        register("presets", name, preset, params=signature_params(preset, name=f"{name.title()}Params"))
+    try:
+        yield
+    finally:
+        for name in ("seeded", "typed"):
+            presets.preset_registry._entries.pop(name, None)
+
+
+def test_a_preset_argument_named_like_a_run_flag_leaves_other_runs_working(tmp_path: Path, capsys, typed_presets):
+    config, _ = _pipeline_call(["run", str(_make_valid_config(tmp_path))])
+    assert config.features.encoder.name == "uni2"
+    assert _exit_code(["run", "--help"], capsys)[0] == 0
+    # soma init owns no --seed: there the argument is the preset's flag.
+    assert yaml.safe_load(_init(["seeded", "--encoder", "uni2", "--seed", "4"], capsys))["run"]["seed"] == 4
+    # soma run does: selecting the preset there is a usage error naming the clash.
+    run = ["run", "--preset", "seeded", "--encoder", "uni2", "--cohort", "d.csv", "--splits", "s.csv", "--out", str(tmp_path)]
+    code, err = _exit_code(run, capsys)
+    assert code == 2 and "preset seeded: argument seed clashes with a soma run flag" in err
+
+
+def test_preset_arguments_take_their_declared_types(tmp_path: Path, capsys, typed_presets):
+    data = yaml.safe_load(_init(["typed", "--encoder", "uni2", "--epochs", "10", "--lr", "0.001"], capsys))
+    assert data["trainer"]["max_epochs"] == 10 and data["learner"]["params"]["optimizer"]["params"]["lr"] == 0.001
+
+    run = ["run", "--preset", "typed", "--encoder", "uni2", "--cohort", "d.csv", "--splits", "s.csv", "--out", str(tmp_path)]
+    config, _ = _pipeline_call([*run, "--epochs", "10", "--lr", "0.001"])
+    assert config.trainer.max_epochs == 10 and config.learner.params["optimizer"].params["lr"] == 0.001
+    code, err = _exit_code([*run, "--epochs", "ten"], capsys)
+    assert code == 2 and "--epochs" in err
 
 
 def _rows(out: str) -> list[list[str]]:

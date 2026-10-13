@@ -472,11 +472,11 @@ def test_getting_started_preset_commands_match_the_cli() -> None:
         if line.startswith(("soma run --preset", "soma init"))
     ]
     assert [command[:2] for command in commands] == [["soma", "run"], ["soma", "init"]]
-    run = _build_run_parser().parse_args(commands[0][2:])
+    run = _build_run_parser(commands[0][2:]).parse_args(commands[0][2:])
     assert (run.preset, run.preset_encoder, run.cohort, run.splits, run.out) == (
         "mil_classification", "phikon", "dataset.csv", "splits.csv", "output",
     )
-    init = _build_init_parser().parse_args(commands[1][2:])
+    init = _build_init_parser(commands[1][2:]).parse_args(commands[1][2:])
     assert (init.preset, init.preset_encoder) == ("mil_classification", "phikon")
 
 
