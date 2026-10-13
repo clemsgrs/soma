@@ -7,7 +7,7 @@ encoder whose output is a *literal* function of the pixels that reached it: a ra
 ViT would compare weights as much as geometry, and a mismatched read would still produce
 plausible-looking floats.
 
-``_LiteralPatchEncoder`` returns the mean RGB of each non-overlapping ``8x8`` patch, so a
+``LiteralPatchEncoder`` returns the mean RGB of each non-overlapping ``8x8`` patch, so a
 grid cell is exactly the block of pixels it came from. Any difference in the reader
 (pyramid level, downsample kernel, extent), the padding, or the window blending shows up
 as a changed number rather than as noise. The same class backs both sides of the gate —
@@ -47,7 +47,7 @@ def _literal_grid(batch: torch.Tensor) -> torch.Tensor:
     return batch.unfold(2, size, size).unfold(3, size, size).mean(dim=(-1, -2))
 
 
-class _LiteralPatchEncoder(TileEncoder):
+class LiteralPatchEncoder(TileEncoder):
     """Mean RGB per non-overlapping ``8x8`` patch — no weights, no randomness."""
 
     def __init__(self, **kwargs) -> None:
@@ -66,7 +66,7 @@ class _LiteralPatchEncoder(TileEncoder):
     def device(self) -> torch.device:
         return self._device
 
-    def to(self, device) -> "_LiteralPatchEncoder":
+    def to(self, device) -> "LiteralPatchEncoder":
         self._device = torch.device(device)
         return self
 
@@ -125,7 +125,7 @@ def register_literal_encoder() -> str:
     if LITERAL_ENCODER_NAME not in encoder_registry:
         encoder_registry.register(
             LITERAL_ENCODER_NAME,
-            _LiteralPatchEncoder,
+            LiteralPatchEncoder,
             metadata={
                 "level": "tile",
                 "input_size": 32,

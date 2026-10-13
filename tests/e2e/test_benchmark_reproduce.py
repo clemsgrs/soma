@@ -27,7 +27,7 @@ from soma.cli import main as soma_main
 from soma.benchmark.eva.curate_segmentation import CONSEP_TILE_PX, OUTPUT_PX
 from tests.e2e.harness import Run
 from tests.eva_slide_raw import write_fake_camelyon16, write_fake_panda
-from tests.e2e.synthetic import _BACKGROUND, _CLASS_COLOURS, _noisy
+from tests.e2e.synthetic import BACKGROUND, CLASS_COLOURS, noisy
 
 #: Synthetic CoNSeP images: 2 x 2 grid tiles of 250 px (EVA's 1000 px images give 4 x 4).
 IMAGE_PX = 2 * CONSEP_TILE_PX
@@ -42,7 +42,7 @@ def write_fake_consep(root: Path, *, train: int = 3, test: int = 1, seed: int = 
         (root / split_dir / "Labels").mkdir(parents=True)
         for i in range(1, count + 1):
             image = np.empty((IMAGE_PX, IMAGE_PX, 3), dtype=np.int16)
-            image[:] = _BACKGROUND
+            image[:] = BACKGROUND
             type_map = np.zeros((IMAGE_PX, IMAGE_PX), dtype=np.uint8)
             # Two colours map onto two merged classes: raw 1/2 -> "other"/"inflammatory"
             # share a colour (merged class 1 and 2), raw 3..7 -> epithelial/spindle colours.
@@ -52,8 +52,8 @@ def write_fake_consep(root: Path, *, train: int = 3, test: int = 1, seed: int = 
                     radius = int(rng.integers(18, 34))
                     disc = (xx - x) ** 2 + (yy - y) ** 2 < radius**2
                     type_map[disc] = raw
-                    image[disc] = _CLASS_COLOURS[colour_key]
-            Image.fromarray(_noisy(image, rng, 8)).save(root / split_dir / "Images" / f"{prefix}_{i}.png")
+                    image[disc] = CLASS_COLOURS[colour_key]
+            Image.fromarray(noisy(image, rng, 8)).save(root / split_dir / "Images" / f"{prefix}_{i}.png")
             savemat(
                 root / split_dir / "Labels" / f"{prefix}_{i}.mat",
                 {"type_map": type_map, "inst_map": type_map},

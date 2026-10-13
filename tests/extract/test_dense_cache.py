@@ -1,0 +1,592 @@
+"""Tests for the dense (segmentation) feature cache: geometry, key, store, validator.
+
+Fully offline — no encoder weights. The headline guard is that a dense ``(d, h, w)``
+grid reports ``feature_dim = d`` (channel axis), not ``w`` (grid width), which is
+exactly the rank-collision the dedicated CachedGridSource + dense_grid metadata
+exist to prevent.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pandas as pd
+import pytest
+import torch
+
+from soma.extract.cache import (
+    build_dense_cache_key,
+    build_tile_cache_key,
+    record_feature_dim,
+    record_sample_identity_signatures,
+    resolve_dense_cache,
+    resolve_output_dtype,
+)
+import dataclasses
+
+import slide2vec
+
+from tests.extraction_configs import extraction
+from soma.data import ImageManifest
+from soma.extract.dense import CachedGridSource, dense_grid_metadata, write_dense_grid
+from soma.data.geometry import compute_dense_geometry
+from soma.extract.dense.store import DENSE_SIDECAR_SUFFIX
+
+
+def _make_dataset(
+    tmp_path: Path, *, spacing_by_id: dict[str, float] | None = None
+) -> ImageManifest:
+    csv_path = tmp_path / "dataset.csv"
+    rows = [
+            # label is unused by the cache layer (the seg loader makes it optional);
+            # the base Dataset still requires the column, so supply a placeholder.
+            {"sample_id": "s1", "image_path": "/tiles/s1.png", "mask_path": "/masks/s1.png", "label": "a"},
+            {"sample_id": "s2", "image_path": "/tiles/s2.png", "mask_path": "/masks/s2.png", "label": "b"},
+        ]
+    if spacing_by_id is not None:
+        for row in rows:
+            row["spacing_at_level_0"] = spacing_by_id[row["sample_id"]]
+    pd.DataFrame(rows).to_csv(csv_path, index=False)
+    return ImageManifest.from_csv(csv_path)
+
+
+def _enc() -> slide2vec.ExecutionOptions:
+    return slide2vec.ExecutionOptions(precision="fp16")
+
+
+#: The run's slide2vec dense options the key tests vary.
+_DENSE = slide2vec.DenseOptions(spacing_um=0.5, target_size=512)
+
+
+# --------------------------------------------------------------------------- #
+# Geometry — the highest-bug-density code: pad-to-patch-multiple + crop box.
+# --------------------------------------------------------------------------- #
+
+
+def test_geometry_patch16_512_is_clean():
+    g = compute_dense_geometry(target_size=512, patch_size=16)
+    assert g.encoded_size == (512, 512)
+    assert g.grid_shape == (32, 32)
+    assert g.pad == (0, 0)
+    assert g.crop_box == (0, 0, 512, 512)
+    assert g.is_padded is False
+
+
+def test_geometry_patch14_512_pads_up_to_518():
+    # 512 is NOT a patch-14 multiple: ceil(512/14)*14 = 518 -> 37x37, pad 6.
+    g = compute_dense_geometry(target_size=512, patch_size=14)
+    assert g.encoded_size == (518, 518)
+    assert g.grid_shape == (37, 37)
+    assert g.pad == (6, 6)
+    assert g.crop_box == (0, 0, 512, 512)  # crop logits back to the 512 mask
+    assert g.is_padded is True
+
+
+def test_geometry_non_square_target():
+    g = compute_dense_geometry(target_size=(300, 512), patch_size=16)
+    assert g.encoded_size == (304, 512)  # 300 -> 304 (19*16), 512 clean
+    assert g.grid_shape == (19, 32)
+    assert g.pad == (4, 0)
+    assert g.crop_box == (0, 0, 300, 512)
+
+
+def test_geometry_rejects_nonpositive():
+    with pytest.raises(ValueError, match="must be positive"):
+        compute_dense_geometry(target_size=0, patch_size=16)
+    with pytest.raises(ValueError, match="must be positive"):
+        compute_dense_geometry(target_size=512, patch_size=(16, -1))
+
+
+# --------------------------------------------------------------------------- #
+# Cache key — distinctness, and independence from output_variant.
+# --------------------------------------------------------------------------- #
+
+
+def _key(dtype: str = "fp32", patch_size=(16, 16), **dense_overrides) -> str:
+    return build_dense_cache_key(
+        tile_encoder_name="uni",
+        patch_size=patch_size,
+        dense=dataclasses.replace(_DENSE, **dense_overrides),
+        execution=_enc(),
+        dtype=dtype,
+    )
+
+
+def test_dense_key_changes_with_target_size():
+    assert _key(target_size=512) != _key(target_size=224)
+
+
+def test_dense_key_changes_with_patch_and_pad():
+    assert _key(patch_size=(16, 16)) != _key(patch_size=(14, 14))
+    assert _key(pad_mode="reflect") != _key(pad_mode="zero")
+
+
+def test_dense_key_changes_with_window_size_and_overlap():
+    # Different windows produce different grids -> must not collide.
+    assert _key(window_size=256, overlap=0.5) != _key(window_size=128, overlap=0.5)
+    assert _key(window_size=256, overlap=0.25) != _key(window_size=256, overlap=0.5)
+    assert _key() != _key(window_size=256)
+
+
+def test_dense_key_changes_with_spacing():
+    # Grids read at different µm/px are different pixels -> must not alias to one
+    # cache entry (the spacing-aware-read regression: spacing was absent from the key).
+    assert _key(spacing_um=0.5) != _key(spacing_um=1.0)
+
+
+def test_dense_key_changes_with_feature_kind_and_attention_knobs():
+    # An attention grid must never alias a patch-feature grid, and different blocks /
+    # register inclusion are different channels -> different keys.
+    patch = _key()  # default feature_kind=patch_features
+    attn = _key(feature_kind="cls_attention", attention_blocks=(-1,))
+    assert patch != attn
+    assert attn != _key(feature_kind="cls_attention", attention_blocks=(-1, -2))
+    assert attn != _key(
+        feature_kind="cls_attention", attention_blocks=(-1,), attention_include_registers=True
+    )
+
+
+def test_dense_key_distinct_from_pooled_tile_key():
+    dense = _key()
+    pooled = build_tile_cache_key(
+        tile_encoder_name="uni",
+        preprocessing=extraction(0.5, 512),
+        execution=_enc(),
+        feature_type="bag",
+    )
+    assert dense != pooled
+
+
+# --------------------------------------------------------------------------- #
+# Storage dtype — fp16 and fp32 caches must never collide (#163).
+# --------------------------------------------------------------------------- #
+
+
+def test_dense_key_dtype_defaults_to_fp32():
+    assert _key() == _key(dtype="fp32")
+
+
+def test_dense_key_fp16_distinct_from_fp32():
+    assert _key(dtype="fp16") != _key(dtype="fp32")
+    assert _key(dtype="fp16") != _key()
+
+
+def test_resolve_output_dtype_explicit_wins_over_precision():
+    # An explicit choice overrides whatever the compute precision is.
+    assert resolve_output_dtype("fp16", "fp32") == "fp16"
+    assert resolve_output_dtype("fp32", "fp16") == "fp32"
+
+
+def test_resolve_output_dtype_aliases():
+    for alias in ("fp16", "float16", "half", "16", "FP16"):
+        assert resolve_output_dtype(alias, None) == "fp16"
+    for alias in ("fp32", "float32", "32", "FP32"):
+        assert resolve_output_dtype(alias, None) == "fp32"
+
+
+def test_resolve_output_dtype_none_follows_precision():
+    # None ⇒ follow the compute precision: fp16 run -> fp16 grid.
+    assert resolve_output_dtype(None, "fp16") == "fp16"
+    # bf16/fp32/unknown all key fp32 (numpy has no bfloat16 grid).
+    assert resolve_output_dtype(None, "fp32") == "fp32"
+    assert resolve_output_dtype(None, "bf16") == "fp32"
+    assert resolve_output_dtype(None, None) == "fp32"
+
+
+def test_resolve_output_dtype_rejects_garbage():
+    with pytest.raises(ValueError, match="cache.dtype"):
+        resolve_output_dtype("int8", "fp16")
+
+
+# --------------------------------------------------------------------------- #
+# CachedGridSource — reads shape from the sidecar, never from rank.
+# --------------------------------------------------------------------------- #
+
+
+def _write_grid(out_dir: Path, sample_id: str, d: int, gh: int, gw: int) -> dict:
+    g = compute_dense_geometry(target_size=(gh * 16, gw * 16), patch_size=16)
+    meta = dense_grid_metadata(
+        g, feature_dim=d, pad_mode="reflect", image_pad_value=0.0, mask_pad_value=255
+    )
+    write_dense_grid(out_dir, sample_id, torch.randn(d, gh, gw), meta)
+    return meta
+
+
+def test_dense_grid_metadata_records_spacing():
+    # The sidecar records the read-spacing so the fold can assert masks are read at
+    # the same µm/px the grid was extracted at (else the supervision misregisters).
+    g = compute_dense_geometry(target_size=512, patch_size=16)
+    assert dense_grid_metadata(g, feature_dim=8, pad_mode="reflect")["spacing_um"] is None
+    assert (
+        dense_grid_metadata(g, feature_dim=8, pad_mode="reflect", spacing_um=0.5)["spacing_um"]
+        == 0.5
+    )
+
+
+def test_store_reports_spacing_from_sidecar(tmp_path: Path):
+    g = compute_dense_geometry(target_size=512, patch_size=16)
+    write_dense_grid(
+        tmp_path,
+        "flat",
+        torch.randn(8, 32, 32),
+        dense_grid_metadata(g, feature_dim=8, pad_mode="reflect"),
+    )
+    write_dense_grid(
+        tmp_path,
+        "spaced",
+        torch.randn(8, 32, 32),
+        dense_grid_metadata(g, feature_dim=8, pad_mode="reflect", spacing_um=0.5),
+    )
+    store = CachedGridSource(tmp_path)
+    assert store.spacing_um("flat") is None
+    assert store.spacing_um("spaced") == 0.5
+
+
+def test_store_reports_feature_dim_d_not_grid_width(tmp_path: Path):
+    # d=1536 channels, 32x32 grid. A rank-based store would wrongly read 32 (w).
+    _write_grid(tmp_path, "s1", d=1536, gh=32, gw=32)
+    store = CachedGridSource(tmp_path)
+    assert store.feature_dim == 1536
+    assert store.grid_shape == (32, 32)
+    assert tuple(store.load("s1").shape) == (1536, 32, 32)
+
+
+def test_store_descends_into_payload_subdir(tmp_path: Path):
+    # Mirrors CachedSetSource: given a cache dir, descend into dense_embeddings/.
+    payload_dir = tmp_path / "dense_embeddings"
+    _write_grid(payload_dir, "s1", d=1536, gh=32, gw=32)
+    store = CachedGridSource(tmp_path)  # cache dir, NOT the payload subdir
+    assert store.sample_ids == ["s1"]
+    assert store.feature_dim == 1536
+
+
+def test_store_prefers_dense_subdir_over_pooled_sibling(tmp_path: Path):
+    # A root holding BOTH tile_embeddings/ and dense_embeddings/ must resolve to
+    # the dense grids, not the pooled tile tensors (generic resolver checks tile
+    # first; the dense resolver must not fall through to it).
+    (tmp_path / "tile_embeddings").mkdir()
+    torch.save(torch.randn(196, 768), tmp_path / "tile_embeddings" / "s1.pt")  # pooled bag
+    _write_grid(tmp_path / "dense_embeddings", "s1", d=1536, gh=32, gw=32)
+    store = CachedGridSource(tmp_path)
+    assert store.feature_dir.name == "dense_embeddings"
+    assert store.feature_dim == 1536
+    assert tuple(store.load("s1").shape) == (1536, 32, 32)
+
+
+@pytest.mark.parametrize("bad_id", ["../escaped", "a/b", "/abs", "..", ".", r"a\b"])
+def test_write_dense_grid_rejects_path_traversal(tmp_path: Path, bad_id: str):
+    g = compute_dense_geometry(target_size=512, patch_size=16)
+    meta = dense_grid_metadata(
+        g, feature_dim=8, pad_mode="reflect", image_pad_value=0.0, mask_pad_value=255
+    )
+    out_dir = tmp_path / "dense_embeddings"
+    with pytest.raises(ValueError, match="Unsafe sample_id"):
+        write_dense_grid(out_dir, bad_id, torch.randn(8, 32, 32), meta)
+    # Nothing escaped to the parent root.
+    assert not (tmp_path / "escaped.pt").exists()
+    assert list(tmp_path.glob("*.pt")) == []
+
+
+def test_store_load_normalizes_to_float32(tmp_path: Path):
+    g = compute_dense_geometry(target_size=512, patch_size=16)
+    meta = dense_grid_metadata(
+        g, feature_dim=8, pad_mode="reflect", image_pad_value=0.0, mask_pad_value=255
+    )
+    write_dense_grid(tmp_path, "s1", torch.randn(8, 32, 32, dtype=torch.float16), meta)
+    loaded = CachedGridSource(tmp_path).load("s1")
+    assert loaded.dtype == torch.float32
+
+
+def test_store_missing_sidecar_fails_loud(tmp_path: Path):
+    torch.save(torch.randn(8, 32, 32), tmp_path / "s1.pt")  # no .meta.json
+    store = CachedGridSource(tmp_path)
+    with pytest.raises(FileNotFoundError, match="missing its required sidecar"):
+        store.metadata("s1")
+
+
+def test_write_dense_grid_rejects_shape_metadata_mismatch(tmp_path: Path):
+    g = compute_dense_geometry(target_size=512, patch_size=16)
+    meta = dense_grid_metadata(
+        g, feature_dim=1536, pad_mode="reflect", image_pad_value=0.0, mask_pad_value=255
+    )
+    with pytest.raises(ValueError, match="metadata declares"):
+        write_dense_grid(tmp_path, "s1", torch.randn(1536, 16, 16), meta)  # grid 16x16 != 32x32
+
+
+def test_store_load_detects_on_disk_shape_mismatch(tmp_path: Path):
+    _write_grid(tmp_path, "s1", d=8, gh=32, gw=32)
+    torch.save(torch.randn(8, 31, 32), tmp_path / "s1.pt")  # corrupt: overwrite with wrong grid
+    store = CachedGridSource(tmp_path)
+    with pytest.raises(ValueError, match="sidecar declares"):
+        store.load("s1")
+
+
+# --------------------------------------------------------------------------- #
+# Validator — dense_grid reads the channel axis, requires the sidecar.
+# --------------------------------------------------------------------------- #
+
+
+def _dense_kw(tmp_path: Path, dataset) -> dict:
+    return dict(
+        cache_root=tmp_path / "dense_cache",
+        images=dataset,
+        tile_encoder_name="uni",
+        patch_size=(16, 16),
+        dense=_DENSE,
+        execution=_enc(),
+    )
+
+
+def _populate(res, dataset, *, d: int, gh: int, gw: int) -> None:
+    """Write proper grid + sidecar for every sample via the real writer."""
+    geom = compute_dense_geometry(target_size=(gh * 16, gw * 16), patch_size=16)
+    for sid in dataset.sample_ids:
+        meta = dense_grid_metadata(geom, feature_dim=d, pad_mode="reflect")
+        meta["source_spacing_um"] = 0.5
+        meta["effective_spacing_um"] = 0.5
+        write_dense_grid(res.features_dir, sid, torch.randn(d, gh, gw), meta)
+    record_feature_dim(res, d)
+    record_sample_identity_signatures(res, list(dataset.sample_ids))
+
+
+def test_dense_cache_partial_message_counts_samples_without_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # A cancelled extraction records no identity for the samples it never reached;
+    # the resume message must still count them against the requested scope.
+    import soma.extract.cache.io as cache_io
+
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    geom = compute_dense_geometry(target_size=(512, 512), patch_size=16)
+    meta = dense_grid_metadata(geom, feature_dim=8, pad_mode="reflect")
+    write_dense_grid(res.features_dir, "s1", torch.randn(8, 32, 32), meta)
+    record_feature_dim(res, 8)
+    record_sample_identity_signatures(res, ["s1"])
+
+    messages: list[str] = []
+    monkeypatch.setattr(
+        cache_io.slide2vec_progress,
+        "emit_progress_log",
+        lambda message, *args, **kwargs: messages.append(str(message)),
+    )
+    resumed = resolve_dense_cache(**kw)
+
+    assert resumed.complete is False
+    assert any(
+        "1/2 feature file already materialized on disk; embedding the 1 missing sample; "
+        "first issue: missing cache identity for s2" in message
+        for message in messages
+    )
+
+
+def test_dense_cache_validator_accepts_real_payloads(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+    assert resolve_dense_cache(**kw, validate_payloads=True).complete is True
+
+
+def test_dense_cache_validator_reuses_valid_sidecars_without_loading_payloads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+
+    def _fail_load_array(_path):
+        raise AssertionError("default dense cache validation must not deserialize tensors")
+
+    monkeypatch.setattr("soma.extract.cache.features.load_array", _fail_load_array)
+
+    resumed = resolve_dense_cache(**kw)
+
+    assert resumed.complete is True
+    assert resumed.validation.complete is True
+    assert resumed.validation.reason is None
+
+
+def test_dense_cache_validator_requires_sidecar(tmp_path: Path):
+    # validator-complete must imply store-readable: a .pt with no sidecar (e.g. if
+    # population were ever routed through the hardlink helper) is NOT complete, even
+    # on the default path that loads no tensors.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    record_feature_dim(res, 1536)
+    for sid in dataset.sample_ids:
+        torch.save(torch.randn(1536, 32, 32), res.feature_path_for_id(sid))  # NO sidecar
+    record_sample_identity_signatures(res, list(dataset.sample_ids))
+    assert resolve_dense_cache(**kw).complete is False
+
+
+def test_dense_cache_validator_gates_sidecar_content_validation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    # Sidecar *content* validation (JSON read + shape cross-check) is the one scan
+    # cost a single directory listing cannot remove, so it lives behind
+    # validate_payloads: the default fast path trusts sidecar *existence* (decided
+    # from the listing), and deep content validation is one flag away. A sidecar
+    # that describes a different grid than this cache key is therefore accepted on
+    # the default path and flagged only under validate_payloads. The sidecar check
+    # short-circuits before the (also-gated) tensor load, so load_array is never hit.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    wrong_geom = compute_dense_geometry(target_size=(256, 512), patch_size=16)
+    for sid in dataset.sample_ids:
+        meta = dense_grid_metadata(wrong_geom, feature_dim=1536, pad_mode="reflect")
+        meta["source_spacing_um"] = 0.5
+        meta["effective_spacing_um"] = 0.5
+        write_dense_grid(res.features_dir, sid, torch.randn(1536, 16, 32), meta)
+    record_feature_dim(res, 1536)
+    record_sample_identity_signatures(res, list(dataset.sample_ids))
+
+    def _fail_load_array(_path):
+        raise AssertionError("dense cache validation must not deserialize tensors here")
+
+    monkeypatch.setattr("soma.extract.cache.features.load_array", _fail_load_array)
+
+    # Default path: sidecar existence only — no JSON read, no tensor load.
+    assert resolve_dense_cache(**kw).complete is True
+
+    # Opt-in deep validation reads the sidecar and flags the grid mismatch.
+    deep = resolve_dense_cache(**kw, validate_payloads=True)
+    assert deep.complete is False
+    assert deep.validation.reason is not None
+    assert "dense sidecar grid_shape mismatch for s1" in deep.validation.reason
+
+
+def test_dense_cache_deep_validation_requires_source_and_effective_spacing(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    _populate(res, dataset, d=1536, gh=32, gw=32)
+    sidecar = res.features_dir / f"s1{DENSE_SIDECAR_SUFFIX}"
+    metadata = json.loads(sidecar.read_text())
+    del metadata["source_spacing_um"]
+    sidecar.write_text(json.dumps(metadata))
+
+    assert resolve_dense_cache(**kw).complete is True
+    deep = resolve_dense_cache(**kw, validate_payloads=True)
+    assert deep.complete is False
+    assert deep.validation.reason == "dense sidecar missing source_spacing_um for s1"
+
+
+def test_dense_cache_validator_flags_wrong_grid_shape(tmp_path: Path):
+    # Correct sidecar + channel dim, but the .pt grid is 16x16 != recorded 32x32.
+    # Rank-3 alone can't catch this; the grid_shape check must. Only under
+    # validate_payloads — the default path never loads the tensor.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    _populate(res, dataset, d=1536, gh=32, gw=32)
+    for sid in dataset.sample_ids:  # corrupt the .pt, keep the (correct) sidecar
+        torch.save(torch.randn(1536, 16, 16), res.feature_path_for_id(sid))
+    assert resolve_dense_cache(**kw).complete is True  # default: no tensor load
+    assert resolve_dense_cache(**kw, validate_payloads=True).complete is False
+
+
+def test_dense_cache_validator_flags_wrong_channel_dim(tmp_path: Path):
+    # Correct sidecar (declares d=1536) but the .pt channel axis is 768. If the
+    # validator read shape[-1] (=32) it would never catch this.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    _populate(res, dataset, d=1536, gh=32, gw=32)
+    for sid in dataset.sample_ids:
+        torch.save(torch.randn(768, 32, 32), res.feature_path_for_id(sid))
+    assert resolve_dense_cache(**kw, validate_payloads=True).complete is False
+
+
+# --------------------------------------------------------------------------- #
+# missing_sample_ids() — dense-sidecar awareness (#140, A′).
+# --------------------------------------------------------------------------- #
+
+
+def test_dense_missing_sample_ids_empty_when_fully_populated(tmp_path: Path):
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+    assert resolve_dense_cache(**kw).missing_sample_ids() == []
+
+
+def test_dense_source_spacing_selectively_invalidates_sample_identity(tmp_path: Path):
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = _make_dataset(first_dir, spacing_by_id={"s1": 0.25, "s2": 0.25})
+    second = _make_dataset(second_dir, spacing_by_id={"s1": 0.5, "s2": 0.25})
+    cache_root = tmp_path / "shared-cache"
+
+    first_kw = _dense_kw(tmp_path, first)
+    first_kw["cache_root"] = cache_root
+    populated = resolve_dense_cache(**first_kw)
+    _populate(populated, first, d=1536, gh=32, gw=32)
+
+    second_kw = _dense_kw(tmp_path, second)
+    second_kw["cache_root"] = cache_root
+    resumed = resolve_dense_cache(**second_kw)
+
+    assert resumed.key == populated.key
+    assert resumed.missing_sample_ids() == ["s1"]
+
+
+def test_dense_missing_sample_ids_treats_pt_without_sidecar_as_missing(tmp_path: Path):
+    # Crash-window: .pt written, sidecar not (writes are .pt-then-sidecar, non-atomic).
+    # That grid is not loadable, so missing_sample_ids() must re-report it — never
+    # silently skip it into a downstream load failure.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+    victim = dataset.sample_ids[0]
+    (resolve_dense_cache(**kw).features_dir / f"{victim}{DENSE_SIDECAR_SUFFIX}").unlink()
+    assert resolve_dense_cache(**kw).missing_sample_ids() == [victim]
+
+
+def test_dense_missing_sample_ids_treats_missing_pt_as_missing(tmp_path: Path):
+    # Sanity: a bare sidecar with no .pt is also missing (existing behaviour, kept).
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
+    victim = dataset.sample_ids[1]
+    resolve_dense_cache(**kw).feature_path_for_id(victim).unlink()
+    assert resolve_dense_cache(**kw).missing_sample_ids() == [victim]
+
+
+def test_dense_key_prenorm_never_aliases_the_post_norm_or_attention_grid():
+    # The pre-norm tap is a different tensor from the post-norm grid of the same encoder,
+    # so the two must live under different keys (and apart from attention grids).
+    pre = _key(feature_kind="patch_features_prenorm")
+    assert pre != _key()
+    assert pre != _key(feature_kind="cls_attention", attention_blocks=(-1,))
+    assert pre == _key(feature_kind="patch_features_prenorm")
+
+
+def test_dense_cache_matching_manifest_does_not_sign_unsigned_grids(tmp_path: Path):
+    # Grids an interrupted extraction wrote but never committed stay unresolved, even
+    # though the cache manifest still describes this very dataset.
+    dataset = _make_dataset(tmp_path)
+    kw = _dense_kw(tmp_path, dataset)
+    res = resolve_dense_cache(**kw)
+    geom = compute_dense_geometry(target_size=(512, 512), patch_size=16)
+    for sid in dataset.sample_ids:
+        meta = dense_grid_metadata(geom, feature_dim=8, pad_mode="reflect")
+        meta["source_spacing_um"] = 0.5
+        meta["effective_spacing_um"] = 0.5
+        write_dense_grid(res.features_dir, sid, torch.randn(8, 32, 32), meta)
+    assert res.manifest_path.is_file()
+
+    resumed = resolve_dense_cache(**kw)
+
+    assert json.loads(resumed.metadata_path.read_text())["sample_identity_signature_by_id"] == {}
+    assert resumed.complete is False
+    assert sorted(resumed.missing_sample_ids()) == sorted(dataset.sample_ids)
+
+    # The extraction path commits them, and a valid current cache is then a full hit.
+    record_feature_dim(resumed, 8)
+    record_sample_identity_signatures(resumed, list(dataset.sample_ids))
+    assert resolve_dense_cache(**kw).complete is True

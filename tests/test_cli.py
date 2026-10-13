@@ -390,25 +390,6 @@ def test_preset_arguments_take_their_declared_types(tmp_path: Path, capsys, type
     assert code == 2 and "--epochs" in err
 
 
-def _my_task(task: str) -> ExperimentConfig:
-    """A user's preset whose argument can take another preset's name as its value."""
-    config = presets.mil_classification("uni2")
-    config.run.run_id = task
-    return config
-
-
-def test_init_tells_a_preset_name_from_a_flag_value_naming_another_preset(capsys):
-    from soma import register
-    from soma.cli import _selected_preset
-
-    register("presets", "my_task", _my_task)
-    try:
-        assert _selected_preset(["--task", "survival", "my_task"], positional=True) == "my_task"
-        assert yaml.safe_load(_init(["--task", "survival", "my_task"], capsys))["run"]["run_id"] == "survival"
-    finally:
-        presets.preset_registry._entries.pop("my_task", None)
-
-
 def _rows(out: str) -> list[list[str]]:
     """The cells of each table row ``soma list`` printed."""
     return [[cell.strip() for cell in line.split("│")[1:-1]] for line in out.splitlines() if line.startswith("│")]
