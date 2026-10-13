@@ -21,7 +21,7 @@ import pytest
 tifffile = pytest.importorskip("tifffile")
 
 import slide2vec
-from hs2p import FilterConfig, MaskSamplingConfig
+from hs2p import MaskSamplingConfig
 
 from tests.extraction_configs import annotation_masks, extraction
 
@@ -34,15 +34,13 @@ def _roi_preprocessing(masks: MaskSamplingConfig | None = None, *, spacing_um: f
     """slide2vec's extraction for ROI sampling: TARGET px at ``spacing_um`` (tolerance
     0.07) over the given annotation vocabulary (tumor at any coverage by default).
 
-    hs2p drops annotation components no larger than ``a_t`` reference tiles, and an unset
-    filter puts the reference at TARGET; these fixtures annotate 4 tiles or less, so the
-    contour-area filter is off (``a_t=0``)."""
+    The filter is left unset: annotation sampling then keeps every annotated component,
+    so these fixtures' annotations of 4 tiles or less are sampled."""
     return extraction(
         spacing_um,
         TARGET,
         tiling_fields={"tolerance": 0.07},
         masks=masks if masks is not None else annotation_masks(PIXEL_MAPPING, {"tumor": 0.0}),
-        filter=FilterConfig(ref_tile_size=TARGET, a_t=0),
     )
 
 

@@ -666,7 +666,9 @@ def test_slide_sampling_uses_native_spacing_only_for_coarser_sources(tmp_path: P
 def test_slide_sampling_forwards_the_filter_the_roi_key_records(tmp_path: Path, monkeypatch):
     """hs2p filters annotation contours (``a_t`` × ``ref_tile_size``²) and runs pixel QC with
     the ``filtering`` it is given; the roi_sampling key hashes the held filter, so the
-    sampler hands hs2p that filter, and resolves an unset one as the key does."""
+    sampler hands hs2p that filter, and resolves an unset one as the key does: with no
+    contour-area threshold (``a_t=0``), so every annotated component is sampled. Tissue
+    tiling keeps hs2p's default threshold."""
     from hs2p import FilterConfig
     from soma.data._legacy import legacy_samples_from_csv
     from soma.dense_slide_extraction import sample_slide_rois
@@ -702,7 +704,12 @@ def test_slide_sampling_forwards_the_filter_the_roi_key_records(tmp_path: Path, 
 
     resolved = resolve_preprocessing_config(unset, encoder_name=ENCODER).filter
     assert filters == [held, resolved]
-    assert resolved == FilterConfig(ref_tile_size=TARGET)
+    assert (filters[1].a_t, filters[1].ref_tile_size) == (0, TARGET)
+    assert resolved == FilterConfig(ref_tile_size=TARGET, a_t=0)
+
+    tissue = resolve_preprocessing_config(extraction(0.5, TARGET), encoder_name=ENCODER).filter
+    assert tissue == FilterConfig(ref_tile_size=TARGET)
+    assert tissue.a_t == 4
 
 
 # --------------------------------------------------------------------------- #
