@@ -9,7 +9,8 @@ step for step by the parity scenarios in ``tests/e2e/test_parity.py``:
 3. build the model (weight initialisation draws here) and its learner
 4. build the loaders
 5. ``Baseline.fit`` on the train targets (set shape)
-6. ``soma.fit`` with ``Checkpoint`` (in memory, no file) and ``EarlyStopping``
+6. ``Trainer.fit`` with exactly the plan's callbacks (``Checkpoint`` in memory, no file,
+   and ``EarlyStopping``)
 7. the tune-time step (detection: ``sweep_threshold`` on tune)
 8. per split: ``soma.predict`` (+ baseline rows) -> ``soma.evaluate`` -> write
    ``predictions_<split>`` and ``metrics.json``
@@ -56,15 +57,10 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup) -> FoldResult:
     learner = setup.build_learner(adaptor)  # 3
     loaders = setup.build_loaders(learner, fold_dir)  # 4
     baseline = setup.fit_baseline(learner.head) if setup.fit_baseline is not None else None  # 5
-    # The setup's callbacks are the whole policy: fit adds no EarlyStopping or Progress of its own.
-    fit = learn.fit(  # 6
-        learner,
-        loaders.train,
-        loaders.tune,
-        callbacks=setup.callbacks(),
-        patience=None,
-        progress=False,
-        **setup.trainer,
+    # The plan's callbacks are the whole policy: no implicit Checkpoint, EarlyStopping or
+    # Progress, so a run without ``checkpoint`` keeps its final weights.
+    fit = learn.Trainer(callbacks=setup.callbacks(), **setup.trainer).fit(  # 6
+        learner, loaders.train, loaders.tune
     )
     if loaders.after_fit is not None:
         loaders.after_fit(fold_dir)

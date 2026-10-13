@@ -185,8 +185,8 @@ python -m examples.beetle.external_submission infer \
   --zip data/beetle/external/submission.zip
 ```
 
-The run must carry `beetle` and selected-arm tags and contain
-`fold_0/best_model.pt` through `fold_4/best_model.pt`. The command loads one shared
+The run must train with the selected arm's sampler (`loaders.sampler.name`) and contain
+`fold_0/bundle` through `fold_4/bundle`. The command loads one shared
 frozen encoder plus all five decoders and averages their per-pixel softmaxes. The protocol
 resolution is revalidated against `encoder_lock.json`, including the weight digest and
 immutable local Hub binding, before the encoder loads in offline mode. Each flat

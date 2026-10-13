@@ -140,10 +140,13 @@ def selected_checkpoints(run_dir: str | Path, selected_arm: str) -> tuple[Path, 
             f"BEETLE selected run has no config.yaml: {config_path}"
         )
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
-    tags = set((config.get("run") or {}).get("tags") or ())
-    if "beetle" not in tags or selected_arm not in tags:
+    # The arm names are the training-batch sampler names.
+    sampler = (config.get("loaders") or {}).get("sampler")
+    sampler_name = sampler.get("name") if isinstance(sampler, dict) else sampler
+    if sampler_name != selected_arm:
         raise ValueError(
-            f"BEETLE selected run config must carry beetle and {selected_arm!r} tags"
+            f"BEETLE selected run config must train with the {selected_arm!r} sampler "
+            f"(loaders.sampler.name), got {sampler_name!r}"
         )
     bundles = tuple(run_dir / f"fold_{fold}" / "bundle" for fold in range(NUM_FOLDS))
     missing = [str(path) for path in bundles if not path.is_dir()]
@@ -159,6 +162,7 @@ def validate_selected_run_recipe(
 ) -> dict[str, str]:
     """Bind the selected run config to the selected arm in protocol resolution."""
     from soma.config import ExperimentConfig
+    from soma.plan import comparable
 
     resolution_path = Path(protocol_resolution)
     run_dir = Path(run_dir)
@@ -181,7 +185,9 @@ def validate_selected_run_recipe(
     run_config_path = run_dir / "config.yaml"
     resolved_config = ExperimentConfig.from_yaml(resolved_path)
     run_config = ExperimentConfig.from_yaml(run_config_path)
-    if run_config.to_dict() != resolved_config.to_dict():
+    # ``run-arm --set run.run_id=/run.resume=`` is written into the run's config.yaml:
+    # compare recipes without the launch-only fields, as the resume drift guard does.
+    if comparable(run_config.to_dict()) != comparable(resolved_config.to_dict()):
         raise ValueError(
             "BEETLE selected run config disagrees with the protocol-resolved selected arm"
         )

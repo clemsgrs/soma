@@ -260,6 +260,40 @@ class TestPipeline:
         assert len(result.fold_results) == 1
         assert result.run_dir == _expected_run_dir(config)
 
+    @pytest.mark.parametrize("callbacks", [[], [{"name": "early_stopping"}]])
+    def test_run_installs_only_the_planned_selection_callbacks(
+        self, tmp_path: Path, monkeypatch, callbacks
+    ):
+        """The plan's callbacks are the whole policy: a run without ``checkpoint`` keeps
+        its final weights instead of an implicit best-loss selection."""
+        from soma.learn import Checkpoint, EarlyStopping
+        from soma.learn.trainer import Trainer
+
+        installed: list[type] = []
+        fit = Trainer.fit
+
+        def spying(self, *args, **kwargs):
+            installed.extend(type(callback) for callback in self.callbacks)
+            return fit(self, *args, **kwargs)
+
+        monkeypatch.setattr(Trainer, "fit", spying)
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / "output",
+            aggregator="mean_pool",
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 3, "callbacks": callbacks},
+        )
+        result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
+
+        assert Checkpoint not in installed
+        assert (EarlyStopping in installed) == bool(callbacks)
+        fit_result = result.fold_results[0].train_result
+        assert fit_result.selected_epoch == 2  # the final epoch
+        assert fit_result.checkpoint_path is None
+
     def test_run_trains_on_a_supplied_in_memory_source(self, tmp_path: Path):
         """A supplied source without a feature manifest (``from_arrays``) trains and
         scores like a cache: every listed sample must simply have features."""
