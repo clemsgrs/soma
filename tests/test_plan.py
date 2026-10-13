@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sys
 import textwrap
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pandas as pd
@@ -259,6 +260,27 @@ def _grid(files, **kwargs) -> ExperimentConfig:
     kwargs.setdefault("head", "segmentation")
     kwargs.setdefault("head_params", {"num_classes": 2})
     return experiment(*files, **kwargs)
+
+
+def test_a_plan_refuses_field_writes(files):
+    # The config is the user's to edit; the plan is what a run does, frozen.
+    plan = _resolve(experiment(*files, aggregator="abmil"))
+    with pytest.raises(FrozenInstanceError):
+        plan.trainer.max_epochs = 3
+    with pytest.raises(FrozenInstanceError):
+        plan.config.run = plan.run
+    assert plan.trainer.max_epochs == 50
+
+
+def test_check_refuses_a_field_write_its_section_would_refuse(files):
+    config = experiment(*files, aggregator="abmil")
+    config.trainer.max_steps = 0
+    with pytest.raises(ValueError, match="trainer.max_steps"):
+        check(config)
+    config = experiment(*files, aggregator="abmil")
+    config.cohort.collapse = "site"
+    with pytest.raises(ValueError, match="cohort.collapse"):
+        check(config)
 
 
 def test_a_run_needs_a_head_or_a_representation(files):

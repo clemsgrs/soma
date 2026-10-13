@@ -37,7 +37,7 @@ from soma.pipeline.layout import (
     test_identity_digest,
 )
 from soma.pipeline.representation import run_representation
-from soma.plan import Plan, check, dotted_packages, resolve
+from soma.plan import Plan, check, dotted_packages, resolve, revalidated
 from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 __all__ = ["Pipeline", "PipelineResult"]
@@ -81,6 +81,8 @@ class Pipeline:
         ensure_default_logging()
         if not isinstance(config, ExperimentConfig):
             raise TypeError(f"Pipeline takes an ExperimentConfig, got {type(config).__name__}")
+        # The run reads a validated copy: a field write after this does not reach it.
+        config = revalidated(config)
         check(config)  # config errors surface before any data is read
         self._config = config
         self._source = source

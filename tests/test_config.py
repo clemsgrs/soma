@@ -1,6 +1,6 @@
 """``soma.config``: seven sections mirroring the public callables, hydrated from YAML."""
 
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -114,8 +114,22 @@ def test_an_experiment_has_seven_sections_and_only_needs_a_cohort():
     assert config.learner is None
     assert config.run == RunConfig() and config.loaders == LoadersConfig()
     assert config.trainer == TrainerConfig() and config.evaluation == EvaluationConfig()
-    with pytest.raises(FrozenInstanceError):
-        config.run = RunConfig()  # type: ignore[misc]
+
+
+def test_a_config_takes_field_writes(tmp_path: Path):
+    # Python users (and the benchmarks) change a config by assigning its fields.
+    config = experiment("d.csv", "s.csv", aggregator="abmil")
+    config.run = RunConfig(output_dir="elsewhere", seed=4)
+    config.trainer.max_steps = 100
+    config.loaders.batch_size = 8
+    config.learner.params["optimizer"] = Component("adamw", {"lr": 3e-4})
+    config.to_yaml(tmp_path / "config.yaml")
+    saved = ExperimentConfig.from_yaml(tmp_path / "config.yaml")
+    assert saved.run == RunConfig(output_dir="elsewhere", seed=4)
+    # A step budget written over the default epoch budget replaces it, as at construction.
+    assert (saved.trainer.max_steps, saved.trainer.max_epochs) == (100, None)
+    assert saved.loaders.batch_size == 8
+    assert saved.learner.params["optimizer"] == Component("adamw", {"lr": 3e-4})
 
 
 # --- hydration -------------------------------------------------------------------------

@@ -31,6 +31,7 @@ from soma.config import (
     LearnerConfig,
     is_annotation_sampling,
     plain,
+    seal,
 )
 
 __all__ = [
@@ -41,6 +42,7 @@ __all__ = [
     "learner_shape",
     "load_cohort",
     "resolve",
+    "revalidated",
     "sample_unit",
 ]
 
@@ -65,13 +67,13 @@ _SURVIVAL_INCOMPATIBLE_AGGREGATORS = frozenset({"clam_sb", "clam_mb", "dtfdmil"}
 class Plan(Mapping):
     """A resolved config, frozen: section name -> section.
 
-    ``plan.learner`` (or ``plan["learner"]``) is the resolved section;
-    :meth:`to_yaml` / :meth:`from_yaml` round-trip it, and two plans are equal when their
-    YAML forms are.
+    ``plan.learner`` (or ``plan["learner"]``) is the resolved section; its sections refuse
+    field writes. :meth:`to_yaml` / :meth:`from_yaml` round-trip it, and two plans are
+    equal when their YAML forms are.
     """
 
     def __init__(self, config: ExperimentConfig) -> None:
-        self._config = config
+        self._config = seal(config)
 
     @property
     def config(self) -> ExperimentConfig:
@@ -287,8 +289,18 @@ def load_cohort(config: ExperimentConfig):
 # --- check: the cross-section rules ----------------------------------------------------
 
 
+def revalidated(config: ExperimentConfig) -> ExperimentConfig:
+    """``config`` rebuilt from its dict form, so every section validates its fields again:
+    a field write runs no check of its own, and the rebuilt copy holds what a run reads."""
+    return ExperimentConfig.from_dict(config.to_dict())
+
+
 def check(config: ExperimentConfig) -> None:
     """Refuse a config whose sections contradict each other, before anything runs."""
+    _check(revalidated(config))
+
+
+def _check(config: ExperimentConfig) -> None:
     registries = _registries()
     features, evaluation = config.features, config.evaluation
     if evaluation.representation is not None:
@@ -551,7 +563,8 @@ def resolve(config: ExperimentConfig, cohort: Any) -> Plan:
     normalized through its YAML form, so a Python config and the YAML it saves resolve to
     one plan.
     """
-    check(config)
+    config = revalidated(config)
+    _check(config)
     registries = _registries()
     learner = config.learner
     if learner is not None:
