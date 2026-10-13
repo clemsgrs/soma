@@ -652,6 +652,7 @@ def _point_frame(cfg, spec, predictions):
 
     params = dict(cfg.learner.params["head"].params)
     match_um = float(params["match_distance"])
+    nms_um = params.get("nms_distance")  # None (a resolved plan's default) means δ, as in DetectionHead
     dense = resolve_pipeline_dense(cfg)
     effective = float(dense.spacing_um)
     spacing = DenseSampleSpacing(
@@ -661,7 +662,7 @@ def _point_frame(cfg, spec, predictions):
     return SimpleNamespace(
         num_classes=predictions.num_classes,
         delta_px=match_um / effective,
-        nms_distance_px=float(params.get("nms_distance", match_um)) / effective,
+        nms_distance_px=(match_um if nms_um is None else float(nms_um)) / effective,
         matching=spec.match_method,
         spacing=spacing,
         spacing_for_sample=lambda sid: spacing,

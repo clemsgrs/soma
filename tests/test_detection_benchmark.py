@@ -793,6 +793,26 @@ def test_point_frame_reads_the_runs_detection_head_and_dense_geometry(tmp_path: 
     assert frame.tile_px == 1024
 
 
+def test_point_frame_reads_a_null_nms_radius_as_the_match_distance(tmp_path: Path):
+    """A replayed ``plan.yaml`` carries every head default, so its saved ``config.yaml``
+    holds ``nms_distance: null``; like :class:`~soma.tasks.DetectionHead`, the frame then
+    suppresses at the match distance δ."""
+    from soma.config import ExperimentConfig
+
+    m = _load_driver()
+    committed = resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml"
+    ExperimentConfig.from_yaml(
+        committed, overrides={"learner": {"params": {"head": {"params": {"nms_distance": None}}}}}
+    ).to_yaml(tmp_path / "config.yaml")
+    cfg = ExperimentConfig.from_yaml(tmp_path / "config.yaml")
+    assert "nms_distance" in cfg.learner.params["head"].params
+    assert cfg.learner.params["head"].params["nms_distance"] is None
+    predictions = SimpleNamespace(num_classes=1, match_distance_px=30.0)
+
+    frame = m._point_frame(cfg, dataset_spec("midog"), predictions)
+
+    assert frame.nms_distance_px == pytest.approx(frame.delta_px)
+
 def test_decode_split_points_drops_ignored_predictions_and_counts_valid_area():
     import numpy as np
     import pandas as pd
