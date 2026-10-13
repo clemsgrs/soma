@@ -1136,6 +1136,74 @@ def test_masks_sampling_round_trip_through_yaml(tmp_path: Path):
     assert loaded.features.extraction.masks == cfg.features.extraction.masks
 
 
+
+_BINARY_TISSUE_MASKS = MaskSamplingConfig(
+    pixel_mapping={"background": 0, "tissue": 1},
+    min_coverage={"tissue": 0.1},
+    colors=None,
+    strategy="independent",
+    output_mode="merged",
+)
+
+
+def _slide_config_with_masks(tmp_path: Path, masks: MaskSamplingConfig) -> PipelineConfig:
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text("sample_id,image_path,label\ns0,/slides/s0.svs,tumor\n", encoding="utf-8")
+    splits_csv = tmp_path / "splits.csv"
+    splits_csv.write_text("fold,sample_id,split\n0,s0,train\n", encoding="utf-8")
+    return PipelineConfig(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        output_root=tmp_path / "out",
+        dataset_type="slide",
+        features=FeaturesConfig(
+            encoder="uni2",
+            extraction=slide2vec.PreprocessingConfig(
+                tiling=TilingConfig(requested_spacing_um=0.5, requested_tile_size_px=224, tolerance=0.05, overlap=0.0),
+                masks=masks,
+            ),
+        ),
+        aggregator=AggregatorConfig(name="abmil"),
+        task=TaskConfig(name="binary_classification"),
+    )
+
+
+@pytest.mark.parametrize("source", ["python", "yaml-masks-without-colors"])
+def test_binary_tissue_masks_off_the_shipped_default_round_trip_through_yaml(tmp_path: Path, source: str):
+    """hs2p tiles binary tissue the same whatever its colors, strategy and output mode,
+    but the experiment identity hashes them: a binary ``MaskSamplingConfig`` other than
+    the shipped default at its threshold saves its ``masks:``/``sampling:`` blocks, so the
+    reload holds the same config and keeps the experiment id."""
+    from soma.pipeline.layout import build_experiment_spec
+
+    config = _slide_config_with_masks(tmp_path, _BINARY_TISSUE_MASKS)
+    if source == "yaml-masks-without-colors":
+        save_config(config, tmp_path / "written.yaml")
+        raw = yaml.safe_load((tmp_path / "written.yaml").read_text())
+        for key in ("masks", "sampling", "min_coverage"):
+            raw["preprocessing"].pop(key, None)
+        raw["preprocessing"]["masks"] = {"pixel_mapping": {"background": 0, "tissue": 1}, "min_coverage": {"tissue": 0.1}}
+        config = load_config(_write_yaml(tmp_path, raw, name="user.yaml"))
+    assert not soma.config.is_annotation_sampling(config.features.extraction.masks)
+    assert config.features.extraction.masks != replace(DEFAULT_MASK_SAMPLING, min_coverage={"tissue": 0.1})
+
+    save_config(config, tmp_path / "config.yaml")
+    reloaded = load_config(tmp_path / "config.yaml")
+
+    assert reloaded.features.extraction.masks == config.features.extraction.masks
+    assert build_experiment_spec(reloaded).experiment_id == build_experiment_spec(config).experiment_id
+
+
+def test_the_shipped_binary_tissue_masks_save_as_min_coverage(tmp_path: Path):
+    config = _slide_config_with_masks(tmp_path, replace(DEFAULT_MASK_SAMPLING, min_coverage={"tissue": 0.3}))
+
+    save_config(config, tmp_path / "config.yaml")
+    preprocessing = yaml.safe_load((tmp_path / "config.yaml").read_text())["preprocessing"]
+
+    assert preprocessing["min_coverage"] == {"tissue": 0.3}
+    assert "masks" not in preprocessing and "sampling" not in preprocessing
+    assert load_config(tmp_path / "config.yaml").features.extraction.masks == config.features.extraction.masks
+
 def test_masks_accepts_hs2p_list_of_single_entry_mappings(tmp_path: Path):
     """An hs2p-style masks block (list of single-entry mappings) pastes in unchanged: it
     is read by hs2p's own resolver."""

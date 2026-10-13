@@ -23,7 +23,7 @@ from hs2p import (
     TilingConfig,
 )
 
-from soma.config import CacheConfig, EncoderLeaf, FeaturesConfig, is_annotation_sampling
+from soma.config import CacheConfig, EncoderLeaf, FeaturesConfig
 
 __all__ = ["features_from_layout", "features_to_layout"]
 
@@ -374,6 +374,18 @@ def _execution(execution: dict[str, Any], encoder_block: dict[str, Any]) -> slid
 # ---------------------------------------------------------------------------
 
 
+def _is_shipped_tissue_masks(masks: MaskSamplingConfig) -> bool:
+    """Whether ``masks`` is hs2p's shipped tissue vocabulary at a tissue threshold, the one
+    config the ``min_coverage`` shorthand reads back to. Any other config, binary tissue
+    included, is written as its ``masks``/``sampling`` blocks: hs2p ignores a binary
+    config's colors, strategy and output mode, but the experiment identity hashes them."""
+    if set(masks.min_coverage) != set(DEFAULT_MASK_SAMPLING.min_coverage):
+        # The shorthand reads an empty threshold as 0.1, and hs2p rejects other labels on
+        # the shipped vocabulary.
+        return False
+    return masks == replace(DEFAULT_MASK_SAMPLING, min_coverage=masks.min_coverage)
+
+
 def features_to_layout(features: FeaturesConfig, *, dataset_type: str | None) -> dict[str, Any]:
     """The YAML blocks :func:`features_from_layout` reads back into ``features``.
 
@@ -420,7 +432,9 @@ def features_to_layout(features: FeaturesConfig, *, dataset_type: str | None) ->
         "preview": _plain(asdict(extraction.preview)),
     }
     masks = extraction.masks
-    if is_annotation_sampling(masks):
+    if _is_shipped_tissue_masks(masks):
+        preprocessing["min_coverage"] = dict(masks.min_coverage)
+    else:
         preprocessing["masks"] = {
             "pixel_mapping": {label: list(values) for label, values in masks.pixel_mapping.items()},
             "min_coverage": dict(masks.min_coverage),
@@ -429,8 +443,6 @@ def features_to_layout(features: FeaturesConfig, *, dataset_type: str | None) ->
             else {label: None if color is None else list(color) for label, color in masks.colors.items()},
         }
         preprocessing["sampling"] = {"strategy": masks.strategy, "output_mode": masks.output_mode}
-    else:
-        preprocessing["min_coverage"] = dict(masks.min_coverage)
     if dense is not None:
         preprocessing.update(
             {
