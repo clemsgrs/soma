@@ -40,8 +40,9 @@ FEATURE_DIM = 4
 PIXEL_MAPPING = {"background": 0, "tumor": 1}
 #: hs2p's MaskSamplingConfig holds every label's raw values as a tuple.
 HELD_PIXEL_MAPPING = {"background": (0,), "tumor": (1,)}
+# Re-recorded on main after annotation sampling defaulted an unset filter to a_t=0.
 #: The ROI sampling key and the dense grid key(s) of the end-to-end run (pinned in slice 6c).
-PINNED_ROI_CACHE_KEYS = ("cb1a198125e6e918", ["4ac5f23b27809824"])
+PINNED_ROI_CACHE_KEYS = ("289c9fd9da4118af", ["84972292be8cc6dc"])
 
 
 def _roi_extraction(*, min_cov: float = 0.0, **tiling_fields) -> slide2vec.PreprocessingConfig:
