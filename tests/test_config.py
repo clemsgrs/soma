@@ -232,6 +232,37 @@ def test_the_composite_block_loads_as_the_composite_encoder_leaf(tmp_path: Path)
     assert (member_dense.window_size, member_dense.spacing_um, member_dense.target_size) == (224, 0.5, 448)
 
 
+def test_a_saved_composite_config_keeps_the_shared_execution_options(tmp_path: Path):
+    """A composite has no ``encoder`` block to carry the run's batch size, so the saved
+    ``config.yaml`` spells it under ``execution``: the reload extracts at the same batch
+    size (members still override it for themselves) and keeps the experiment id."""
+    from soma.encoders import CompositeParams
+    from soma.pipeline.layout import build_experiment_spec
+
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text("sample_id,image_path,label_mask_path\ns0,/slides/s0.png,/masks/s0.png\n", encoding="utf-8")
+    splits_csv = tmp_path / "splits.csv"
+    splits_csv.write_text("fold,sample_id,split\n0,s0,train\n", encoding="utf-8")
+    config = _seg_config(
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        features=FeaturesConfig(
+            encoder=_composite({"name": "uni2"}, {"name": "virchow2", "execution": {"batch_size": 4}}),
+            execution=slide2vec.ExecutionOptions(batch_size=2, save_tile_embeddings=True),
+            dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=224),
+        ),
+    )
+    saved = tmp_path / "config.yaml"
+
+    save_config(config, saved)
+    reloaded = load_config(saved)
+
+    assert reloaded.features.execution == config.features.execution
+    members = CompositeParams(**reloaded.features.encoder.params).members
+    assert [dict(member.execution) for member in members] == [{}, {"batch_size": 4}]
+    assert build_experiment_spec(reloaded).experiment_id == build_experiment_spec(config).experiment_id
+
+
 @pytest.mark.parametrize(
     "data",
     [

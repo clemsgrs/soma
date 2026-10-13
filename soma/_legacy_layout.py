@@ -73,7 +73,15 @@ _ENCODER_KEYS = frozenset(
     }
 )
 _EXECUTION_KEYS = frozenset(
-    {"num_gpus", "num_workers_per_gpu", "num_preprocessing_workers", "prefetch_factor", "precision"}
+    {
+        "num_gpus",
+        "num_workers_per_gpu",
+        "num_preprocessing_workers",
+        "prefetch_factor",
+        "precision",
+        "batch_size",
+        "save_tile_features",
+    }
 )
 _COMPOSITE_KEYS = frozenset({"encoders", "concat_resolution", "concat_grid_size"})
 _MEMBER_KEYS = frozenset(
@@ -340,9 +348,17 @@ def _dense(preprocessing: dict[str, Any], tiling: TilingConfig | None) -> slide2
 
 def _execution(execution: dict[str, Any], encoder_block: dict[str, Any]) -> slide2vec.ExecutionOptions:
     _reject_unknown(execution, _EXECUTION_KEYS, "execution")
+    # Configs spell these under ``encoder``; a saved config.yaml also writes them under
+    # ``execution`` (a composite has no ``encoder`` block), and ``execution`` wins.
+    batch_size = execution.get("batch_size")
+    if batch_size is None:
+        batch_size = encoder_block.get("batch_size", 32)
+    save_tile_features = execution.get("save_tile_features")
+    if save_tile_features is None:
+        save_tile_features = encoder_block.get("save_tile_features", False)
     values: dict[str, Any] = {
-        "batch_size": int(encoder_block.get("batch_size", 32)),
-        "save_tile_embeddings": bool(encoder_block.get("save_tile_features", False)),
+        "batch_size": int(batch_size),
+        "save_tile_embeddings": bool(save_tile_features),
     }
     precision = execution.get("precision") or encoder_block.get("precision")
     if precision is not None:
@@ -366,7 +382,9 @@ def features_to_layout(features: FeaturesConfig, *, dataset_type: str | None) ->
     ``run.yaml`` still carries them. ``dense`` without a tiling is written as the tiling
     it reads at (the layout derives the dense geometry from the tiling keys). A leaf
     encoder's unset tiling is written as the preset geometry the reader resolves it to,
-    and a grid run's unset dense options as the defaults the reader gives it.
+    and a grid run's unset dense options as the defaults the reader gives it. The run's
+    batch size and tile-feature saving are written under ``execution`` too, because a
+    composite has no ``encoder`` block to carry them.
     """
     from soma.preprocessing.resolution import reconcile_dense_tiling
 
@@ -434,6 +452,8 @@ def features_to_layout(features: FeaturesConfig, *, dataset_type: str | None) ->
             "num_preprocessing_workers": execution.num_preprocessing_workers,
             "prefetch_factor": execution.prefetch_factor,
             "precision": execution.precision,
+            "batch_size": execution.batch_size,
+            "save_tile_features": execution.save_tile_embeddings,
         },
         "cache": _plain(asdict(features.cache)),
         "encoder": None,
