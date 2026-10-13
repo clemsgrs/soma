@@ -83,17 +83,19 @@ def sample_slide_rois(
 
     hs2p tiles each slide's annotation raster with ``preprocessing.tiling`` (read at the
     slide's effective spacing), ``preprocessing.masks`` and ``preprocessing.filter`` (its
-    contour-area threshold and pixel QC; unset resolves to ``ref_tile_size`` at the tile
-    size, as the roi_sampling key does). ``sample_ids`` restricts
-    sampling to that subset of the manifest's slides (manifest order preserved) — the
-    roi_sampling cache's partial-miss path samples only the missing slides without
-    touching the hits. ``None`` (the default) samples every slide.
+    contour-area threshold and pixel QC; unset resolves, as the roi_sampling key does, to
+    ``ref_tile_size`` at the tile size and ``a_t=0``, keeping every annotated component).
+    ``sample_ids`` restricts sampling to that subset of the manifest's slides (manifest
+    order preserved) — the roi_sampling cache's partial-miss path samples only the
+    missing slides without touching the hits. ``None`` (the default) samples every slide.
     """
     from hs2p import SlideSpec, tile_slide
 
     masks = preprocessing.masks
     filtering = resolve_filter_config(
-        preprocessing.filter, tile_size_px=preprocessing.tiling.requested_tile_size_px
+        preprocessing.filter,
+        tile_size_px=preprocessing.tiling.requested_tile_size_px,
+        annotation_sampling=True,
     )
     if masks.output_mode != "merged":
         raise ValueError(

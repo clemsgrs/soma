@@ -11,7 +11,11 @@ import pytest
 import slide2vec
 from hs2p import FilterConfig
 
-from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
+from soma.encoders.validation import (
+    resolve_encoder_precision,
+    resolve_filter_config,
+    resolve_preprocessing_config,
+)
 from tests.extraction_configs import tiling
 
 
@@ -36,6 +40,21 @@ def test_an_explicit_tiling_and_filter_are_kept():
     resolved = resolve_preprocessing_config(held, encoder_name="dinov3-vitb16")
 
     assert (resolved.tiling, resolved.filter) == (held.tiling, held.filter)
+
+
+def test_an_unset_filter_keeps_every_annotation_component_and_hs2p_s_tissue_threshold():
+    explicit = FilterConfig(ref_tile_size=64, a_t=2)
+
+    assert resolve_filter_config(explicit, tile_size_px=224) is explicit
+    assert resolve_filter_config(explicit, tile_size_px=224, annotation_sampling=True) is explicit
+    # Tissue tiling: hs2p's defaults (a_t=4), the reference tile at the tile size.
+    tissue = resolve_filter_config(None, tile_size_px=224)
+    assert tissue == FilterConfig(ref_tile_size=224)
+    assert tissue.a_t == 4
+    # Annotation sampling: no contour-area threshold, so small annotations are sampled.
+    assert resolve_filter_config(None, tile_size_px=224, annotation_sampling=True) == FilterConfig(
+        ref_tile_size=224, a_t=0
+    )
 
 
 def test_region_geometry_is_completed_from_either_side():

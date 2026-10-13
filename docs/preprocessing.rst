@@ -98,6 +98,12 @@ are derived by hs2p and slide2vec. Cache keys are built from the fields of these
 upstream objects, so a field added upstream is keyed without a change in soma;
 caches written by soma releases that keyed its own copies are not reused.
 
+An unset filter takes hs2p's defaults, with ``ref_tile_size_px`` at the tile
+size. Tissue tiling then drops tissue regions with an area of at most ``a_t: 4``
+tiles. Annotation sampling keeps annotated regions of any size (``a_t: 0``). In
+YAML, ``a_t: 4`` without ``ref_tile_size_px`` counts as unset: also set
+``ref_tile_size_px`` to drop small annotated regions.
+
 Declared pooled extraction encodes exactly ``requested_tile_size_px``, applying
 only the encoder's photometric transform after tiling. Defaults describe the
 final model input: GigaPath uses 224 px, DINOv2 224 px, and DINOv3 256 px. At
