@@ -26,4 +26,4 @@ The YAML vocabulary (`data`, `task`, `training`, `aggregation`, `preprocessing`)
 - Every YAML file and every benchmark's config builder is rewritten; there is no converter from the old layout. Experiment identities change (identity version 9); feature cache keys do not.
 - The plan includes the torch optimizer's and scheduler's defaults, read from their signatures, so a torch upgrade that changes a default changes the plan and the experiment id.
 - `soma.ExperimentConfig`, `soma.resolve` and `soma.Plan` are the public surface; the sections live in `soma.config`.
-- A config states only what differs from the defaults, and `soma plan.yaml` reruns a run with every value pinned.
+- A config states only what differs from the defaults, and `soma run plan.yaml` reruns a run with every value pinned.
