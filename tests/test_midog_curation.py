@@ -20,7 +20,7 @@ from soma.curation.midog import (
     MIDOG_CLASS_NAMES,
     MIDOG_MITOTIC_CATEGORY_ID,
 )
-from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
+from soma.data import Cohort, ImageManifest
 
 
 # --------------------------------------------------------------------------- helpers
@@ -112,7 +112,7 @@ def test_curate_emits_detection_manifest_and_center_points(tmp_path: Path):
     df = pd.read_csv(manifest.dataset_csv)
     assert list(df.columns)[:3] == ["sample_id", "image_path", "points_path"]
 
-    detection = legacy_samples_from_csv(manifest.dataset_csv)
+    detection = ImageManifest.from_csv(manifest.dataset_csv)
     (sid,) = detection.sample_ids
     assert sid == "midog_001"
 
@@ -144,8 +144,8 @@ def test_per_domain_metadata_propagated(tmp_path: Path):
         [{"file_name": "007.tiff", "tumortype": "melanoma", "scanner": "Aperio", "patient_id": "p7", "boxes": []}],
     )
     out = tmp_path / "curated"
-    detection = legacy_samples_from_csv(curate_midog_detection(raw, out).dataset_csv)
-    rec = detection.samples["midog_007"]
+    manifest = curate_midog_detection(raw, out)
+    rec = Cohort.from_csv(manifest.dataset_csv, manifest.splits_csv, allow_missing_test=True).record("midog_007")
     assert rec.patient_id == "p7"
     assert rec.metadata["tumor_type"] == "melanoma"
     assert rec.metadata["scanner"] == "Aperio"
@@ -184,10 +184,9 @@ def test_local_split_keeps_a_patient_in_one_split(tmp_path: Path):
     out = tmp_path / "curated"
     manifest = curate_midog_detection(raw, out)
 
-    detection = legacy_samples_from_csv(manifest.dataset_csv)
     # The no-leakage invariant holds across every fold: Cohort rejects a patient that
     # crosses splits at construction.
-    splits = legacy_folds_from_csv(manifest.splits_csv, detection, unit="patient_id")
+    splits = Cohort.from_csv(manifest.dataset_csv, manifest.splits_csv, unit="patient_id")
     assert splits.num_folds >= 1
 
 
@@ -221,12 +220,12 @@ def test_per_image_spacing_overrides_param(tmp_path: Path):
         ],
     )
     out = tmp_path / "curated"
-    detection = legacy_samples_from_csv(
+    detection = ImageManifest.from_csv(
         curate_midog_detection(raw, out, spacing_at_level_0=0.5).dataset_csv
     )
     # Per-image spacing (from the JSON) wins; the param fills in where absent.
-    assert detection.samples["midog_001"].spacing_at_level_0 == 0.23
-    assert detection.samples["midog_002"].spacing_at_level_0 == 0.5
+    assert detection["midog_001"].spacing_at_level_0 == 0.23
+    assert detection["midog_002"].spacing_at_level_0 == 0.5
 
 
 def test_native_path_has_no_spacing_column(tmp_path: Path):
@@ -348,6 +347,6 @@ def test_null_patient_id_falls_back_to_the_sample_id(tmp_path: Path):
             {"file_name": "008.tiff", "tumortype": "melanoma", "scanner": "Aperio", "patient_id": None, "boxes": []},
         ],
     )
-    detection = legacy_samples_from_csv(curate_midog_detection(raw, tmp_path / "curated").dataset_csv)
-    assert detection.samples["midog_007"].patient_id == "midog_007"
-    assert detection.samples["midog_008"].patient_id == "midog_008"
+    detection = ImageManifest.from_csv(curate_midog_detection(raw, tmp_path / "curated").dataset_csv)
+    assert detection["midog_007"].patient_id == "midog_007"
+    assert detection["midog_008"].patient_id == "midog_008"

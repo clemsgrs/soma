@@ -29,8 +29,8 @@ from slide2vec import ExecutionOptions
 
 from soma.config import CacheOptions
 from tests.extraction_configs import extraction, tissue_masks
-from soma.data._legacy import legacy_samples_from_csv
-from soma.extraction import FeatureExtractor
+import soma
+from soma.data import ImageManifest
 from tests.e2e.synthetic import write_tiff
 
 STUB_ENCODER = "soma512-switchable-transform"
@@ -162,7 +162,7 @@ def _expected_image_features(n: int, *, mean: list[float]) -> dict[str, torch.Te
     }
 
 
-def _image_dataset(root: Path, n: int = 4) -> TileDataset:
+def _image_dataset(root: Path, n: int = 4) -> ImageManifest:
     """The first ``n`` images of one cohort: datasets of different ``n`` share samples."""
     root.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -172,18 +172,18 @@ def _image_dataset(root: Path, n: int = 4) -> TileDataset:
         rows.append({"sample_id": f"s{index}", "image_path": str(image_path), "label": index % 2})
     dataset_csv = root / f"dataset_{n}.csv"
     pd.DataFrame(rows).to_csv(dataset_csv, index=False)
-    return legacy_samples_from_csv(dataset_csv)
+    return ImageManifest.from_csv(dataset_csv)
 
 
 def _extract_images(dataset, root: Path, **cache_settings):
-    return FeatureExtractor(
+    return soma.extract(
         dataset,
-        STUB_ENCODER,
+        encoder=STUB_ENCODER,
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=2),
         cache=CacheOptions(enabled=True, root_dir=root / "cache", **cache_settings),
-        output_root=root / "run",
+        output_dir=root / "run",
         unit="tile",
-    ).extract()
+    )
 
 
 def _cache_dir(root: Path, kind: str) -> Path:
@@ -208,11 +208,8 @@ def _forget_identity(root: Path, kind: str) -> None:
         sidecar_path.write_text(json.dumps(sidecar))
 
 
-def _features(result) -> dict[str, torch.Tensor]:
-    return {
-        sample_id: result.source.load(sample_id)
-        for sample_id in sorted(result.source.sample_ids)
-    }
+def _features(source) -> dict[str, torch.Tensor]:
+    return {sample_id: source.load(sample_id) for sample_id in sorted(source.sample_ids)}
 
 
 def _assert_same_features(actual: dict[str, torch.Tensor], expected: dict[str, torch.Tensor]):
@@ -538,10 +535,10 @@ def slide_manifests(tmp_path_factory) -> dict[int, Path]:
 
 def _extract_slides(dataset_csv: Path, root: Path, kind: str, **cache_settings):
     """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``."""
-    return FeatureExtractor(
-        legacy_samples_from_csv(dataset_csv),
-        _SLIDE_KINDS[kind],
-        extraction(
+    return soma.extract(
+        ImageManifest.from_csv(dataset_csv),
+        encoder=_SLIDE_KINDS[kind],
+        extraction=extraction(
             0.5,
             32,
             tiling_fields={"backend": "openslide"},
@@ -555,8 +552,8 @@ def _extract_slides(dataset_csv: Path, root: Path, kind: str, **cache_settings):
             num_gpus=1, num_workers_per_gpu=0, num_preprocessing_workers=0, precision="fp32", batch_size=64
         ),
         cache=CacheOptions(enabled=True, root_dir=root / "cache", **cache_settings),
-        output_root=root / "run",
-    ).extract()
+        output_dir=root / "run",
+    )
 
 
 def test_patient_level_extraction_tiles_the_slides_into_an_empty_tiling_cache(

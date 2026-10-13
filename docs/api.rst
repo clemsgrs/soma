@@ -39,31 +39,18 @@ requirements.
 
    from dataclasses import replace
 
-   from soma import (
-       CacheOptions,
-       Cohort,
-       ExperimentConfig,
-       FeatureExtractor,
-       ImageManifest,
-       Pipeline,
-   )
+   import soma
+   from soma import CacheOptions, Cohort, ExperimentConfig, ImageManifest, Pipeline
    from soma.config import CohortConfig, LearnerConfig, RunConfig, TrainerConfig
-   from soma.data._legacy import records_for_pipeline
 
    # The cohort holds identity, targets and folds; the image manifest holds the paths.
    cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
    images = ImageManifest.from_csv("dataset.csv")
-   # Extraction still reads one joined record per sample (see ``soma.data._legacy``).
-   dataset = records_for_pipeline(cohort, images)
    cache = CacheOptions(enabled=True, root_dir="shared/feature_cache")
 
-   extractor = FeatureExtractor(
-       dataset=dataset,
-       encoder="uni2",
-       cache=cache,
-       output_root="output",
-   )
-   features = extractor.extract()
+   # Features enter through soma.extract: it reads the image manifest and returns the source.
+   features = soma.extract(images, encoder="uni2", cache=cache, output_dir="output")
+
    def experiment(aggregator: dict) -> ExperimentConfig:
        return ExperimentConfig(
            run=RunConfig(output_dir="output"),
@@ -77,11 +64,20 @@ requirements.
    abmil = experiment({"name": "abmil", "params": {"hidden_dim": 256}})
    clam = experiment({"name": "clam_sb", "params": {"hidden_dim": 256, "attn_dim": 128}})
 
-   abmil_result = Pipeline(abmil, source=features.source).run()
-   clam_result = Pipeline(clam, source=features.source).run()
+   abmil_result = Pipeline(abmil, source=features).run()
+   clam_result = Pipeline(clam, source=features).run()
 
 Each config trains in its own run directory under ``run.output_dir``; the source
 is attached, never re-extracted.
+
+``soma.extract`` is the single way features enter soma; a :class:`~soma.Pipeline`
+without a source extracts through it too. It is also the namespace of
+:func:`soma.extract.live_encoder`.
+
+.. autofunction:: soma.extraction.extract
+
+.. autoclass:: soma.extraction.RoiSet
+   :members: children, label_maps, pixels, subset
 
 The source can be reused across experiments as long as the upstream dataset,
 preprocessing, and encoder settings do not change (see :doc:`getting-started`
@@ -103,14 +99,14 @@ contracts and :doc:`outputs` for the saved attention scores and overlays:
        attention_heatmaps={"cmap": "coolwarm", "alpha": 0.5},
    )
 
-   result = Pipeline(replace(abmil, evaluation=evaluation), source=features.source).run()
+   result = Pipeline(replace(abmil, evaluation=evaluation), source=features).run()
 
 Dense features over given images
 --------------------------------
 
-Dense extraction is an extraction setting, not a manifest kind: ``shape="grid"``
-asks for token grids and ``unit="tile"`` says each row is a pre-cropped image.
-The grid recipe is slide2vec's ``DenseOptions`` (read spacing, supervision size,
+Dense extraction is an extraction setting, not a manifest kind: ``dense`` asks
+for token grids and ``unit="tile"`` says each row is a pre-cropped image. The
+grid recipe is slide2vec's ``DenseOptions`` (read spacing, supervision size,
 padding, window, feature kind); batch size and precision are slide2vec's
 ``ExecutionOptions``:
 
@@ -118,47 +114,45 @@ padding, window, feature kind); batch size and precision are slide2vec's
 
    from slide2vec import DenseOptions, ExecutionOptions
 
-   from soma import CacheOptions, FeatureExtractor
-   from soma.data._legacy import legacy_samples_from_csv
+   import soma
+   from soma import CacheOptions, ImageManifest
 
-   dataset = legacy_samples_from_csv("segmentation.csv")
-   features = FeatureExtractor(
-       dataset,
-       "phikon",
-       shape="grid",
+   grids = soma.extract(
+       ImageManifest.from_csv("segmentation.csv"),
+       encoder="phikon",
        unit="tile",
        dense=DenseOptions(spacing_um=0.5, target_size=224),
        execution=ExecutionOptions(batch_size=64),
        cache=CacheOptions(enabled=True, root_dir="shared/feature_cache"),
-       output_root="output/dense",
-   ).extract()
+       output_dir="output/dense",
+   )
 
-   grid = features.source.load("roi_001")  # float32: (feature_dim, grid_h, grid_w)
-   geometry = features.source.geometry("roi_001")
+   grid = grids.load("roi_001")  # float32: (feature_dim, grid_h, grid_w)
+   geometry = grids.geometry("roi_001")
 
 Annotation-sampled whole slides
 -------------------------------
 
 A table of whole-slide image and annotation paths becomes an annotation-sampled
-grid extraction when the preprocessing carries an annotation vocabulary (hs2p's
-``MaskSamplingConfig``) and ``shape="grid"`` runs over whole slides. The result's
-dataset is the persisted ROI table; parent-slide folds are projected explicitly:
+grid extraction when the extraction carries an annotation vocabulary (hs2p's
+``MaskSamplingConfig``) and a grid runs over whole slides. The grids are keyed
+by ROI id; their ``rois`` name each ROI's slide, from which the slide cohort
+derives the ROI cohort (each ROI inherits its slide's splits):
 
 .. code-block:: python
 
    from hs2p import MaskSamplingConfig, SegmentationConfig, TilingConfig
-   from slide2vec import PreprocessingConfig
+   from slide2vec import DenseOptions, PreprocessingConfig
 
-   from soma import CacheOptions, Cohort, FeatureExtractor
-   from soma.data._legacy import LegacyFolds, legacy_samples_from_csv
+   import soma
+   from soma import AnnotationManifest, CacheOptions, Cohort, ImageManifest
 
-   slides = legacy_samples_from_csv("slides.csv")
-   slide_splits = LegacyFolds.from_cohort(Cohort.from_csv("slides.csv", "splits.csv"))
-   features = FeatureExtractor(
-       slides,
-       "phikon",
-       shape="grid",
-       preprocessing=PreprocessingConfig(
+   grids = soma.extract(
+       ImageManifest.from_csv("slides.csv"),
+       annotations=AnnotationManifest.from_csv("slides.csv"),
+       encoder="phikon",
+       dense=DenseOptions(spacing_um=0.5, target_size=512),
+       extraction=PreprocessingConfig(
            tiling=TilingConfig(
                requested_spacing_um=0.5, requested_tile_size_px=512, tolerance=0.05, overlap=0.0
            ),
@@ -171,15 +165,14 @@ dataset is the persisted ROI table; parent-slide folds are projected explicitly:
            ),
        ),
        cache=CacheOptions(enabled=True, root_dir="shared/feature_cache"),
-       output_root="output/annotation-rois",
-   ).extract()
+       output_dir="output/annotation-rois",
+   )
 
-   roi_splits = slide_splits.project(features.dataset)
-   print(features.artifacts.dataset_csv)
-   print(features.provenance.zero_roi_sample_ids)
+   rois = Cohort.from_csv("slides.csv", "splits.csv").derived(grids.rois.children)
+   label_maps = grids.rois.label_maps(size=(512, 512))  # the stored mask crops
 
-Slides with no sampled ROI are recorded in provenance rather than represented
-by empty samples.
+Slides with no sampled ROI have no child, so they leave the ROI cohort;
+``output/annotation-rois/extraction_provenance.json`` lists them.
 
 Score and compare saved predictions
 -----------------------------------

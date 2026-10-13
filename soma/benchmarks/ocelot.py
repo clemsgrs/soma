@@ -38,7 +38,7 @@ from soma.curation.manifest import CuratedManifest
 from soma.curation.ocelot import curate_ocelot_detection
 
 if TYPE_CHECKING:
-    from soma.data._legacy import LegacySamples
+    from soma.data import ImageManifest
 
 _CONFIG_DIR = Path(__file__).resolve().parent / "configs" / "ocelot"
 
@@ -99,30 +99,27 @@ def _locate_run_config(run_dir: Path) -> Path:
     raise FileNotFoundError(f"no config.yaml found under {run_dir}")
 
 
-def resolve_dense_cache_dir(
-    cfg: ExperimentConfig, manifest: LegacySamples
-) -> Path | None:
+def resolve_dense_cache_dir(cfg: ExperimentConfig, images: ImageManifest) -> Path | None:
     """Prepare and return the exact dense-image cache directory described by ``cfg``."""
-    from soma import FeatureExtractor
+    from soma import extract
     from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     features = cfg.features
     cache = features.cache
     if cache.root_dir is None:
         cache = replace(cache, root_dir=Path(cfg.run.output_dir) / "feature_cache")
-    extraction = FeatureExtractor(
-        manifest,
-        features.encoder,
-        resolve_pipeline_preprocessing(cfg),
-        shape="grid",
+    source = extract(
+        images,
+        encoder=features.encoder,
+        cache=cache,
         unit="tile",
+        extraction=resolve_pipeline_preprocessing(cfg),
         dense=resolve_pipeline_dense(cfg),
         spacing_policy=features.spacing_policy,
         execution=features.execution,
-        cache=cache,
-        output_root=Path(cfg.run.output_dir) / "rescore_extraction",
-    ).extract()
-    return extraction.artifacts.feature_dir.parent
+        output_dir=Path(cfg.run.output_dir) / "rescore_extraction",
+    )
+    return source.feature_dir.parent
 
 
 def build_greedy_report(

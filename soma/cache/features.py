@@ -61,7 +61,7 @@ from soma.cache.keys import (
     preprocessing_signature,
 )
 from slide2vec import DenseImageOptions, DenseOptions, ExecutionOptions, PreprocessingConfig
-from soma.data._legacy import LegacySamples
+from soma.data.manifests import ImageManifest
 
 # Joins every slide-manifest ROI grid's cache identity. ROI masks are read at the spacing
 # slide2vec recorded for the grid (``effective_spacing_um``), which it records since 5.7;
@@ -326,7 +326,7 @@ def _comparable_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     comparable.pop("sample_identity_signature_by_id", None)
     # dtype is recorded for symmetry/provenance but excluded from the equality check: the
     # cache key already folds the dtype (guarded so fp32 keys stay byte-stable), so a dir's
-    # dtype is fixed by its key. Excluding it lets legacy caches (whose metadata predates
+    # dtype is fixed by its key. Excluding it lets older caches (whose metadata predates
     # the dtype field) still validate without a spurious "missing=[dtype=...]" mismatch.
     comparable.pop("dtype", None)
     # The geometry record is validated on its own terms (validate_recorded_geometry), with
@@ -625,7 +625,7 @@ def _resolve_cache(
     cache_root: Path,
     cache_kind: str,
     key: str,
-    dataset: LegacySamples,
+    images: ImageManifest,
     metadata: dict[str, Any],
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
@@ -640,7 +640,7 @@ def _resolve_cache(
     features_dir = cache_dir / _features_subdir_for_kind(cache_kind)
     metadata_path = cache_dir / CACHE_METADATA_NAME
     identity_key_by_id: dict[str, str] | None = None
-    if cache_kind == "tile" and getattr(dataset, "supplies_coordinates", False):
+    if cache_kind == "tile" and images.supplies_coordinates:
         # Supplied tile sets are content-addressed: each sample's payload is named after
         # its full identity, tile set included, so runs over different tile sets of one
         # slide keep their own features side by side and each reuses its own. (Only tile
@@ -783,7 +783,7 @@ def _resolve_cache(
 def resolve_tile_cache(
     *,
     cache_root: Path,
-    dataset: LegacySamples,
+    images: ImageManifest,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig | None,
     execution: ExecutionOptions | None,
@@ -808,7 +808,7 @@ def resolve_tile_cache(
         extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _sample_stems_for_kind(
-        dataset=dataset,
+        images=images,
         cache_kind=cache_kind,
         static_identity_payload={"cache_key": metadata["cache_key"]},
     )
@@ -816,11 +816,11 @@ def resolve_tile_cache(
         cache_root=cache_root,
         cache_kind=cache_kind,
         key=metadata["cache_key"],
-        dataset=dataset,
+        images=images,
         metadata=metadata,
-        cache_ids=tuple(sorted(dataset.sample_ids)),
+        cache_ids=tuple(sorted(images.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,
-        manifest_rows=dataset_manifest_rows(dataset),
+        manifest_rows=dataset_manifest_rows(images),
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
@@ -831,7 +831,7 @@ def resolve_tile_cache(
 def resolve_image_cache(
     *,
     cache_root: Path,
-    dataset: LegacySamples,
+    images: ImageManifest,
     tile_encoder_name: str,
     execution: ExecutionOptions | None,
     output_variant: str | None = None,
@@ -851,7 +851,7 @@ def resolve_image_cache(
     """
     return resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=images,
         tile_encoder_name=tile_encoder_name,
         preprocessing=None,
         execution=execution,
@@ -868,7 +868,7 @@ def resolve_image_cache(
 def resolve_slide_cache(
     *,
     cache_root: Path,
-    dataset: LegacySamples,
+    images: ImageManifest,
     slide_encoder_name: str,
     tile_encoder_name: str,
     tile_preprocessing: PreprocessingConfig,
@@ -902,7 +902,7 @@ def resolve_slide_cache(
         backend_provenance=backend_provenance,
     )
     cache_stem_by_id = _sample_stems_for_kind(
-        dataset=dataset,
+        images=images,
         cache_kind="slide",
         static_identity_payload={"cache_key": metadata["cache_key"]},
     )
@@ -910,11 +910,11 @@ def resolve_slide_cache(
         cache_root=cache_root,
         cache_kind="slide",
         key=metadata["cache_key"],
-        dataset=dataset,
+        images=images,
         metadata=metadata,
-        cache_ids=tuple(sorted(dataset.sample_ids)),
+        cache_ids=tuple(sorted(images.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,
-        manifest_rows=dataset_manifest_rows(dataset),
+        manifest_rows=dataset_manifest_rows(images),
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
@@ -925,7 +925,7 @@ def resolve_slide_cache(
 def resolve_patient_cache(
     *,
     cache_root: Path,
-    dataset: LegacySamples,
+    images: ImageManifest,
     patient_encoder_name: str,
     tile_encoder_name: str,
     tile_preprocessing: PreprocessingConfig,
@@ -959,7 +959,7 @@ def resolve_patient_cache(
         backend_provenance=backend_provenance,
     )
     cache_stem_by_id = _patient_stems_for_kind(
-        dataset=dataset,
+        images=images,
         cache_kind="patient",
         static_identity_payload={"cache_key": metadata["cache_key"]},
     )
@@ -967,11 +967,11 @@ def resolve_patient_cache(
         cache_root=cache_root,
         cache_kind="patient",
         key=metadata["cache_key"],
-        dataset=dataset,
+        images=images,
         metadata=metadata,
         cache_ids=tuple(sorted(cache_stem_by_id.keys())),
         cache_stem_by_id=cache_stem_by_id,
-        manifest_rows=dataset_manifest_rows(dataset),
+        manifest_rows=dataset_manifest_rows(images),
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
@@ -982,7 +982,7 @@ def resolve_patient_cache(
 def resolve_hierarchical_cache(
     *,
     cache_root: Path,
-    dataset: LegacySamples,
+    images: ImageManifest,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
     execution: ExecutionOptions | None,
@@ -1004,7 +1004,7 @@ def resolve_hierarchical_cache(
         extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _sample_stems_for_kind(
-        dataset=dataset,
+        images=images,
         cache_kind="hierarchical",
         static_identity_payload={"cache_key": metadata["cache_key"]},
     )
@@ -1012,11 +1012,11 @@ def resolve_hierarchical_cache(
         cache_root=cache_root,
         cache_kind="hierarchical",
         key=metadata["cache_key"],
-        dataset=dataset,
+        images=images,
         metadata=metadata,
-        cache_ids=tuple(sorted(dataset.sample_ids)),
+        cache_ids=tuple(sorted(images.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,
-        manifest_rows=dataset_manifest_rows(dataset),
+        manifest_rows=dataset_manifest_rows(images),
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,
@@ -1027,7 +1027,7 @@ def resolve_hierarchical_cache(
 def resolve_dense_cache(
     *,
     cache_root: Path,
-    dataset: LegacySamples,
+    images: ImageManifest,
     tile_encoder_name: str,
     patch_size: tuple[int, int],
     dense: DenseOptions | DenseImageOptions,
@@ -1054,7 +1054,7 @@ def resolve_dense_cache(
         extraction_geometry=extraction_geometry,
     )
     cache_stem_by_id = _sample_stems_for_kind(
-        dataset=dataset,
+        images=images,
         cache_kind=cache_kind,
         static_identity_payload=dense_static_identity(
             cache_kind=cache_kind, cache_key=metadata["cache_key"]
@@ -1064,11 +1064,11 @@ def resolve_dense_cache(
         cache_root=cache_root,
         cache_kind=cache_kind,
         key=metadata["cache_key"],
-        dataset=dataset,
+        images=images,
         metadata=metadata,
-        cache_ids=tuple(sorted(dataset.sample_ids)),
+        cache_ids=tuple(sorted(images.sample_ids)),
         cache_stem_by_id=cache_stem_by_id,
-        manifest_rows=dataset_manifest_rows(dataset),
+        manifest_rows=dataset_manifest_rows(images),
         initial_reason="initializing",
         complete_state=complete_state,
         validate_payloads=validate_payloads,

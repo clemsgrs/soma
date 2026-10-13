@@ -286,3 +286,34 @@ def test_folds_cannot_be_mutated_after_validation() -> None:
     assert cohort.folds[0].tests["test"] == ("c",)
     with pytest.raises(TypeError):
         cohort.folds[0].tests["test"] = ("a",)  # type: ignore[index]
+
+
+def test_derived_children_inherit_their_parent_sample() -> None:
+    cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
+    rois = cohort.derived({"s0__x0_y0": "s0", "s0__x32_y0": "s0", "s3__x0_y0": "s3", "s4__x0_y0": "s4"})
+
+    assert rois.sample_ids == ["s0__x0_y0", "s0__x32_y0", "s3__x0_y0", "s4__x0_y0"]
+    child = rois.record("s3__x0_y0")
+    assert (child.targets, child.patient_id, child.metadata) == ({"label": 1}, "p1", {"site": "b"})
+    # Splits are sample-level: each child sits where its parent does; a parent without
+    # children leaves its split's ids, not the split.
+    assert rois.folds[0] == FoldSplit(
+        train=("s0__x0_y0", "s0__x32_y0"), tune=("s3__x0_y0",), tests={"test": ("s4__x0_y0",)}
+    )
+    assert rois.unit == cohort.unit == "patient_id"
+
+
+def test_derived_keeps_a_tune_mirroring_test_split() -> None:
+    cohort = Cohort.from_frames(
+        _records_df(4), _splits_df(4), targets=["label"], allow_missing_test=True
+    ).with_test_from_tune()
+    rois = cohort.derived({"s2__a": "s2", "s0__a": "s0"})
+
+    assert rois.folds[0].test_from_tune
+    assert rois.folds[0].tests == {"test": ("s2__a",)} and rois.folds[0].tune == ("s2__a",)
+
+
+def test_derived_refuses_a_child_of_an_unknown_sample() -> None:
+    cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
+    with pytest.raises(ValueError, match="'nope'"):
+        cohort.derived({"nope__x0_y0": "nope"})

@@ -7,7 +7,7 @@ config fingerprint + dataset/splits checksums). :func:`project_leaderboard` scan
 artifacts and renders a table — no pipeline execution, no shared mutable index.
 
 A **facet** fixes a ``(dataset + splits + task)`` triple, holds a set of config axes
-fixed, and surfaces one (or more) *varied* axes as comparison columns. Legacy scalar
+fixed, and surfaces one (or more) *varied* axes as comparison columns. Single-metric
 tables rank by one metric; multi-metric Benchmark tables use neutral row order and expose
 independent per-metric ranks plus Pareto membership. Because a run's identity
 (``experiment_id``) fingerprints the *entire* config modulo seed, two runs that differ in
@@ -172,7 +172,7 @@ def discover_triples(
 ) -> dict[TripleKey, list[Path]]:
     """Scan run attempts and group them by their data/task identity triple.
 
-    Legacy callers see completed, non-empty attempts only. Multi-metric Benchmark
+    By default only completed, non-empty attempts are returned. Multi-metric Benchmark
     projection opts into incomplete attempts so missing logical samples can fail loudly.
     """
     root = Path(output_root)

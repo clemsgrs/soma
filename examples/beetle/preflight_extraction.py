@@ -16,16 +16,15 @@ from hs2p import MaskSamplingConfig, TilingConfig
 from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
 
 from soma.config import CacheOptions, EncoderLeaf
-from soma import FeatureExtractor
-from soma.data._legacy import LegacySamples, legacy_samples_from_csv
+from soma import extract
+from soma.data import AnnotationManifest, CachedLabelMapSource, Cohort, ImageManifest
 from soma.dense.reader import build_label_remap
 from soma.dense_slide_extraction import (
-    build_roi_dataset,
     effective_spacing_um,
     sample_slide_rois,
     write_roi_mask_crops,
 )
-from soma.data import CachedLabelMapSource
+from soma.extraction.rois import RoiEntry, RoiSet, roi_entries, write_roi_table
 
 from examples.beetle.curate import _NATIVE_LEVEL_0_EXCEPTIONS
 
@@ -140,14 +139,17 @@ def _one_coordinate(coords: list[tuple[int, int]], *, sample_id: str) -> tuple[i
 
 
 def _representative_coordinates(
-    dataset: LegacySamples,
+    images: ImageManifest,
+    annotations: AnnotationManifest,
+    cohort: Cohort,
     *,
     preprocessing: PreprocessingConfig,
 ) -> tuple[dict[str, list[tuple[int, int]]], set[str]]:
+    def read_policy(sample_id: str):
+        return cohort.record(sample_id).metadata.get("read_policy")
+
     coarse_ids = [
-        sample_id
-        for sample_id, record in dataset.samples.items()
-        if record.metadata.get("read_policy") == COARSE_READ_POLICY
+        sample_id for sample_id in images.sample_ids if read_policy(sample_id) == COARSE_READ_POLICY
     ]
     expected_ids = set(_NATIVE_LEVEL_0_EXCEPTIONS)
     if len(coarse_ids) != EXPECTED_COARSE_SLIDES or set(coarse_ids) != expected_ids:
@@ -157,7 +159,8 @@ def _representative_coordinates(
             f"found {sorted(coarse_ids)}"
         )
     coarse_coords = sample_slide_rois(
-        dataset,
+        images,
+        annotations,
         preprocessing=preprocessing,
         spacing_policy=SPACING_POLICY,
         sample_ids=coarse_ids,
@@ -176,11 +179,12 @@ def _representative_coordinates(
 
     ordinary_id = None
     ordinary_coord = None
-    for sample_id, record in dataset.samples.items():
-        if record.metadata.get("read_policy") == COARSE_READ_POLICY:
+    for sample_id in images.sample_ids:
+        if read_policy(sample_id) == COARSE_READ_POLICY:
             continue
         candidate = sample_slide_rois(
-            dataset,
+            images,
+            annotations,
             preprocessing=preprocessing,
             spacing_policy=SPACING_POLICY,
             sample_ids=[sample_id],
@@ -198,17 +202,18 @@ def _representative_coordinates(
 def _run_precision(
     *,
     precision: str,
-    roi_dataset: LegacySamples,
+    images: ImageManifest,
+    rois: list[RoiEntry],
     output_dir: Path,
     preprocessing: PreprocessingConfig,
     dense: DenseOptions,
 ):
-    result = FeatureExtractor(
-        roi_dataset,
-        EncoderLeaf(name="virchow2", params={"output_variant": "cls"}),
-        preprocessing=preprocessing,
-        # Annotation-sampled ROI grids over whole slides (the pipeline's segmentation path).
-        shape="grid",
+    store = extract(
+        images,
+        # The representative ROIs, encoded as the pipeline's segmentation path encodes ROIs.
+        rois=RoiSet(rois),
+        encoder=EncoderLeaf(name="virchow2", params={"output_variant": "cls"}),
+        extraction=preprocessing,
         unit="slide",
         dense=dense,
         spacing_policy=SPACING_POLICY,
@@ -225,10 +230,8 @@ def _run_precision(
             validate_payloads=True,
             dtype=precision,
         ),
-        output_root=output_dir / f"features_{precision}",
-    ).extract()
-    store = result.source
-    del result
+        output_dir=output_dir / f"features_{precision}",
+    )
     gc.collect()
     if torch.cuda.is_available():
         torch.cuda.empty_cache()
@@ -254,12 +257,12 @@ def _file_evidence(path: Path) -> FileEvidence:
 
 
 def _snapshot_payloads(
-    stores: dict, roi_dataset: LegacySamples
+    stores: dict, rois: list[RoiEntry]
 ) -> dict[str, dict[str, tuple[int, str]]]:
     snapshots: dict[str, dict[str, tuple[int, str]]] = {}
     for precision, store in stores.items():
         files: dict[str, tuple[int, str]] = {}
-        for record in roi_dataset.samples.values():
+        for record in rois:
             for path in _payload_paths(store, record):
                 files[str(path)] = (path.stat().st_size, _sha256(path))
         snapshots[precision] = files
@@ -301,7 +304,7 @@ def _validate_sidecar(
         )
 
     expected_spacing = effective_spacing_um(
-        preprocessing, record.spacing_at_level_0, spacing_policy=SPACING_POLICY
+        preprocessing, record.slide.spacing_at_level_0, spacing_policy=SPACING_POLICY
     )
     declared = metadata.get("declared_spacing_um")
     if declared is None or not math.isclose(
@@ -325,14 +328,14 @@ def _validate_sidecar(
             f"BEETLE representative {record.sample_id} effective spacing {effective!r} "
             f"is outside tolerance of its declared spacing {expected_spacing}"
         )
-    if record.spacing_at_level_0 is not None:
+    if record.slide.spacing_at_level_0 is not None:
         source = metadata.get("source_spacing_um")
         if source is None or not math.isclose(
-            float(source), float(record.spacing_at_level_0), rel_tol=0.0, abs_tol=1e-5
+            float(source), float(record.slide.spacing_at_level_0), rel_tol=0.0, abs_tol=1e-5
         ):
             raise ValueError(
                 f"BEETLE representative {record.sample_id} source spacing {source!r} "
-                f"does not match manifest {record.spacing_at_level_0}"
+                f"does not match manifest {record.slide.spacing_at_level_0}"
             )
         if metadata.get("read_level") != 0:
             raise ValueError(
@@ -390,40 +393,46 @@ def run_representative_extraction_parity(
     splits_csv = Path(splits_csv).resolve()
     output_dir = Path(output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
+    annotations = AnnotationManifest.from_csv(dataset_csv)
+    cohort = Cohort.from_csv(dataset_csv, splits_csv, allow_missing_test=True)
     preprocessing, dense = _recipe()
-    coords_by_slide, coarse_ids = _representative_coordinates(dataset, preprocessing=preprocessing)
+    coords_by_slide, coarse_ids = _representative_coordinates(
+        images, annotations, cohort, preprocessing=preprocessing
+    )
     roi_dir = output_dir / "representative_rois"
-    roi_manifest = build_roi_dataset(
-        dataset,
+    rois = roi_entries(
+        images,
+        annotations,
         coords_by_slide,
-        out_dir=roi_dir,
         mask_crop_dirs={slide_id: roi_dir / "masks" / slide_id for slide_id in coords_by_slide},
     )
-    roi_dataset = legacy_samples_from_csv(roi_manifest)
+    write_roi_table(rois, out_dir=roi_dir)
 
     stores = {
         precision: _run_precision(
             precision=precision,
-            roi_dataset=roi_dataset,
+            images=images,
+            rois=rois,
             output_dir=output_dir,
             preprocessing=preprocessing,
             dense=dense,
         )
         for precision in ("fp16", "fp32")
     }
-    before_resume = _snapshot_payloads(stores, roi_dataset)
+    before_resume = _snapshot_payloads(stores, rois)
     resumed_stores = {
         precision: _run_precision(
             precision=precision,
-            roi_dataset=roi_dataset,
+            images=images,
+            rois=rois,
             output_dir=output_dir,
             preprocessing=preprocessing,
             dense=dense,
         )
         for precision in ("fp16", "fp32")
     }
-    after_resume = _snapshot_payloads(resumed_stores, roi_dataset)
+    after_resume = _snapshot_payloads(resumed_stores, rois)
     resume = {}
     for precision in ("fp16", "fp32"):
         unchanged = before_resume[precision] == after_resume[precision]
@@ -438,12 +447,12 @@ def run_representative_extraction_parity(
     stores = resumed_stores
     # The head reads each ROI's stored mask crop, cut at the spacing its grid recorded.
     write_roi_mask_crops(
-        list(roi_dataset.samples.values()),
+        rois,
         spacing_um_by_sample_id={
             record.sample_id: json.loads(
                 _payload_paths(stores["fp16"], record)[1].read_text(encoding="utf-8")
             )["effective_spacing_um"]
-            for record in roi_dataset.samples.values()
+            for record in rois
         },
         preprocessing=preprocessing,
     )
@@ -451,14 +460,14 @@ def run_representative_extraction_parity(
     label_maps = CachedLabelMapSource(
         {
             record.sample_id: record.label_mask_crop_path
-            for record in roi_dataset.samples.values()
+            for record in rois
         },
         size=(512, 512),
         label_remap=label_remap,
     )
 
     representatives = []
-    for record in roi_dataset.samples.values():
+    for record in rois:
         paths = {}
         tensors = {}
         metadata_by_precision = {}

@@ -17,9 +17,9 @@ from soma.benchmarks.detection_benchmark import (
 
 
 def _manifest(meta_by_sid):
-    return SimpleNamespace(
-        samples={sid: SimpleNamespace(sample_id=sid, metadata=m) for sid, m in meta_by_sid.items()}
-    )
+    """The cohort surface stitching reads: each sample's record metadata."""
+    records = {sid: SimpleNamespace(sample_id=sid, metadata=m) for sid, m in meta_by_sid.items()}
+    return SimpleNamespace(record=records.__getitem__)
 
 
 def _head():

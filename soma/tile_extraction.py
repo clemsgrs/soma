@@ -1,6 +1,6 @@
 """Private tile-image extraction engine for pooled feature vectors.
 
-The Given-geometry entry point (ADR 0006): the dataset rows are *pre-cropped images*
+The Given-geometry entry point (ADR 0006): the manifest rows are *pre-cropped images*
 that soma never asked for at any particular size — a public patch benchmark (BACH, CRC,
 Gleason, BreakHis, MHIST, PCam), an exported ROI set — so the encoder's shipped transform
 is the contract and no geometry is declared.
@@ -31,7 +31,7 @@ from soma.cache import (
 )
 from soma.cache.compute_key import resolved_output_variant
 from soma.config import CacheOptions, EncoderLeaf
-from soma.data._legacy import LegacySamples, LegacyRecord
+from soma.data.manifests import ImageEntry, ImageManifest
 from soma.cache._types import PACKED_FILENAME
 from soma.data import CachedSetSource
 from soma.slide2vec_adapter import execution_options
@@ -52,7 +52,7 @@ class _TileFeatureExtractor:
     feature vector per sample.
 
     Args:
-        dataset: LegacySamples whose ``image_path`` fields point to tile images.
+        images: The image manifest whose ``image_path`` fields point to tile images.
         encoder: The encoder leaf (a slide2vec encoder and its params).
         execution: slide2vec's ``ExecutionOptions`` (batch size, precision, GPUs).
         cache: Optional cache configuration. When enabled, features are stored
@@ -61,13 +61,13 @@ class _TileFeatureExtractor:
 
     def __init__(
         self,
-        dataset: LegacySamples,
+        images: ImageManifest,
         encoder: EncoderLeaf,
         *,
         execution: ExecutionOptions | None = None,
         cache: CacheOptions | None = None,
     ) -> None:
-        self._dataset = dataset
+        self._images = images
         self._encoder = encoder
         self._execution = execution if execution is not None else ExecutionOptions()
         self._cache = cache or CacheOptions(enabled=False)
@@ -103,7 +103,7 @@ class _TileFeatureExtractor:
             dtype,
         )
 
-        records = list(self._dataset.samples.values())
+        records = list(self._images)
         if not self._cache.enabled:
             feature_dir.mkdir(parents=True, exist_ok=True)
             if records:
@@ -115,7 +115,7 @@ class _TileFeatureExtractor:
 
         cache_resolution = resolve_image_cache(
             cache_root=resolve_cache_root(self._cache, feature_dir=feature_dir),
-            dataset=self._dataset,
+            images=self._images,
             tile_encoder_name=self._encoder.name,
             execution=self._execution,
             output_variant=output_variant,
@@ -138,7 +138,7 @@ class _TileFeatureExtractor:
             # validate or re-encode on the next run.
             cache_resolution = invalidate_sample_identities(cache_resolution, pending_ids)
             feature_dim = self._embed(
-                [self._dataset.samples[sample_id] for sample_id in pending_ids],
+                [self._images[sample_id] for sample_id in pending_ids],
                 out_root=cache_resolution.cache_dir,
                 dtype=dtype,
             )
@@ -150,7 +150,7 @@ class _TileFeatureExtractor:
             )
         return CachedSetSource(cache_resolution.cache_dir)
 
-    def _embed(self, records: list[LegacyRecord], *, out_root: Path, dtype: str) -> int:
+    def _embed(self, records: list[ImageEntry], *, out_root: Path, dtype: str) -> int:
         """Hand ``records`` to slide2vec in one call and return the feature dimension.
 
         slide2vec writes under ``out_root/image_embeddings/``. It reuses an image whose

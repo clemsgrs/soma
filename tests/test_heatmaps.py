@@ -5,7 +5,6 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import numpy as np
@@ -13,6 +12,7 @@ import pandas as pd
 import pytest
 import torch
 
+from soma.data import ImageEntry, ImageManifest
 from soma.heatmaps import (
     _build_coordinate_map,
     _prediction_files_for_fold,
@@ -298,8 +298,7 @@ def test_render_heatmaps_single_branch(tmp_path):
         }
     ])
 
-    dataset = MagicMock()
-    dataset.samples = {"s1": SimpleNamespace(image_path=tmp_path / "fake.svs")}
+    dataset = ImageManifest([ImageEntry(sample_id="s1", image_path=tmp_path / "fake.svs")])
 
     with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
@@ -333,8 +332,7 @@ def test_render_heatmaps_single_branch_nested_split_dir(tmp_path):
         }
     ])
 
-    dataset = MagicMock()
-    dataset.samples = {"s1": SimpleNamespace(image_path=tmp_path / "fake.svs")}
+    dataset = ImageManifest([ImageEntry(sample_id="s1", image_path=tmp_path / "fake.svs")])
 
     with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
@@ -367,8 +365,7 @@ def test_render_heatmaps_reads_nested_tiling_metadata(tmp_path):
         }
     ])
 
-    dataset = MagicMock()
-    dataset.samples = {"s1": SimpleNamespace(image_path=tmp_path / "fake.svs")}
+    dataset = ImageManifest([ImageEntry(sample_id="s1", image_path=tmp_path / "fake.svs")])
 
     with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
@@ -405,8 +402,7 @@ def test_render_heatmaps_clam_mb_multi_branch(tmp_path):
         }
     ])
 
-    dataset = MagicMock()
-    dataset.samples = {"s2": SimpleNamespace(image_path=tmp_path / "fake.svs")}
+    dataset = ImageManifest([ImageEntry(sample_id="s2", image_path=tmp_path / "fake.svs")])
 
     with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
@@ -431,8 +427,7 @@ def test_render_heatmaps_skips_unknown_sample(tmp_path):
 
     (tiling_dir / "process_list.csv").write_text("sample_id,coordinates_npz_path,coordinates_meta_path\n")
 
-    dataset = MagicMock()
-    dataset.samples = {}  # "unknown" not in dataset
+    dataset = ImageManifest([])  # "unknown" not in the image manifest
 
     render_heatmaps(
         tmp_path, dataset, tiling_dir,

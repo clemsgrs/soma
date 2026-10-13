@@ -114,6 +114,16 @@ def test_coordinates_column_is_all_or_nothing() -> None:
     assert manifest["a"].coordinates_path == Path("a.npz")
 
 
+def test_coordinates_are_all_or_nothing_for_a_manifest_built_from_entries() -> None:
+    with pytest.raises(ValueError, match="must be set for every row or for none"):
+        ImageManifest(
+            [
+                ImageEntry("a", Path("/img/a.tif"), coordinates_path=Path("a.npz")),
+                ImageEntry("b", Path("/img/b.tif")),
+            ]
+        )
+
+
 def test_annotation_manifest_requires_an_annotation_column() -> None:
     with pytest.raises(ValueError, match="label_mask_path.*points_path"):
         AnnotationManifest.from_frame(pd.DataFrame({"sample_id": ["a"], "image_path": ["x"]}))

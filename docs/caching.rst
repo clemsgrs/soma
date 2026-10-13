@@ -17,10 +17,16 @@ patient. Datasets with overlapping samples can share their payloads while
 extracting only the missing samples.
 
 Sample identity includes ``sample_id``, ``image_path``, ``mask_path``, and the
-optional ``spacing_at_level_0`` declaration. ``mask_path`` is the tissue or
-annotation-sampling mask; segmentation's ``label_mask_path`` is excluded from
-ordinary feature identity but participates in the separate ROI-sampling cache.
-Delete affected caches before replacing source files in place.
+optional ``spacing_at_level_0`` declaration, read from each row of the image
+manifest. ``mask_path`` is the tissue or annotation-sampling mask; segmentation's
+``label_mask_path`` is excluded from ordinary feature identity but participates in
+the separate ROI-sampling cache. Delete affected caches before replacing source
+files in place.
+
+Annotation sampling caches each slide's ROI origins and mask crops under the
+slide's identity, with its ``label_mask_path``. An ROI's grid is keyed by the ROI
+id (``<slide>__x<x>_y<y>``) over its slide's image row, so a relaunch over the same
+slides reuses both the ROIs and their grids.
 
 On a complete cache hit, soma does not load the foundation encoder, except once
 after a slide2vec upgrade (see `Feature identity`_). On a miss,

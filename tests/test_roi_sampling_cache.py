@@ -23,7 +23,7 @@ from soma.cache import (
 import slide2vec
 
 from tests.extraction_configs import annotation_masks, extraction
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import AnnotationManifest, ImageManifest
 from soma.dense.reader import write_mask_crop
 
 
@@ -31,7 +31,8 @@ def _make_manifest(
     tmp_path: Path,
     *,
     label_mask_by_id: dict[str, str] | None = None,
-) -> SegmentationManifest:
+) -> dict[str, object]:
+    """The slides' image and annotation manifests, as ``resolve_roi_sampling_cache`` reads them."""
     label_mask_by_id = label_mask_by_id or {
         "s1": "/annotations/s1.tif",
         "s2": "/annotations/s2.tif",
@@ -48,7 +49,7 @@ def _make_manifest(
             for sample_id, label_mask in label_mask_by_id.items()
         ]
     ).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return {"images": ImageManifest.from_csv(csv_path), "annotations": AnnotationManifest.from_csv(csv_path)}
 
 
 def _preprocessing(
@@ -84,7 +85,7 @@ def test_roundtrip_written_coords_hit_and_load_back_identically(tmp_path: Path):
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     assert resolution.coords_by_id == {}
@@ -96,7 +97,7 @@ def test_roundtrip_written_coords_hit_and_load_back_identically(tmp_path: Path):
 
     reloaded = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     assert reloaded.coords_by_id == coords
@@ -109,14 +110,14 @@ def test_zero_roi_slide_is_a_hit_loading_an_empty_list(tmp_path: Path):
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     _publish(resolution, {"s1": [], "s2": [(64, 128)]})
 
     reloaded = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     assert reloaded.coords_by_id == {"s1": [], "s2": [(64, 128)]}
@@ -129,7 +130,7 @@ def test_corrupt_artifact_is_a_single_slide_miss_siblings_still_hit(tmp_path: Pa
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     _publish(resolution, {"s1": [(0, 0)], "s2": [(512, 512)]})
@@ -138,7 +139,7 @@ def test_corrupt_artifact_is_a_single_slide_miss_siblings_still_hit(tmp_path: Pa
 
     reloaded = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     assert reloaded.miss_sample_ids == ["s1"]
@@ -151,7 +152,7 @@ def test_missing_artifact_is_a_single_slide_miss_siblings_still_hit(tmp_path: Pa
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     _publish(resolution, {"s1": [(0, 0)], "s2": [(512, 512)]})
@@ -159,7 +160,7 @@ def test_missing_artifact_is_a_single_slide_miss_siblings_still_hit(tmp_path: Pa
 
     reloaded = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     assert reloaded.miss_sample_ids == ["s2"]
@@ -176,7 +177,7 @@ def test_fresh_directory_initializes_cleanly_and_resolves_again(tmp_path: Path):
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     assert resolution.metadata_path.is_file()
@@ -184,7 +185,7 @@ def test_fresh_directory_initializes_cleanly_and_resolves_again(tmp_path: Path):
     # A second resolve against the untouched fresh directory must not raise.
     resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
 
@@ -194,7 +195,7 @@ def test_metadata_mismatch_raises_hard_error(tmp_path: Path):
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     tampered = json.loads(resolution.metadata_path.read_text(encoding="utf-8"))
@@ -204,7 +205,7 @@ def test_metadata_mismatch_raises_hard_error(tmp_path: Path):
     with pytest.raises(ValueError, match="metadata mismatch"):
         resolve_roi_sampling_cache(
             cache_root=tmp_path / "cache",
-            dataset=dataset,
+            **dataset,
             preprocessing=preprocessing,
         )
 
@@ -219,7 +220,7 @@ def test_changing_label_mask_path_changes_only_that_slides_stem(tmp_path: Path):
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     _publish(resolution, {"s1": [(0, 0)], "s2": [(512, 512)]})
@@ -233,7 +234,7 @@ def test_changing_label_mask_path_changes_only_that_slides_stem(tmp_path: Path):
     )
     reloaded = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=reannotated,
+        **reannotated,
         preprocessing=preprocessing,
     )
     assert reloaded.key == resolution.key
@@ -282,14 +283,14 @@ def test_mask_preview_colors_change_neither_key_nor_stems(tmp_path: Path):
 
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=plain,
     )
     _publish(resolution, {"s1": [(0, 0)], "s2": []})
     # A colors-only change resolves to the same directory and hits everywhere.
     reloaded = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=colored,
     )
     assert reloaded.cache_dir == resolution.cache_dir
@@ -324,7 +325,7 @@ def test_write_rejects_sample_ids_outside_the_resolution(tmp_path: Path):
     dataset = _make_manifest(tmp_path)
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=_preprocessing(),
     )
     with pytest.raises(ValueError, match="unknown"):
@@ -343,7 +344,7 @@ def test_mask_crops_live_under_the_entry_per_slide_stem_and_roi_origin(tmp_path:
     dataset = _make_manifest(tmp_path)
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=_preprocessing(),
     )
     stem = resolution.cache_stem_by_id["s1"]
@@ -359,7 +360,7 @@ def test_slide_with_coords_but_a_missing_crop_is_a_miss(tmp_path: Path):
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     _publish(resolution, {"s1": [(0, 0), (512, 0)], "s2": [(64, 64)]})
@@ -367,7 +368,7 @@ def test_slide_with_coords_but_a_missing_crop_is_a_miss(tmp_path: Path):
 
     reloaded = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     assert reloaded.miss_sample_ids == ["s1"]
@@ -375,7 +376,7 @@ def test_slide_with_coords_but_a_missing_crop_is_a_miss(tmp_path: Path):
 
     coords_only = resolve_roi_sampling_cache(
         cache_root=tmp_path / "other-cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     write_roi_sampling_coords(
@@ -383,12 +384,12 @@ def test_slide_with_coords_but_a_missing_crop_is_a_miss(tmp_path: Path):
     )
     assert resolve_roi_sampling_cache(
         cache_root=tmp_path / "other-cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     ).miss_sample_ids == ["s1"]
 
 
-def _annotated_manifest(tmp_path: Path) -> tuple[SegmentationManifest, Path]:
+def _annotated_manifest(tmp_path: Path) -> tuple[dict[str, object], Path]:
     annotations = tmp_path / "annotations"
     annotations.mkdir(parents=True)
     for sample_id in ("s1", "s2"):
@@ -410,7 +411,7 @@ def test_an_edited_annotation_raster_misses_its_coords_and_crops(tmp_path: Path,
     preprocessing = _preprocessing()
     resolution = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     _publish(resolution, {"s1": [(0, 0)], "s2": [(512, 512)]})
@@ -422,7 +423,7 @@ def test_an_edited_annotation_raster_misses_its_coords_and_crops(tmp_path: Path,
 
     reloaded = resolve_roi_sampling_cache(
         cache_root=tmp_path / "cache",
-        dataset=dataset,
+        **dataset,
         preprocessing=preprocessing,
     )
     assert reloaded.key == resolution.key

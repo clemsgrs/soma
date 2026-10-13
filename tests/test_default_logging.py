@@ -8,9 +8,11 @@ import logging
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from soma.data import CachedSetSource
-from soma import ExperimentConfig, FeatureExtractor, Pipeline
-from soma.data._legacy import legacy_samples_from_csv
+import soma
+from soma import CacheOptions, ExperimentConfig, ImageManifest, Pipeline
 from soma.cli import main
 from tests.experiment_configs import experiment
 from tests.test_pipeline import FIXED_RUN_ID, _setup_synthetic_data
@@ -77,18 +79,20 @@ def test_pipeline_run_prints_the_fold_summary_to_stderr_once_without_logging_set
     assert err.count("Fold 0: train=6 tune=1 test=1") == 1
 
 
-def test_feature_extractor_turns_on_soma_info_output_without_logging_setup(
-    tmp_path: Path, capsys
-):
+def test_extract_turns_on_soma_info_output_without_logging_setup(tmp_path: Path, capsys):
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text("sample_id,image_path,label\ns0,tile.png,1\n", encoding="utf-8")
 
     with no_logging_setup():
-        FeatureExtractor(
-            legacy_samples_from_csv(dataset_csv),
-            "phikon",
-            output_root=tmp_path / "output",
-        )
+        # Refused before anything runs: the logging is set up first.
+        with pytest.raises(ValueError, match="unit must be"):
+            soma.extract(
+                ImageManifest.from_csv(dataset_csv),
+                encoder="phikon",
+                unit="neither",
+                cache=CacheOptions(enabled=False),
+                output_dir=tmp_path / "output",
+            )
         logging.getLogger("soma.extraction").info("feature cache resolved")
 
     assert capsys.readouterr().err.count("feature cache resolved") == 1

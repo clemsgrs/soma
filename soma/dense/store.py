@@ -327,7 +327,9 @@ class CachedGridSource:
     the ``sample_id → relative stem`` mapping it already holds (ADR 0007).
 
     ``provenance`` records where the grids came from (cache kind, dataset CSVs) for
-    run artifacts; it is optional and never read to locate a grid.
+    run artifacts; it is optional and never read to locate a grid. ``rois`` is set on the
+    grids of an annotation-sampled :func:`soma.extract`: the ROIs, keyed like the grids
+    (:class:`~soma.extraction.RoiSet`).
     """
 
     def __init__(
@@ -336,8 +338,10 @@ class CachedGridSource:
         *,
         payload_stems: dict[str, str] | None = None,
         provenance: DenseSourceProvenance | None = None,
+        rois=None,
     ) -> None:
         self.provenance = provenance
+        self.rois = rois
         # Accept a cache dir and descend into dense_embeddings/, or a plain dir of
         # .pt files as-is. Dense-specific resolver: never falls through to a pooled
         # sibling dir (e.g. tile_embeddings) if both happen to exist.

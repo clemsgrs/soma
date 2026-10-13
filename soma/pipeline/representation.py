@@ -17,10 +17,8 @@ import torch
 from rich.console import Console
 
 from soma.config import CRoMaOptions
-from soma.data import CachedSetSource, require_coverage
-from soma.pipeline._legacy import LegacyFolds, LegacySamples
+from soma.data import CachedSetSource, Cohort, ImageManifest, require_coverage
 from soma.pipeline.aggregate import save_summary
-from soma.pipeline.build import attach_source
 from soma.pipeline.console import build_completed_run_panel
 from soma.pipeline.layout import RunRecorder, open_run
 
@@ -31,24 +29,17 @@ __all__ = ["evaluate_representation", "run_representation"]
 
 
 def run_representation(pipeline) -> "PipelineResult":
-    """Run a task-free plan: open the run, attach the source, score CRoMa."""
+    """Run a task-free plan: open the run, extract its features, score CRoMa."""
     plan = pipeline.plan
-    layout, _ = open_run(plan, config=pipeline.config, num_folds=pipeline.splits.num_folds)
+    layout, _ = open_run(plan, config=pipeline.config, num_folds=pipeline.cohort.num_folds)
     with RunRecorder(layout, plan) as recorder:
-        context = attach_source(
-            plan,
-            source=pipeline.source,
-            dataset=pipeline.dataset,
-            splits=pipeline.splits,
-            image_manifest=pipeline.image_manifest,
-            run_dir=layout.run_dir,
-        )
+        context = pipeline._features(layout.run_dir)
         log_path = layout.run_dir / "run.log"
         log_path.write_text("Starting task-free CRoMa representation evaluation.\n", encoding="utf-8")
         result = evaluate_representation(
             feature_store=context.source,
-            dataset=context.dataset,
-            splits=context.splits,
+            cohort=context.cohort,
+            images=pipeline.image_manifest,
             representation=plan.evaluation.representation,
             run_dir=layout.run_dir,
         )
@@ -60,11 +51,9 @@ def run_representation(pipeline) -> "PipelineResult":
 
 
 
-def _representation_split_ids(
-    splits: LegacyFolds, representation: CRoMaOptions
-) -> list[str]:
+def _representation_split_ids(cohort: Cohort, representation: CRoMaOptions) -> list[str]:
     matches: list[tuple[int, tuple[str, ...]]] = []
-    for fold_index, fold in enumerate(splits.folds):
+    for fold_index, fold in enumerate(cohort.folds):
         if representation.split == "train":
             ids = fold.train
         elif representation.split == "tune":
@@ -97,12 +86,17 @@ def _required_representation_text(value: object, *, field_name: str, sample_id: 
 
 def evaluate_representation(
     feature_store: CachedSetSource,
-    dataset: LegacySamples,
-    splits: LegacyFolds,
+    cohort: Cohort,
+    images: ImageManifest,
     representation: CRoMaOptions,
     run_dir: str | Path,
 ) -> "PipelineResult":
-    """Evaluate selected frozen tile embeddings directly with CRoMa's public API."""
+    """Evaluate selected frozen tile embeddings directly with CRoMa's public API.
+
+    The split ``representation.split`` names in ``cohort`` is scored, in cohort order: each
+    sample's ``label`` target, its ``group_id`` and confounder metadata, and its image path
+    from ``images``.
+    """
     from croma import CRoMa
 
     run_dir = Path(run_dir)
@@ -111,12 +105,12 @@ def evaluate_representation(
     # result before validation so a failed re-evaluation cannot leave rankable stale data.
     summary_path.unlink(missing_ok=True)
 
-    selected_membership = _representation_split_ids(splits, representation)
+    selected_membership = _representation_split_ids(cohort, representation)
     selected_set = set(selected_membership)
-    selected_ids = [sample_id for sample_id in dataset.sample_ids if sample_id in selected_set]
+    selected_ids = [sample_id for sample_id in cohort.sample_ids if sample_id in selected_set]
     if len(selected_ids) != len(selected_membership) or set(selected_ids) != selected_set:
         raise ValueError(
-            "Representation split membership does not match the dataset manifest IDs."
+            "Representation split membership does not match the cohort's sample IDs."
         )
 
     require_coverage(feature_store, selected_ids)
@@ -124,7 +118,7 @@ def evaluate_representation(
     feature_rows: list[np.ndarray] = []
     feature_dim: int | None = None
     for sample_id in selected_ids:
-        record = dataset.samples[sample_id]
+        record = cohort.record(sample_id)
         label = _required_representation_text(
             record.targets.get("label"), field_name="label", sample_id=sample_id
         )
@@ -158,7 +152,7 @@ def evaluate_representation(
         manifest_rows.append(
             {
                 "sample_id": sample_id,
-                "image_path": str(record.image_path),
+                "image_path": str(images[sample_id].image_path),
                 "label": label,
                 "group_id": group_id,
                 representation.confounder_column: confounder,
@@ -168,7 +162,7 @@ def evaluate_representation(
     features = np.stack(feature_rows, axis=0)
     manifest = pd.DataFrame(manifest_rows)
     if manifest["sample_id"].tolist() != selected_ids:
-        raise AssertionError("CRoMa manifest IDs are not in selected dataset-manifest order.")
+        raise AssertionError("CRoMa manifest IDs are not in selected cohort order.")
     if len(manifest) != features.shape[0] or features.shape[0] != len(selected_ids):
         raise AssertionError("CRoMa feature and manifest row counts differ.")
 

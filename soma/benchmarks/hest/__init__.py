@@ -325,32 +325,28 @@ class HestBenchmark:
         import numpy as np
         import pandas as pd
 
+        from soma import extract
         from soma.data import ImageManifest
-        from soma.data._legacy import records_for_pipeline
         from soma.cache import resolve_cache_root
         from soma.evaluation import Evaluation, evaluate
-        from soma.extraction import FeatureExtractor
         from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_metrics, save_summary
         from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
         genes = list(cohort.target_names.get("expression") or [])
-        records_csv = plan.cohort.records
-        records = records_for_pipeline(cohort, ImageManifest.from_csv(records_csv), None, path=records_csv)
         features = plan.features
         cache = replace(
             features.cache,
             root_dir=resolve_cache_root(features.cache, feature_dir=run_dir, output_root=plan.run.output_dir),
         )
-        source = FeatureExtractor(
-            records,
-            features.encoder,
-            resolve_pipeline_preprocessing(plan),
-            shape="set",
-            unit="tile",
-            output_root=run_dir,
-            execution=features.execution,
+        source = extract(
+            ImageManifest.from_csv(plan.cohort.records),
+            encoder=features.encoder,
             cache=cache,
-        ).extract().source
+            unit="tile",
+            extraction=resolve_pipeline_preprocessing(plan),
+            execution=features.execution,
+            output_dir=run_dir,
+        )
         probe_params = plan.learner.params
         metrics = ["mean_pearson", *(gene_pearson(k, gene) for k, gene in enumerate(genes))]
 

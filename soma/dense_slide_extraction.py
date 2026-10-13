@@ -1,7 +1,7 @@
 """Slide-manifest dense extraction: slides + annotation masks → cached ROI grids.
 
 The slide-region counterpart of soma's internal dense given-image engine
-(which reads *pre-cropped* tile images). Here the dataset rows are **whole slides** plus an
+(which reads *pre-cropped* tile images). Here the manifest rows are **whole slides** plus an
 annotation vocabulary in hs2p's ``MaskSamplingConfig``; soma:
 
 1. runs **hs2p annotation sampling** (``tile_slide(masks=…)``, ``merged`` output mode) per
@@ -18,26 +18,23 @@ Persistence is not caching (ADR 0007): slide2vec writes the payloads, into soma'
 cache directory, while the key, the completeness decision, the missing set and the identity
 signatures stay here.
 
-Splits stay outside extraction. The ROI manifest records one row per sampled tile, with
-its parent ``slide_id``, paths, and ``region_x``/``region_y`` origin; callers project their
-existing splits through that explicit ancestry. The ROI manifest is a coordinate manifest,
-not a tile dump: no pixels are written to disk, and the grids are the only cached payloads.
+Splits stay outside extraction. Each sampled ROI is a private
+:class:`~soma.extraction.rois.RoiEntry` (its parent slide, its level-0 origin, its stored
+mask crop); callers see the ROI ids and their parent sample, and derive the ROI cohort
+from it (:meth:`soma.data.Cohort.derived`). No pixels are written to disk: the grids and
+the mask crops are the only cached payloads.
 """
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
 from collections import defaultdict
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from slide2vec import DenseOptions, ExecutionOptions, Model, PreprocessingConfig, SlideRegions
 
-from soma.atomic_io import atomic_write_text
 from soma.cache import (
     dense_extraction_geometry,
     record_feature_dim,
@@ -48,13 +45,12 @@ from soma.cache import (
     roi_sampling_signature,
 )
 from soma.config import CacheOptions, EncoderLeaf
+from soma.data.manifests import AnnotationManifest, ImageManifest
 from soma.dense import CachedGridSource, normalize_hw
 from soma.encoders.validation import resolve_filter_config
+from soma.extraction.rois import RoiEntry
 from soma.slide2vec_adapter import execution_options
 from soma.spacing import resolve_effective_spacing_um
-
-if TYPE_CHECKING:
-    from soma.data._legacy import LegacyRecord, LegacySamples
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +69,8 @@ def effective_spacing_um(
 
 
 def sample_slide_rois(
-    dataset: "LegacySamples",
+    images: ImageManifest,
+    annotations: AnnotationManifest,
     *,
     preprocessing: PreprocessingConfig,
     spacing_policy: str = "strict",
@@ -85,7 +82,7 @@ def sample_slide_rois(
     slide's effective spacing), ``preprocessing.masks`` and ``preprocessing.filter`` (its
     contour-area threshold and pixel QC; unset resolves, as the roi_sampling key does, to
     ``ref_tile_size`` at the tile size and ``a_t=0``, keeping every annotated component).
-    ``sample_ids`` restricts sampling to that subset of the manifest's slides (manifest
+    ``sample_ids`` restricts sampling to that subset of ``images``' slides (manifest
     order preserved) — the roi_sampling cache's partial-miss path samples only the
     missing slides without touching the hits. ``None`` (the default) samples every slide.
     """
@@ -105,15 +102,17 @@ def sample_slide_rois(
     wanted: set[str] | None = None
     if sample_ids is not None:
         wanted = {str(sample_id) for sample_id in sample_ids}
-        unknown = sorted(wanted - set(dataset.samples))
+        unknown = sorted(wanted - set(images.sample_ids))
         if unknown:
             raise ValueError(f"sample_ids not in the slide manifest: {unknown}")
 
     coords_by_slide: dict[str, list[tuple[int, int]]] = {}
-    for sid, record in dataset.samples.items():
+    for record in images:
+        sid = record.sample_id
         if wanted is not None and sid not in wanted:
             continue
-        if record.label_mask_path is None:
+        label_mask_path = annotations[sid].label_mask_path if sid in annotations else None
+        if label_mask_path is None:
             raise ValueError(
                 f"slide '{sid}' has no label_mask_path; a slide-manifest row needs one."
             )
@@ -129,7 +128,7 @@ def sample_slide_rois(
             SlideSpec(
                 sample_id=sid,
                 image_path=record.image_path,
-                mask_path=record.label_mask_path,
+                mask_path=label_mask_path,
                 spacing_at_level_0=record.spacing_at_level_0,
             ),
             tiling=tiling,
@@ -144,66 +143,8 @@ def sample_slide_rois(
     return coords_by_slide
 
 
-def build_roi_dataset(
-    dataset: "LegacySamples",
-    coords_by_slide: dict[str, list[tuple[int, int]]],
-    *,
-    out_dir: Path,
-    mask_crop_dirs: Mapping[str, Path] | None = None,
-) -> Path:
-    """Persist the deterministic effective ROI dataset without depending on splits.
-
-    ``mask_crop_dirs`` gives each slide's mask crop directory; each ROI's
-    ``label_mask_crop_path`` is then ``<dir>/<x>_<y>.png`` there (left empty without it).
-    """
-    from soma.cache._types import mask_crop_name
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = out_dir / "dataset.csv"
-    rows: list[dict] = []
-    for slide_id in dataset.sample_ids:
-        record = dataset.samples[slide_id]
-        for x, y in coords_by_slide.get(slide_id, []):
-            crop_path = (
-                ""
-                if mask_crop_dirs is None
-                else str(Path(mask_crop_dirs[slide_id]) / mask_crop_name(x, y))
-            )
-            rows.append(
-                {
-                    "sample_id": f"{slide_id}__x{x}_y{y}",
-                    "slide_id": slide_id,
-                    "image_path": str(record.image_path),
-                    "mask_path": ("" if record.mask_path is None else str(record.mask_path)),
-                    "label_mask_path": str(record.label_mask_path),
-                    "patient_id": ("" if record.patient_id is None else record.patient_id),
-                    "spacing_at_level_0": record.spacing_at_level_0,
-                    "region_x": int(x),
-                    "region_y": int(y),
-                    "label_mask_crop_path": crop_path,
-                }
-            )
-    _write_csv(
-        manifest_path,
-        [
-            "sample_id",
-            "slide_id",
-            "image_path",
-            "mask_path",
-            "label_mask_path",
-            "patient_id",
-            "spacing_at_level_0",
-            "region_x",
-            "region_y",
-            "label_mask_crop_path",
-        ],
-        rows,
-    )
-    return manifest_path
-
-
 def write_roi_mask_crops(
-    records: Sequence["LegacyRecord"],
+    records: Sequence[RoiEntry],
     *,
     spacing_um_by_sample_id: Mapping[str, float],
     preprocessing: PreprocessingConfig,
@@ -224,13 +165,12 @@ def write_roi_mask_crops(
     height, width = normalize_hw(int(tiling.requested_tile_size_px), name="tile_size_px")
     by_slide: dict[tuple, list] = defaultdict(list)
     for record in records:
-        if record.region is None or record.label_mask_crop_path is None:
+        if record.label_mask_crop_path is None:
             raise ValueError(
-                f"ROI '{record.sample_id}' needs a region and a label_mask_crop_path to "
-                "write its mask crop."
+                f"ROI '{record.sample_id}' needs a label_mask_crop_path to write its mask crop."
             )
         by_slide[
-            (str(record.label_mask_path), str(record.image_path), record.spacing_at_level_0)
+            (str(record.label_mask_path), str(record.slide.image_path), record.slide.spacing_at_level_0)
         ].append(record)
     for (label_mask_path, image_path, spacing_at_level_0), slide_records in by_slide.items():
         try:
@@ -257,27 +197,17 @@ def write_roi_mask_crops(
             raise ValueError(f"annotation raster '{label_mask_path}': {error}") from error
 
 
-def _write_csv(path: Path, fieldnames: list[str], rows: list[dict]) -> None:
-    # Launches that split one run's folds all rewrite this file at startup while
-    # siblings read it, so it must never be visible half-written.
-    buffer = io.StringIO(newline="")
-    writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-    writer.writeheader()
-    writer.writerows(rows)
-    atomic_write_text(path, buffer.getvalue(), newline="")
-
-
 class _SlideRegionExtractor:
     """Encode annotation-sampled ROIs into cached dense grids (slide-manifest segmentation).
 
-    Reads the ROI coordinate manifest (built by :func:`build_roi_dataset`), groups ROIs by
-    slide, and asks slide2vec to encode each slide's regions into ``(d, gh, gw)`` grids;
+    Takes the ROIs (:class:`~soma.extraction.rois.RoiEntry`), groups them by slide, and
+    asks slide2vec to encode each slide's regions into ``(d, gh, gw)`` grids;
     persists each grid via soma's dense store and resolves/populates soma's dense cache.
     """
 
     def __init__(
         self,
-        roi_dataset: "LegacySamples",
+        rois: Sequence[RoiEntry],
         encoder: EncoderLeaf,
         *,
         preprocessing: PreprocessingConfig,
@@ -286,7 +216,8 @@ class _SlideRegionExtractor:
         execution: ExecutionOptions | None = None,
         cache: CacheOptions | None = None,
     ) -> None:
-        self._dataset = roi_dataset
+        self._rois = list(rois)
+        self._images = ImageManifest([roi.image for roi in self._rois])
         self._encoder = encoder
         self._preprocessing = preprocessing
         self._dense = dense
@@ -299,24 +230,10 @@ class _SlideRegionExtractor:
         """ROI id → its path inside ``dense_embeddings/``, as ``<slide_id>/<x>_<y>``.
 
         slide2vec namespaces ROI grids by their parent slide, so an ROI's on-disk address
-        is (slide, x, y) — all three read off the manifest row, never parsed back out of
-        the ROI id.
+        is (slide, x, y) — all three read off the ROI entry, never parsed back out of the
+        ROI id.
         """
-        stems: dict[str, str] = {}
-        for record in self._dataset.samples.values():
-            if record.region is None:
-                raise ValueError(
-                    f"ROI '{record.sample_id}' has no region; the ROI manifest must carry "
-                    "region_x/region_y."
-                )
-            if record.slide_id is None:
-                raise ValueError(
-                    f"ROI '{record.sample_id}' has no slide_id; the ROI manifest must carry "
-                    "the parent slide id (it is part of the grid's on-disk address)."
-                )
-            x, y = record.region
-            stems[record.sample_id] = f"{record.slide_id}/{int(x)}_{int(y)}"
-        return stems
+        return {roi.sample_id: f"{roi.slide_id}/{int(roi.region[0])}_{int(roi.region[1])}" for roi in self._rois}
 
     def run(self, feature_dir: str | Path) -> CachedGridSource:
         from slide2vec.encoders.registry import resolve_patch_size
@@ -351,7 +268,7 @@ class _SlideRegionExtractor:
             cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
             cache_resolution = resolve_dense_cache(
                 cache_root=cache_root,
-                dataset=self._dataset,
+                images=self._images,
                 tile_encoder_name=self._encoder.name,
                 patch_size=patch_size,
                 dense=self._dense,
@@ -389,21 +306,13 @@ class _SlideRegionExtractor:
         coords_by_slide: dict[str, list[tuple[int, int]]] = defaultdict(list)
         image_path_by_slide: dict[str, Path] = {}
         spacing_by_slide: dict[str, float | None] = {}
-        for record in self._dataset.samples.values():
-            if wanted is not None and record.sample_id not in wanted:
+        for roi in self._rois:
+            if wanted is not None and roi.sample_id not in wanted:
                 continue
-            slide_id = str(record.slide_id)
-            coords_by_slide[slide_id].append(record.region)
-            image_path_by_slide[slide_id] = record.image_path
-            if (
-                slide_id in spacing_by_slide
-                and spacing_by_slide[slide_id] != record.spacing_at_level_0
-            ):
-                raise ValueError(
-                    f"ROI rows for slide '{slide_id}' disagree on spacing_at_level_0: "
-                    f"{spacing_by_slide[slide_id]} vs {record.spacing_at_level_0}."
-                )
-            spacing_by_slide[slide_id] = record.spacing_at_level_0
+            slide_id = roi.slide_id
+            coords_by_slide[slide_id].append(roi.region)
+            image_path_by_slide[slide_id] = roi.slide.image_path
+            spacing_by_slide[slide_id] = roi.slide.spacing_at_level_0
 
         if not coords_by_slide:
             return CachedGridSource(out_root, payload_stems=payload_stems)
@@ -454,7 +363,7 @@ class _SlideRegionExtractor:
             )
             cache_resolution = record_sample_identity_signatures(
                 cache_resolution,
-                [record.sample_id for record in self._dataset.samples.values()],
+                [roi.sample_id for roi in self._rois],
                 validate_payloads=self._cache.validate_payloads,
             )
         return CachedGridSource(out_root, payload_stems=payload_stems)

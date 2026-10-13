@@ -38,7 +38,7 @@ from soma.cache import (
     resolve_cache_dtype,
 )
 from soma.config import CacheOptions, EncoderLeaf
-from soma.data._legacy import LegacySamples
+from soma.data.manifests import ImageManifest
 from soma.dense import (
     DENSE_IMAGE_PAYLOAD_SUBDIR,
     CachedGridSource,
@@ -97,7 +97,7 @@ class _DenseImageExtractor:
     """Encode tile images into dense ``(d, h, w)`` grids (the grid shape over pre-cropped tiles).
 
     Args:
-        dataset: LegacySamples whose ``image_path`` fields point to tile images. One
+        images: The image manifest whose ``image_path`` fields point to tile images. One
             extraction run must contain either raster images or spacing-readable
             pyramidal images, not a mixture; split mixed manifests into separate runs.
         encoder: The encoder leaf. For encoders that recommend ``dynamic_img_size=False``
@@ -112,7 +112,7 @@ class _DenseImageExtractor:
 
     def __init__(
         self,
-        dataset: LegacySamples,
+        images: ImageManifest,
         encoder: EncoderLeaf,
         *,
         dense: DenseOptions,
@@ -123,7 +123,7 @@ class _DenseImageExtractor:
             raise ValueError(
                 f"unsupported pad_mode {dense.pad_mode!r}; expected one of {sorted(_PAD_MODES)}"
             )
-        self._dataset = dataset
+        self._images = images
         self._encoder = encoder
         self._options = image_options(dense)
         self._target_size = normalize_hw(dense.target_size, name="target_size")
@@ -139,8 +139,8 @@ class _DenseImageExtractor:
 
         Resolved with **no side effects**: it loads no encoder (the key needs only the
         static ``patch_size`` slide2vec exposes as registry metadata — the #165
-        check-before-load constant), scans no dataset (the dense key is
-        dataset-independent), and creates no directories. Returns ``None`` when caching
+        check-before-load constant), scans no manifest (the dense key is
+        manifest-independent), and creates no directories. Returns ``None`` when caching
         is disabled.
 
         Recomputes the *same* key ``run()`` resolves through ``resolve_dense_cache`` —
@@ -202,7 +202,7 @@ class _DenseImageExtractor:
             cache_root = resolve_cache_root(self._cache, feature_dir=feature_dir)
             cache_resolution = resolve_dense_cache(
                 cache_root=cache_root,
-                dataset=self._dataset,
+                images=self._images,
                 tile_encoder_name=self._encoder.name,
                 patch_size=patch_size,
                 dense=self._options,
@@ -223,7 +223,7 @@ class _DenseImageExtractor:
             # slide2vec appends its own payload subdir, so it is handed the cache dir.
             out_root = cache_resolution.cache_dir
 
-        records = list(self._dataset.samples.values())
+        records = list(self._images)
         # Resume: encode only the images absent from the cache (the missing set comes from
         # the shared FeatureCacheResolution contract — no inline missing-logic). Present
         # grids are left untouched. Cache disabled ⇒ encode all.

@@ -36,7 +36,7 @@ Three invariants define this module:
 The adaptor is constructed **only when at least one stage is active**. With every section
 ``none`` the module is absent entirely and the model is structurally identical to a run
 that predates this module — soma's "omitted section = absent" convention, and the anchor
-for byte-identical legacy runs.
+for runs that stay byte-identical to those earlier ones.
 """
 
 from __future__ import annotations

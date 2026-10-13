@@ -43,10 +43,10 @@ from slide2vec import ExecutionOptions
 
 from soma.config import CacheOptions
 from tests.extraction_configs import extraction
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import ImageManifest
 
 
-def _make_dataset(tmp_path: Path, rows: list[dict[str, object]] | None = None) -> Dataset:
+def _make_dataset(tmp_path: Path, rows: list[dict[str, object]] | None = None) -> ImageManifest:
     csv_path = tmp_path / "dataset.csv"
     pd.DataFrame(
         rows
@@ -55,7 +55,7 @@ def _make_dataset(tmp_path: Path, rows: list[dict[str, object]] | None = None) -
             {"sample_id": "s1", "image_path": "/slides/s1.svs", "label": "tumor"},
         ]
     ).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return ImageManifest.from_csv(csv_path)
 
 
 def _write_sidecar(resolution: FeatureCacheResolution, sample_id: str) -> None:
@@ -110,7 +110,7 @@ def test_manifest_digest_stable_under_row_order(tmp_path: Path):
             "image_path": str(sample.image_path),
             "mask_path": None,
         }
-        for sample in dataset.samples.values()
+        for sample in dataset
     ]
     assert manifest_digest(rows) == manifest_digest(list(reversed(rows)))
 
@@ -190,7 +190,7 @@ def test_cache_validation_surfaces_payload_errors(tmp_path: Path, caplog):
     # First resolve: builds metadata, no payloads.
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -210,7 +210,7 @@ def test_cache_validation_surfaces_payload_errors(tmp_path: Path, caplog):
     caplog.set_level(logging.WARNING, logger="soma.cache.features")
     resumed = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -288,7 +288,7 @@ def test_probe_resolved_backends_uses_explicit_backend_without_probe(tmp_path: P
     dataset = _make_dataset(tmp_path)
     with patch("soma.cache.keys.resolve_backend") as resolve_backend:
         mapping = probe_resolved_backends(
-            dataset=dataset,
+            images=dataset,
             requested_backend="openslide",
         )
     assert mapping == {"s1": "openslide", "s2": "openslide"}
@@ -306,7 +306,7 @@ def test_probe_resolved_backends_uses_runtime_backend_probe_for_auto(tmp_path: P
 
     with patch("soma.cache.keys.resolve_backend", side_effect=_fake_resolve_backend) as resolve_backend:
         mapping = probe_resolved_backends(
-            dataset=dataset,
+            images=dataset,
             requested_backend="auto",
         )
 
@@ -327,7 +327,7 @@ def test_resolve_tiling_cache_records_backend_provenance(tmp_path: Path):
     }
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         preprocessing=extraction(0.5, 224),
         backend_provenance=provenance,
         requested_preprocessing={"backend": "auto", "requested_tile_size_px": None},
@@ -345,7 +345,7 @@ def test_write_tiling_cache_stub_points_to_shared_cache_paths(tmp_path: Path):
     cache_root = tmp_path / "tiling_cache"
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         preprocessing=extraction(0.5, 224),
         backend_provenance={
             "requested_backend": "openslide",
@@ -394,7 +394,7 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
     )
     resolution = resolve_tiling_cache(
         cache_root=tmp_path / "tiling_cache",
-        dataset=dataset,
+        images=dataset,
         preprocessing=extraction(0.5, 224),
         backend_provenance={
             "requested_backend": "openslide",
@@ -450,7 +450,7 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
 
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         preprocessing=preprocessing,
         backend_provenance=provenance,
     )
@@ -478,7 +478,7 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
     ):
         refreshed = resolve_tiling_cache(
             cache_root=cache_root,
-            dataset=dataset,
+            images=dataset,
             preprocessing=preprocessing,
             backend_provenance=provenance,
         )
@@ -500,7 +500,7 @@ def test_resolve_tile_cache_records_backend_provenance(tmp_path: Path):
     }
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224, tiling_fields={"backend": "auto"}),
         execution=ExecutionOptions(precision="fp16"),
@@ -519,7 +519,7 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
 
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -534,7 +534,7 @@ def test_resolve_feature_cache_treats_known_empty_samples_as_complete(tmp_path: 
 
     reused = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -549,7 +549,7 @@ def test_record_empty_sample_ids_records_sample_identity(tmp_path: Path):
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -646,7 +646,7 @@ def test_resolve_tile_cache_reuses_complete_store(tmp_path: Path):
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -660,7 +660,7 @@ def test_resolve_tile_cache_reuses_complete_store(tmp_path: Path):
 
     reused = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -674,7 +674,7 @@ def test_feature_cache_metadata_mutations_return_refreshed_resolution(tmp_path: 
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -704,7 +704,7 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -717,7 +717,7 @@ def test_resolve_tile_cache_marks_incomplete_store(tmp_path: Path):
 
     resumed = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -733,7 +733,7 @@ def test_non_dense_missing_sample_ids_ignores_sidecar(tmp_path: Path):
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -745,7 +745,7 @@ def test_non_dense_missing_sample_ids_ignores_sidecar(tmp_path: Path):
         sidecar_path.unlink()  # bare .pt, no sidecar
     reused = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -758,7 +758,7 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -772,7 +772,7 @@ def test_resolve_tile_cache_logs_partial_state_when_some_samples_exist(tmp_path:
     with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
         resolve_tile_cache(
             cache_root=cache_root,
-            dataset=dataset,
+            images=dataset,
             tile_encoder_name="virchow",
             preprocessing=extraction(0.5, 224),
             execution=ExecutionOptions(precision="fp16"),
@@ -792,7 +792,7 @@ def test_resolve_tile_cache_logs_missing_count_when_no_samples_exist(tmp_path: P
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -806,7 +806,7 @@ def test_resolve_tile_cache_logs_missing_count_when_no_samples_exist(tmp_path: P
     with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
         resolve_tile_cache(
             cache_root=cache_root,
-            dataset=dataset,
+            images=dataset,
             tile_encoder_name="virchow",
             preprocessing=extraction(0.5, 224),
             execution=ExecutionOptions(precision="fp16"),
@@ -818,17 +818,17 @@ def test_resolve_tile_cache_logs_missing_count_when_no_samples_exist(tmp_path: P
     assert any("first issue: missing feature for" in message for message in messages)
 
 
-def _resolve_virchow_tile_cache(cache_root: Path, dataset: Dataset) -> FeatureCacheResolution:
+def _resolve_virchow_tile_cache(cache_root: Path, dataset: ImageManifest) -> FeatureCacheResolution:
     return resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
     )
 
 
-def _resolve_tile_cache_messages(cache_root: Path, dataset: Dataset) -> list[str]:
+def _resolve_tile_cache_messages(cache_root: Path, dataset: ImageManifest) -> list[str]:
     with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
         _resolve_virchow_tile_cache(cache_root, dataset)
     return [str(call.args[0]) for call in emit_progress_log.call_args_list]
@@ -1002,7 +1002,7 @@ def test_resolve_tile_cache_logs_resolving_state(tmp_path: Path):
     with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
         resolve_tile_cache(
             cache_root=cache_root,
-            dataset=dataset,
+            images=dataset,
             tile_encoder_name="virchow",
             preprocessing=extraction(0.5, 224),
             execution=ExecutionOptions(precision="fp16"),
@@ -1017,7 +1017,7 @@ def test_resolve_tiling_cache_logs_resolving_state(tmp_path: Path):
     with patch("soma.cache.io.slide2vec_progress.emit_progress_log") as emit_progress_log:
         resolve_tiling_cache(
             cache_root=cache_root,
-            dataset=dataset,
+            images=dataset,
             preprocessing=extraction(0.5, 224),
             backend_provenance={
                 "requested_backend": "openslide",
@@ -1038,7 +1038,7 @@ def test_resolve_tile_cache_logs_validation_progress_for_large_dataset(tmp_path:
     cache_root = tmp_path / "feature_cache"
     resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -1047,7 +1047,7 @@ def test_resolve_tile_cache_logs_validation_progress_for_large_dataset(tmp_path:
     with patch("soma.cache.io.slide2vec_progress.get_progress_reporter", return_value=reporter):
         resolve_tile_cache(
             cache_root=cache_root,
-            dataset=dataset,
+            images=dataset,
             tile_encoder_name="virchow",
             preprocessing=extraction(0.5, 224),
             execution=ExecutionOptions(precision="fp16"),
@@ -1183,7 +1183,7 @@ def test_resolve_tiling_cache_logs_validation_progress_for_large_dataset(tmp_pat
         return_value=pd.DataFrame(rows),
     ):
         validation = _validate_tiling_cache_contents(
-            dataset=dataset,
+            images=dataset,
             process_list_path=process_list_path,
             artifacts_dir=artifacts_dir,
             previews_dir=previews_dir,
@@ -1206,7 +1206,7 @@ def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -1221,7 +1221,7 @@ def test_resolve_cache_fails_on_metadata_mismatch(tmp_path: Path):
     with pytest.raises(ValueError) as excinfo:
         resolve_tile_cache(
             cache_root=cache_root,
-            dataset=dataset,
+            images=dataset,
             tile_encoder_name="virchow",
             preprocessing=extraction(0.5, 224),
             execution=ExecutionOptions(precision="fp16"),
@@ -1243,7 +1243,7 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
     cache_root = tmp_path / "tiling_cache"
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         preprocessing=extraction(0.5, 224),
         backend_provenance={
             "requested_backend": "openslide",
@@ -1260,7 +1260,7 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
     with pytest.raises(ValueError) as excinfo:
         resolve_tiling_cache(
             cache_root=cache_root,
-            dataset=dataset,
+            images=dataset,
             preprocessing=extraction(0.5, 224),
             backend_provenance={
                 "requested_backend": "openslide",
@@ -1302,7 +1302,7 @@ def test_resolve_tiling_cache_reuses_shared_sample_across_datasets(tmp_path: Pat
     }
     resolution_a = resolve_tiling_cache(
         cache_root=cache_root,
-        dataset=dataset_a,
+        images=dataset_a,
         preprocessing=preprocessing,
         backend_provenance=provenance_a,
     )
@@ -1325,7 +1325,7 @@ def test_resolve_tiling_cache_reuses_shared_sample_across_datasets(tmp_path: Pat
 
     resolution_b = resolve_tiling_cache(
         cache_root=cache_root,
-        dataset=dataset_b,
+        images=dataset_b,
         preprocessing=preprocessing,
         backend_provenance={
             "requested_backend": "openslide",
@@ -1353,7 +1353,7 @@ def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_p
     preprocessing = extraction(0.5, 224)
     resolution_a = resolve_tiling_cache(
         cache_root=cache_root,
-        dataset=dataset_a,
+        images=dataset_a,
         preprocessing=preprocessing,
         backend_provenance={
             "requested_backend": "openslide",
@@ -1374,7 +1374,7 @@ def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_p
 
     resolution_b = resolve_tiling_cache(
         cache_root=cache_root,
-        dataset=dataset_b,
+        images=dataset_b,
         preprocessing=preprocessing,
         backend_provenance={
             "requested_backend": "openslide",
@@ -1463,7 +1463,7 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
     cache_root = tmp_path / "feature_cache"
     resolution = resolve_hierarchical_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224, requested_region_size_px=1344, region_tile_multiple=6),
         execution=ExecutionOptions(precision="fp16"),
@@ -1477,7 +1477,7 @@ def test_resolve_hierarchical_cache_reuses_complete_store(tmp_path: Path):
 
     reused = resolve_hierarchical_cache(
         cache_root=cache_root,
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224, requested_region_size_px=1344, region_tile_multiple=6),
         execution=ExecutionOptions(precision="fp16"),
@@ -1503,7 +1503,7 @@ def test_resolve_tile_cache_reuses_shared_sample_across_datasets(tmp_path: Path)
     )
     resolution_a = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset_a,
+        images=dataset_a,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -1516,7 +1516,7 @@ def test_resolve_tile_cache_reuses_shared_sample_across_datasets(tmp_path: Path)
 
     resolution_b = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset_b,
+        images=dataset_b,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -1539,7 +1539,7 @@ def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_pat
     )
     resolution_a = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset_a,
+        images=dataset_a,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),
@@ -1552,7 +1552,7 @@ def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_pat
 
     resolution_b = resolve_tile_cache(
         cache_root=cache_root,
-        dataset=dataset_b,
+        images=dataset_b,
         tile_encoder_name="virchow",
         preprocessing=extraction(0.5, 224),
         execution=ExecutionOptions(precision="fp16"),

@@ -557,7 +557,7 @@ def test_head_postprocess_emits_level0_peaks_above_min_score():
 
 
 def test_detection_manifest_loads_points_path(tmp_path):
-    from soma.data._legacy import legacy_samples_from_csv
+    from soma.data import AnnotationManifest, ImageManifest
 
     (tmp_path / "a.csv").write_text("x,y,class\n1,1,0\n")
     csv = tmp_path / "manifest.csv"
@@ -565,16 +565,16 @@ def test_detection_manifest_loads_points_path(tmp_path):
         "sample_id,image_path,points_path,spacing_at_level_0\n"
         f"s0,img0.jpg,{tmp_path / 'a.csv'},0.25\n"
     )
-    manifest = legacy_samples_from_csv(csv)
-    rec = manifest.samples["s0"]
-    assert rec.points_path == tmp_path / "a.csv"
-    assert rec.spacing_at_level_0 == pytest.approx(0.25)
+    assert AnnotationManifest.from_csv(csv)["s0"].points_path == tmp_path / "a.csv"
+    assert ImageManifest.from_csv(csv)["s0"].spacing_at_level_0 == pytest.approx(0.25)
 
 
 def test_detection_manifest_retains_tile_origin(tmp_path):
     # source_wsi/tile_x/tile_y are recognized columns; they must survive into metadata
     # for deferred WSI stitching rather than being silently dropped.
-    from soma.data._legacy import legacy_samples_from_csv
+    import pandas as pd
+
+    from soma.data import Cohort
 
     (tmp_path / "a.csv").write_text("x,y,class\n1,1,0\n")
     csv = tmp_path / "manifest.csv"
@@ -582,14 +582,16 @@ def test_detection_manifest_retains_tile_origin(tmp_path):
         "sample_id,image_path,points_path,source_wsi,tile_x,tile_y\n"
         f"s0,img0.jpg,{tmp_path / 'a.csv'},wsi0.tif,512,1024\n"
     )
-    rec = legacy_samples_from_csv(csv).samples["s0"]
+    rec = Cohort.from_frames(pd.read_csv(csv).assign(split="test")).record("s0")
     assert rec.metadata["source_wsi"] == "wsi0.tif"
     assert rec.metadata["tile_x"] == 512
     assert rec.metadata["tile_y"] == 1024
 
 
 def test_detection_manifest_reads_ignore_mask_path_as_typed_column(tmp_path):
-    from soma.data._legacy import legacy_samples_from_csv
+    import pandas as pd
+
+    from soma.data import AnnotationManifest, Cohort
 
     (tmp_path / "a.csv").write_text("x,y,class\n1,1,0\n")
     csv = tmp_path / "manifest.csv"
@@ -598,10 +600,11 @@ def test_detection_manifest_reads_ignore_mask_path_as_typed_column(tmp_path):
         f"s0,img0.jpg,{tmp_path / 'a.csv'},{tmp_path / 'm0.png'}\n"
         f"s1,img1.jpg,{tmp_path / 'a.csv'},\n"
     )
-    samples = legacy_samples_from_csv(csv).samples
-    assert samples["s0"].ignore_mask_path == tmp_path / "m0.png"
-    assert samples["s1"].ignore_mask_path is None
-    assert "ignore_mask_path" not in samples["s0"].metadata
+    annotations = AnnotationManifest.from_csv(csv)
+    assert annotations["s0"].ignore_mask_path == tmp_path / "m0.png"
+    assert annotations["s1"].ignore_mask_path is None
+    cohort = Cohort.from_frames(pd.read_csv(csv).assign(split="test"))
+    assert "ignore_mask_path" not in cohort.record("s0").metadata
 
 
 # --------------------------------------------------------------------------- #

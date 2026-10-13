@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 
 from soma.config import CohortConfig
-from soma.data import FoldSplit, SampleRecord
+from soma.data import Cohort, FoldSplit, SampleRecord
 
 
 @dataclass(frozen=True)
@@ -38,14 +38,14 @@ class DenseFoldPlan:
 
 def plan_dense_fold(
     *,
-    dataset,
+    samples: Cohort,
     fold_split: FoldSplit,
     cohort: CohortConfig,
     fold_label: str,
     logger: logging.Logger | None = None,
     holdout_test: bool = False,
 ) -> DenseFoldPlan:
-    """Select dense train, tune, and test records for one fold.
+    """Select dense train, tune, and test records of ``samples`` for one fold.
 
     ``holdout_test`` (from ``evaluation.holdout_test``) drops every declared test
     split from the plan so downstream coverage/geometry checks, loaders, inference,
@@ -53,10 +53,10 @@ def plan_dense_fold(
     *after* ``tune_is_test`` has resolved the tune records from the test split, so
     checkpoint selection and training are unaffected.
     """
-    train_records = [dataset.samples[sid] for sid in fold_split.train]
-    tune_records = [dataset.samples[sid] for sid in fold_split.tune]
+    train_records = [samples.record(sid) for sid in fold_split.train]
+    tune_records = [samples.record(sid) for sid in fold_split.tune]
     test_records_by_split = {
-        split_name: [dataset.samples[sid] for sid in ids]
+        split_name: [samples.record(sid) for sid in ids]
         for split_name, ids in fold_split.tests.items()
     }
     if not train_records:

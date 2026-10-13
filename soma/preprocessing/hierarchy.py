@@ -36,7 +36,7 @@ def derive_preprocessing_for_aggregator(
                 region_tile_multiple=resolved_region_tile_multiple,
             )
         raise ValueError(
-            "HIPT aggregator requires 'tile_multiple' or legacy 'region_size' and "
+            "HIPT aggregator requires 'tile_multiple' or both 'region_size' and "
             "'patch_size' params"
         )
 

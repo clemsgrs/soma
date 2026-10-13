@@ -334,7 +334,7 @@ class SegmentationHead(TaskHead):
         The single reduce+filter path shared by ``compute_metrics`` and the
         streaming evaluator, so a batched (concatenated-logits) and a streamed
         (concatenated-counts) evaluation cannot drift. ``counts`` keeps the
-        per-image axis so legacy ``mean_dice`` remains per-image macro while
+        per-image axis so ``mean_dice`` remains the per-image macro while
         ``dataset_global_mean_dice`` can sum the same rows before reduction.
         """
         per_image_metrics = reduce_dice_iou(counts, num_classes=self.num_classes)

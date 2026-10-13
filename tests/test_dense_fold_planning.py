@@ -6,20 +6,17 @@ from types import SimpleNamespace
 import pytest
 
 from soma.config import CohortConfig
-from soma.data import FoldSplit
-from soma.data._legacy import LegacyRecord
+from soma.data import FoldSplit, SampleRecord
 from soma.training.fold_planning import plan_dense_fold
 
 
-def _record(sample_id: str) -> LegacyRecord:
-    return LegacyRecord(sample_id=sample_id, image_path=f"{sample_id}.png", )
-
-
 def _dataset(*sample_ids: str):
-    return SimpleNamespace(samples={sample_id: _record(sample_id) for sample_id in sample_ids})
+    """The cohort surface fold planning reads: one record per sample id."""
+    records = {sample_id: SampleRecord(sample_id=sample_id, targets={}) for sample_id in sample_ids}
+    return SimpleNamespace(record=records.__getitem__)
 
 
-def _ids(records: list[LegacyRecord]) -> list[str]:
+def _ids(records: list[SampleRecord]) -> list[str]:
     return [record.sample_id for record in records]
 
 
@@ -32,7 +29,7 @@ def test_plan_dense_fold_selects_train_tune_and_test_records():
     )
 
     plan = plan_dense_fold(
-        dataset=dataset,
+        samples=dataset,
         fold_split=fold_split,
         cohort=CohortConfig(records="d.csv", splits="s.csv"),
         fold_label="Run",
@@ -55,7 +52,7 @@ def test_plan_dense_fold_holdout_test_drops_test_splits():
     )
 
     plan = plan_dense_fold(
-        dataset=dataset,
+        samples=dataset,
         fold_split=fold_split,
         cohort=CohortConfig(records="d.csv", splits="s.csv"),
         fold_label="Run",
@@ -80,7 +77,7 @@ def test_plan_dense_fold_holdout_test_keeps_tune_is_test_resolution():
     )
 
     plan = plan_dense_fold(
-        dataset=dataset,
+        samples=dataset,
         fold_split=fold_split,
         cohort=CohortConfig(records="d.csv", splits="s.csv", tune_is_test=True),
         fold_label="Run",
@@ -100,7 +97,7 @@ def test_plan_dense_fold_uses_single_test_split_as_tune_when_tune_is_test():
     )
 
     plan = plan_dense_fold(
-        dataset=dataset,
+        samples=dataset,
         fold_split=fold_split,
         cohort=CohortConfig(records="d.csv", splits="s.csv", tune_is_test=True),
         fold_label="Run",
@@ -123,7 +120,7 @@ def test_plan_dense_fold_rejects_tune_is_test_with_multiple_test_splits():
 
     with pytest.raises(ValueError, match="requires exactly one test split"):
         plan_dense_fold(
-            dataset=dataset,
+            samples=dataset,
             fold_split=fold_split,
             cohort=CohortConfig(records="d.csv", splits="s.csv", tune_is_test=True),
             fold_label="Run",
@@ -139,7 +136,7 @@ def test_plan_dense_fold_uses_train_as_tune_when_missing_tune_is_allowed():
     )
 
     plan = plan_dense_fold(
-        dataset=dataset,
+        samples=dataset,
         fold_split=fold_split,
         cohort=CohortConfig(records="d.csv", splits="s.csv", allow_missing_tune=True),
         fold_label="Run",
@@ -158,7 +155,7 @@ def test_plan_dense_fold_warns_when_missing_tune_uses_train(
     caplog.set_level(logging.WARNING, logger=logger.name)
 
     plan_dense_fold(
-        dataset=dataset,
+        samples=dataset,
         fold_split=fold_split,
         cohort=CohortConfig(records="d.csv", splits="s.csv", allow_missing_tune=True),
         fold_label="Run",
@@ -178,7 +175,7 @@ def test_plan_dense_fold_rejects_missing_tune_by_default():
 
     with pytest.raises(ValueError, match="no tuning samples"):
         plan_dense_fold(
-            dataset=dataset,
+            samples=dataset,
             fold_split=fold_split,
             cohort=CohortConfig(records="d.csv", splits="s.csv"),
             fold_label="Run",
@@ -191,7 +188,7 @@ def test_plan_dense_fold_rejects_empty_train_split():
 
     with pytest.raises(ValueError, match="no training samples"):
         plan_dense_fold(
-            dataset=dataset,
+            samples=dataset,
             fold_split=fold_split,
             cohort=CohortConfig(records="d.csv", splits="s.csv"),
             fold_label="Run",
@@ -204,7 +201,7 @@ def test_plan_dense_fold_rejects_empty_test_split():
 
     with pytest.raises(ValueError, match="no samples in split 'test'"):
         plan_dense_fold(
-            dataset=dataset,
+            samples=dataset,
             fold_split=fold_split,
             cohort=CohortConfig(records="d.csv", splits="s.csv"),
             fold_label="Run",
@@ -216,7 +213,7 @@ def test_plan_dense_fold_with_a_tune_split_is_not_a_train_fallback():
     fold_split = FoldSplit(train=("train",), tune=("tune",), tests={"test": ("test",)})
 
     plan = plan_dense_fold(
-        dataset=dataset,
+        samples=dataset,
         fold_split=fold_split,
         cohort=CohortConfig(records="d.csv", splits="s.csv", allow_missing_tune=True),
         fold_label="Run",

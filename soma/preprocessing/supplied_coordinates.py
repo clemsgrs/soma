@@ -1,8 +1,8 @@
 """User-supplied tile coordinates: a manifest's ``coordinates_path`` in place of soma's tiling.
 
-A slide-level ``LegacySamples`` may name, per slide, an hs2p tiling artifact — the
+A slide-level :class:`~soma.data.ImageManifest` may name, per slide, an hs2p tiling artifact — the
 ``<name>.coordinates.npz`` + ``<name>.coordinates.meta.json`` pair that
-``hs2p.artifacts.save_tiling_result`` writes. soma then skips hs2p tiling for the dataset:
+``hs2p.artifacts.save_tiling_result`` writes. soma then skips hs2p tiling for the slides:
 it copies each artifact into the run's tiling directory, checks it against its manifest
 row and the run's preprocessing, and lists it there, unchanged, for slide2vec to embed.
 
@@ -26,7 +26,7 @@ from hs2p.tiling.io import normalize_artifact_path
 from slide2vec import PreprocessingConfig
 
 from soma.config import is_annotation_sampling
-from soma.data._legacy import LegacySamples, LegacyRecord
+from soma.data.manifests import ImageEntry, ImageManifest
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ def _check_supported(preprocessing: PreprocessingConfig) -> None:
         )
 
 
-def _snapshot(record: LegacyRecord, snapshot_dir: Path) -> tuple[Path, Path]:
+def _snapshot(record: ImageEntry, snapshot_dir: Path) -> tuple[Path, Path]:
     """Copy ``record``'s artifact into the run, so the run keeps the tiles it checked.
 
     A run that already holds a snapshot (a resume, which reloads the original manifest)
@@ -102,7 +102,7 @@ def _snapshot(record: LegacyRecord, snapshot_dir: Path) -> tuple[Path, Path]:
     source = Path(record.coordinates_path)
     npz_copy = snapshot_dir / f"{record.sample_id}{_NPZ_SUFFIX}"
     meta_copy = snapshot_dir / f"{record.sample_id}{_META_SUFFIX}"
-    if source.resolve() == npz_copy.resolve():  # the dataset already names the snapshot
+    if source.resolve() == npz_copy.resolve():  # the manifest already names the snapshot
         return npz_copy.resolve(), meta_copy.resolve()
     if npz_copy.is_file() and meta_copy.is_file():
         source_present = source.is_file() and coordinates_meta_path(source).is_file()
@@ -132,7 +132,7 @@ def _snapshot(record: LegacyRecord, snapshot_dir: Path) -> tuple[Path, Path]:
 
 
 def _load_checked(
-    record: LegacyRecord,
+    record: ImageEntry,
     preprocessing: PreprocessingConfig,
     *,
     npz_path: Path,
@@ -192,22 +192,22 @@ def _load_checked(
 
 
 def stage_supplied_coordinates(
-    dataset: LegacySamples,
+    images: ImageManifest,
     tiling_dir: Path,
     preprocessing: PreprocessingConfig,
-) -> LegacySamples:
+) -> ImageManifest:
     """Copy each slide's supplied artifact into ``tiling_dir`` and list it there.
 
     It is the tiling directory hs2p would have written, so slide2vec embeds from it
     unchanged. The copies, not the user's files, are checked and listed, and the
-    returned dataset names them: its cache identity is that of the tiles this run
+    returned manifest names them: its cache identity is that of the tiles this run
     embeds, and replacing an artifact later leaves the run's tiles (and the heatmaps
     drawn over them) intact.
     """
     _check_supported(preprocessing)
     rows = []
     snapshots: dict[str, Path] = {}
-    for record in dataset.samples.values():
+    for record in images:
         npz_path, meta_path = _snapshot(record, tiling_dir / "coordinates")
         snapshots[record.sample_id] = npz_path
         result = _load_checked(record, preprocessing, npz_path=npz_path, meta_path=meta_path)
@@ -236,4 +236,4 @@ def stage_supplied_coordinates(
         )
     tiling_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(rows).to_csv(tiling_dir / "process_list.csv", index=False)
-    return dataset.with_coordinates(snapshots)
+    return images.with_coordinates(snapshots)

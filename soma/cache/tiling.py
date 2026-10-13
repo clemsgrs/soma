@@ -36,7 +36,7 @@ from soma.cache.keys import (
     preprocessing_signature,
 )
 from slide2vec import PreprocessingConfig
-from soma.data._legacy import LegacySamples
+from soma.data.manifests import ImageManifest
 
 
 def _optional_path(value: Any) -> Path | None:
@@ -120,7 +120,7 @@ def _write_tiling_stub_marker(*, tiling_dir: Path, cache_dir: Path) -> None:
 
 def _validate_tiling_cache_contents(
     *,
-    dataset: LegacySamples,
+    images: ImageManifest,
     process_list_path: Path,
     artifacts_dir: Path,
     previews_dir: Path,
@@ -155,7 +155,7 @@ def _validate_tiling_cache_contents(
             checked += 1
             progress.update(checked)
             sample_id = str(sample_id)
-            sample = dataset.samples[sample_id]
+            sample = images[sample_id]
             row = rows_by_stem.get(str(cache_stem_by_id[sample_id]))
             if row is None:
                 row = rows_by_stem.get(sample_id)
@@ -218,7 +218,7 @@ def _validate_tiling_cache_contents(
 def resolve_tiling_cache(
     *,
     cache_root: Path,
-    dataset: LegacySamples,
+    images: ImageManifest,
     preprocessing: PreprocessingConfig,
     backend_provenance: dict[str, Any],
     encoder_name: str | None = None,
@@ -231,9 +231,9 @@ def resolve_tiling_cache(
         encoder_name=encoder_name,
         requested_preprocessing=requested_preprocessing,
     )
-    cache_ids = tuple(sorted(dataset.sample_ids))
+    cache_ids = tuple(sorted(images.sample_ids))
     cache_stem_by_id = _sample_stems_for_tiling(
-        dataset=dataset,
+        images=images,
         cache_key=str(metadata["cache_key"]),
     )
     cache_dir = _tiling_cache_dir(cache_root, str(metadata["cache_key"]))
@@ -264,7 +264,7 @@ def resolve_tiling_cache(
         if mismatch_message:
             raise ValueError(mismatch_message)
         validation = _validate_tiling_cache_contents(
-            dataset=dataset,
+            images=images,
             process_list_path=process_list_path,
             artifacts_dir=artifacts_dir,
             previews_dir=previews_dir,
@@ -294,7 +294,7 @@ def resolve_tiling_cache(
             cache_stem_by_id=cache_stem_by_id,
         )
 
-    _write_manifest(manifest_path, dataset_manifest_rows(dataset))
+    _write_manifest(manifest_path, dataset_manifest_rows(images))
     _write_metadata(metadata_path, metadata)
     _emit_cache_state_log(
         cache_label="tiling",

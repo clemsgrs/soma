@@ -20,7 +20,7 @@ from soma.data import CachedSetSource
 from soma.plan import check
 from tests.experiment_configs import experiment
 from soma.data import SampleRecord
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import Cohort
 from soma.evaluation import Predictions
 from soma.evaluation.metrics import compute_survival_metrics
 from soma.pipeline import Pipeline, PipelineResult
@@ -367,10 +367,12 @@ class TestCoxConfigGuards:
 # ---------------------------------------------------------------------------
 
 
-def _dataset(tmp_path: Path, rows: list[dict]) -> Dataset:
-    path = tmp_path / "dataset.csv"
-    pd.DataFrame(rows).to_csv(path, index=False)
-    return legacy_samples_from_csv(path)
+def _dataset(tmp_path: Path, rows: list[dict]) -> Cohort:
+    """The survival records of ``rows``: their ``time`` / ``event`` / ``bin`` columns as
+    targets (a cohort read straight from the table)."""
+    frame = pd.DataFrame(rows)
+    targets = [key for key in ("time", "event", "bin") if key in frame.columns]
+    return Cohort.from_frames(frame.assign(split="test"), targets=targets)
 
 
 class TestValidateCoxDataset:

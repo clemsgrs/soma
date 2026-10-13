@@ -44,14 +44,8 @@ from soma.evaluation import (
     predict,
 )
 from soma.dense import CachedGridSource, DenseSourceProvenance
-from soma.extraction import (
-    ExtractionArtifacts,
-    FeatureExtractionResult,
-    FeatureExtractor,
-    FeatureProvenance,
-    FeatureSource,
-    PooledFeatureSource,
-)
+from soma import extract
+from soma.extraction import FeatureSource, PooledFeatureSource
 from soma.learn import (
     Budget,
     Checkpoint,
@@ -119,10 +113,8 @@ __all__ = [
     "from_directory",
     "group_by",
     "require_coverage",
-    "FeatureExtractor",
-    "ExtractionArtifacts",
-    "FeatureExtractionResult",
-    "FeatureProvenance",
+    # Features enter through soma.extract (ADR 0021)
+    "extract",
     "FeatureSource",
     "PooledFeatureSource",
     "CachedSetSource",

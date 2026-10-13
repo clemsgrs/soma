@@ -21,7 +21,7 @@ from slide2vec import DenseImageOptions, DenseOptions, ExecutionOptions, Preproc
 from slide2vec.encoders.registry import encoder_registry
 
 from soma.cache._types import SCHEMA_VERSION, _FEATURE_TYPE_TO_RANK
-from soma.data._legacy import LegacySamples
+from soma.data.manifests import AnnotationManifest, ImageManifest
 from soma.encoders.validation import resolve_encoder_precision
 from soma.preprocessing.supplied_coordinates import coordinates_digest
 
@@ -70,10 +70,11 @@ def _canonical_json(payload: Any) -> str:
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
-def dataset_manifest_rows(dataset: LegacySamples) -> list[dict[str, object]]:
+def dataset_manifest_rows(images: ImageManifest) -> list[dict[str, object]]:
+    """The cache's ``manifest.csv`` rows: each sample's image fields, by sorted id."""
     rows: list[dict[str, object]] = []
-    for sample_id in sorted(dataset.sample_ids):
-        sample = dataset.samples[sample_id]
+    for sample_id in sorted(images.sample_ids):
+        sample = images[sample_id]
         rows.append(
             {
                 "sample_id": sample.sample_id,
@@ -185,18 +186,18 @@ def preprocessing_backend_provenance(
 
 def probe_resolved_backends(
     *,
-    dataset: LegacySamples,
+    images: ImageManifest,
     requested_backend: str,
 ) -> dict[str, str]:
     requested_backend = str(requested_backend)
     if requested_backend != "auto":
         return {
             sample_id: requested_backend
-            for sample_id in sorted(dataset.sample_ids)
+            for sample_id in sorted(images.sample_ids)
         }
     mapping: dict[str, str] = {}
-    for sample_id in sorted(dataset.sample_ids):
-        sample = dataset.samples[sample_id]
+    for sample_id in sorted(images.sample_ids):
+        sample = images[sample_id]
         selection = resolve_backend(
             requested_backend,
             wsi_path=sample.image_path,
@@ -502,25 +503,29 @@ def _file_size_and_mtime(path: Path | str | None) -> tuple[int | None, int | Non
     return int(stat.st_size), int(stat.st_mtime_ns)
 
 
-def _sample_stems_for_roi_sampling(dataset: Any) -> dict[str, str]:
-    """Duck-typed over ``samples``/``sample_ids`` so :class:`LegacySamples` fits."""
+def _sample_stems_for_roi_sampling(
+    images: ImageManifest, annotations: AnnotationManifest
+) -> dict[str, str]:
+    """Each slide's ``roi_sampling`` stem: its image row and its annotation raster."""
     stems: dict[str, str] = {}
-    for sample_id, sample in sorted(dataset.samples.items()):
-        size_bytes, mtime_ns = _file_size_and_mtime(sample.label_mask_path)
+    for sample_id in sorted(images.sample_ids):
+        image = images[sample_id]
+        label_mask_path = annotations[sample_id].label_mask_path if sample_id in annotations else None
+        size_bytes, mtime_ns = _file_size_and_mtime(label_mask_path)
         stems[sample_id] = roi_sampling_identity_signature(
-            sample_id=sample.sample_id,
-            image_path=sample.image_path,
-            label_mask_path=sample.label_mask_path,
+            sample_id=image.sample_id,
+            image_path=image.image_path,
+            label_mask_path=label_mask_path,
             label_mask_size_bytes=size_bytes,
             label_mask_mtime_ns=mtime_ns,
-            spacing_at_level_0=sample.spacing_at_level_0,
+            spacing_at_level_0=image.spacing_at_level_0,
         )
     return stems
 
 
-def _sample_identity_payload(dataset: LegacySamples) -> dict[str, str]:
+def _sample_identity_payload(images: ImageManifest) -> dict[str, str]:
     return {
-        sample_id: sample_identity_signature(
+        sample.sample_id: sample_identity_signature(
             sample_id=sample.sample_id,
             image_path=sample.image_path,
             mask_path=sample.mask_path,
@@ -531,24 +536,24 @@ def _sample_identity_payload(dataset: LegacySamples) -> dict[str, str]:
                 else None
             ),
         )
-        for sample_id, sample in dataset.samples.items()
+        for sample in images
     }
 
 
 def _sample_stems_for_kind(
     *,
-    dataset: LegacySamples,
+    images: ImageManifest,
     cache_kind: str,
     static_identity_payload: dict[str, Any],
 ) -> dict[str, str]:
-    signature_by_sample_id = _sample_identity_payload(dataset)
+    signature_by_sample_id = _sample_identity_payload(images)
     return {
         sample_id: _sample_stem_for_kind(
             sample_signature=signature_by_sample_id[sample_id],
             cache_kind=cache_kind,
             static_identity_payload=static_identity_payload,
         )
-        for sample_id in sorted(dataset.sample_ids)
+        for sample_id in sorted(images.sample_ids)
     }
 
 
@@ -570,14 +575,14 @@ def _sample_stem_for_kind(
 
 def _patient_stems_for_kind(
     *,
-    dataset: LegacySamples,
+    images: ImageManifest,
     cache_kind: str,
     static_identity_payload: dict[str, Any],
 ) -> dict[str, str]:
-    signature_by_sample_id = _sample_identity_payload(dataset)
+    signature_by_sample_id = _sample_identity_payload(images)
     sample_ids_by_patient: dict[str, list[str]] = {}
-    for sample_id in sorted(dataset.sample_ids):
-        record = dataset.samples[sample_id]
+    for sample_id in sorted(images.sample_ids):
+        record = images[sample_id]
         if record.patient_id is None:
             continue
         sample_ids_by_patient.setdefault(str(record.patient_id), []).append(sample_id)
@@ -600,10 +605,10 @@ def _patient_stems_for_kind(
 
 def _sample_stems_for_tiling(
     *,
-    dataset: LegacySamples,
+    images: ImageManifest,
     cache_key: str,
 ) -> dict[str, str]:
-    signature_by_sample_id = _sample_identity_payload(dataset)
+    signature_by_sample_id = _sample_identity_payload(images)
     return {
         sample_id: _sample_cache_stem(
             sample_signature=signature_by_sample_id[sample_id],
@@ -613,5 +618,5 @@ def _sample_stems_for_tiling(
                 "tiling_cache_key": str(cache_key),
             },
         )
-        for sample_id in sorted(dataset.sample_ids)
+        for sample_id in sorted(images.sample_ids)
     }

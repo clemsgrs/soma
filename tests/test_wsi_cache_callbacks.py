@@ -12,7 +12,7 @@ from soma import cache as cache_mod
 from soma.config import CacheOptions, EncoderLeaf
 from soma.encoders.validation import resolve_preprocessing_config
 from tests.extraction_configs import extraction
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import ImageManifest
 from soma.extraction import orchestration
 from soma.extraction.extractor import _PooledFeatureExtractor
 from soma.slide2vec_adapter import LoadedTiling
@@ -70,7 +70,7 @@ def population(tmp_path, request):
             for sid in ids
         ]
     ).to_csv(csv, index=False)
-    dataset = legacy_samples_from_csv(csv)
+    dataset = ImageManifest.from_csv(csv)
     preprocessing = resolve_preprocessing_config(
         extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
         encoder_name=_TEST_TILE,
@@ -86,7 +86,7 @@ def population(tmp_path, request):
     def resolve():
         return getattr(cache_mod, f"resolve_{kind}_cache")(
             cache_root=tmp_path / "cache",
-            dataset=dataset,
+            images=dataset,
             tile_encoder_name=_TEST_TILE,
             preprocessing=preprocessing,
             execution=extractor._execution,

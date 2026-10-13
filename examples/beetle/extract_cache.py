@@ -9,10 +9,9 @@ import json
 from pathlib import Path
 from typing import Sequence
 
-from soma.data import require_coverage
-from soma import FeatureExtractor
+from soma import extract
 from soma.config import ExperimentConfig
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import AnnotationManifest, ImageManifest, require_coverage
 from soma.pipeline.build import extraction_unit
 from soma.plan import check, learner_shape
 from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
@@ -38,33 +37,32 @@ def extract_verified_cache(
 
     config = ExperimentConfig.from_yaml(config_path)
     check(config)
-    dataset = legacy_samples_from_csv(config.cohort.records)
+    if learner_shape(config) != "grid":
+        raise ValueError("BEETLE extraction is a grid run (a decoder over ROI token grids).")
+    images = ImageManifest.from_csv(config.cohort.records)
     features = config.features
     if features.encoder is None:
         raise ValueError("BEETLE extraction requires a single encoder configuration.")
     cache = features.cache
     if cache.root_dir is None:
         cache = replace(cache, root_dir=Path(config.run.output_dir) / "feature_cache")
-    extraction = FeatureExtractor(
-        dataset,
-        features.encoder,
-        resolve_pipeline_preprocessing(config),
-        shape=learner_shape(config),
+    store = extract(
+        images,
+        annotations=AnnotationManifest.from_csv(config.cohort.records),
+        encoder=features.encoder,
+        extraction=resolve_pipeline_preprocessing(config),
         unit=extraction_unit(config),
         dense=resolve_pipeline_dense(config),
         spacing_policy=features.spacing_policy,
         execution=features.execution,
         cache=cache,
-        output_root=work_dir,
-    ).extract()
-    store = extraction.source
-    roi_ids = list(extraction.dataset.sample_ids)
-    require_coverage(store, roi_ids)
-    slides_with_rois = sorted(
-        {str(record.slide_id) for record in extraction.dataset.samples.values()}
+        output_dir=work_dir,
     )
-    parent_ids = list(dataset.sample_ids)
-    zero_roi_slides = list(extraction.provenance.zero_roi_sample_ids)
+    roi_ids = list(store.sample_ids)
+    require_coverage(store, roi_ids)
+    slides_with_rois = sorted(set(store.rois.children.values()))
+    parent_ids = list(images.sample_ids)
+    zero_roi_slides = [slide for slide in parent_ids if slide not in set(slides_with_rois)]
     feature_dir = Path(store.feature_dir).resolve()
     tensors = sorted(feature_dir.rglob("*.pt"))
     sidecars = sorted(feature_dir.rglob("*.meta.json"))

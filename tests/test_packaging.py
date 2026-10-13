@@ -110,8 +110,10 @@ def test_public_import_surface_dependencies_are_declared():
     import soma
 
     assert soma.Pipeline is not None
-    assert soma.FeatureExtractor is not None
-    assert soma.FeatureExtractionResult is not None
+    # Features enter through the soma.extract verb (ADR 0021); no extractor class.
+    assert callable(soma.extract)
+    assert not hasattr(soma, "FeatureExtractor")
+    assert not hasattr(soma, "FeatureExtractionResult")
     assert not hasattr(soma, "TileFeatureExtractor")
     assert not hasattr(soma, "DenseTileFeatureExtractor")
 

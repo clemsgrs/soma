@@ -28,7 +28,7 @@ import dataclasses
 import slide2vec
 
 from tests.extraction_configs import extraction
-from soma.data._legacy import legacy_samples_from_csv
+from soma.data import ImageManifest
 from soma.dense import (
     CachedGridSource,
     compute_dense_geometry,
@@ -40,7 +40,7 @@ from soma.dense.store import DENSE_SIDECAR_SUFFIX
 
 def _make_dataset(
     tmp_path: Path, *, spacing_by_id: dict[str, float] | None = None
-) -> Dataset:
+) -> ImageManifest:
     csv_path = tmp_path / "dataset.csv"
     rows = [
             # label is unused by the cache layer (the seg loader makes it optional);
@@ -52,7 +52,7 @@ def _make_dataset(
         for row in rows:
             row["spacing_at_level_0"] = spacing_by_id[row["sample_id"]]
     pd.DataFrame(rows).to_csv(csv_path, index=False)
-    return legacy_samples_from_csv(csv_path)
+    return ImageManifest.from_csv(csv_path)
 
 
 def _enc() -> slide2vec.ExecutionOptions:
@@ -334,7 +334,7 @@ def test_store_load_detects_on_disk_shape_mismatch(tmp_path: Path):
 def _dense_kw(tmp_path: Path, dataset) -> dict:
     return dict(
         cache_root=tmp_path / "dense_cache",
-        dataset=dataset,
+        images=dataset,
         tile_encoder_name="uni",
         patch_size=(16, 16),
         dense=_DENSE,
@@ -611,14 +611,13 @@ def test_dense_cache_identity_ignores_label_mask_path(tmp_path: Path):
     # mask shapes tiling, the segmentation supervision raster does not. Re-pointing
     # label_mask_path must not re-key the dense cache; re-pointing mask_path must.
     from soma.cache import _sample_identity_payload
-    from soma.data._legacy import legacy_samples_from_csv
 
-    def manifest(name: str, *, mask: str, label_mask: str) -> SegmentationManifest:
+    def manifest(name: str, *, mask: str, label_mask: str) -> ImageManifest:
         csv_path = tmp_path / f"{name}.csv"
         pd.DataFrame(
             [{"sample_id": "s1", "image_path": "/tiles/s1.png", "mask_path": mask, "label_mask_path": label_mask}]
         ).to_csv(csv_path, index=False)
-        return legacy_samples_from_csv(csv_path)
+        return ImageManifest.from_csv(csv_path)
 
     base = _sample_identity_payload(manifest("a", mask="/t/s1.png", label_mask="/m/s1.png"))
     other_label = _sample_identity_payload(manifest("b", mask="/t/s1.png", label_mask="/m2/s1.png"))
@@ -632,7 +631,7 @@ def _identities_without_roi_grid_contract(res, dataset, *, cache_kind: str = "de
     from soma.cache.keys import _sample_stems_for_kind
 
     return _sample_stems_for_kind(
-        dataset=dataset,
+        images=dataset,
         cache_kind=cache_kind,
         static_identity_payload={"cache_key": res.metadata["cache_key"]},
     )

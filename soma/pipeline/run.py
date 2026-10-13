@@ -16,14 +16,23 @@ from typing import Any
 
 from rich.console import Console
 
+from soma import extract
 from soma._logging import ensure_default_logging
 from soma.atomic_io import atomic_write_json
 from soma.cache import resolve_cache_root
 from soma.config import ExperimentConfig
-from soma.data import AnnotationManifest, Cohort, ImageManifest
-from soma.pipeline._legacy import LegacyFolds, LegacySamples, legacy_inputs
+from soma.data import AnnotationManifest, Cohort, GridSource, ImageManifest, TileImageSource
+from soma.extraction import RoiSet
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_summary
-from soma.pipeline.build import RunInputs, attach_source, build_fold, load_pipeline_data
+from soma.pipeline.build import (
+    RunInputs,
+    annotation_sampled,
+    build_composite_dense_store,
+    build_fold,
+    extraction_options,
+    live_encoder_for,
+    load_pipeline_data,
+)
 from soma.pipeline.console import build_completed_run_panel, build_run_summary_panel
 from soma.pipeline.folds import FoldResult, run_fold
 from soma.pipeline.layout import (
@@ -63,8 +72,23 @@ class PipelineResult:
     test_checksum: str = ""
 
 
+@dataclass(frozen=True)
+class RunFeatures:
+    """The run's features and the cohort they serve.
+
+    Annotation sampling turns slides into ROIs: ``cohort`` is then the ROI cohort
+    (:meth:`~soma.data.Cohort.derived`) and ``rois`` the source's ROIs. On the live grid
+    path ``source`` is the pixels' image source and ``encoder_stage`` the frozen encoder.
+    """
+
+    source: Any
+    cohort: Cohort
+    encoder_stage: Any = None
+    rois: RoiSet | None = None
+
+
 class Pipeline:
-    """Runs a config: attach or extract features → train every fold → summarize.
+    """Runs a config: extract features (:func:`soma.extract`) → train every fold → summarize.
 
     The constructor reads the cohort and resolves ``config`` into its :attr:`plan`
     (:func:`soma.resolve`), so a bad config fails before anything is extracted.
@@ -88,10 +112,6 @@ class Pipeline:
         self._source = source
         self._cohort, self._image_manifest, self._annotation_manifest = load_pipeline_data(config)
         self._plan = resolve(config, self._cohort)
-        # Fat-record bridge (slice 7 deletes it): the builders still consume these.
-        self._dataset, self._splits = legacy_inputs(
-            self._cohort, self._image_manifest, self._annotation_manifest, path=config.cohort.records
-        )
 
     @property
     def config(self) -> ExperimentConfig:
@@ -109,6 +129,7 @@ class Pipeline:
 
     @property
     def cohort(self) -> Cohort:
+        """The cohort the config names (sample-level splits)."""
         return self._cohort
 
     @property
@@ -119,25 +140,16 @@ class Pipeline:
     def annotation_manifest(self) -> AnnotationManifest | None:
         return self._annotation_manifest
 
-    @property
-    def dataset(self) -> LegacySamples:
-        """Legacy fat records (slice 7 deletes them)."""
-        return self._dataset
-
-    @property
-    def splits(self) -> LegacyFolds:
-        return self._splits
-
     def run(self) -> PipelineResult:
         """Run every fold not yet complete on disk, then summarize the run from disk."""
-        plan, num_folds = self._plan, self._splits.num_folds
+        plan, num_folds = self._plan, self._cohort.num_folds
         if plan.evaluation.representation is not None:
             return run_representation(self)
         layout, mirror = open_run(plan, config=self._config, num_folds=num_folds)
         with RunRecorder(layout, plan) as recorder:
             inputs = self._prepare(layout)
             results = []
-            for fold, fold_split in enumerate(inputs.splits.folds):
+            for fold, fold_split in enumerate(inputs.cohort.folds):
                 directory = fold_dir(layout.run_dir, fold, num_folds)
                 if self._skips(fold, directory):
                     if mirror is not None and fold_is_complete(directory):
@@ -170,26 +182,20 @@ class Pipeline:
     # -- run() helpers ------------------------------------------------------------
 
     def _prepare(self, layout) -> RunInputs:
-        """Attach the source, apply the test-clobber guard and print the run summary."""
+        """Extract the features, apply the test-clobber guard and print the run summary."""
         plan = self._plan
         folds = plan.run.folds
-        if self._splits.num_folds > 1:
-            reject_undeclared_fold_dirs(layout.run_dir, self._splits.num_folds)
+        num_folds = self._cohort.num_folds
+        if num_folds > 1:
+            reject_undeclared_fold_dirs(layout.run_dir, num_folds)
         if folds is not None:
-            unknown = sorted(set(folds) - set(range(self._splits.num_folds)))
-            if self._splits.num_folds == 1 or unknown:
+            unknown = sorted(set(folds) - set(range(num_folds)))
+            if num_folds == 1 or unknown:
                 raise ValueError(
                     f"run.folds={list(folds)} does not fit the splits: they declare "
-                    f"{self._splits.num_folds} fold(s), indexed from 0."
+                    f"{num_folds} fold(s), indexed from 0."
                 )
-        context = attach_source(
-            plan,
-            source=self._source,
-            dataset=self._dataset,
-            splits=self._splits,
-            image_manifest=self._image_manifest,
-            run_dir=layout.run_dir,
-        )
+        context = self._features(layout.run_dir)
         preprocessing = resolve_pipeline_preprocessing(plan)
         dense = None
         if plan.shape == "grid":
@@ -202,9 +208,9 @@ class Pipeline:
             preprocessing=preprocessing,
             evaluation=self._guard_test_clobber(layout),
             source=context.source,
-            cohort=self._cohort,
-            dataset=context.dataset,
-            splits=context.splits,
+            cohort=context.cohort,
+            images=self._image_manifest,
+            annotations=self._annotation_manifest,
             run_id=layout.run_id,
             run_dir=layout.run_dir,
             source_identity=source_identity(context.source),
@@ -219,10 +225,81 @@ class Pipeline:
                 else layout.run_dir / "segmentation_roi_population"
             ),
             packages=dotted_packages(plan),
+            rois=context.rois,
         )
 
+    def _features(self, run_dir: Path) -> RunFeatures:
+        """The run's features: the supplied source, the live path's pixels and frozen
+        encoder stage, a composite's members, or what :func:`soma.extract` extracts (or
+        reuses from the feature cache) as the plan says.
+
+        A supplied image source on the live grid path gets the run's frozen encoder stage;
+        a supplied :class:`~soma.data.GridSource` (cached grids) takes the cached path, so
+        it cannot be augmented. Annotation sampling keys the extracted grids by ROI: the
+        run then trains on the ROI cohort its source's ROIs derive.
+        """
+        plan, features, source = self._plan, self._plan.features, self._source
+        grid = plan.shape == "grid"
+        live = grid and features.kind == "live"
+        roi_sampled = annotation_sampled(plan)
+        if roi_sampled and source is not None:
+            raise ValueError(
+                "a supplied source is not supported for annotation-sampled segmentation; "
+                "soma.extract samples the ROIs and owns their cache identity."
+            )
+        if roi_sampled and features.kind == "live":
+            raise NotImplementedError(
+                "Live extraction over annotation-sampled segmentation ROIs is outside the "
+                "persistent soma.extract contract."
+            )
+        if roi_sampled and features.is_composite:
+            raise NotImplementedError(
+                "Multi-encoder extraction over annotation-sampled segmentation ROIs is not implemented."
+            )
+        if source is not None:
+            # A supplied image source under ``features.kind: live`` is re-encoded by the
+            # run's frozen encoder stage, like the one built below; supplied grids are cached.
+            cached_grids = isinstance(source, GridSource)
+            if live and cached_grids and plan.loaders.augment is not None:
+                raise ValueError(
+                    "loaders.augment needs pixels re-encoded by an encoder stage, but the supplied "
+                    "source is cached grids (frozen features); supply an ImageSource or clear "
+                    "loaders.augment."
+                )
+            stage = live_encoder_for(plan) if live and not cached_grids else None
+            return RunFeatures(source=source, cohort=self._cohort, encoder_stage=stage)
+        if live:
+            dense = resolve_pipeline_dense(plan)
+            pixels = TileImageSource.from_manifest(
+                self._image_manifest,
+                size=int(dense.target_size),
+                spacing_um=float(dense.spacing_um),
+                spacing_policy=features.spacing_policy,
+                backend=dense.backend,
+                tolerance=float(dense.tolerance),
+            )
+            return RunFeatures(source=pixels, cohort=self._cohort, encoder_stage=live_encoder_for(plan))
+        if grid and features.is_composite:
+            from soma.dense import DenseSourceProvenance
+
+            store = build_composite_dense_store(plan, self._image_manifest, output_root=run_dir / "features")
+            store.provenance = DenseSourceProvenance(kind="composite_dense_cache", dataset_csv=plan.cohort.records)
+            return RunFeatures(source=store, cohort=self._cohort)
+        if features.encoder is None:
+            raise ValueError("features.encoder is required when no source is supplied.")
+        source = extract(
+            self._image_manifest,
+            annotations=self._annotation_manifest if roi_sampled else None,
+            **extraction_options(plan, run_dir=run_dir),
+        )
+        _record_cohort_csv(source, plan.cohort.records)
+        rois = getattr(source, "rois", None)
+        if rois is None:
+            return RunFeatures(source=source, cohort=self._cohort)
+        return RunFeatures(source=source, cohort=self._cohort.derived(rois.children), rois=rois)
+
     def _pending_folds(self, run_dir: Path) -> tuple[int, ...]:
-        num_folds = self._splits.num_folds
+        num_folds = self._cohort.num_folds
         return tuple(f for f in range(num_folds) if not fold_is_complete(fold_dir(run_dir, f, num_folds)))
 
     def _skips(self, fold: int, directory: Path) -> bool:
@@ -230,7 +307,7 @@ class Pipeline:
         dir (a single fold only under ``resume``/``run_id``); ``run.folds`` leaves the
         other folds to another launch."""
         run = self._plan.run
-        resuming = self._splits.num_folds > 1 or bool(run.resume or run.run_id)
+        resuming = self._cohort.num_folds > 1 or bool(run.resume or run.run_id)
         if resuming and fold_is_complete(directory):
             logger.info("Fold %d already complete (%s); skipping (resume).", fold, directory)
             return True
@@ -250,7 +327,7 @@ class Pipeline:
         decision = register_test_result(
             layout.run_dir,
             digest,
-            split_names=sorted({name for fold in self._splits.folds for name in fold.test_split_names}),
+            split_names=sorted({name for fold in self._cohort.folds for name in fold.test_split_names}),
             run_id=layout.run_id,
             overwrite=evaluation.overwrite_test,
         )
@@ -286,12 +363,24 @@ class Pipeline:
         logger.info("Rendering attention heatmaps...")
         generate_heatmaps(
             run_dir=run_dir,
-            dataset=inputs.dataset,
+            images=inputs.images,
             feature_store=inputs.source,
             tiling_dir=run_dir / "tiling",
             seg_downsample=plan.features.extraction.segmentation.downsample,
             **plan.evaluation.attention_heatmaps,
         )
+
+
+def _record_cohort_csv(source: Any, cohort_csv: str | Path) -> None:
+    """Name the cohort CSV in a grid source's provenance: the CSV its grids were extracted
+    from, or, for annotation-sampled ROIs, the parent of the ROI table."""
+    provenance = getattr(source, "provenance", None)
+    if provenance is None:
+        return
+    if provenance.dataset_csv is None:
+        source.provenance = replace(provenance, dataset_csv=cohort_csv)
+    else:
+        source.provenance = replace(provenance, parent_dataset_csv=cohort_csv)
 
 
 def _write_source_provenance(run_dir: Path, source: Any) -> None:

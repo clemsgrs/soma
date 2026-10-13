@@ -22,9 +22,8 @@ from soma.config import CacheOptions, FeaturesConfig
 from soma.plan import load_cohort
 from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
-from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 from soma.evaluation import Predictions
-from soma.data import CachedSetSource
+from soma.data import CachedSetSource, Cohort, ImageManifest
 from soma.pipeline.layout import (
     build_experiment_spec,
     read_test_results,
@@ -665,15 +664,12 @@ class TestPipeline:
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         output_root = tmp_path / "output_prism"
 
-        def _fake_extract(self):
-            out = self._output_root / "features"
+        def _fake_extract(images, *, output_dir, **_options):
+            out = Path(output_dir) / "features"
             out.mkdir(parents=True, exist_ok=True)
-            for i in range(NUM_SAMPLES):
-                torch.save(torch.randn(D), out / f"s{i}.pt")
-            return SimpleNamespace(
-                source=CachedSetSource(out),
-                dataset=self._dataset,
-            )
+            for sample_id in images.sample_ids:
+                torch.save(torch.randn(D), out / f"{sample_id}.pt")
+            return CachedSetSource(out)
 
         config = experiment(
             dataset_csv,
@@ -685,7 +681,7 @@ class TestPipeline:
             scheduler='cosine',
         )
 
-        with patch("soma.extraction.FeatureExtractor.extract", new=_fake_extract):
+        with patch("soma.extract.extract", new=_fake_extract):
             with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
                 result = Pipeline(config).run()
 
@@ -972,7 +968,7 @@ class TestPipeline:
         assert (bundle.provenance["fold"], bundle.provenance["run_id"]) == (0, FIXED_RUN_ID)
         assert bundle.preprocessing["classes"] == ["normal", "tumor"]
 
-    def test_dataset_and_splits_properties(self, tmp_path: Path):
+    def test_cohort_and_manifest_properties(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         config = experiment(
             dataset_csv,
@@ -984,8 +980,9 @@ class TestPipeline:
 
         from soma.tasks.classification import categorical_label_map
 
-        assert len(categorical_label_map(pipeline.dataset.records)) == 2
-        assert pipeline.splits.num_folds == 1
+        assert len(categorical_label_map(pipeline.cohort.records)) == 2
+        assert pipeline.cohort.num_folds == 1
+        assert pipeline.image_manifest.sample_ids == pipeline.cohort.sample_ids
 
     def test_pipeline_writes_experiment_metadata_and_indexes(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
@@ -1132,12 +1129,12 @@ def test_patient_run_scores_patients_and_fills_a_tileless_tune_patient(tmp_path:
 
 def test_patient_leakage_is_refused_when_the_folds_are_built(tmp_path: Path):
     dataset_csv, _, feature_dir = _setup_patient_data(tmp_path)
-    dataset = legacy_samples_from_csv(dataset_csv)
+    images = ImageManifest.from_csv(dataset_csv)
 
     # s0 belongs to p0 but is put in test; the other p0 slide (s1) stays in train
     bad_splits = []
-    for sid in dataset.sample_ids:
-        pid = dataset.samples[sid].patient_id
+    for sid in images.sample_ids:
+        pid = images[sid].patient_id
         if sid == "s0":
             split = "test"
         elif pid in ("p0", "p1"):
@@ -1153,4 +1150,4 @@ def test_patient_leakage_is_refused_when_the_folds_are_built(tmp_path: Path):
 
     # Leakage is a data-contract violation: the folds cannot even be built.
     with pytest.raises(ValueError, match="p0"):
-        legacy_folds_from_csv(splits_csv, dataset, unit="patient_id")
+        Cohort.from_csv(dataset_csv, splits_csv, unit="patient_id")
