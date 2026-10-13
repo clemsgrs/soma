@@ -74,14 +74,19 @@ def _preset_parameters(name: str) -> list[inspect.Parameter]:
 
 def _selected_preset(argv: Sequence[str], *, positional: bool) -> str | None:
     """The registered preset ``argv`` selects, read before the parser that takes its
-    arguments exists: ``soma init``'s first argument naming one (its flags may come
-    first), ``soma run``'s ``--preset NAME``."""
+    arguments exists: ``soma init``'s positional (its flags may come first, so every
+    preset's flags are declared and a flag's value is not taken for the name),
+    ``soma run``'s ``--preset NAME``."""
     from soma.presets import preset_registry
 
-    if positional:
-        return next((argument for argument in argv if argument in preset_registry), None)
     selector = argparse.ArgumentParser(add_help=False, exit_on_error=False)
-    selector.add_argument("--preset")
+    if positional:
+        selector.add_argument("preset", nargs="?")
+        flags = {_flag(p.name): p.name for entry in components("presets") for p in _preset_parameters(entry["name"])}
+        for flag, argument in flags.items():
+            selector.add_argument(flag, dest=f"preset_{argument}")
+    else:
+        selector.add_argument("--preset")
     try:
         name = selector.parse_known_args(list(argv))[0].preset
     except argparse.ArgumentError:  # the full parser reports it
