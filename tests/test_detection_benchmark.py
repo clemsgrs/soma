@@ -762,6 +762,37 @@ def test_roi_threshold_sweep_uses_stitched_predictions():
     assert threshold == [0.9]
 
 
+def test_point_frame_reads_the_runs_detection_head_and_dense_geometry(tmp_path: Path):
+    """A scored cell's frame comes from its saved ``config.yaml`` (an ``ExperimentConfig``,
+    held as given): the detection head's radii and the run's dense read geometry."""
+    from soma.config import ExperimentConfig
+
+    m = _load_driver()
+    committed = resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml"
+    # A run read at 0.5 µm/px (not the dataset's nominal 0.25) with its own NMS radius.
+    ExperimentConfig.from_yaml(
+        committed,
+        overrides={
+            "features": {"dense": {"spacing_um": 0.5}},
+            "learner": {"params": {"head": {"params": {"nms_distance": 5.0}}}},
+        },
+    ).to_yaml(tmp_path / "config.yaml")
+    cfg = ExperimentConfig.from_yaml(tmp_path / "config.yaml")
+    assert cfg.features.extraction.tiling is None  # the run's geometry lives in features.dense
+    predictions = SimpleNamespace(num_classes=1, match_distance_px=30.0)  # 7.5 µm at level 0
+
+    frame = m._point_frame(cfg, dataset_spec("midog"), predictions)
+
+    assert frame.num_classes == 1
+    assert frame.delta_px == pytest.approx(7.5 / 0.5)
+    assert frame.nms_distance_px == pytest.approx(5.0 / 0.5)
+    assert frame.matching == "hungarian"
+    assert frame.spacing.source_spacing_um == pytest.approx(0.25)
+    assert frame.spacing.effective_spacing_um == pytest.approx(0.5)
+    assert frame.spacing_for_sample("any") is frame.spacing
+    assert frame.tile_px == 1024
+
+
 def test_decode_split_points_drops_ignored_predictions_and_counts_valid_area():
     import numpy as np
     import pandas as pd

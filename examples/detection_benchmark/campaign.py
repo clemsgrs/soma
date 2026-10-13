@@ -638,20 +638,22 @@ def _sweep_thresholds_on_rois(tune, targets, manifest, frame, *, tile_px: int) -
 
 
 def _point_frame(cfg, spec, predictions):
-    """The run's point frame for scoring: class count, matcher, radii and spacings.
+    """The run's point frame for scoring: class count, matcher, radii, spacings, tile size.
 
-    Radii are the run's own µm distances at its frame spacing (``delta_px`` /
-    ``nms_distance_px`` in frame pixels, as the stitch expects); the level-0 spacing
-    follows from the predictions' level-0 tolerance (``match_distance_px``).
+    Radii are the detection head's µm distances at the run's dense read spacing
+    (``delta_px`` / ``nms_distance_px`` in frame pixels, as the stitch expects); the
+    level-0 spacing follows from the predictions' level-0 tolerance
+    (``match_distance_px``); ``tile_px`` is the run's supervision tile size.
     """
     from types import SimpleNamespace
 
     from soma.dense import DenseSampleSpacing
+    from soma.preprocessing.resolution import resolve_pipeline_dense
 
-    params = dict(cfg.task.params)
+    params = dict(cfg.learner.params["head"].params)
     match_um = float(params["match_distance"])
-    tiling = cfg.features.extraction.tiling
-    effective = float((tiling.requested_spacing_um if tiling is not None else None) or spec.spacing_um)
+    dense = resolve_pipeline_dense(cfg)
+    effective = float(dense.spacing_um)
     spacing = DenseSampleSpacing(
         source_spacing_um=match_um / float(predictions.match_distance_px),
         effective_spacing_um=effective,
@@ -663,6 +665,7 @@ def _point_frame(cfg, spec, predictions):
         matching=spec.match_method,
         spacing=spacing,
         spacing_for_sample=lambda sid: spacing,
+        tile_px=int(dense.target_size),
     )
 
 
@@ -706,7 +709,7 @@ def _decode_cell_points(
         if path.name != "predictions_tune.parquet"
     ]
     frame = _point_frame(cfg, spec, tune)
-    tile_px = int(cfg.features.extraction.tiling.requested_tile_size_px)
+    tile_px = frame.tile_px
     if spec.stitch_to_roi:
         score_thresholds = _sweep_thresholds_on_rois(tune, targets, manifest, frame, tile_px=tile_px)
     else:
