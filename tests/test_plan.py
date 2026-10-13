@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import sys
 import textwrap
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 import pandas as pd
@@ -261,6 +262,32 @@ def _grid(files, **kwargs) -> ExperimentConfig:
     return experiment(*files, **kwargs)
 
 
+def test_a_plan_refuses_field_writes(files):
+    # The config is the user's to edit; the plan is what a run does, frozen.
+    plan = _resolve(experiment(*files, aggregator="abmil"))
+    with pytest.raises(FrozenInstanceError):
+        plan.trainer.max_epochs = 3
+    with pytest.raises(FrozenInstanceError):
+        plan.config.run = plan.run
+    assert plan.trainer.max_epochs == 50
+    # Wrapping a config as a plan freezes the plan's copy, not the caller's config.
+    config = experiment(*files, aggregator="abmil")
+    wrapped = Plan(config)
+    config.trainer.max_epochs = 3
+    assert wrapped.trainer.max_epochs == 50
+
+
+def test_check_refuses_a_field_write_its_section_would_refuse(files):
+    config = experiment(*files, aggregator="abmil")
+    config.trainer.max_steps = 0
+    with pytest.raises(ValueError, match="trainer.max_steps"):
+        check(config)
+    config = experiment(*files, aggregator="abmil")
+    config.cohort.collapse = "site"
+    with pytest.raises(ValueError, match="cohort.collapse"):
+        check(config)
+
+
 def test_a_run_needs_a_head_or_a_representation(files):
     with pytest.raises(ValueError, match="needs a learner with a head"):
         check(experiment(*files, head=None))
@@ -389,6 +416,14 @@ def test_a_segmentation_class_scheme_is_checked_against_the_mask_vocabulary(file
         check(_grid(files, features=features))
     with pytest.raises(ValueError, match="does not declare"):
         check(_grid(files, features=features, head_params={"classes": {"tumor": [1], "stroma": [2]}}))
+
+
+def test_a_null_class_scheme_is_checked_like_an_omitted_one(files):
+    # ``soma init`` spells the scheme's fields as null for the user to fill in.
+    unset = {"classes": None, "ignore": None, "num_classes": None}
+    check(_grid(files, head_params={}))
+    check(_grid(files, head_params=unset))
+    check(_grid(files, head="detection", head_params={"classes": None, "drop": None}))
 
 
 def test_patient_runs_take_no_aggregator(files):

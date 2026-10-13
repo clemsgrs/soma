@@ -1,4 +1,4 @@
-"""Pipeline parity: ``soma <config.yaml>`` is the public verbs in the canonical order.
+"""Pipeline parity: ``soma run <config.yaml>`` is the public verbs in the canonical order.
 
 Each scenario runs one fold twice over the same cached features: once through the CLI
 (``--feature-dir``), once composed by hand from plain constructors carrying the YAML's

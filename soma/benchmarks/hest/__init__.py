@@ -8,7 +8,9 @@ its own slide2vec encoder → soma's tile feature cache → the closed-form Ridg
 Manifest; it does not depend on the ``hest`` library or TRIDENT. The benchmark composes
 soma's verbs itself (:meth:`HestBenchmark.run`): extract a rank-1 tile set source, fit the
 probe on each fold's train spots, predict its test spots, and ``soma.evaluate`` the
-predictions with ``mean_pearson`` plus one Pearson per gene.
+predictions with ``mean_pearson`` plus one Pearson per gene. Its config starts from the
+:func:`~soma.presets.tile_classification` preset (a tile encoder, no aggregator) and swaps
+the learner for the probe.
 
 All 9 HEST-Benchmark tasks are registered as ``hest/<task>`` (:data:`HEST_TASKS`), mirroring
 the ``eva/<dataset>`` family: each shares the closed-form spatial-expression probe recipe and
@@ -48,15 +50,17 @@ from soma.benchmarks.registry import (
 from hs2p import TilingConfig
 from slide2vec import ExecutionOptions, PreprocessingConfig
 
+from soma import presets
 from soma.config import (
     CacheOptions,
     CohortConfig,
     EncoderLeaf,
     EvaluationConfig,
     ExperimentConfig,
-    FeaturesConfig,
     LearnerConfig,
+    LoadersConfig,
     RunConfig,
+    TrainerConfig,
 )
 from soma.curation.hest import curate_hest
 from soma.curation.manifest import CuratedManifest
@@ -233,39 +237,34 @@ class HestBenchmark:
         Preprocessing pins HEST's tile geometry (:data:`TILE_SIZE_PX` px @ :data:`SPACING_UM`
         µm/px) for every encoder, so the encoder axis varies the encoder and nothing else.
         """
-        return ExperimentConfig(
-            run=RunConfig(
-                output_dir=Path(output_root) if output_root is not None else Path("output/hest"),
-                seed=0 if seed is None else int(seed),
-            ),
-            cohort=CohortConfig(
-                records=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
-                splits=str(splits_csv) if splits_csv is not None else "splits.csv",
-            ),
-            features=FeaturesConfig(
-                encoder=EncoderLeaf(
-                    name=encoder,
-                    params=(
-                        {"output_variant": OUTPUT_VARIANTS[encoder]}
-                        if OUTPUT_VARIANTS.get(encoder) is not None
-                        else {}
-                    ),
-                ),
-                extraction=PreprocessingConfig(
-                    tiling=TilingConfig(
-                        requested_spacing_um=SPACING_UM,
-                        requested_tile_size_px=TILE_SIZE_PX,
-                        tolerance=0.05,
-                        overlap=0.0,
-                    ),
-                ),
-                execution=replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
-                cache=_cache_from_overrides(overrides) or CacheOptions(enabled=True),
-            ),
-            # The probe is closed-form: no loaders, trainer or tune split take part.
-            learner=LearnerConfig(PROBE_NAME, {"pca_components": int(pca_components)}),
-            evaluation=EvaluationConfig(metrics=[EVAL_METRIC]),
+        cfg = presets.tile_classification(encoder)
+        cfg.run = RunConfig(
+            output_dir=Path(output_root) if output_root is not None else Path("output/hest"),
+            seed=0 if seed is None else int(seed),
         )
+        cfg.cohort = CohortConfig(
+            records=str(dataset_csv) if dataset_csv is not None else "dataset.csv",
+            splits=str(splits_csv) if splits_csv is not None else "splits.csv",
+        )
+        if OUTPUT_VARIANTS.get(encoder) is not None:
+            cfg.features.encoder = EncoderLeaf(name=encoder, params={"output_variant": OUTPUT_VARIANTS[encoder]})
+        cfg.features.extraction = PreprocessingConfig(
+            tiling=TilingConfig(
+                requested_spacing_um=SPACING_UM,
+                requested_tile_size_px=TILE_SIZE_PX,
+                tolerance=0.05,
+                overlap=0.0,
+            ),
+        )
+        cfg.features.execution = replace(execution or ExecutionOptions(), batch_size=encoder_batch_size)
+        cfg.features.cache = _cache_from_overrides(overrides) or CacheOptions(enabled=True)
+        # The probe is closed-form: no loaders, trainer or tune split take part, so those
+        # sections keep their defaults rather than the preset's training recipe.
+        cfg.loaders = LoadersConfig()
+        cfg.learner = LearnerConfig(PROBE_NAME, {"pca_components": int(pca_components)})
+        cfg.trainer = TrainerConfig()
+        cfg.evaluation = EvaluationConfig(metrics=[EVAL_METRIC])
+        return cfg
 
     def run(self, config: ExperimentConfig) -> dict[str, float]:
         """Extract, fit, predict and evaluate each fold through soma's verbs.

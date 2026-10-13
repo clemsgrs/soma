@@ -102,12 +102,13 @@ python -m examples.beetle.launch run-arm \
   --preflight data/beetle/hardware_preflight.json \
   --output-dir data/beetle/resolved \
   --arm uniform \
-  --set run.run_id=<run-id>
+  --run-id <run-id>
 ```
 
-Use `--set run.resume=true` instead only when exactly one compatible mirrored run exists.
-The single-arm launcher accepts only these two run-lifecycle overrides; scientific recipe
-changes require a newly reviewed protocol.
+Use `--resume` instead only when exactly one compatible mirrored run exists. The launcher
+writes the run lifecycle into `data/beetle/resolved/<arm>.launch.yaml` and runs that file;
+it accepts no other change, so scientific recipe changes require a newly reviewed
+protocol.
 
 ## 4. Report and select from development evidence
 

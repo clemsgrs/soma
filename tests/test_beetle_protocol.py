@@ -18,7 +18,7 @@ from examples.beetle.protocol import ARM_NAMES, BATCH_SIZE_CANDIDATES, PIXEL_MAP
 from examples.beetle.select_arm import main as select_main, select_development_arm
 from examples.beetle.smoke import run_offline_smoke
 from soma.config import Component, ExperimentConfig
-from soma.plan import check
+from soma.plan import check, comparable
 
 REPOSITORY = "paige-ai/Virchow2"
 REVISION = "3158645804b69e3f3bc4439d4116edddf0840a72"
@@ -279,11 +279,12 @@ def test_launch_binds_offline_hub_to_the_validated_immutable_snapshot(
     )
 
     assert [command for command, _ in calls] == [
-        [sys.executable, "-m", "soma", str(tmp_path / "resolved" / "uniform.yaml")],
+        [sys.executable, "-m", "soma", "run", str(tmp_path / "resolved" / "uniform.yaml")],
         [
             sys.executable,
             "-m",
             "soma",
+            "run",
             str(tmp_path / "resolved" / "class_conditioned.yaml"),
         ],
     ]
@@ -329,10 +330,19 @@ def test_resolution_rejects_a_snapshot_missing_runtime_config(
         resolve_arm_configs(preflight_path=preflight, output_dir=tmp_path / "resolved")
 
 
-def test_pinned_single_arm_launch_forwards_resume_override(
+@pytest.mark.parametrize(
+    ("flags", "run_fields"),
+    [
+        (["--run-id", "beetle-uniform-resume"], {"run_id": "beetle-uniform-resume", "resume": False}),
+        (["--resume"], {"run_id": None, "resume": True}),
+    ],
+)
+def test_pinned_single_arm_launch_writes_its_run_lifecycle_into_the_launched_config(
     tmp_path: Path,
     local_encoder_snapshot: tuple[Path, str],
     monkeypatch: pytest.MonkeyPatch,
+    flags: list[str],
+    run_fields: dict,
 ) -> None:
     preflight = _write_completed_preflight(
         tmp_path / "preflight.json", local_encoder_snapshot
@@ -353,22 +363,18 @@ def test_pinned_single_arm_launch_forwards_resume_override(
             str(tmp_path / "resolved"),
             "--arm",
             "uniform",
-            "--set",
-            "run.run_id=beetle-uniform-resume",
+            *flags,
         ]
     )
 
-    assert [command for command, _ in calls] == [
-        [
-            sys.executable,
-            "-m",
-            "soma",
-            str((tmp_path / "resolved" / "uniform.yaml").resolve()),
-            "--set",
-            "run.run_id=beetle-uniform-resume",
-        ]
-    ]
+    launched = (tmp_path / "resolved" / "uniform.launch.yaml").resolve()
+    assert [command for command, _ in calls] == [[sys.executable, "-m", "soma", "run", str(launched)]]
     assert calls[0][1]["env"]["HF_HUB_OFFLINE"] == "1"
+    resolved = ExperimentConfig.from_yaml(tmp_path / "resolved" / "uniform.yaml")
+    config = ExperimentConfig.from_yaml(launched)
+    assert {name: getattr(config.run, name) for name in run_fields} == run_fields
+    # Only the run's lifecycle differs from the protocol-resolved arm.
+    assert comparable(config.to_dict()) == comparable(resolved.to_dict())
 
 
 def test_pinned_single_arm_launch_rejects_scientific_recipe_overrides(
@@ -427,12 +433,14 @@ def test_launch_uses_absolute_config_paths_from_a_non_repository_cwd(
             sys.executable,
             "-m",
             "soma",
+            "run",
             str((caller / "resolved/uniform.yaml").resolve()),
         ],
         [
             sys.executable,
             "-m",
             "soma",
+            "run",
             str((caller / "resolved/class_conditioned.yaml").resolve()),
         ],
     ]

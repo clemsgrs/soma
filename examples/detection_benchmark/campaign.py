@@ -380,11 +380,63 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, check=True, **kw)
 
 
-def _data_overrides(data_root: Path, dataset: str) -> list[str]:
-    return [
-        "--set", f"cohort.records={dataset_csv_for(data_root, dataset)}",
-        "--set", f"cohort.splits={splits_csv_for(data_root, dataset)}",
+def _nested(pairs: Sequence[tuple[str, Any]]) -> dict[str, Any]:
+    """Dotted ``(key, value)`` pairs as one nested mapping; a later pair wins."""
+    nested: dict[str, Any] = {}
+    for key, value in pairs:
+        *parents, leaf = key.split(".")
+        cursor = nested
+        for part in parents:
+            if not isinstance(cursor.get(part), dict):
+                cursor[part] = {}
+            cursor = cursor[part]
+        cursor[leaf] = value
+    return nested
+
+
+def _parse_sets(extra_sets: Sequence[str]) -> list[tuple[str, Any]]:
+    """The driver's own ``--set key=value`` pairs (values parse as YAML)."""
+    import yaml
+
+    pairs = []
+    for pair in extra_sets:
+        key, sep, value = pair.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"--set expects key=value, got {pair!r}")
+        pairs.append((key.strip(), yaml.safe_load(value)))
+    return pairs
+
+
+def cell_config(
+    encoder: str, dataset: str, replicate: int, axis: str, data_root: Path, out_root: Path,
+    decoder: str | None = None, extra_sets: Sequence[str] = (),
+    config_path: Path | None = None,
+):
+    """The committed recipe with the cell's data, encoder, decoder, the driver's own ``--set``
+    pairs, output dir, shared cache and replicate written in, in that order."""
+    from soma.config import ExperimentConfig
+
+    pairs: list[tuple[str, Any]] = [
+        ("cohort.records", str(dataset_csv_for(data_root, dataset))),
+        ("cohort.splits", str(splits_csv_for(data_root, dataset))),
     ]
+    if config_path is None:
+        pairs.append(("features.encoder.name", encoder))
+    if decoder:
+        pairs.append(("learner.params.decoder.name", decoder))
+    pairs += _parse_sets(extra_sets)
+    pairs.append(("run.output_dir", str(cell_dir(out_root, dataset, encoder, replicate))))
+    # Point every cell at the dataset-wide grid cache, else each replicate builds its own
+    # private copy under its run dir. score_cell reloads the run's persisted config, so it
+    # inherits this root too and reads the same grids it trained on.
+    pairs.append(("features.cache.root_dir", str(feature_cache_dir(out_root, dataset))))
+    if axis == "seeds":
+        pairs.append(("run.seed", replicate))
+    else:
+        # The cell trains only its own fold. soma requires run.run_id with run.folds;
+        # pinning it also makes a relaunch after a crash reuse the cell's run dir.
+        pairs += [("run.folds", [replicate]), ("run.run_id", f"fold_{replicate}")]
+    return ExperimentConfig.from_yaml(config_path or _config_path(dataset), overrides=_nested(pairs))
 
 
 def _config_path(dataset: str) -> Path:
@@ -398,34 +450,22 @@ def train_cell(
     decoder: str | None = None, extra_sets: Sequence[str] = (),
     config_path: Path | None = None,
 ) -> None:
-    """Train (+extract) one cell via ``python -m soma`` — the config supplies the recipe.
+    """Train (+extract) one cell via ``python -m soma run`` — the config supplies the recipe.
 
     The replicate maps onto ``run.seed`` for the seeds axis and onto ``run.folds=[k]`` for the
     folds axis, so a fold cell trains that one fold under ``<run>/fold_<k>/``. The
     committed config's encoder is swapped for the roster encoder — unless ``config_path``
     names a composite (rung 4) recipe, whose ``composite`` encoder *is* the encoder and
-    whose ``encoder`` is then the composite label (the cell-dir name).
+    whose ``encoder`` is then the composite label (the cell-dir name). The cell's config
+    (:func:`cell_config`) is written to ``<cell>/launch.yaml`` and run from there.
     """
-    cmd = [sys.executable, "-m", "soma", str(config_path or _config_path(dataset))]
-    cmd += _data_overrides(data_root, dataset)
-    if config_path is None:
-        cmd += ["--set", f"features.encoder.name={encoder}"]
-    if decoder:
-        cmd += ["--set", f"learner.params.decoder.name={decoder}"]
-    for override in extra_sets:
-        cmd += ["--set", override]
-    cmd += ["--set", f"run.output_dir={cell_dir(out_root, dataset, encoder, replicate)}"]
-    # Point every cell at the dataset-wide grid cache, else each replicate builds its own
-    # private copy under its run dir. score_cell reloads the run's persisted config, so it
-    # inherits this root too and reads the same grids it trained on.
-    cmd += ["--set", f"features.cache.root_dir={feature_cache_dir(out_root, dataset)}"]
-    if axis == "seeds":
-        cmd += ["--set", f"run.seed={replicate}"]
-    else:
-        # The cell trains only its own fold. soma requires run.run_id with run.folds; pinning
-        # it also makes a relaunch after a crash reuse the cell's run dir.
-        cmd += ["--set", f"run.folds=[{replicate}]", "--set", f"run.run_id=fold_{replicate}"]
-    _run(cmd, cwd=REPO_ROOT)
+    cfg = cell_config(
+        encoder, dataset, replicate, axis, data_root, out_root,
+        decoder=decoder, extra_sets=extra_sets, config_path=config_path,
+    )
+    path = cell_dir(out_root, dataset, encoder, replicate) / "launch.yaml"
+    cfg.to_yaml(path)
+    _run([sys.executable, "-m", "soma", "run", str(path)], cwd=REPO_ROOT)
 
 
 def score_cell_isolated(

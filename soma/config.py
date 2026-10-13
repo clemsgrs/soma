@@ -4,6 +4,11 @@ keywords, so a knob that cannot be passed in Python cannot appear in YAML (ADR 0
 Every swappable component is a :class:`Component` (``{name, params}``). YAML hydrates the
 dataclasses generically from their field types; cross-section checks, defaults and what
 the cohort decides belong to :mod:`soma.plan`.
+
+A config is edited by assigning its fields (``cfg.trainer.max_steps = 100``); there is no
+override mechanism. :func:`soma.plan.check` validates the sections again, so a write a
+section's constructor would refuse is refused before anything runs. A
+:class:`~soma.plan.Plan` seals its sections, so a plan refuses writes.
 """
 
 from __future__ import annotations
@@ -25,8 +30,32 @@ from soma.atomic_io import atomic_write_text
 __all__ = [
     "CRoMaOptions", "CacheOptions", "CohortConfig", "Component", "EncoderLeaf", "EvaluationConfig",
     "ExperimentConfig", "FeaturesConfig", "LearnerConfig", "LoadersConfig", "RunConfig",
-    "TrainerConfig", "hydrate", "is_annotation_sampling", "plain",
+    "TrainerConfig", "hydrate", "is_annotation_sampling", "plain", "seal",
 ]
+
+
+# --- editable sections -------------------------------------------------------------------
+
+_SEALED = "_sealed"
+
+
+class _Editable:
+    """A section its owner changes by assigning fields, until a plan seals it (:func:`seal`)."""
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if self.__dict__.get(_SEALED):
+            raise dataclasses.FrozenInstanceError(
+                f"cannot assign to field {name!r}: a plan is frozen (edit the config and resolve it again)"
+            )
+        object.__setattr__(self, name, value)
+
+
+def seal(config: ExperimentConfig) -> ExperimentConfig:
+    """Make ``config`` and its sections refuse field writes (a :class:`~soma.plan.Plan`'s)."""
+    for section in (config, *(getattr(config, f.name) for f in dataclasses.fields(config)), config.features.cache):
+        if isinstance(section, _Editable):
+            object.__setattr__(section, _SEALED, True)
+    return config
 
 
 # --- {name, params} leaves -------------------------------------------------------------
@@ -84,8 +113,8 @@ class EncoderLeaf(Component):
 
 # --- features ------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class CacheOptions:
+@dataclass
+class CacheOptions(_Editable):
     """``features.cache``: the feature and tiling cache policy. ``dtype`` (``None``
     follows the compute precision) enters every cache key; ``on_identity_mismatch``
     (``error`` or ``reextract``) handles a pooled cache from another slide2vec identity."""
@@ -109,8 +138,8 @@ def is_annotation_sampling(masks: Any) -> bool:
     return not is_binary_tissue_tiling(masks)
 
 
-@dataclass(frozen=True)
-class FeaturesConfig:
+@dataclass
+class FeaturesConfig(_Editable):
     """``features``: where a run's features come from (ADR 0019).
 
     ``kind``: ``cached`` extracts once; ``live`` re-encodes the (augmented) pixels every
@@ -151,8 +180,8 @@ class FeaturesConfig:
 # --- the other sections ----------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class RunConfig:
+@dataclass
+class RunConfig(_Editable):
     """``run``: :class:`~soma.pipeline.Pipeline`'s keywords. ``resume`` reuses the latest
     run dir, ``run_id`` pins one, ``folds`` trains only those folds in this launch (launches
     pinned to one ``run_id`` split the folds); ``mirror_root`` mirrors fold artifacts."""
@@ -177,8 +206,8 @@ class RunConfig:
             object.__setattr__(self, "folds", folds)
 
 
-@dataclass(frozen=True)
-class CohortConfig:
+@dataclass
+class CohortConfig(_Editable):
     """``cohort``: :meth:`~soma.data.Cohort.from_csv`'s files. ``collapse: patient_id``
     makes one sample per patient; ``tune_is_test`` uses one held-out split for selection
     and test; ``allow_missing_tune`` lets a fold without tune select on train."""
@@ -194,8 +223,8 @@ class CohortConfig:
             _check_choice("cohort.collapse", self.collapse, ("patient_id",))
 
 
-@dataclass(frozen=True)
-class LoadersConfig:
+@dataclass
+class LoadersConfig(_Editable):
     """``loaders``: :func:`soma.learn.loaders`' keywords. ``sampler`` is a training-batch
     sampler leaf (cached segmentation ROI strategies); ``augment`` augments a live grid
     run's train split."""
@@ -256,8 +285,8 @@ def _default_callbacks() -> list[Component]:
     return [Component("checkpoint"), Component("early_stopping")]
 
 
-@dataclass(frozen=True)
-class TrainerConfig:
+@dataclass
+class TrainerConfig(_Editable):
     """``trainer``: :class:`~soma.learn.Trainer`'s keywords. A step budget (``max_steps``)
     replaces the epoch budget; ``callbacks`` are the selection policy (``checkpoint``,
     ``early_stopping``; leave the latter out to train the whole budget)."""
@@ -304,8 +333,8 @@ class CRoMaOptions:
                 raise ValueError(f"representation.{name} must be exactly {fixed!r} (v1 protocol), got {value!r}.")
 
 
-@dataclass(frozen=True)
-class EvaluationConfig:
+@dataclass
+class EvaluationConfig(_Editable):
     """``evaluation``: :func:`soma.evaluate`'s ``metrics`` and ``subgroups`` (columns), and
     what a run scores and saves. ``holdout_test`` skips test work; ``overwrite_test``
     re-scores a test set. The grid shape saves overlays, the segmentation softmax and the
@@ -333,8 +362,8 @@ class EvaluationConfig:
 # --- the experiment --------------------------------------------------------------------
 
 
-@dataclass(frozen=True, kw_only=True)
-class ExperimentConfig:
+@dataclass(kw_only=True)
+class ExperimentConfig(_Editable):
     """A whole experiment: the seven sections. Only ``cohort`` is required; a run that
     trains needs a ``learner`` with a ``head``."""
 
@@ -358,7 +387,7 @@ class ExperimentConfig:
     @classmethod
     def from_yaml(cls, path: str | Path, overrides: Mapping[str, Any] | None = None) -> ExperimentConfig:
         """Read a YAML config; ``overrides`` (nested like the file) are merged in first, so
-        a committed config can be repointed (``--set``, a benchmark's paths) unedited."""
+        a benchmark can repoint a committed config's paths without editing it."""
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         if not isinstance(data, Mapping):
             raise TypeError(f"{path}: an experiment config is a mapping of sections")

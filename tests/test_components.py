@@ -28,6 +28,7 @@ DOMAINS = [
     "heads",
     "learners",
     "optimizers",
+    "presets",
     "samplers",
     "schedulers",
 ]

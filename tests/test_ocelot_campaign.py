@@ -37,20 +37,34 @@ def test_cells_cover_the_2x2_plus_anchor():
 
 def test_every_cell_uses_the_one_native_manifest(tmp_path: Path):
     m = _load_campaign()
-    expected = [
-        "--set",
-        f"cohort.records={tmp_path / 'curated' / 'dataset.csv'}",
-        "--set",
-        f"cohort.splits={tmp_path / 'curated' / 'splits.csv'}",
-    ]
+    curated = tmp_path / "curated"
 
-    assert [m._data_overrides(cell, tmp_path) for cell in m.CELLS] == [
-        expected,
-        expected,
-        expected,
-        expected,
-        expected,
-    ]
+    for cell in m.CELLS:
+        cfg = m.cell_config(cell, tmp_path, seed=2, holdout_test=True)
+        assert (str(cfg.cohort.records), str(cfg.cohort.splits)) == (
+            str(curated / "dataset.csv"),
+            str(curated / "splits.csv"),
+        )
+        assert (cfg.run.seed, cfg.evaluation.holdout_test) == (2, True)
+
+
+def test_a_cell_seed_launch_runs_the_config_it_writes(tmp_path: Path, monkeypatch):
+    m = _load_campaign()
+    cell = m.CELLS[0]
+    monkeypatch.setattr(m, "output_root_for", lambda _cell: tmp_path / "out")
+    commands = []
+    monkeypatch.setattr(m, "_run", lambda cmd, **kw: commands.append(cmd))
+
+    m.train_cell_seed(cell, 1, tmp_path, holdout_test=False, max_epochs=1)
+
+    (command,) = commands
+    assert command[1:4] == ["-m", "soma", "run"]
+    from soma.config import ExperimentConfig
+
+    launched = ExperimentConfig.from_yaml(command[4])
+    assert Path(command[4]).parent == tmp_path / "out"
+    assert (launched.run.seed, launched.evaluation.holdout_test, launched.trainer.max_epochs) == (1, False, 1)
+    assert str(launched.cohort.records) == str(tmp_path / "curated" / "dataset.csv")
 
 
 def test_campaign_resolves_the_current_dense_image_cache_layout(monkeypatch, tmp_path: Path):

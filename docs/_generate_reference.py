@@ -40,7 +40,7 @@ _REFERENCE_HEADER = """\
 # prints them with their defaults, and a run's plan.yaml records every value it used.
 # features.execution.num_gpus and num_preprocessing_workers are null here: slide2vec
 # resolves them for the machine a run starts on.
-# Run with: soma /path/to/config.yaml
+# Run with: soma run /path/to/config.yaml
 """
 
 
@@ -78,6 +78,18 @@ def _benchmark_family(family: str) -> list:
     return [get_benchmark(entry["name"]) for entry in components("benchmarks") if entry["name"].startswith(f"{family}/")]
 
 
+def _preset_rows() -> str:
+    """One bullet per registered preset: its call signature and its summary line."""
+    lines = []
+    for entry in components("presets"):
+        arguments = ", ".join(
+            name if name in entry["required"] else f'{name}="{value}"' if isinstance(value, str) else f"{name}={value!r}"
+            for name, value in entry["params"].items()
+        )
+        lines.append(f"* ``{entry['name']}({arguments})`` — {entry['description']}")
+    return "\n".join(lines)
+
+
 def build_cli_rst() -> str:
     config_reference = _default_config_yaml_block()
     kinds = ", ".join(f"``{kind}``" for kind in components())
@@ -87,7 +99,7 @@ def build_cli_rst() -> str:
         CLI
         ===
 
-        Use ``soma`` to run YAML experiments, discover components, score
+        Use ``soma`` to run experiments, discover components, score
         predictions, reproduce benchmarks, and compare completed runs.
 
         .. figure:: /_static/figures/run-flow.svg
@@ -100,23 +112,29 @@ def build_cli_rst() -> str:
         Basic usage
         -----------
 
-        The main entrypoint takes a config path directly::
+        ``soma run`` runs a YAML config::
 
-            soma /path/to/config.yaml
+            soma run /path/to/config.yaml
 
-        Override individual settings without editing the file::
+        or a preset on your cohort (see :ref:`presets`)::
 
-            soma config.yaml --set run.output_dir=runs/local --set trainer.max_epochs=5
+            soma run --preset mil_classification --encoder uni2 \\
+                --cohort dataset.csv --splits splits.csv --out runs
 
-        Repeat ``--set KEY=VALUE`` for multiple overrides. Keys are dotted YAML
-        paths and values are parsed as YAML, preserving numbers and booleans.
+        A config is edited, not overridden: there are no override flags. To start
+        from a preset and change it, print it as YAML with every default filled in,
+        edit the file, and run it::
+
+            soma init mil_classification --encoder uni2 > experiment.yaml
+            soma run experiment.yaml
+
         Use ``soma --help`` or ``soma COMMAND --help`` for command options.
 
         Train on features you already have with ``--feature-dir``: the directory of a
         pooled feature cache (slide, patient and tile runs) or of dense grids
         (segmentation and detection). The run attaches it and extracts nothing::
 
-            soma config.yaml --feature-dir runs/features/uni2
+            soma run config.yaml --feature-dir runs/features/uni2
 
         ``soma`` prints soma's INFO log messages to stderr, and warnings and errors
         from other libraries. See :ref:`log-output` for the same behaviour in a Python
@@ -125,9 +143,25 @@ def build_cli_rst() -> str:
         Available commands
         ------------------
 
-        ``soma CONFIG [--set KEY=VALUE ...] [--feature-dir DIR]``
-           Run a full pipeline from the given YAML config file, optionally on
-           pre-extracted features.
+        ``soma run CONFIG [--feature-dir DIR]``
+           Run an experiment from a YAML config file, optionally on pre-extracted
+           features. The run directory keeps the config as given (``config.yaml``)
+           and its resolved plan (``plan.yaml``), written before training starts;
+           ``soma run plan.yaml`` replays a run with every value pinned.
+
+        ``soma run --preset NAME --cohort CSV --splits CSV --out DIR [--seed N] [PRESET ARGUMENTS] [--feature-dir DIR]``
+           Run a preset on a cohort: the preset's own arguments are flags
+           (``--encoder``, ``--aggregator``, ``--decoder``; ``soma run --preset NAME
+           --help`` lists them), its required ones are required, and ``--seed``
+           defaults to 0. The registered presets:
+
+        __PRESETS__
+
+        ``soma init NAME [PRESET ARGUMENTS]``
+           Print the preset as an editable YAML config with every component's
+           params at their defaults. Fields the cohort or the machine decide are
+           ``null``; point ``cohort.records`` and ``cohort.splits`` at your files
+           before ``soma run``.
 
         ``soma list [KIND] [--level {tile,slide,patient}]``
            Without ``KIND``, list the component kinds: __KINDS__.
@@ -203,6 +237,7 @@ def build_cli_rst() -> str:
         """
         )
         .replace("__KINDS__", kinds)
+        .replace("__PRESETS__", indent(_preset_rows(), "   "))
         + config_reference
         + "\n\n"
         + dedent(

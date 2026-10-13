@@ -26,6 +26,7 @@ _DOMAINS: dict[str, tuple[str, str]] = {
     "heads": ("soma.tasks", "task_registry"),
     "learners": ("soma.learn", "learner_registry"),
     "optimizers": ("soma.learn", "optimizer_registry"),
+    "presets": ("soma.presets", "preset_registry"),
     "samplers": ("soma.learn", "sampler_registry"),
     "schedulers": ("soma.learn", "scheduler_registry"),
 }

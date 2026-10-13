@@ -4,7 +4,8 @@ The two segmentation tasks of the `kaiko-ai/eva <https://github.com/kaiko-ai/eva
 pathology leaderboard join the ``eva`` family next to the tile-classification members of
 :mod:`soma.benchmarks.eva`. They share that module's encoder table, reference ledger and
 ``soma reproduce eva`` fan-out, and run on soma's dense (grid) segmentation
-path with components that exist only to reproduce EVA's decoder protocol:
+path, starting from the :func:`~soma.presets.segmentation` preset, with components that
+exist only to reproduce EVA's decoder protocol:
 
 * ``eva_conv_with_image`` — EVA's online ``ConvDecoderWithImage``, the leaderboard
   decoder: it concatenates the ImageNet-normalised input tile to the upsampled grid, so
@@ -80,6 +81,7 @@ from dataclasses import replace as _replace
 from hs2p import TilingConfig
 from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
 
+from soma import presets
 from soma.config import (
     CacheOptions,
     CohortConfig,
@@ -87,8 +89,6 @@ from soma.config import (
     EncoderLeaf,
     EvaluationConfig,
     ExperimentConfig,
-    FeaturesConfig,
-    LearnerConfig,
     LoadersConfig,
     RunConfig,
     TrainerConfig,
@@ -417,61 +417,50 @@ def _build_eva_segmentation_config(
 
     live = spec.train_crop_scale is not None
     monitor = {"monitor": "foreground_mean_dice", "mode": "max"}
-    return ExperimentConfig(
-        run=RunConfig(output_dir=Path(output_root), seed=seed),
-        cohort=CohortConfig(records=str(dataset_csv), splits=str(splits_csv), tune_is_test=True),
-        features=FeaturesConfig(
-            kind="live" if live else "cached",
-            # Dense extraction returns the patch-token grid, so no pooled output variant
-            # applies; the tiles carry only a nominal spacing, so the encoder's
-            # recommended regime is moot.
-            encoder=EncoderLeaf(name=encoder, params={"allow_non_recommended_settings": True}),
-            extraction=PreprocessingConfig(
-                tiling=TilingConfig(
-                    requested_spacing_um=NOMINAL_SPACING_UM,
-                    requested_tile_size_px=OUTPUT_PX,
-                    tolerance=0.05,
-                    overlap=0.0,
-                ),
-            ),
-            # The curated PNGs declare NOMINAL_SPACING_UM; requesting the same value reads
-            # EVA's 224 px samples pixel for pixel (no resampling). EVA builds its
-            # backbones with timm ``features_only=True, out_indices=1``: the last block's
-            # patch grid *before* the final norm. Match that tap.
-            dense=DenseOptions(
-                spacing_um=NOMINAL_SPACING_UM,
-                target_size=OUTPUT_PX,
-                feature_kind=FEATURE_KIND,
-            ),
-            execution=_replace(execution or ExecutionOptions(), batch_size=encoder_batch_size),
-            cache=cache or CacheOptions(enabled=True),
+    cfg = presets.segmentation(encoder, DECODER_NAME)
+    cfg.run = RunConfig(output_dir=Path(output_root), seed=seed)
+    cfg.cohort = CohortConfig(records=str(dataset_csv), splits=str(splits_csv), tune_is_test=True)
+    cfg.features.kind = "live" if live else "cached"
+    # Dense extraction returns the patch-token grid, so no pooled output variant applies;
+    # the tiles carry only a nominal spacing, so the encoder's recommended regime is moot.
+    cfg.features.encoder = EncoderLeaf(name=encoder, params={"allow_non_recommended_settings": True})
+    cfg.features.extraction = PreprocessingConfig(
+        tiling=TilingConfig(
+            requested_spacing_um=NOMINAL_SPACING_UM,
+            requested_tile_size_px=OUTPUT_PX,
+            tolerance=0.05,
+            overlap=0.0,
         ),
-        loaders=LoadersConfig(
-            batch_size=BATCH_SIZE,
-            num_workers=head_num_workers,
-            augment=(
-                Component("segmentation", {"crop_scale": list(spec.train_crop_scale)}) if live else None
-            ),
-        ),
-        learner=LearnerConfig(
-            "dense",
-            {
-                "decoder": Component(DECODER_NAME),
-                "head": Component(HEAD_NAME, task_params),
-                "optimizer": Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY}),
-                # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
-                "scheduler": [Component("constant", {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS})],
-            },
-        ),
-        trainer=TrainerConfig(
-            max_steps=max_steps,
-            callbacks=[
-                Component("checkpoint", monitor),
-                Component("early_stopping", {**monitor, "patience": patience}),
-            ],
-        ),
-        evaluation=EvaluationConfig(metrics=list(METRICS)),
     )
+    # The curated PNGs declare NOMINAL_SPACING_UM; requesting the same value reads EVA's
+    # 224 px samples pixel for pixel (no resampling). EVA builds its backbones with timm
+    # ``features_only=True, out_indices=1``: the last block's patch grid *before* the final
+    # norm. Match that tap.
+    cfg.features.dense = DenseOptions(
+        spacing_um=NOMINAL_SPACING_UM,
+        target_size=OUTPUT_PX,
+        feature_kind=FEATURE_KIND,
+    )
+    cfg.features.execution = _replace(execution or ExecutionOptions(), batch_size=encoder_batch_size)
+    cfg.features.cache = cache or CacheOptions(enabled=True)
+    cfg.loaders = LoadersConfig(
+        batch_size=BATCH_SIZE,
+        num_workers=head_num_workers,
+        augment=Component("segmentation", {"crop_scale": list(spec.train_crop_scale)}) if live else None,
+    )
+    cfg.learner.params["head"] = Component(HEAD_NAME, task_params)
+    cfg.learner.params["optimizer"] = Component("adamw", {"lr": LEARNING_RATE, "weight_decay": WEIGHT_DECAY})
+    # EVA's warm-up: torch ConstantLR (factor 1/3 for 5 epochs) and no main schedule.
+    cfg.learner.params["scheduler"] = [Component("constant", {"factor": WARMUP_FACTOR, "total_iters": WARMUP_EPOCHS})]
+    cfg.trainer = TrainerConfig(
+        max_steps=max_steps,
+        callbacks=[
+            Component("checkpoint", monitor),
+            Component("early_stopping", {**monitor, "patience": patience}),
+        ],
+    )
+    cfg.evaluation = EvaluationConfig(metrics=list(METRICS))
+    return cfg
 
 
 class EvaSegmentationBenchmark:

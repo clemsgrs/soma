@@ -75,19 +75,27 @@ segmentation and detection). The head decides the task family. A set run's
 sample is a patient with ``cohort.collapse: patient_id``, a tile when a tile
 encoder runs without an aggregator, and otherwise a slide.
 
-YAML and overrides
-------------------
+Editing a config
+----------------
 
-``ExperimentConfig.from_yaml(path)`` reads a YAML file and ``to_yaml(path)``
-writes one; ``from_yaml(path, overrides)`` merges a nested mapping into the file
-first. On the command line, ``--set`` takes dotted keys into the sections:
+A config has no override mechanism: you edit it. In Python, assign its fields:
 
-.. code-block:: bash
+.. code-block:: python
 
-   soma config.yaml --set run.seed=1 --set learner.params.head.params.dropout=0.2
+   from soma import presets
 
-Values are parsed as YAML, so numbers and booleans keep their types. A mapping is
-merged key by key; a list is replaced whole.
+   config = presets.mil_classification("uni2")
+   config.run.seed = 1
+   config.trainer.max_steps = 2000
+   config.learner.params["head"].params["dropout"] = 0.2
+
+A field write runs no check of its own; :func:`soma.plan.check` builds every
+section again, so a value its constructor would refuse is refused before
+anything runs. A step budget written over an epoch budget replaces it, as at
+construction. On the command line, edit the YAML file: ``soma init PRESET``
+prints a preset (see :ref:`presets`) with every default filled in, and
+``soma run config.yaml`` runs a file. ``ExperimentConfig.from_yaml(path)`` reads
+a YAML file and ``to_yaml(path)`` writes one.
 
 Checking and resolving
 ----------------------
@@ -99,12 +107,13 @@ config against its cohort into a :class:`soma.Plan`: every component's params
 with their defaults, plus what the cohort decides, such as a classification
 head's label map. A value the config states wins; a contradiction raises. A
 ``null`` value counts as unset, so the cohort decides it.
-:class:`~soma.Pipeline` runs both at its start.
+:class:`~soma.Pipeline` runs both at its start. A plan is frozen: its sections
+refuse field writes.
 
 The run directory keeps ``config.yaml`` (the config as given) and ``plan.yaml``
-(the plan). ``plan.yaml`` loads as a config, so ``soma plan.yaml`` replays a run
-with every value pinned, while ``soma config.yaml`` resolves again against the
-current code and cohort. See :ref:`plan-yaml` for how a resume compares plans and
+(the plan). ``plan.yaml`` loads as a config, so ``soma run plan.yaml`` replays a
+run with every value pinned, while ``soma run config.yaml`` resolves again
+against the current code and cohort. See :ref:`plan-yaml` for how a resume compares plans and
 what the experiment identity digests.
 
 .. autoclass:: soma.ExperimentConfig
@@ -116,3 +125,19 @@ what the experiment identity digests.
    :members: comparable, from_yaml, to_yaml
 
 .. autoclass:: soma.config.Component
+
+Presets
+-------
+
+A preset returns a complete config for a common task (see :ref:`presets`);
+``soma.components("presets")`` lists them with their arguments.
+
+.. autofunction:: soma.presets.mil_classification
+
+.. autofunction:: soma.presets.tile_classification
+
+.. autofunction:: soma.presets.survival
+
+.. autofunction:: soma.presets.segmentation
+
+.. autofunction:: soma.presets.detection

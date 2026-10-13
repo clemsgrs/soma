@@ -13,7 +13,7 @@ Three barrier-synchronised phases:
 
   1. extract — G parallel processes (encoder-sharded), each pinned to one GPU, populate the
      dataset-wide dense cache. Note this runs campaign.py's ``extract``, which invokes a full
-     ``python -m soma`` run for replicate 0 — so it *extracts and then trains* that replicate
+     ``python -m soma run`` for replicate 0 — so it *extracts and then trains* that replicate
      (~2h/encoder), it is not a minutes-long extraction-only pass. Nothing is wasted (phase 2
      skips the cell it already trained), and an encoder that OOMs (e.g. genbio-pathfm at
      4608-dim) still fails within the first minutes, before any real GPU-hours are spent.

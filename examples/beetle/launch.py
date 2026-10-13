@@ -32,7 +32,6 @@ ENCODER_LOCK_PATH = PROJECT_DIR / "encoder_lock.json"
 BATCH_SIZE_TOKEN = "${BEETLE_CAMPAIGN_BATCH_SIZE}"
 ENCODER_CACHE_ID_TOKEN = "${BEETLE_ENCODER_CACHE_ID}"
 RUNTIME_REQUIRED_FILES = ("config.json",)
-RUN_LIFECYCLE_OVERRIDE_PREFIXES = ("run.run_id=", "run.resume=")
 
 
 @dataclass(frozen=True)
@@ -272,6 +271,17 @@ def resolve_arm_configs(
     return paths
 
 
+def _with_run_lifecycle(path: Path, *, run_id: str | None, resume: bool) -> Path:
+    """The resolved arm config with ``run.run_id`` / ``run.resume`` written in, saved
+    beside it as ``<arm>.launch.yaml``: the config a pinned launch runs."""
+    config = ExperimentConfig.from_yaml(path)
+    config.run.run_id = run_id
+    config.run.resume = resume
+    launched = path.with_name(f"{path.stem}.launch.yaml")
+    config.to_yaml(launched)
+    return launched
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -283,19 +293,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     run_arm.add_argument("--preflight", type=Path, required=True)
     run_arm.add_argument("--output-dir", type=Path, required=True)
     run_arm.add_argument("--arm", choices=ARM_NAMES, required=True)
-    run_arm.add_argument("--set", dest="overrides", action="append", default=[])
+    # The run's lifecycle is the only thing a pinned launch may change; a recipe change
+    # needs a newly reviewed protocol.
+    lifecycle = run_arm.add_mutually_exclusive_group()
+    lifecycle.add_argument("--run-id", default=None, help="Resume or extend this run dir.")
+    lifecycle.add_argument(
+        "--resume", action="store_true", help="Resume the latest compatible run."
+    )
     args = parser.parse_args(argv)
-
-    overrides = getattr(args, "overrides", [])
-    invalid_overrides = [
-        value
-        for value in overrides
-        if not value.startswith(RUN_LIFECYCLE_OVERRIDE_PREFIXES)
-    ]
-    if invalid_overrides:
-        parser.error(
-            "run-arm --set accepts only run.run_id=... or run.resume=... overrides"
-        )
 
     paths = resolve_arm_configs(
         preflight_path=args.preflight,
@@ -318,9 +323,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         arms = ARM_NAMES if args.command == "run" else (args.arm,)
         for arm in arms:
-            command = [sys.executable, "-m", "soma", str(paths[arm].resolve())]
-            for override in overrides:
-                command.extend(("--set", override))
+            path = paths[arm]
+            if getattr(args, "run_id", None) is not None or getattr(args, "resume", False):
+                path = _with_run_lifecycle(path, run_id=args.run_id, resume=args.resume)
+            command = [sys.executable, "-m", "soma", "run", str(path.resolve())]
             subprocess.run(
                 command,
                 check=True,

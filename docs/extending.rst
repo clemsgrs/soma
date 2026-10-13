@@ -371,7 +371,7 @@ run soma from a small script that imports your module and then calls
 
     from soma.cli import main
 
-    main(["config.yaml"])
+    main(["run", "config.yaml"])
 
 ``soma list heads`` and ``soma list decoders`` print every registered
 component, built-in or not, with its params.

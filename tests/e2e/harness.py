@@ -1,4 +1,4 @@
-"""Drive ``soma <config.yaml>`` end to end and turn a run into a repeatable artifact.
+"""Drive ``soma run <config.yaml>`` end to end and turn a run into a repeatable artifact.
 
 The artifact is the scenario's verifiable output: the metrics the run reported, the
 checks the test applied to them, and content digests of the prediction files, all
@@ -90,7 +90,7 @@ def run_soma(config: dict[str, Any], config_path: Path, *cli_args: str) -> Run:
     output_root = Path(config["run"]["output_dir"])
     before = set(output_root.glob("experiments/*/runs/*"))
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
-    soma_main([str(config_path), *cli_args])
+    soma_main(["run", str(config_path), *cli_args])
     created = sorted(set(output_root.glob("experiments/*/runs/*")) - before)
     assert len(created) == 1, f"expected one new run dir, found {created}"
     run_dir = created[0]

@@ -31,8 +31,9 @@ Design decisions that make this cheap and resumable:
 Each cell's config is the committed benchmark YAML under
 ``soma/benchmarks/configs/ocelot/`` — the same files the registered ``ocelot`` benchmark's
 ``build_config`` loads — resolved here by ``(encoder, spacing)``. It supplies the
-output_root, encoder, decoder, and detection protocol; this driver only overrides the
-dataset paths (from ``--data-root``), the seed, and the holdout flag. Needs a GPU and an
+output_root, encoder, decoder, and detection protocol; this driver only writes the dataset
+paths (from ``--data-root``), the seed, and the holdout flag into it and runs the result
+(``soma run``) from the cell's output_root. Needs a GPU and an
 HF token (Virchow2 and UNI2 are gated). Run from the soma repo root.
 """
 
@@ -242,23 +243,30 @@ def find_seed_runs(output_root: Path) -> dict[int, Path]:
     return {seed: run_dir for seed, (_, run_dir) in by_seed.items()}
 
 
-def _data_overrides(cell: Cell, data_root: Path) -> list[str]:
+def cell_config(cell: Cell, data_root: Path, *, seed: int, holdout_test: bool, max_epochs: int | None = None):
+    """The cell's committed config pointed at the curated manifest, with the seed and the
+    holdout flag (and a budget, for the test-grid backfill) written in."""
+    from soma.config import ExperimentConfig
+
+    cfg = ExperimentConfig.from_yaml(cell.config_path)
     curated = data_root / "curated"
-    return [
-        "--set", f"cohort.records={curated / 'dataset.csv'}",
-        "--set", f"cohort.splits={curated / 'splits.csv'}",
-    ]
+    cfg.cohort.records = str(curated / "dataset.csv")
+    cfg.cohort.splits = str(curated / "splits.csv")
+    cfg.run.seed = seed
+    cfg.evaluation.holdout_test = holdout_test
+    if max_epochs is not None:
+        cfg.trainer.max_epochs = max_epochs
+    return cfg
 
 
 def train_cell_seed(
-    cell: Cell, seed: int, data_root: Path, *, holdout_test: bool, extra: list[str] | None = None
+    cell: Cell, seed: int, data_root: Path, *, holdout_test: bool, max_epochs: int | None = None
 ) -> None:
-    """Run ``python -m soma`` for one (cell, seed); the config supplies the output_root."""
-    cmd = [sys.executable, "-m", "soma", str(cell.config_path)]
-    cmd += _data_overrides(cell, data_root)
-    cmd += ["--set", f"run.seed={seed}", "--set", f"evaluation.holdout_test={str(holdout_test).lower()}"]
-    cmd += extra or []
-    _run(cmd, cwd=REPO_ROOT)
+    """Run ``python -m soma run`` for one (cell, seed) on the config written beside its runs."""
+    cfg = cell_config(cell, data_root, seed=seed, holdout_test=holdout_test, max_epochs=max_epochs)
+    path = output_root_for(cell) / f"launch_seed{seed}.yaml"
+    cfg.to_yaml(path)
+    _run([sys.executable, "-m", "soma", "run", str(path)], cwd=REPO_ROOT)
 
 
 def score_run(
@@ -410,9 +418,7 @@ def backfill_test_grids(cell: Cell, data_root: Path) -> None:
     holdout_test=false pass extracts them incrementally (train/tune already cached) into the
     seed-independent cache; its throwaway decoder (BACKFILL_SEED) is never scored.
     """
-    train_cell_seed(
-        cell, BACKFILL_SEED, data_root, holdout_test=False, extra=["--set", "trainer.max_epochs=1"]
-    )
+    train_cell_seed(cell, BACKFILL_SEED, data_root, holdout_test=False, max_epochs=1)
 
 
 def format_confirmation_markdown(results: dict[str, dict], winner: str) -> str:

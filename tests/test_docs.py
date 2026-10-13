@@ -444,6 +444,42 @@ def test_getting_started_python_examples_are_syntactically_valid() -> None:
         ast.parse(block)
 
 
+def test_getting_started_preset_example_edits_a_checked_config() -> None:
+    rst = (Path(__file__).resolve().parents[1] / "docs" / "getting-started.rst").read_text(encoding="utf-8")
+    (block,) = [block for block in _extract_code_blocks(rst, "python") if "presets." in block]
+    namespace: dict[str, object] = {}
+    exec(_without_pipeline_run(block), namespace)
+
+    config = namespace["config"]
+    check(config)
+    assert (str(config.cohort.records), str(config.run.output_dir), config.trainer.max_epochs) == (
+        "dataset.csv",
+        "output",
+        20,
+    )
+
+
+def test_getting_started_preset_commands_match_the_cli() -> None:
+    import shlex
+
+    from soma.cli import _build_init_parser, _build_run_parser
+
+    rst = (Path(__file__).resolve().parents[1] / "docs" / "getting-started.rst").read_text(encoding="utf-8")
+    commands = [
+        shlex.split(line.split("#")[0].split(">")[0])
+        for block in _extract_code_blocks(rst, "bash")
+        for line in block.replace("\\\n", " ").splitlines()
+        if line.startswith(("soma run --preset", "soma init"))
+    ]
+    assert [command[:2] for command in commands] == [["soma", "run"], ["soma", "init"]]
+    run = _build_run_parser(commands[0][2:]).parse_args(commands[0][2:])
+    assert (run.preset, run.preset_encoder, run.cohort, run.splits, run.out) == (
+        "mil_classification", "phikon", "dataset.csv", "splits.csv", "output",
+    )
+    init = _build_init_parser(commands[1][2:]).parse_args(commands[1][2:])
+    assert (init.preset, init.preset_encoder) == ("mil_classification", "phikon")
+
+
 def _without_pipeline_run(code: str) -> str:
     return "\n".join(
         line
