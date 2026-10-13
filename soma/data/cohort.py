@@ -47,7 +47,7 @@ EXPRESSION_NAMES_FILENAME = "genes.json"
 EXPRESSION_INDEX_COLUMN = "target_index"
 
 SPLIT_COLUMNS = frozenset({"split", "fold"})
-#: Columns owned by the image / annotation manifests (and the legacy ROI dataset writer).
+#: Columns owned by the image / annotation manifests (and the ROI table extraction writes).
 #: They never reach ``SampleRecord.metadata``: a record carries no file paths.
 MANIFEST_COLUMNS = frozenset(
     {
@@ -494,6 +494,50 @@ class Cohort:
             )
             folds.append(replace(fold, tests={"test": fold.tune}, test_from_tune=True))
         return Cohort(self._records, folds, unit=self._unit, target_names=self._target_names)
+
+    def derived(self, children: Mapping[str, str]) -> "Cohort":
+        """A cohort of ``children`` (child id -> parent ``sample_id``), each inheriting its
+        parent sample.
+
+        One record per child, in ``children`` order, carrying its parent's targets,
+        patient and metadata; each child sits in every split its parent sits in. Splits
+        are sample-level and children (tiles, ROIs) inherit them, so a parent without
+        children leaves its splits' ids but no split. The unit is kept.
+        """
+        records: list[SampleRecord] = []
+        for child_id, parent_id in children.items():
+            if parent_id not in self._by_id:
+                raise ValueError(f"Child {child_id!r} names an unknown parent sample {parent_id!r}.")
+            parent = self._by_id[parent_id]
+            records.append(
+                SampleRecord(
+                    sample_id=str(child_id),
+                    targets=dict(parent.targets),
+                    patient_id=parent.patient_id,
+                    metadata=dict(parent.metadata),
+                )
+            )
+
+        def inherited(ids: tuple[str, ...]) -> tuple[str, ...]:
+            parents = set(ids)
+            return tuple(str(child) for child, parent in children.items() if parent in parents)
+
+        folds = [
+            FoldSplit(
+                train=inherited(fold.train),
+                tune=inherited(fold.tune),
+                tests={name: inherited(ids) for name, ids in fold.tests.items()},
+                test_from_tune=fold.test_from_tune,
+            )
+            for fold in self._folds
+        ]
+        return Cohort(
+            records,
+            folds,
+            unit=self._unit,
+            allow_missing_test=True,
+            target_names=self._target_names,
+        )
 
     def collapse(self, unit: str) -> "Cohort":
         """One record per ``unit`` member group, carrying the group's shared targets.
