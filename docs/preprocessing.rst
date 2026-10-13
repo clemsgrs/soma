@@ -37,8 +37,10 @@ Key settings
      - Tiles per side of a hierarchical region
      - Alternative to ``requested_region_size_px``
    * - ``tissue_method``
-     - Tissue segmentation method: ``sam2``, ``hsv``, ``otsu``, or ``threshold``
-     - Leave empty/unused when dataset rows provide pre-computed tissue masks
+     - Tissue segmentation method: ``sam2``, ``hsv``, ``otsu``, ``threshold``, or
+       ``precomputed_mask``
+     - Set ``precomputed_mask`` when dataset rows provide tissue masks; soma
+       selects it automatically when every row has one
    * - ``sam2_device``
      - Device used for SAM2 tissue segmentation
      - Set explicitly when running SAM2 on GPU
