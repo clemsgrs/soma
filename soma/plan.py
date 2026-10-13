@@ -74,7 +74,7 @@ class Plan(Mapping):
     """
 
     def __init__(self, config: ExperimentConfig) -> None:
-        self._config = seal(config)
+        self._config = seal(copy.deepcopy(config))
 
     @property
     def config(self) -> ExperimentConfig:

@@ -277,6 +277,15 @@ def test_init_requires_the_preset_s_arguments(capsys):
     assert "--decoder" in capsys.readouterr().err
 
 
+def test_init_refuses_arguments_that_make_an_invalid_config(capsys):
+    from soma.cli import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["init", "survival", "--encoder", "uni2", "--aggregator", "clam_sb"])
+    assert exc_info.value.code == 2
+    assert "not supported for survival" in capsys.readouterr().err
+
+
 def _rows(out: str) -> list[list[str]]:
     """The cells of each table row ``soma list`` printed."""
     return [[cell.strip() for cell in line.split("│")[1:-1]] for line in out.splitlines() if line.startswith("│")]

@@ -270,6 +270,11 @@ def test_a_plan_refuses_field_writes(files):
     with pytest.raises(FrozenInstanceError):
         plan.config.run = plan.run
     assert plan.trainer.max_epochs == 50
+    # Wrapping a config as a plan freezes the plan's copy, not the caller's config.
+    config = experiment(*files, aggregator="abmil")
+    wrapped = Plan(config)
+    config.trainer.max_epochs = 3
+    assert wrapped.trainer.max_epochs == 50
 
 
 def test_check_refuses_a_field_write_its_section_would_refuse(files):

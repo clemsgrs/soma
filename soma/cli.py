@@ -72,28 +72,36 @@ def _preset_arguments() -> dict[str, list[str]]:
     return arguments
 
 
+def _flag(argument: str) -> str:
+    return f"--{argument.replace('_', '-')}"
+
+
 def _add_preset_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_argument_group("preset arguments", "The chosen preset's own arguments (soma list presets).")
     for name, takers in _preset_arguments().items():
         group.add_argument(
-            f"--{name.replace('_', '-')}", dest=f"preset_{name}", metavar=name.upper(), default=None,
+            _flag(name), dest=f"preset_{name}", metavar=name.upper(), default=None,
             help=f"Taken by: {', '.join(takers)}.",
         )
+
+
+def _given_preset_arguments(args: argparse.Namespace) -> dict[str, str]:
+    """The preset-argument flags given on the command line, by argument name."""
+    given = {name: getattr(args, f"preset_{name}") for name in _preset_arguments()}
+    return {name: value for name, value in given.items() if value is not None}
 
 
 def _build_preset(parser: argparse.ArgumentParser, name: str, args: argparse.Namespace) -> ExperimentConfig:
     """The preset ``name`` called with the flags ``args`` gives: exactly its own arguments,
     every required one present."""
     entry = next(entry for entry in components("presets") if entry["name"] == name)
-    given = {key: getattr(args, f"preset_{key}") for key in _preset_arguments()}
-    given = {key: value for key, value in given.items() if value is not None}
-    flag = lambda key: f"--{key.replace('_', '-')}"  # noqa: E731
+    given = _given_preset_arguments(args)
     foreign = sorted(set(given) - set(entry["params"]))
     if foreign:
-        parser.error(f"preset {name} takes no {', '.join(map(flag, foreign))}")
-    missing = [key for key in entry["required"] if key not in given]
+        parser.error(f"preset {name} takes no {', '.join(map(_flag, foreign))}")
+    missing = [argument for argument in entry["required"] if argument not in given]
     if missing:
-        parser.error(f"preset {name} needs {', '.join(map(flag, missing))}")
+        parser.error(f"preset {name} needs {', '.join(map(_flag, missing))}")
     from soma.presets import preset_registry
 
     try:
@@ -108,7 +116,7 @@ def _cmd_run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         if args.config is None:
             parser.error("pass a config path or --preset NAME")
         given = [flag for flag, value in preset_only.items() if value is not None]
-        given += [f"--{key.replace('_', '-')}" for key in _preset_arguments() if getattr(args, f"preset_{key}") is not None]
+        given += [_flag(argument) for argument in _given_preset_arguments(args)]
         if given:
             parser.error(f"{', '.join(given)} only go with --preset: edit the config instead")
         config = _load_config(Path(args.config))
@@ -166,23 +174,24 @@ def _init_yaml(name: str, args: argparse.Namespace, config: ExperimentConfig) ->
     data = expand(config).to_dict()
     for field in MACHINE_RESOLVED_EXECUTION_FIELDS:  # slide2vec resolves them where a run starts
         data["features"]["execution"][field] = None
-    flags = " ".join(
-        f"--{key.replace('_', '-')} {getattr(args, f'preset_{key}')}"
-        for key in _preset_arguments()
-        if getattr(args, f"preset_{key}") is not None
-    )
+    flags = " ".join(f"{_flag(argument)} {value}" for argument, value in _given_preset_arguments(args).items())
     header = (
         f"# soma init {name} {flags}".rstrip() + "\n"
-        "# Every field at the preset's value or its default; null ones are decided by the\n"
-        "# cohort or the machine at run time. Point cohort.records and cohort.splits at your\n"
-        "# files, edit what you need, then: soma run <this file>\n"
+        "# Every field at the preset's value or its default. A null field is unset: the run\n"
+        "# fills in what the cohort or the machine decides (a segmentation or detection head's\n"
+        "# classes and match distance are yours to state). Point cohort.records and\n"
+        "# cohort.splits at your files, edit what you need, then: soma run <this file>\n"
     )
     return header + yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
 
 
 def _cmd_init(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     config = _build_preset(parser, args.preset, args)
-    sys.stdout.write(_init_yaml(args.preset, args, config))
+    try:
+        text = _init_yaml(args.preset, args, config)
+    except (TypeError, ValueError) as exc:  # the arguments make a config check refuses
+        parser.error(f"preset {args.preset}: {exc}")
+    sys.stdout.write(text)
 
 
 def _build_init_parser() -> argparse.ArgumentParser:
