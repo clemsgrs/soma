@@ -22,6 +22,9 @@ METADATA_REVISION = "6583cf0b0d902c8cc032308262fa3a3befdc0687"
 SOURCE_INDEX_COLUMNS = ("slide_id", "patch_id", "sample_id", "image_path")
 _IMAGE_EXTENSIONS = {"JPEG": ".jpg", "PNG": ".png", "TIFF": ".tiff"}
 _SAFE_IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+#: The preparation tool a prepared tree's provenance names. An identifier recorded on
+#: disk, not an import path: it keeps the module's old name so prepared trees stay valid.
+PREPARATION_TOOL = "soma.robustness.prepare_croma"
 
 
 @dataclass(frozen=True)
@@ -291,7 +294,7 @@ def _provenance_contract(
         "cohort": spec.name,
         "prepared_at": prepared_at,
         "preparation_tool": {
-            "name": "soma.robustness.prepare_croma",
+            "name": PREPARATION_TOOL,
             "version": tool_version,
         },
         "sources": {
@@ -530,7 +533,7 @@ def _validate_provenance(
         )
     if (
         not isinstance(tool, dict)
-        or tool.get("name") != "soma.robustness.prepare_croma"
+        or tool.get("name") != PREPARATION_TOOL
         or not isinstance(tool.get("version"), str)
         or not tool["version"]
     ):

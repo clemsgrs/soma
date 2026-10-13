@@ -27,6 +27,13 @@ When a packaged reference matches the encoder, soma reports the measured value
 next to it. The comparison is informational and never determines command
 success; an encoder without a reference still runs.
 
+Each benchmark protocol is one package under ``soma/benchmark/`` (``eva``,
+``hest``, ``ocelot``, ``midog``, ``monkey``, ``croma``) holding its curator,
+recipes, scorer, packaged reference rows (``reference.csv``) and the results
+ledger ``--record`` appends to (``results.csv``). The ``soma`` command imports
+:mod:`soma.benchmark` at startup; from Python, ``import soma.benchmark``
+registers the benchmarks (``import soma`` alone does not).
+
 Compare an encoder panel
 ------------------------
 

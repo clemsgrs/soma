@@ -302,7 +302,10 @@ Reproduce a packaged benchmark programmatically
 
 Every registered :doc:`benchmark <benchmarking>` is a Python object, so the
 ``soma reproduce`` flow is available from code, with results directly
-comparable to the CLI's:
+comparable to the CLI's. The benchmarks live in the :mod:`soma.benchmark`
+package, which ``import soma`` does not import: importing it (here through
+``from soma.benchmark import get_benchmark``) registers them, after which
+``soma.components("benchmarks")`` lists them:
 
 .. code-block:: python
 
@@ -344,7 +347,8 @@ orchestration behind ``soma reproduce`` itself: the canonical-seed loop, the
 reference-row tolerance status, provenance stamping (git commit, slide2vec/croma
 versions), and the results-ledger append used by the CLI. Its keywords
 mirror the CLI flags, plus ``results_root`` so an external repository can append
-``MeasuredRow`` rows to its own committed ledger instead of the in-package one:
+``MeasuredRow`` rows to its own committed ledger instead of the packaged one
+(``soma/benchmark/<protocol>/results.csv``):
 
 .. code-block:: python
 

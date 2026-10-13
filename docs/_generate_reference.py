@@ -208,9 +208,10 @@ def build_cli_rst() -> str:
            ordered panel and writes one leaderboard per benchmark. ``--seeds N``
            runs seeds 0 through N−1. ``--output-root``, ``--cache-root``, and
            ``--out-dir`` place run artifacts, shared features, and curated
-           manifests; ``--record`` appends the score to the packaged results
-           ledger. See :doc:`benchmarking` for panel validation, partial
-           failures, and reference comparisons.
+           manifests; ``--record`` appends the score to the benchmark's results
+           ledger, ``soma/benchmark/<protocol>/results.csv`` next to its
+           ``reference.csv``. See :doc:`benchmarking` for panel validation,
+           partial failures, and reference comparisons.
 
         ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
            Render a faceted leaderboard over the completed run dirs under an
@@ -280,7 +281,7 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 # ``source`` column (no hand-typed numbers, no drift, no ``TBD``). A generator + a
 # checked-in file kept in sync by ``tests/test_docs.py`` mirrors the ``cli.rst`` mechanism.
 
-# Maintainers: edit this file for prose, ``soma/benchmark/<name>.py`` for a protocol, and
+# Maintainers: edit this file for prose, the ``soma/benchmark/<name>/`` package for a protocol, and
 # ``soma/benchmark/<name>/reference.csv`` for references. Regenerate the pages with
 # ``python docs/_generate_reference.py``; ``tests/test_docs.py`` checks parity.
 
@@ -346,7 +347,7 @@ def _flag(value: float, text: str, gate) -> str:
 def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> tuple[str, bool]:
     """A ``list-table`` of soma's recorded measurements next to the reference band.
 
-    Built from the packaged results ledger (``results/<name>.csv``); only cells that have
+    Built from the packaged results ledger (``<name>/results.csv``); only cells that have
     been run appear, latest row per cell. Returns the table and whether any cell is
     flagged (the caller emits the ``:red:`` role definition once).
     """
