@@ -252,7 +252,7 @@ def test_a_composite_states_the_geometry_its_members_read_at():
     """The composite's members read at the run's dense options: nothing picks a spacing
     for them, so a composite run without a dense geometry is refused."""
     from soma.config import FeaturesConfig
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
+    from soma.pipeline.extraction import resolve_pipeline_dense
     from tests.experiment_configs import experiment
 
     members = {"members": [{"name": "conch"}, {"name": "h0-mini"}]}

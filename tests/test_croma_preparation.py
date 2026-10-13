@@ -17,8 +17,8 @@ import pyarrow.parquet as pq
 import pytest
 
 import soma
-import soma.robustness as croma
-from soma.robustness import (
+import soma.benchmark.croma.robustness as croma
+from soma.benchmark.croma.robustness import (
     PATHOROB_COHORTS,
     PathoROBCohortSource,
     SourceFile,

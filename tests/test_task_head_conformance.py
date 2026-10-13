@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 import torch
 
-import soma.benchmarks  # noqa: F401  (registers the benchmark-private heads)
+import soma.benchmark  # noqa: F401  (registers the benchmark-private heads)
 from soma.models.heads.classification import BinaryClassificationHead
 from soma.models.heads.registry import task_registry
 from soma.models.heads.regression import RegressionHead

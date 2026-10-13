@@ -11,10 +11,10 @@ import torch.nn.functional as F
 from soma.config import Component
 from soma.plan import head_family
 from tests.experiment_configs import callback
-from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
-from soma.benchmarks import eva_segmentation as seg
-from soma.benchmarks.eva import EvaTileClassificationBenchmark
-from soma.curation.manifest import CuratedManifest
+from soma.benchmark import Benchmark, benchmark_registry, get_benchmark
+from soma.benchmark.eva import segmentation as seg
+from soma.benchmark.eva import EvaTileClassificationBenchmark
+from soma.benchmark.curation import CuratedManifest
 from soma.models.decoders.registry import decoder_registry
 from soma.data.geometry import compute_dense_geometry
 from soma.models.heads.dense_metrics import dense_confusion_counts, reduce_foreground_dice
@@ -147,7 +147,8 @@ def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):
 
 
 def test_saved_benchmark_config_loads_in_a_fresh_process(tmp_path: Path):
-    """The private head/decoder resolve without the caller importing ``soma.benchmarks``."""
+    """A saved benchmark config names the benchmark's private head and decoder: a fresh
+    process refuses them, with a hint, until it imports ``soma.benchmark`` (ADR 0022)."""
     import os
     import subprocess
     import sys
@@ -160,21 +161,24 @@ def test_saved_benchmark_config_loads_in_a_fresh_process(tmp_path: Path):
     path = tmp_path / "config.yaml"
     config.to_yaml(path)
     script = (
-        "import sys\n"
         "from soma.config import ExperimentConfig\n"
         "from soma.plan import check\n"
         f"config = ExperimentConfig.from_yaml({str(path)!r})\n"
+        "try:\n"
+        "    check(config)\n"
+        "except (KeyError, ValueError) as error:\n"
+        "    print('refused, hint:', 'import soma.benchmark' in str(error))\n"
+        "import soma.benchmark\n"
         "check(config)\n"
-        "assert 'soma.benchmarks' in sys.modules, 'registries import the bundled module'\n"
         "params = config.learner.params\n"
         "print(params['head'].name, params['decoder'].name)\n"
     )
-    # Import the same soma as this process (the checkout may shadow an installed copy).
-    env = {**os.environ, "PYTHONPATH": str(Path(soma.__file__).resolve().parents[1])}
-    result = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=True, cwd=tmp_path, env=env
-    )
-    assert result.stdout.strip() == "eva_segmentation eva_conv_with_image"
+    # Import this checkout's soma first (an installed copy may shadow it), then the rest.
+    checkout = str(Path(soma.__file__).resolve().parents[1])
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [checkout, os.environ.get("PYTHONPATH")]))}
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, cwd=tmp_path, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines() == ["refused, hint: True", "eva_segmentation eva_conv_with_image"]
 
 
 def test_curate_delegates_to_the_segmentation_curator(monkeypatch, tmp_path):

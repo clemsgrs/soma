@@ -114,9 +114,10 @@ Benchmarking commands
    ordered panel and writes one leaderboard per benchmark. ``--seeds N``
    runs seeds 0 through N−1. ``--output-root``, ``--cache-root``, and
    ``--out-dir`` place run artifacts, shared features, and curated
-   manifests; ``--record`` appends the score to the packaged results
-   ledger. See :doc:`benchmarking` for panel validation, partial
-   failures, and reference comparisons.
+   manifests; ``--record`` appends the score to the benchmark's results
+   ledger, ``soma/benchmark/<protocol>/results.csv`` next to its
+   ``reference.csv``. See :doc:`benchmarking` for panel validation,
+   partial failures, and reference comparisons.
 
 ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
    Render a faceted leaderboard over the completed run dirs under an

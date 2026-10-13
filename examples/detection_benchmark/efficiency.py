@@ -37,7 +37,10 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from soma.benchmarks.detection_benchmark import DATASET_ORDER, dataset_spec
+from soma.benchmark.detection import dataset_spec, registered_datasets
+
+# The detection datasets the protocols registered, in the harness's report order.
+DATASET_ORDER = registered_datasets()
 
 # --- protocol constants ------------------------------------------------------------
 

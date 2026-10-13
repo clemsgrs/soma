@@ -99,7 +99,7 @@ class Budget:
 
 optimizer_registry = Registry("optimizers")
 scheduler_registry = Registry("schedulers")
-learner_registry = Registry("learners", bundled_module="soma.benchmarks")
+learner_registry = Registry("learners")
 
 # torch owns these signatures, so their params dataclasses are derived from them.
 for _name, _cls in {

@@ -51,8 +51,10 @@ NOUNS = {
 NAMESPACES = {"data", "extract", "models", "learn", "evaluation", "pipeline", "presets", "testing"}
 
 ROOT_MODULES = {"__init__.py", "__main__.py", "cli.py", "config.py", "discovery.py", "plan.py", "registry.py"}
-#: The benchmark side, gathered into ``soma.benchmark`` by the next slice.
-AWAITING_BENCHMARK_PACKAGE = {"benchmarks", "curation", "leaderboard.py", "robustness.py"}
+#: The benchmark side: one package, imported explicitly (design §2, ADR 0022).
+BENCHMARK_PACKAGE = "benchmark"
+#: One package per benchmark protocol, each with its own reference rows.
+PROTOCOLS = ("eva", "hest", "ocelot", "midog", "monkey", "croma")
 
 
 def _holds_source(path: Path) -> bool:
@@ -64,7 +66,70 @@ def test_the_package_top_level_holds_only_the_namespaces_and_the_root_modules():
 
     entries = {path.name for path in package.iterdir() if _holds_source(path)}
 
-    assert entries == ROOT_MODULES | NAMESPACES | {"_internal"} | AWAITING_BENCHMARK_PACKAGE
+    assert entries == ROOT_MODULES | NAMESPACES | {"_internal", BENCHMARK_PACKAGE}
+
+
+@pytest.mark.parametrize("module", ["soma.benchmarks", "soma.curation", "soma.leaderboard", "soma.robustness"])
+def test_the_old_benchmark_modules_are_gone(module):
+    assert importlib.util.find_spec(module) is None
+
+
+@pytest.mark.parametrize(
+    "module",
+    [
+        # the generic mechanism
+        "soma.benchmark.spec",
+        "soma.benchmark.registry",
+        "soma.benchmark.run",
+        "soma.benchmark.reproduction",
+        "soma.benchmark.leaderboard",
+        "soma.benchmark.curation",
+        "soma.benchmark.coverage",
+        "soma.benchmark.tiles",
+        "soma.benchmark.detection",
+        "soma.benchmark.attention",
+        # one package per benchmark: curate, recipes, scorer
+        "soma.benchmark.eva",
+        "soma.benchmark.eva.segmentation",
+        "soma.benchmark.eva.slide",
+        "soma.benchmark.eva.curate",
+        "soma.benchmark.eva.curate_segmentation",
+        "soma.benchmark.eva.curate_slide",
+        "soma.benchmark.hest",
+        "soma.benchmark.hest.probe",
+        "soma.benchmark.hest.curate",
+        "soma.benchmark.ocelot",
+        "soma.benchmark.ocelot.curate",
+        "soma.benchmark.midog",
+        "soma.benchmark.midog.curate",
+        "soma.benchmark.midog.f1",
+        "soma.benchmark.monkey",
+        "soma.benchmark.monkey.curate",
+        "soma.benchmark.monkey.froc",
+        "soma.benchmark.croma",
+        "soma.benchmark.croma.curate",
+        "soma.benchmark.croma.robustness",
+    ],
+)
+def test_each_benchmark_module_lives_in_the_benchmark_package(module):
+    assert importlib.util.find_spec(module) is not None
+
+
+@pytest.mark.parametrize("protocol", PROTOCOLS)
+def test_each_protocol_ships_its_reference_rows_beside_its_code(protocol):
+    package = Path(soma.__file__).parent / BENCHMARK_PACKAGE / protocol
+
+    assert (package / "__init__.py").is_file()
+    assert (package / "reference.csv").is_file()
+
+
+def test_the_benchmark_package_holds_only_the_generic_mechanism_and_the_protocols():
+    package = Path(soma.__file__).parent / BENCHMARK_PACKAGE
+
+    entries = {path.name for path in package.iterdir() if _holds_source(path)}
+
+    generic = {"spec", "registry", "run", "reproduction", "leaderboard", "curation", "coverage", "tiles"}
+    assert entries == {"__init__.py", "detection.py", "attention.py"} | {f"{name}.py" for name in generic} | set(PROTOCOLS)
 
 
 @pytest.mark.parametrize(

@@ -1659,7 +1659,7 @@ def test_dense_adaptor_leaves_the_feature_extraction_cache_key_untouched(tmp_pat
         projection=ProjectionParams(method="random", target_dim=64),
     )
 
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
+    from soma.pipeline.extraction import resolve_pipeline_dense
 
     def key(config):
         return build_dense_cache_key(

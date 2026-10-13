@@ -21,7 +21,9 @@ from typing import Any, Callable, Literal
 from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
 
 from soma._internal.logging import ensure_default_logging
-from soma.config import CacheOptions, EncoderLeaf, is_annotation_sampling
+from soma.extract.cache.options import CacheOptions
+from soma.extract.preprocessing import is_annotation_sampling
+from soma.models.encoders import EncoderLeaf
 from soma.data import AnnotationManifest, ImageManifest, require_coverage
 from soma.models.encoders.validation import resolve_preprocessing_config
 from soma.extract.rois import RoiSet

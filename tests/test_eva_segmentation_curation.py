@@ -10,7 +10,7 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from soma.curation.eva_segmentation import (
+from soma.benchmark.eva.curate_segmentation import (
     CONSEP_CLASSES,
     MONUSAC_CLASSES,
     MONUSAC_IGNORE_INDEX,

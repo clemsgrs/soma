@@ -14,7 +14,7 @@ from soma.config import ExperimentConfig
 from soma.data import AnnotationManifest, ImageManifest, require_coverage
 from soma.pipeline.build import extraction_unit
 from soma.plan import check, learner_shape
-from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 
 def _sha256(path: Path) -> str:

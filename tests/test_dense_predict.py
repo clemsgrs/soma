@@ -197,7 +197,7 @@ def test_mixed_ensemble_hands_pixels_only_to_the_image_prior_member():
 
 
 def test_eva_image_decoder_predicts_through_the_predictor():
-    from soma.benchmarks.eva_segmentation import EvaConvWithImageDecoder
+    from soma.benchmark.eva.segmentation import EvaConvWithImageDecoder
 
     stage = FakeEncoder(target_size=TILE, patch_size=PATCH)
     models = [_model(stage, EvaConvWithImageDecoder(input_dim=3, num_classes=3)) for _ in range(2)]

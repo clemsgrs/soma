@@ -16,10 +16,10 @@ import pandas as pd
 import yaml
 from PIL import Image
 
-from soma.benchmarks import get_benchmark
-from soma.benchmarks.run import _from_run_dir_axes
+from soma.benchmark import get_benchmark
+from soma.benchmark.run import _from_run_dir_axes
 from slide2vec import ExecutionOptions
-from soma.leaderboard import load_run_record
+from soma.benchmark.leaderboard import load_run_record
 from tests.e2e.harness import CPU_EXECUTION
 
 GENES = ["ERBB2", "ESR1", "MKI67"]

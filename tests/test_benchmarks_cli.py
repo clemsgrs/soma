@@ -16,8 +16,8 @@ import pytest
 
 import soma.cli as cli
 from soma.cli import main
-from soma.benchmarks import registry as registry_mod
-from soma.benchmarks.registry import Facet, ReferenceRow, register_benchmark
+from soma.benchmark import registry as registry_mod
+from soma.benchmark.registry import Facet, ReferenceRow, register_benchmark
 from tests.experiment_configs import experiment
 
 
@@ -41,7 +41,7 @@ def test_reproduce_from_run_dir_passes_within_tolerance(monkeypatch, capsys, tmp
     # mean_f1 = 0.70 is within 0.6995 +/- 0.02 -> REFERENCE OK. Stub the greedy inner
     # seam so no data/GPU is touched.
     monkeypatch.setattr(
-        "soma.benchmarks.ocelot._greedy_report_for_run",
+        "soma.benchmark.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
             "matching": "greedy",
             "tune": {"mean_f1": 0.71},
@@ -66,7 +66,7 @@ def test_reproduce_from_run_dir_reports_potential_drift_without_failing(monkeypa
     # mean_f1 = 0.50 is far outside the reference band. The comparison is diagnostic: it
     # highlights potential drift but does not turn a successfully scored run into a failure.
     monkeypatch.setattr(
-        "soma.benchmarks.ocelot._greedy_report_for_run",
+        "soma.benchmark.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
             "matching": "greedy",
             "tune": {"mean_f1": 0.71},
@@ -82,7 +82,7 @@ def test_reproduce_from_run_dir_reports_potential_drift_without_failing(monkeypa
 
 def test_reproduce_logs_fast_path_hint_at_start(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(
-        "soma.benchmarks.ocelot._greedy_report_for_run",
+        "soma.benchmark.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
             "matching": "greedy",
             "tune": {"mean_f1": 0.71},
@@ -100,7 +100,7 @@ def test_reproduce_logs_fast_path_hint_at_start(monkeypatch, capsys, tmp_path):
 def test_reproduce_default_runs_canonical_seed_set(monkeypatch, capsys, tmp_path):
     # Without --seeds, reproduce announces the benchmark's canonical seed set (OCELOT: [0]).
     monkeypatch.setattr(
-        "soma.benchmarks.ocelot._greedy_report_for_run",
+        "soma.benchmark.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
             "matching": "greedy",
             "tune": {"mean_f1": 0.71},
@@ -166,7 +166,7 @@ class _MultiMetricBenchmark:
     def curate(self, raw_root, out_dir):
         from pathlib import Path
 
-        from soma.curation.manifest import CuratedManifest
+        from soma.benchmark.curation import CuratedManifest
 
         Path(out_dir).mkdir(parents=True, exist_ok=True)
         return CuratedManifest(
@@ -446,7 +446,7 @@ def test_reproduce_external_anchors_do_not_override_comparable_reference(
     # comparable row (0.6995 ± 0.02). A measured 0.70 matches it; external anchors must not
     # turn the result into a drift warning or a "multiple rows" error.
     monkeypatch.setattr(
-        "soma.benchmarks.ocelot._greedy_report_for_run",
+        "soma.benchmark.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
             "matching": "greedy",
             "tune": {"mean_f1": 0.71},
@@ -548,7 +548,7 @@ class _PanelBenchmark:
         self.events: list[tuple[str, str | None]] = []
 
     def curate(self, raw_root, out_dir):
-        from soma.curation.manifest import CuratedManifest
+        from soma.benchmark.curation import CuratedManifest
 
         self.curate_calls += 1
         self.events.append(("curate", None))
@@ -606,7 +606,7 @@ class _DensePanelBenchmark(_PanelBenchmark):
     name = "dense_panel_fixture"
 
     def build_config(self, **axes):
-        from soma.benchmarks import get_benchmark
+        from soma.benchmark import get_benchmark
 
         self.events.append(("build", axes["encoder"]))
         return get_benchmark("ocelot").build_config(**axes)
@@ -1550,7 +1550,7 @@ class _CaptureCacheBenchmark:
     def curate(self, raw_root, out_dir):
         from pathlib import Path
 
-        from soma.curation.manifest import CuratedManifest
+        from soma.benchmark.curation import CuratedManifest
 
         self.curate_calls += 1
         Path(out_dir).mkdir(parents=True, exist_ok=True)
@@ -1732,7 +1732,7 @@ def test_reproduce_record_appends_measured_row_with_provenance(capsys, tmp_path,
     assert code == 0
     assert "recorded" in out
 
-    from soma.benchmarks import reproduced_rows
+    from soma.benchmark import reproduced_rows
 
     rows = reproduced_rows("eva", dataset="bach", encoder="uni2")
     assert len(rows) == 1
@@ -1758,7 +1758,7 @@ def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, 
     ledger = tmp_path / "ledger" / "ocelot.csv"
     monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
     monkeypatch.setattr(
-        "soma.benchmarks.ocelot._greedy_report_for_run",
+        "soma.benchmark.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
             "matching": "greedy",
             "tune": {"mean_f1": 0.71},
@@ -1772,7 +1772,7 @@ def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, 
     assert code == 0
     assert "recorded" in capsys.readouterr().out
 
-    from soma.benchmarks import reproduced_rows
+    from soma.benchmark import reproduced_rows
 
     rows = reproduced_rows("ocelot", encoder="virchow2")
     assert len(rows) == 1
@@ -1816,7 +1816,7 @@ def test_record_result_never_overwrites_a_key_the_reference_states(tmp_path, mon
         benchmark, row, 0.9, std=None, n_seeds=1, key_axes={"encoder": "somethingelse"}
     )
 
-    from soma.benchmarks import reproduced_rows
+    from soma.benchmark import reproduced_rows
 
     assert reproduced_rows("eva", dataset="bach", encoder="uni2")[0].key["encoder"] == "uni2"
 
@@ -1965,7 +1965,7 @@ def test_reproduce_unknown_eva_family_member_exits_nonzero(capsys):
 def test_preflight_rejects_prenorm_tap_when_slide2vec_reports_no_support():
     from types import SimpleNamespace
 
-    from soma.benchmarks import get_benchmark
+    from soma.benchmark import get_benchmark
     from soma.cli import _preflight_config_compatibility
 
     benchmark = get_benchmark("eva/consep")

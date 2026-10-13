@@ -3,7 +3,7 @@
 No HEST data or GPU here: the registry lookup (all 9 tasks), the Benchmark-Protocol
 conformance, the ``build_config`` recipe (tile extraction for the probe predictor, PCA
 latent dim 256, encoder axis defaulting to uni2, the virchow2 CLS variant / h-optimus-1
-default), the external-only ``reference/hest.csv`` parse (9 tasks × the reproduction encoders),
+default), the external-only ``hest/reference.csv`` parse (9 tasks × the reproduction encoders),
 the default ``summary.json`` scorer, ``curate`` delegation, and the external-only ``--record``
 path are all verifiable offline. The live curate→probe→score reproduction (HEST download +
 slide2vec weights + GPU) is a manual campaign, not a CI unit test.
@@ -20,8 +20,8 @@ import pytest
 
 from soma.config import LearnerConfig
 from soma.plan import check, sample_unit
-from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
-from soma.benchmarks import hest
+from soma.benchmark import Benchmark, benchmark_registry, get_benchmark
+from soma.benchmark import hest
 
 
 # --- registration ---------------------------------------------------------------------
@@ -271,7 +271,7 @@ def test_build_config_rejects_unknown_encoder(tmp_path):
 
 
 def test_reference_csv_has_external_schema_header():
-    with resources.files("soma.benchmarks.reference").joinpath("hest.csv").open(newline="") as fh:
+    with resources.files("soma.benchmark.hest").joinpath("reference.csv").open(newline="") as fh:
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
         rows = list(reader)
@@ -282,7 +282,7 @@ def test_reference_csv_has_external_schema_header():
     # exists (#260: render Measured beside Reference, never tolerance-check). Datasets are the
     # 9 HEST-Benchmark tasks (IDC carries the full ~18-encoder leaderboard; the other tasks
     # carry the reproduction encoders).
-    assert rows, "reference/hest.csv must carry the published external rows"
+    assert rows, "hest/reference.csv must carry the published external rows"
     for row in rows:
         assert row["dataset"] in hest.HEST_TASKS
         assert row["metric"] == "test/mean_pearson_mean"
@@ -293,7 +293,7 @@ def test_reference_csv_has_external_schema_header():
 
 def test_reference_csv_carries_reproduction_encoder_numbers_across_tasks():
     by_cell = {}
-    with resources.files("soma.benchmarks.reference").joinpath("hest.csv").open(newline="") as fh:
+    with resources.files("soma.benchmark.hest").joinpath("reference.csv").open(newline="") as fh:
         for row in csv.DictReader(fh):
             by_cell[(row["dataset"], row["encoder"])] = float(row["expected"])
     # The three reproduction encoders carry their confirmed HEST-leaderboard IDC Pearson ...
@@ -356,7 +356,7 @@ def test_curate_delegates_to_curate_hest(monkeypatch, tmp_path):
 
     def _fake_curate(raw_root, output_dir, *, task):
         calls["args"] = (str(raw_root), str(output_dir), task)
-        from soma.curation.manifest import CuratedManifest
+        from soma.benchmark.curation import CuratedManifest
 
         return CuratedManifest(
             dataset_csv=Path(output_dir) / "dataset.csv",
@@ -415,9 +415,9 @@ def test_reproduce_hest_keeps_encoder_reference_beside_measured(capsys, tmp_path
 def test_reproduce_record_appends_external_only_cell_to_ledger(tmp_path, monkeypatch, capsys):
     # The external-only --record fix: HEST has no gate row, so before the fix --record was a
     # silent no-op (it keyed off a gate row that never exists). Now it falls back to the single
-    # matching EXTERNAL row, so a reproduced Pearson still lands in results/hest.csv keyed to
+    # matching EXTERNAL row, so a reproduced Pearson still lands in hest/results.csv keyed to
     # join the HEST reference — which is what the docs' A/B/C reproduction proof reads.
-    from soma.benchmarks import load_results, registry
+    from soma.benchmark import load_results, registry
 
     ledger = tmp_path / "hest_results.csv"
     monkeypatch.setattr(registry, "_results_file", lambda name: ledger)
@@ -442,7 +442,7 @@ def test_reproduce_record_writes_no_orphan_row_when_encoder_has_no_reference(
 ):
     # An encoder with no published HEST number still runs and scores. It cannot be keyed into
     # the reference-indexed ledger, so --record explains the skip and leaves no orphan row.
-    from soma.benchmarks import load_results, registry
+    from soma.benchmark import load_results, registry
 
     ledger = tmp_path / "hest_results.csv"
     monkeypatch.setattr(registry, "_results_file", lambda name: ledger)
@@ -465,7 +465,7 @@ def test_record_reference_row_declines_when_external_rows_are_ambiguous():
     # external row matching the primary metric there is no unambiguous cell to key on, so it
     # declines (returns None) rather than silently picking the first — that is the branch the
     # CLI turns into "nothing recorded".
-    from soma.benchmarks.registry import ReferenceRow
+    from soma.benchmark.registry import ReferenceRow
     from soma.cli import _record_reference_row
 
     def _ext(encoder: str) -> ReferenceRow:

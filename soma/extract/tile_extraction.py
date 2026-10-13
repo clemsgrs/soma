@@ -30,7 +30,8 @@ from soma.extract.cache import (
     resolve_image_cache,
 )
 from soma.extract.cache.compute_key import resolved_output_variant
-from soma.config import CacheOptions, EncoderLeaf
+from soma.extract.cache.options import CacheOptions
+from soma.models.encoders import EncoderLeaf
 from soma.data.manifests import ImageEntry, ImageManifest
 from soma.extract.cache._types import PACKED_FILENAME
 from soma.data import CachedSetSource

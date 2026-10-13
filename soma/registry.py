@@ -7,9 +7,79 @@ import dataclasses
 import functools
 import importlib
 import inspect
+import sys
 import warnings
+import weakref
 from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass, field
 from typing import Any
+
+# The params helpers a component author declares and checks its params with (ADR 0018):
+# public here, for components outside core such as the benchmarks'.
+from soma._internal.params import (  # noqa: F401
+    NoParams,
+    check_choice,
+    check_non_negative,
+    check_positive,
+    check_probability,
+)
+
+#: The package that registers soma's benchmark components when it is imported. Core
+#: never imports it (ADR 0022); it only names it in the hint of a failed lookup.
+BENCHMARK_PACKAGE = "soma.benchmark"
+
+#: The registry of each component kind, by kind: a :class:`Registry` announces itself
+#: here when it is built, so :func:`soma.components` lists exactly the kinds whose module
+#: is imported. Held weakly, so a throwaway registry leaves the listing with its last
+#: reference.
+_KINDS: weakref.WeakValueDictionary[str, Registry] = weakref.WeakValueDictionary()
+
+
+def kinds() -> dict[str, Registry]:
+    """Each component kind whose registry is built (its module imported), by kind."""
+    return dict(_KINDS)
+
+
+def benchmark_import_hint() -> str:
+    """How to reach a benchmark's components while :data:`BENCHMARK_PACKAGE` is not imported."""
+    if BENCHMARK_PACKAGE in sys.modules:
+        return ""
+    return (
+        f" The benchmarks and their components register when {BENCHMARK_PACKAGE} is imported: "
+        f"`import {BENCHMARK_PACKAGE}` first (the soma CLI does), or name a component by its dotted path."
+    )
+
+
+@dataclass(frozen=True)
+class Component:
+    """A ``{name, params}`` leaf: a registry key or a dotted import path, and its params."""
+
+    name: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError(f"a component leaf needs a non-empty name, got {self.name!r}")
+        params = {} if self.params is None else self.params
+        if not isinstance(params, Mapping):
+            raise TypeError(f"the params of '{self.name}' must be a mapping, got {type(params).__name__}")
+        object.__setattr__(self, "params", dict(params))
+
+    @classmethod
+    def of(cls, value: Any) -> Any:
+        """``value`` as a leaf of this class: a leaf, a name or a ``{name, params}`` mapping."""
+        if value is None or type(value) is cls:
+            return value
+        if isinstance(value, Component):
+            return cls(value.name, value.params)
+        if isinstance(value, str):
+            return cls(value)
+        if isinstance(value, Mapping):
+            unknown = sorted(set(value) - {"name", "params"})
+            if unknown or "name" not in value:
+                raise ValueError(f"a component leaf is a name or a {{name, params}} mapping, got {dict(value)!r}")
+            return cls(value["name"], value.get("params") or {})
+        raise TypeError(f"a component leaf is a name or a {{name, params}} mapping, got {value!r}")
 
 
 class Registry:
@@ -23,26 +93,19 @@ class Registry:
     unlisted, with a one-line warning (:meth:`resolve`). :func:`soma.components` lists
     the entries of every registry.
 
-    ``bundled_module`` names a module that registers components shipped with soma but
-    defined outside the registry's own package (the benchmark-private heads and decoders
-    under :mod:`soma.benchmarks`). It is imported once, on the first lookup that misses,
-    so a saved config naming one of those components loads in a fresh process without the
-    caller importing that module first.
+    A registry announces its ``domain`` (its component kind) when it is built: one live
+    registry per kind. Entries register when the module defining them is imported, so a
+    benchmark's private components are known once :mod:`soma.benchmark` is imported
+    (ADR 0022); a dotted path imports its module itself.
     """
 
-    def __init__(self, domain: str, *, bundled_module: str | None = None) -> None:
+    def __init__(self, domain: str) -> None:
+        if _KINDS.get(domain) is not None:
+            raise ValueError(f"the {domain!r} kind already has a registry")
         self._domain = domain
         self._entries: dict[str, _Entry] = {}
         self._warned: set[str] = set()
-        self._bundled_module = bundled_module
-        self._bundled_loaded = bundled_module is None
-
-    def _load_bundled(self) -> None:
-        if self._bundled_loaded:
-            return
-        # Set first: the bundled module checks ``name in registry`` while it is importing.
-        self._bundled_loaded = True
-        importlib.import_module(self._bundled_module)  # type: ignore[arg-type]
+        _KINDS[domain] = self
 
     def register(
         self,
@@ -108,10 +171,8 @@ class Registry:
     def get(self, name: str) -> Any:
         """Retrieve a registered class by name."""
         if name not in self._entries:
-            self._load_bundled()
-        if name not in self._entries:
             available = ", ".join(sorted(self._entries)) or "(none)"
-            msg = f"'{name}' not found in {self._domain} registry. Available: {available}"
+            msg = f"'{name}' not found in {self._domain} registry. Available: {available}.{benchmark_import_hint()}"
             raise KeyError(msg)
         return self._entries[name].cls
 
@@ -172,13 +233,10 @@ class Registry:
         return obj, None
 
     def __contains__(self, name: str) -> bool:
-        if name not in self._entries:
-            self._load_bundled()
         return name in self._entries
 
     def list(self) -> list[str]:
-        """Every registered name, the bundled module's included."""
-        self._load_bundled()
+        """Every registered name."""
         return list(self._entries.keys())
 
     def info(self, name: str) -> dict[str, Any]:

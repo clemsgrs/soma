@@ -15,18 +15,18 @@ for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
         sys.path.insert(0, str(sibling))
 
 from soma import components
-from soma.benchmarks import (
+from soma.benchmark import (
     expected_rows,
     get_benchmark,
     load_results,
     reproduction_report,
 )
-from soma.benchmarks import croma as croma_bench
-from soma.benchmarks import eva as eva_bench
-from soma.benchmarks import eva_segmentation as eva_seg_bench
-from soma.benchmarks import eva_slide as eva_slide_bench
-from soma.benchmarks import ocelot as ocelot_bench
-from soma.benchmarks.hest.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
+from soma.benchmark import croma as croma_bench
+from soma.benchmark import eva as eva_bench
+from soma.benchmark.eva import segmentation as eva_seg_bench
+from soma.benchmark.eva import slide as eva_slide_bench
+from soma.benchmark import ocelot as ocelot_bench
+from soma.benchmark.hest.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 from soma.config import CohortConfig, ExperimentConfig, FeaturesConfig, LearnerConfig
 from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS
 
@@ -208,9 +208,10 @@ def build_cli_rst() -> str:
            ordered panel and writes one leaderboard per benchmark. ``--seeds N``
            runs seeds 0 through N−1. ``--output-root``, ``--cache-root``, and
            ``--out-dir`` place run artifacts, shared features, and curated
-           manifests; ``--record`` appends the score to the packaged results
-           ledger. See :doc:`benchmarking` for panel validation, partial
-           failures, and reference comparisons.
+           manifests; ``--record`` appends the score to the benchmark's results
+           ledger, ``soma/benchmark/<protocol>/results.csv`` next to its
+           ``reference.csv``. See :doc:`benchmarking` for panel validation,
+           partial failures, and reference comparisons.
 
         ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
            Render a faceted leaderboard over the completed run dirs under an
@@ -275,13 +276,13 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 # protocol summary comes from ``facet`` / ``primary_metric`` / ``canonical_seeds`` /
 # ``reference_environment``, the reproduce command from ``benchmark.name``, and the
 # reference numbers are read from the benchmark's ``expected()`` reference rows (packaged
-# ``soma/benchmarks/reference/<name>.csv``) and rendered as a readable ``list-table`` — the
+# ``soma/benchmark/<name>/reference.csv``) and rendered as a readable ``list-table`` — the
 # gate band beside the measured cells, a linked source instead of dumping the CSV's verbose
 # ``source`` column (no hand-typed numbers, no drift, no ``TBD``). A generator + a
 # checked-in file kept in sync by ``tests/test_docs.py`` mirrors the ``cli.rst`` mechanism.
 
-# Maintainers: edit this file for prose, ``soma/benchmarks/<name>.py`` for a protocol, and
-# ``soma/benchmarks/reference/<name>.csv`` for references. Regenerate the pages with
+# Maintainers: edit this file for prose, the ``soma/benchmark/<name>/`` package for a protocol, and
+# ``soma/benchmark/<name>/reference.csv`` for references. Regenerate the pages with
 # ``python docs/_generate_reference.py``; ``tests/test_docs.py`` checks parity.
 
 # Upstream provenance for each benchmark family's published reference band — the leaderboard
@@ -346,7 +347,7 @@ def _flag(value: float, text: str, gate) -> str:
 def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> tuple[str, bool]:
     """A ``list-table`` of soma's recorded measurements next to the reference band.
 
-    Built from the packaged results ledger (``results/<name>.csv``); only cells that have
+    Built from the packaged results ledger (``<name>/results.csv``); only cells that have
     been run appear, latest row per cell. Returns the table and whether any cell is
     flagged (the caller emits the ``:red:`` role definition once).
     """
@@ -935,7 +936,7 @@ def build_hest_benchmark_rst() -> str:
     protocol_rows = [
         (
             "predictor",
-            "``soma.benchmarks.hest.probe.RidgePCAProbe``: a closed-form Ridge probe, "
+            "``soma.benchmark.hest.probe.RidgePCAProbe``: a closed-form Ridge probe, "
             "no trained head, no gradient loop",
         ),
         (
@@ -1000,7 +1001,7 @@ def build_hest_benchmark_rst() -> str:
             "The benchmark trains no model through the pipeline; it composes soma's\n"
             "verbs itself. It extracts each spot's tile features once into the feature\n"
             "cache, then, for each fold:\n\n"
-            "1. fits :class:`~soma.benchmarks.hest.probe.RidgePCAProbe`\n"
+            "1. fits :class:`~soma.benchmark.hest.probe.RidgePCAProbe`\n"
             "   (``StandardScaler`` → ``PCA`` → ``Ridge``) on the train spots;\n"
             "2. predicts the test spots as :class:`~soma.evaluation.Predictions` with one\n"
             "   ``value_<k>`` column per gene;\n"

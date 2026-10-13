@@ -255,7 +255,7 @@ def test_segmentation_coverage_summarizes_every_label_of_the_fixture(tmp_path: P
     """The coverage driver against real hs2p: every pixel_mapping label, background too."""
     import pandas as pd
 
-    from soma.curation.segmentation_coverage import summarize_coverage
+    from soma.benchmark.coverage import summarize_coverage
 
     slide_path, label_mask_path = _make_fixture(tmp_path)
     manifest = pd.DataFrame(

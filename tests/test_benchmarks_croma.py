@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 import soma.cli as cli
-from soma.benchmarks import (
+from soma.benchmark import (
     Benchmark,
     MeasuredRow,
     ReferenceRow,
@@ -19,12 +19,12 @@ from soma.benchmarks import (
     load_results,
     reproduction_report,
 )
-from soma.benchmarks import registry as registry_mod
-from soma.benchmarks import reproduction as reproduction_mod
+from soma.benchmark import registry as registry_mod
+from soma.benchmark import reproduction as reproduction_mod
 from soma.config import CRoMaOptions
 from soma.plan import check, sample_unit
-from soma.benchmarks.croma import CROMA_0_3_ENCODER_PANEL
-from soma.curation.manifest import CuratedManifest
+from soma.benchmark.croma import CROMA_0_3_ENCODER_PANEL
+from soma.benchmark.curation import CuratedManifest
 
 
 def test_croma_family_registers_all_three_cohorts():
@@ -49,7 +49,7 @@ def test_croma_family_appears_in_cli_benchmark_listing(capsys):
 
 def test_croma_config_materializes_the_fixed_protocol(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        "soma.benchmarks.croma.validate_croma_0_3_encoder_panel", lambda **_kw: None
+        "soma.benchmark.croma.validate_croma_0_3_encoder_panel", lambda **_kw: None
     )
     benchmark = get_benchmark("croma/camelyon")
 
@@ -106,7 +106,7 @@ def test_croma_declares_reported_and_ranking_metric_roles_in_order():
 def test_croma_validates_panel_pins(tmp_path, monkeypatch):
     validations = []
     monkeypatch.setattr(
-        "soma.benchmarks.croma.validate_croma_0_3_encoder_panel",
+        "soma.benchmark.croma.validate_croma_0_3_encoder_panel",
         lambda **kw: validations.append(tuple(kw.get("encoders") or ())),
     )
     benchmark = get_benchmark("croma/camelyon")
@@ -120,7 +120,7 @@ def test_croma_validates_panel_pins(tmp_path, monkeypatch):
 def test_croma_keeps_encoders_outside_the_panel_runnable(tmp_path, monkeypatch):
     validations = []
     monkeypatch.setattr(
-        "soma.benchmarks.croma.validate_croma_0_3_encoder_panel",
+        "soma.benchmark.croma.validate_croma_0_3_encoder_panel",
         lambda **kw: validations.append(tuple(kw.get("encoders") or ())),
     )
 
@@ -134,7 +134,7 @@ def test_croma_keeps_encoders_outside_the_panel_runnable(tmp_path, monkeypatch):
 
 
 def test_croma_reference_has_one_external_row_per_cohort_encoder_metric():
-    path = resources.files("soma.benchmarks.reference").joinpath("croma.csv")
+    path = resources.files("soma.benchmark.croma").joinpath("reference.csv")
     with path.open(newline="") as handle:
         rows = list(csv.DictReader(handle))
 
@@ -305,7 +305,7 @@ def test_croma_curates_its_cohort_from_the_prepared_family_root(
             Path(out_dir) / "dataset.csv", Path(out_dir) / "splits.csv"
         )
 
-    monkeypatch.setattr("soma.benchmarks.croma.curate_croma_view", fake_curate)
+    monkeypatch.setattr("soma.benchmark.croma.curate_croma_view", fake_curate)
     benchmark = get_benchmark("croma/tcga-4x4")
 
     manifest = benchmark.curate(tmp_path / "prepared", tmp_path / "curated")
@@ -366,9 +366,7 @@ def test_croma_rescore_renders_three_external_deltas_without_a_gate(
 
 
 def test_croma_reference_provenance_pins_release_producer_protocol_and_sources():
-    path = resources.files("soma.benchmarks.reference").joinpath(
-        "croma.provenance.json"
-    )
+    path = resources.files("soma.benchmark.croma").joinpath("reference.provenance.json")
     provenance = json.loads(path.read_text(encoding="utf-8"))
 
     assert provenance == {
@@ -465,13 +463,13 @@ def _run_croma_family(tmp_path, monkeypatch):
         return object()
 
     monkeypatch.setattr(
-        "soma.benchmarks.croma.CromaBenchmark.curate", fake_curate
+        "soma.benchmark.croma.CromaBenchmark.curate", fake_curate
     )
     monkeypatch.setattr(
-        "soma.benchmarks.croma.CromaBenchmark.build_config", fake_build_config
+        "soma.benchmark.croma.CromaBenchmark.build_config", fake_build_config
     )
     monkeypatch.setattr(
-        "soma.benchmarks.croma.CromaBenchmark.score",
+        "soma.benchmark.croma.CromaBenchmark.score",
         lambda _self, _run_dir: {
             "test/croma_median": 0.31,
             "test/croma_f0": 0.12,

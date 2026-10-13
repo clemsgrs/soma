@@ -97,6 +97,8 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # lint-imports (a dev dependency) checks the import contracts in pyproject.toml
+      # (ADR 0022) before the suite; a broken contract fails the job.
       - name: Run full test suite in container
         if: steps.scope.outputs.run == 'true'
         run: |
@@ -104,7 +106,7 @@ jobs:
           docker run --rm \
             -v "$GITHUB_WORKSPACE:/opt/app" \
             soma-ci:${{ github.sha }} \
-            bash -lc "python -m pip install --no-cache-dir -c /tmp/constraints-cu128.txt '/opt/app[dev]' pytest pytest-cov && python -m pytest -q tests -k 'not prism_slide_feature_matches_slide2vec_gt'"
+            bash -lc "python -m pip install --no-cache-dir -c /tmp/constraints-cu128.txt '/opt/app[dev]' pytest pytest-cov && lint-imports && python -m pytest -q tests -k 'not prism_slide_feature_matches_slide2vec_gt'"
 
   prism-regression:
     runs-on: ubuntu-latest
@@ -164,8 +166,10 @@ jobs:
             'soma/extract/preprocessing/*'       # tiling inputs (supplied coordinates, preprocessing hierarchy)
             'soma/extract/cache/*'               # cache keys/io/tile artifact metadata, used even with the cache off
             'soma/_internal/atomic_io.py'        # writes the config and cache metadata files on this path
+            'soma/_internal/editable.py'         # CacheOptions' field-write guard
             'soma/_internal/logging.py'          # extraction sets up default logging on every run
-            'soma/config.py'                     # EncoderLeaf/CacheOptions the test builds
+            'soma/config.py'                     # the config vocabulary the test imports CacheOptions from
+            'soma/registry.py'                   # Component, EncoderLeaf's base
             'soma/dataset.py'                    # Dataset/SampleRecord the slides are read through
             'soma/extract/spacing.py'            # effective spacing resolution used by config
             'tests/conftest.py'                  # shared pytest setup the regression runs under

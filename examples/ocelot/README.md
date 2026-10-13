@@ -8,14 +8,14 @@ class-aware **F1 @ δ = 3 µm (15 px @ 0.2 µm/px)**, OCELOT's official toleranc
 The encoder is swappable (the configs cover an encoder × spacing ablation). `ocelot.yaml`
 here is a standalone CONCH example. The encoder × spacing configs
 (`ocelot_{virchow2,uni2}_*.yaml`) are **canonical under
-[`soma/benchmarks/configs/ocelot/`](../../soma/benchmarks/configs/ocelot)** — they are the
+[`soma/benchmark/ocelot/configs/`](../../soma/benchmark/ocelot/configs)** — they are the
 committed YAML the registered `ocelot` benchmark loads (`build_config`), and `campaign.py`
 resolves them from there by `(encoder, spacing)` (no local copies). The **published
 anchor** is `ocelot_virchow2_0.20.yaml` (frozen Virchow2 @ 0.2 µm/px, greedy test mean_F1
 0.6995) — see [`RESULTS.md`](RESULTS.md).
 
 The dataset itself lives outside the repo (`data/` is git-ignored). Only the curation
-code (`soma/curation/ocelot.py`), the packaged benchmark configs, this `ocelot.yaml`, and
+code (`soma/benchmark/ocelot/curate.py`), the packaged benchmark configs, this `ocelot.yaml`, and
 `eval_greedy.py` (a thin CLI over the benchmark's greedy re-scorer) are tracked. OCELOT is also a first-class registered benchmark —
 `soma reproduce ocelot` (see §4) supersedes the old `reproduce.py`.
 
@@ -48,7 +48,7 @@ Split sizes (v1.0.1 drops 4 under-annotated test cases): **400 / 137 / 126**.
 ## 2. Curate → Soma manifests
 
 ```bash
-python -m soma.curation.ocelot \
+python -m soma.benchmark.ocelot.curate \
   --raw-root   <data_root>/ocelot \
   --output-dir <data_root>/ocelot/curated
 ```
@@ -73,7 +73,7 @@ on read and record the resolved source/effective spacing beside each dense grid.
 ```bash
 # All three configs use curated/dataset.csv + curated/splits.csv: copy one, point its
 # cohort.records / cohort.splits at your curated files, then run the copy.
-cp soma/benchmarks/configs/ocelot/ocelot_virchow2_0.25.yaml ocelot_virchow2_0.25.yaml
+cp soma/benchmark/ocelot/configs/ocelot_virchow2_0.25.yaml ocelot_virchow2_0.25.yaml
 python -m soma run ocelot_virchow2_0.25.yaml
 ```
 
@@ -103,7 +103,7 @@ python examples/ocelot/eval_greedy.py \
 OCELOT is now a **first-class registered benchmark** (`soma list benchmarks` shows
 `ocelot`), so the whole curate → train → greedy-score → tolerance-check loop is one
 command — no bespoke script. The expected band + per-row tolerance ship as package data
-(`soma/benchmarks/reference/ocelot.csv`); the human-readable record stays in
+(`soma/benchmark/ocelot/reference.csv`); the human-readable record stays in
 [`RESULTS.md`](RESULTS.md). The **Virchow2 @ 0.2 µm/px** anchor is frozen-probe greedy test
 mean_F1 **0.6995 ± 0.02**.
 

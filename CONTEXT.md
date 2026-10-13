@@ -59,7 +59,7 @@ A *published* evaluation dataset paired with a sufficiently fixed public protoco
 _Avoid_: calling any single run or any user dataset a "benchmark"; reserve the noun for the published, expected-numbers-annotated instance.
 
 **Built-in Benchmark**:
-A Benchmark that maintainers have explicitly chosen to register, distribute, and support as part of soma. Its provider ships in the wheel; its curator, reference data, and other protocol assets ship there when the protocol requires them.
+A Benchmark that maintainers have explicitly chosen to register, distribute, and support as part of soma. Its provider ships in the wheel, in the `soma.benchmark` package that the core never imports and users import explicitly (ADR 0022); its curator, reference data, and other protocol assets ship there when the protocol requires them.
 _Avoid_: assuming every published Benchmark must be built in; treating publication as the promotion decision.
 
 **Benchmark protocol**:

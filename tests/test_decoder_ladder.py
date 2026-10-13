@@ -140,7 +140,7 @@ def test_attention_map_detection_heatmap_end_to_end():
     MIDOG-shaped: single class. A synthetic attention grid attends to exactly the token
     covering a mitosis; the decoder-free rung must recover that detection at F1 = 1.
     """
-    from soma.benchmarks.detection_attention import attention_to_detection_heatmap
+    from soma.benchmark.attention import attention_to_detection_heatmap
     from soma.models.heads.detection import DetectionHead
 
     patch = 4
@@ -176,7 +176,7 @@ def test_attention_map_detection_heatmap_end_to_end():
 def test_attention_map_is_class_agnostic_saliency():
     # The attention saliency is class-blind (design §2.4): broadcasting to C channels gives
     # identical maps — why the rung is MIDOG-scoped (strong single-class, weak multi-class).
-    from soma.benchmarks.detection_attention import attention_to_detection_heatmap
+    from soma.benchmark.attention import attention_to_detection_heatmap
 
     geom = compute_dense_geometry(target_size=16, patch_size=4)
     attn = torch.rand(4, *geom.grid_shape)
@@ -189,7 +189,7 @@ def test_attention_map_is_class_agnostic_saliency():
 def test_attention_map_constant_grid_yields_no_peaks():
     # A flat attention map (nothing salient) normalises to all-zeros -> no detections, the
     # correct empty answer rather than a peak everywhere.
-    from soma.benchmarks.detection_attention import attention_to_detection_heatmap
+    from soma.benchmark.attention import attention_to_detection_heatmap
     from soma.evaluation.detection.peaks import extract_peaks
 
     geom = compute_dense_geometry(target_size=16, patch_size=4)

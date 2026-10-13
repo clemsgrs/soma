@@ -651,7 +651,7 @@ class TestPipeline:
             trainer={"max_epochs": 2},
             scheduler='cosine',
         )
-        from soma.extract.preprocessing.resolution import resolve_pipeline_preprocessing
+        from soma.pipeline.extraction import resolve_pipeline_preprocessing
 
         resolved = resolve_pipeline_preprocessing(config)
 

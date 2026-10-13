@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import dataclasses
+import gc
 import inspect
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import pytest
 
 import soma
+import soma.benchmark  # noqa: F401  (registers the benchmarks kind: option C)
 from soma import discovery
 from soma._internal.params import is_run_decided
+from soma.registry import Registry
 
 
 def _entry(kind: str, name: str) -> dict:
@@ -50,6 +57,91 @@ def test_every_domain_lists_named_entries(kind):
 def test_an_unknown_kind_names_the_domains():
     with pytest.raises(ValueError, match="aggregators, augmentations"):
         soma.components("widgets")
+
+
+def _fresh_python(script: str) -> subprocess.CompletedProcess:
+    """Run ``script`` in a fresh interpreter importing this checkout's soma first."""
+    checkout = str(Path(soma.__file__).resolve().parents[1])
+    path = os.pathsep.join(filter(None, [checkout, os.environ.get("PYTHONPATH")]))
+    return subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, env={**os.environ, "PYTHONPATH": path}
+    )
+
+
+def test_a_registry_announces_its_kind_while_it_lives():
+    widgets = Registry("widgets")
+
+    assert "widgets" in soma.components()
+    assert discovery.registry("widgets") is widgets
+
+    del widgets
+    gc.collect()
+    assert "widgets" not in soma.components()
+
+
+def test_a_kind_has_one_registry():
+    with pytest.raises(ValueError, match="already"):
+        Registry("aggregators")
+
+
+def test_registries_have_no_lazy_bundled_module():
+    assert "bundled_module" not in inspect.signature(Registry).parameters
+
+
+def test_import_soma_lists_the_core_kinds_and_not_the_benchmarks():
+    result = _fresh_python(
+        "import sys, soma\n"
+        "assert not [m for m in sys.modules if m.startswith('soma.benchmark')], 'core imported soma.benchmark'\n"
+        "print(' '.join(soma.components()))\n"
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == [kind for kind in DOMAINS if kind != "benchmarks"]
+
+
+def test_the_benchmarks_kind_needs_import_soma_benchmark():
+    result = _fresh_python(
+        "import soma\n"
+        "try:\n"
+        "    soma.components('benchmarks')\n"
+        "except ValueError as error:\n"
+        "    print(error)\n"
+        "import soma.benchmark\n"
+        "print('eva/bach' in [entry['name'] for entry in soma.components('benchmarks')])\n"
+        "print('benchmarks' in soma.components())\n"
+    )
+
+    assert result.returncode == 0, result.stderr
+    hint, listed, kind = result.stdout.strip().splitlines()
+    assert "unknown component kind 'benchmarks'" in hint
+    assert "import soma.benchmark" in hint
+    assert (listed, kind) == ("True", "True")
+
+
+def test_a_benchmark_component_name_needs_the_import_and_a_dotted_path_does_not():
+    result = _fresh_python(
+        "import sys, soma\n"
+        "from soma.models.aggregators import aggregator_registry\n"
+        "try:\n"
+        "    aggregator_registry.get('eva_abmil')\n"
+        "except KeyError as error:\n"
+        "    print(error.args[0])\n"
+        "cls = aggregator_registry.resolve('soma.benchmark.eva.slide.EvaABMIL')\n"
+        "print(cls.__name__, 'eva_abmil' in aggregator_registry)\n"
+    )
+
+    assert result.returncode == 0, result.stderr
+    hint, resolved = result.stdout.strip().splitlines()
+    assert "'eva_abmil' not found in aggregators registry" in hint
+    assert "import soma.benchmark" in hint
+    assert resolved == "EvaABMIL True"
+
+
+def test_the_cli_imports_soma_benchmark_at_startup():
+    result = _fresh_python("import sys, soma.cli\nprint('soma.benchmark' in sys.modules)\n")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "True"
 
 
 def _soma_entries():
@@ -242,7 +334,7 @@ def test_an_unregistered_dotted_path_keeps_its_name_and_params_verbatim(aggregat
 
 def test_components_is_the_only_discovery_surface():
     import soma.models.aggregators
-    import soma.benchmarks
+    import soma.benchmark
     import soma.models.decoders
     import soma.models.encoders
     import soma.models.heads
@@ -257,7 +349,7 @@ def test_components_is_the_only_discovery_surface():
         (soma.models.aggregators, "list_aggregators"),
         (soma.models.decoders, "list_decoders"),
         (soma.models.heads, "list_task_heads"),
-        (soma.benchmarks, "list_benchmarks"),
+        (soma.benchmark, "list_benchmarks"),
     ]:
         assert not hasattr(module, name), f"{module.__name__}.{name} is still exported"
     assert not hasattr(Registry, "list_with_metadata")

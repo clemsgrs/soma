@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
-from soma.curation import eva_slide
+from soma.benchmark.eva import curate_slide as eva_slide
 from tests import eva_reference as eva
 from tests.eva_slide_raw import write_fake_camelyon16, write_fake_panda, write_pyramid
 

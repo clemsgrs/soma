@@ -131,14 +131,14 @@ everywhere.
 - **Predictions.** Peaks on ignored pixels are left out whenever predictions
   are scored: in the threshold sweep, in evaluation and in the detection
   benchmark. The saved predictions file keeps them.
-- **Area.** The FROC per-mm² area of a sample (:mod:`soma.benchmarks.froc`)
+- **Area.** The FROC per-mm² area of a sample (:mod:`soma.benchmark.monkey.froc`)
   covers its supervised pixels only.
 
 The mask is mapped to the run's ``target_size`` frame like the points: each
 target pixel takes the value of its nearest level-0 pixel.
 
 **Tiling.** When an ROI row of the manifest given to
-``python -m soma.curation.tile_detection`` has ``ignore_mask_path``, the mask
+``python -m soma.benchmark.tiles`` has ``ignore_mask_path``, the mask
 must have the size of the ROI image. The tiler then:
 
 - pads the mask with 255 where it pads the ROI up to a full tile;

@@ -143,6 +143,17 @@ def test_docker_test_no_longer_runs_the_prism_regression():
     assert f"-k 'not {PRISM_TEST}'" in suite
 
 
+def test_docker_test_checks_the_import_contracts_after_the_dev_install_and_before_the_suite():
+    # import-linter is a dev dependency; the contracts (ADR 0022) are checked in the
+    # container the suite runs in, and a broken contract stops the job before pytest.
+    steps = _docker_test_steps()
+    suite = steps[_step_index(steps, "Run full test suite in container")]["run"]
+
+    install, lint, pytest_run = (suite.index(part) for part in ("'/opt/app[dev]'", "lint-imports", "python -m pytest"))
+    assert install < lint < pytest_run
+    assert "&& lint-imports &&" in " ".join(suite.split())
+
+
 PRISM_SCOPE_STEP = "Determine whether extraction code changed"
 SCOPE_ENV = {
     "EVENT_NAME": "${{ github.event_name }}",
@@ -213,6 +224,9 @@ def test_prism_regression_always_runs_outside_pull_requests(tmp_path, event):
         ("docs/index.md", "soma/extract/extractor.py"),
         ("soma/models/encoders/validation.py",),
         ("soma/extract/cache/keys.py",),
+        ("soma/extract/cache/options.py",),
+        ("soma/registry.py",),
+        ("soma/_internal/editable.py",),
         ("soma/extract/preprocessing/supplied_coordinates.py",),
         ("soma/extract/slide2vec_adapter.py",),
         ("tests/fixtures/regression/gt/test-wsi.pt",),

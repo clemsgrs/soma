@@ -1,7 +1,7 @@
 """Benchmark registry mechanics + a fixture Benchmark (protocol-as-code, ADR 0002).
 
 Exercises the parts that do not need OCELOT data or a GPU: register/lookup/list, the
-structural :class:`Benchmark` protocol, ``reference/<name>.csv`` parsing with a per-row
+structural :class:`Benchmark` protocol, ``<name>/reference.csv`` parsing with a per-row
 tolerance, axis matching (broad banner vs keyed rows), the default ``summary.json`` scorer,
 and the :class:`Facet`. A fixture Benchmark that uses the DEFAULT scorer proves the
 registry works independently of OCELOT's greedy override.
@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from soma.benchmarks import (
+from soma.benchmark import (
     Benchmark,
     Facet,
     ReferenceRow,
@@ -28,9 +28,9 @@ from soma.benchmarks import (
     score_from_summary,
 )
 from soma import components
-from soma.benchmarks import registry as registry_mod
+from soma.benchmark import registry as registry_mod
 from soma.config import CacheOptions, ExperimentConfig, FeaturesConfig
-from soma.curation.manifest import CuratedManifest
+from soma.benchmark.curation import CuratedManifest
 from tests.experiment_configs import experiment
 
 
@@ -263,7 +263,7 @@ def test_ocelot_carries_external_guidance_anchors():
 
 def test_load_reference_requires_value_columns(tmp_path, monkeypatch):
     # A table missing the fixed value columns fails fast.
-    import soma.benchmarks.registry as reg
+    import soma.benchmark.registry as reg
 
     class _Fake:
         def joinpath(self, _name):
@@ -281,7 +281,7 @@ def test_load_reference_requires_value_columns(tmp_path, monkeypatch):
 
 def _fake_reference_csv(monkeypatch, text: str) -> None:
     """Point ``load_reference`` at an in-memory CSV (mirrors the missing-column test)."""
-    import soma.benchmarks.registry as reg
+    import soma.benchmark.registry as reg
 
     class _Fake:
         def joinpath(self, _name):

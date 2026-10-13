@@ -10,9 +10,9 @@ from __future__ import annotations
 
 import pytest
 
-from soma.benchmarks import reproduction
-from soma.benchmarks.registry import EXTERNAL, MeasuredRow, ReferenceRow
-from soma.benchmarks.reproduction import RESOLVABLE_EPS, reproduction_report
+from soma.benchmark import reproduction
+from soma.benchmark.registry import EXTERNAL, MeasuredRow, ReferenceRow
+from soma.benchmark.reproduction import RESOLVABLE_EPS, reproduction_report
 
 METRIC = "test/mean_pearson_mean"
 
@@ -163,7 +163,7 @@ def test_rankdata_and_spearman_helpers():
 # symmetric, direction-independent. Families that declare nothing keep the historical
 # absolute rule they were published under.
 
-from soma.benchmarks.reproduction import (  # noqa: E402
+from soma.benchmark.reproduction import (  # noqa: E402
     DEFAULT_RESOLVABILITY,
     ResolvabilityPolicy,
 )

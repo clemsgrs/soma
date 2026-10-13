@@ -16,7 +16,7 @@ from soma.models.decoders import (  # noqa: E402
 
 
 def test_registry_lists_all_decoders():
-    # Benchmark-private decoders (soma.benchmarks.eva_segmentation) register under an
+    # Benchmark-private decoders (soma.benchmark.eva.segmentation) register under an
     # ``eva_`` prefix and are listed with soma's own.
     names = [entry["name"] for entry in components("decoders")]
     assert [name for name in names if not name.startswith("eva_")] == ["heavy_conv", "lightweight_conv", "linear"]

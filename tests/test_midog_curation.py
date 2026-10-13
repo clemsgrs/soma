@@ -15,8 +15,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from soma.curation import Curator, curate_midog_detection
-from soma.curation.midog import (
+from soma.benchmark.curation import Curator
+from soma.benchmark.midog.curate import curate_midog_detection
+from soma.benchmark.midog.curate import (
     MIDOG_CLASS_NAMES,
     MIDOG_MITOTIC_CATEGORY_ID,
 )

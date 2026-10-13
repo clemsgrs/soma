@@ -3,7 +3,7 @@
 from soma.registry import Registry
 
 #: The task-head registry: the ``heads`` domain of :func:`soma.components`.
-task_registry = Registry("heads", bundled_module="soma.benchmarks")
+task_registry = Registry("heads")
 
 
 def task_head_class(name: str) -> type:

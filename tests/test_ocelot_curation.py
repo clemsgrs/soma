@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from soma.curation.ocelot import (
+from soma.benchmark.ocelot.curate import (
     OCELOT_NATIVE_SPACING_UM,
     OCELOT_SPLIT_ROLE,
     curate_ocelot_detection,

@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
-import soma.benchmarks.run as run_mod
-from soma.benchmarks import (
+import soma.benchmark.run as run_mod
+from soma.benchmark import (
     BenchmarkRunResult,
     BenchmarkSpec,
     MetricResult,
@@ -17,7 +17,7 @@ from soma.benchmarks import (
     get_reported_metrics,
     run_benchmark_spec,
 )
-from soma.benchmarks.spec import BenchmarkConfigBuilder
+from soma.benchmark.spec import BenchmarkConfigBuilder
 
 
 def _build_config(**kwargs):
@@ -29,7 +29,7 @@ def _score(run_dir: str | Path) -> dict[str, float]:
 
 
 def test_benchmark_spec_is_public_and_validates_metrics_without_registration():
-    import soma.benchmarks
+    import soma.benchmark
 
     spec = BenchmarkSpec(
         name="fmtf/example",
@@ -43,7 +43,7 @@ def test_benchmark_spec_is_public_and_validates_metrics_without_registration():
 
     assert get_reported_metrics(spec) == ("test/accuracy", "test/f1")
     assert get_ranking_metrics(spec) == ("test/accuracy",)
-    assert "BenchmarkSpec" in soma.benchmarks.__all__
+    assert "BenchmarkSpec" in soma.benchmark.__all__
     with pytest.raises(KeyError, match="Unknown benchmark 'fmtf/example'"):
         get_benchmark(spec.name)
 

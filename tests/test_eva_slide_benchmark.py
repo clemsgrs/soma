@@ -16,8 +16,8 @@ from soma.config import Component
 from soma.plan import sample_unit
 from tests.experiment_configs import callback
 from soma.models.aggregators.registry import aggregator_registry
-from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
-from soma.benchmarks import eva_slide as slide
+from soma.benchmark import Benchmark, benchmark_registry, get_benchmark
+from soma.benchmark.eva import slide as slide
 from soma.models.heads.registry import task_family_of, task_registry
 from tests import eva_reference as eva
 
@@ -47,18 +47,20 @@ def test_private_components_are_registered_under_eva_names():
     assert task_family_of("eva_mil_multiclass") == "multiclass_classification"
 
 
-def test_a_fresh_process_resolves_the_private_aggregator():
-    """A saved benchmark config names ``eva_abmil``; loading it must not need an import."""
+def test_a_fresh_process_resolves_the_private_aggregator_after_import_soma_benchmark():
+    """A saved benchmark config names ``eva_abmil``: ``import soma.benchmark`` registers it."""
     code = (
         "from soma.models.aggregators.registry import aggregator_registry\n"
         "from soma.models.heads.registry import task_registry\n"
+        "print('eva_abmil' in aggregator_registry)\n"
+        "import soma.benchmark\n"
         "print(aggregator_registry.get('eva_abmil').__name__, "
         "task_registry.get('eva_mil_binary').__name__)\n"
     )
     out = subprocess.run(
         [sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, check=True
     )
-    assert out.stdout.split() == ["EvaABMIL", "EvaMILBinaryHead"]
+    assert out.stdout.split() == ["False", "EvaABMIL", "EvaMILBinaryHead"]
 
 
 @pytest.mark.parametrize(

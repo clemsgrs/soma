@@ -1,4 +1,4 @@
-"""Tests for the detection ROI tiler (soma.curation.tile_detection)."""
+"""Tests for the detection ROI tiler (soma.benchmark.tiles)."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from soma.curation.tile_detection import cover_origins, tile_detection_manifest
+from soma.benchmark.tiles import cover_origins, tile_detection_manifest
 
 
 def test_cover_origins_edge_flush():

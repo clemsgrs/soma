@@ -16,8 +16,8 @@ from pathlib import Path
 
 import pytest
 
-from soma.benchmarks import get_benchmark
-from soma.benchmarks.ocelot import OCELOT, extract_test_metrics
+from soma.benchmark import get_benchmark
+from soma.benchmark.ocelot import OCELOT, extract_test_metrics
 
 
 def _greedy_report(mean_f1: float) -> dict:
@@ -135,7 +135,7 @@ def test_score_override_uses_greedy_matcher(monkeypatch, tmp_path: Path):
     # The score OVERRIDE runs the greedy matcher; stub the GPU/data-bound inner seam so we
     # verify score() plumbs the greedy report into the primary metric offline.
     monkeypatch.setattr(
-        "soma.benchmarks.ocelot._greedy_report_for_run",
+        "soma.benchmark.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": _greedy_report(0.6991),
     )
     metrics = OCELOT.score(tmp_path)
@@ -143,7 +143,7 @@ def test_score_override_uses_greedy_matcher(monkeypatch, tmp_path: Path):
 
 
 def test_reference_csv_has_key_metric_expected_tolerance_source_columns():
-    with resources.files("soma.benchmarks.reference").joinpath("ocelot.csv").open(newline="") as fh:
+    with resources.files("soma.benchmark.ocelot").joinpath("reference.csv").open(newline="") as fh:
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
         rows = list(reader)

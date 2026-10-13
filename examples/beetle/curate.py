@@ -32,7 +32,7 @@ from pathlib import Path
 from PIL import Image
 
 from examples.beetle.protocol import CLASSES, PIXEL_MAPPING
-from soma.curation.manifest import CuratedManifest, write_manifest
+from soma.benchmark.curation import CuratedManifest, write_manifest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_BEETLE_ROOT = _REPO_ROOT / "data" / "beetle"
@@ -446,8 +446,8 @@ def _validate_sensitivity_subset(dataset_rows: list[dict]) -> None:
 
 
 def _write_coverage(dataset_csv: Path, out_path: Path) -> None:
-    """Per-slide per-class annotation coverage (soma.curation.segmentation_coverage)."""
-    from soma.curation.segmentation_coverage import (
+    """Per-slide per-class annotation coverage (soma.benchmark.coverage)."""
+    from soma.benchmark.coverage import (
         summarize_coverage,
         write_coverage_csv,
     )
@@ -488,7 +488,7 @@ def curate_beetle_slide_manifest(
             (requires hs2p + readable WSIs); informs split authoring only.
 
     Returns:
-        A :class:`~soma.curation.manifest.CuratedManifest` for the generated files.
+        A :class:`~soma.benchmark.curation.CuratedManifest` for the generated files.
     """
     overview_csv = Path(overview_csv)
     beetle_root = Path(beetle_root)

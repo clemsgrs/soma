@@ -236,7 +236,7 @@ def test_benchmark_page_matches_registry(builder: str, filename: str) -> None:
 
 
 def test_croma_benchmark_page_exceptions_table_matches_panel() -> None:
-    from soma.benchmarks.croma import CROMA_0_3_ENCODER_PANEL
+    from soma.benchmark.croma import CROMA_0_3_ENCODER_PANEL
 
     docs_dir = Path(__file__).resolve().parents[1] / "docs"
     page = (docs_dir / "croma-robustness-benchmark.rst").read_text(encoding="utf-8")

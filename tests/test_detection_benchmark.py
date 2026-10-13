@@ -23,15 +23,16 @@ from PIL import Image
 
 from soma import Plan
 from soma.config import ExperimentConfig
-from soma.benchmarks import get_benchmark
-from soma.benchmarks.registry import Benchmark
-from soma.benchmarks.detection_benchmark import (
+from soma.benchmark import get_benchmark
+from soma.benchmark.registry import Benchmark
+from soma.benchmark import detection
+from soma.benchmark.detection import (
     DETECTION_BENCHMARK,
     DetectionDatasetBenchmark,
-    DATASET_ORDER,
     DEFAULT_ROSTER,
     Cell,
     CellPredictions,
+    DatasetSpec,
     DetectionBenchmark,
     RosterEntry,
     SamplePrediction,
@@ -43,6 +44,8 @@ from soma.benchmarks.detection_benchmark import (
     rank_consistency,
     rank_encoders,
     read_cell_predictions,
+    register_dataset,
+    registered_datasets,
     replicate_plan,
     resolve_stratify_maps,
     score_dataset_points,
@@ -83,12 +86,72 @@ def test_registered_per_dataset_not_as_the_harness():
     assert DETECTION_BENCHMARK.datasets == ("ocelot", "midog", "monkey")
 
 
+def test_the_harness_names_no_dataset_and_imports_no_scorer():
+    # Each detection protocol registers its own DatasetSpec; the harness keeps no table of
+    # datasets and imports none of the protocol packages (their scorers and curators).
+    import ast
+
+    tree = ast.parse(Path(detection.__file__).read_text(encoding="utf-8"))
+    imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    imported |= {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    protocols = ("eva", "hest", "ocelot", "midog", "monkey", "croma")
+    assert not {m for m in imported if m and m.startswith(tuple(f"soma.benchmark.{p}" for p in protocols))}
+    assert not hasattr(detection, "DATASETS")
+    assert not hasattr(detection, "DATASET_ORDER")
+
+
+def test_each_detection_protocol_registers_its_dataset_with_its_own_scorer():
+    assert registered_datasets() == ("ocelot", "midog", "monkey")
+    for dataset in registered_datasets():
+        spec = dataset_spec(dataset)
+        assert spec.name == dataset
+        assert spec.score.__module__.startswith(f"soma.benchmark.{dataset}")
+        assert spec.curate.__module__.startswith(f"soma.benchmark.{dataset}")
+        assert spec.config.is_file()
+        assert spec.config.is_relative_to(Path(detection.__file__).parent / dataset)
+
+
+def _toy_spec(**changes) -> DatasetSpec:
+    fields = dict(
+        name="toy",
+        spacing_um=0.5,
+        metric_name="toy_score",
+        num_classes=1,
+        match_um=(4.0,),
+        match_method="greedy",
+        tolerance=None,
+        test_source="local_holdout",
+        config=Path("toy.yaml"),
+        score=lambda samples, spec: {"toy_score": float(len(samples)) * spec.spacing_um},
+        curate=lambda raw_root, out_dir, spec: ("curated", str(raw_root), str(out_dir), spec.name),
+    )
+    return DatasetSpec(**{**fields, **changes})
+
+
+def test_a_registered_dataset_is_scored_and_curated_by_its_spec(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(detection, "_DATASETS", dict(detection._DATASETS))
+    register_dataset(_toy_spec())
+
+    assert registered_datasets()[-1] == "toy"
+    samples = [SamplePrediction("s0", [], [], [], [], []), SamplePrediction("s1", [], [], [], [], [])]
+    assert score_dataset_points("toy", samples) == {"toy_score": 1.0}
+    assert DETECTION_BENCHMARK.curate("raw", tmp_path, dataset="toy") == ("curated", "raw", str(tmp_path), "toy")
+    assert DETECTION_BENCHMARK.metric_for("toy") == "toy_score"
+
+
+def test_a_dataset_registers_once(monkeypatch):
+    monkeypatch.setattr(detection, "_DATASETS", dict(detection._DATASETS))
+
+    with pytest.raises(ValueError, match="already registered"):
+        register_dataset(_toy_spec(name="midog"))
+
+
 def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
     bench = get_benchmark("detection/midog")
     cfg = bench.build_config(encoder="uni2", dataset_csv="/x/d.csv", output_root="/out", seed=3)
     assert cfg.features.encoder.name == "uni2" and cfg.learner.params["head"].params["num_classes"] == 1
     assert cfg.run.seed == 3 and str(cfg.cohort.records) == "/x/d.csv"
-    # expected() reads reference/midog.csv (external anchors only, so any encoder matches).
+    # expected() reads midog/reference.csv (external anchors only, so any encoder matches).
     rows = bench.expected(encoder="uni2")
     assert rows and all(r.is_external for r in rows)
     write_cell_predictions(
@@ -128,7 +191,7 @@ def test_build_config_is_roster_size_agnostic():
 
 def test_midog_config_carries_relaxed_tolerance():
     cfg = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset="midog")
-    from soma.extract.preprocessing.resolution import resolve_pipeline_preprocessing
+    from soma.pipeline.extraction import resolve_pipeline_preprocessing
 
     assert resolve_pipeline_preprocessing(cfg).tiling.tolerance == pytest.approx(0.10)
     assert cfg.features.dense.tolerance == pytest.approx(0.10)
@@ -545,7 +608,7 @@ def test_report_reference_bands_scaffolds():
     [("midog", ("f1",), True), ("monkey", ("froc_inflammatory", "froc_lymphocytes", "froc_monocytes", "mean_froc"), False)],
 )
 def test_reference_scaffold_shape(dataset, metrics, gated):
-    with resources.files("soma.benchmarks.reference").joinpath(f"{dataset}.csv").open(newline="") as fh:
+    with resources.files(f"soma.benchmark.{dataset}").joinpath("reference.csv").open(newline="") as fh:
         reader = csv.DictReader(fh)
         columns = reader.fieldnames
         rows = list(reader)
@@ -768,7 +831,7 @@ def test_point_frame_reads_the_runs_detection_head_and_dense_geometry(tmp_path: 
     from soma.config import ExperimentConfig
 
     m = _load_driver()
-    committed = resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml"
+    committed = resources.files("soma.benchmark.midog") / "configs" / "detection.yaml"
     # A run read at 0.5 µm/px (not the dataset's nominal 0.25) with its own NMS radius.
     ExperimentConfig.from_yaml(
         committed,
@@ -800,7 +863,7 @@ def test_point_frame_reads_a_null_nms_radius_as_the_match_distance(tmp_path: Pat
     from soma.config import ExperimentConfig
 
     m = _load_driver()
-    committed = resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml"
+    committed = resources.files("soma.benchmark.midog") / "configs" / "detection.yaml"
     ExperimentConfig.from_yaml(
         committed, overrides={"learner": {"params": {"head": {"params": {"nms_distance": None}}}}}
     ).to_yaml(tmp_path / "config.yaml")
@@ -1230,7 +1293,7 @@ def test_ensemble_configs_load_with_agreed_semantics(dataset, comp, members):
     assert cfg.learner.params["decoder"].name == "lightweight_conv"
     # The recipe below the composite matches the dataset base config.
     base = ExperimentConfig.from_yaml(
-        resources.files("soma.benchmarks") / "configs" / "detection" / f"{dataset}.yaml"
+        resources.files(f"soma.benchmark.{dataset}") / "configs" / "detection.yaml"
     )
     assert cfg.learner == base.learner
     assert cfg.features.extraction == base.features.extraction
@@ -1250,13 +1313,13 @@ def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
     from soma.config import EncoderLeaf, ExperimentConfig
     from soma.extract.dense_extraction import _DenseImageExtractor
     from soma.models.encoders import CompositeParams
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
+    from soma.pipeline.extraction import resolve_pipeline_dense
 
     repo_root = Path(__file__).resolve().parents[1]
     overrides = {"features": {"cache": {"root_dir": str(tmp_path)}}}
 
     single = ExperimentConfig.from_yaml(
-        resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml",
+        resources.files("soma.benchmark.midog") / "configs" / "detection.yaml",
         overrides={"features": {"encoder": {"name": "virchow2"}, "cache": {"root_dir": str(tmp_path)}}},
     )
     key_single = _DenseImageExtractor(
@@ -1320,7 +1383,7 @@ def test_main_composite_config_guards(monkeypatch, tmp_path: Path):
         m.main(base + ["--out-root", str(tmp_path), "--datasets", "midog", "ocelot"])
     with pytest.raises(SystemExit, match="drop --encoders"):
         m.main(base + ["--out-root", str(tmp_path), "--encoders", "uni2"])
-    single = str(resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml")
+    single = str(resources.files("soma.benchmark.midog") / "configs" / "detection.yaml")
     with pytest.raises(SystemExit, match="no composite"):
         m.main(["extract", "--config", single, "--datasets", "midog",
                 "--out-root", str(tmp_path)])

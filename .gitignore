@@ -240,12 +240,11 @@ Dockerfile.save
 TODO.md
 TODO.html
 eva.csv
-# …but the bundled EVA benchmark reference + reproduced-results tables are package data,
-# not scratch.
-!soma/benchmarks/reference/eva.csv
-!soma/benchmarks/results/eva.csv
 review.md
 scratch_logs/
 
 # End-to-end scenario artifacts (tests/e2e/)
 e2e-artifacts/
+
+# import-linter cache (lint-imports)
+.import_linter_cache/

@@ -609,7 +609,7 @@ def _materialise_tile_images(tmp_path: Path, sample_ids: list[str], *, size: int
 def test_pipeline_runs_an_image_prior_decoder_on_cached_grids(tmp_path: Path):
     """An image-prior decoder (EVA's online decoder) trains and evaluates through the real
     cached entry point: the fold attaches each tile's pixels next to its grid."""
-    import soma.benchmarks.eva_segmentation  # registers eva_conv_with_image
+    import soma.benchmark.eva.segmentation  # registers eva_conv_with_image
     from soma.pipeline import Pipeline
 
     sample_ids = ["s0", "s1", "s2", "s3"]
@@ -624,7 +624,7 @@ def test_pipeline_runs_an_image_prior_decoder_on_cached_grids(tmp_path: Path):
 
 
 def test_pipeline_rejects_an_image_prior_decoder_whose_image_misses_the_mask_size(tmp_path: Path):
-    import soma.benchmarks.eva_segmentation  # registers eva_conv_with_image
+    import soma.benchmark.eva.segmentation  # registers eva_conv_with_image
     from soma.pipeline import Pipeline
 
     sample_ids = ["s0", "s1", "s2", "s3"]

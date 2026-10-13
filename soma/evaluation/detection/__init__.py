@@ -14,7 +14,7 @@ The target side (level-0 <-> target-frame coordinate transforms and the point ->
 peak-heatmap encoder) is :mod:`soma.models.detection_targets`.
 
 Protocol scorers (MIDOG F1, Monkey FROC) and the attention-map rung live with their
-benchmarks under :mod:`soma.benchmarks`.
+benchmarks under :mod:`soma.benchmark`.
 """
 
 from __future__ import annotations

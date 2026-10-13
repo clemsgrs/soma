@@ -77,7 +77,7 @@ from soma.learn import (
 )
 from soma.learn.grid import grid_loaders
 from soma.plan import LEARNER_OWN_EXCLUDED, Plan, load_cohort
-from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 from soma.models.heads.classification import BranchAwareClassificationHead, MulticlassClassificationHead
 from soma.models.heads.registry import task_registry
 from soma.learn.bag_dataset import BagDataset, HierarchicalBagDataset
