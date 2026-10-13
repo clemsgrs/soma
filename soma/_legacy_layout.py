@@ -363,10 +363,15 @@ def features_to_layout(features: FeaturesConfig) -> dict[str, Any]:
 
     Upstream fields the former vocabulary cannot spell (hs2p filter knobs other than
     ``a_t``, a dense ``pad_mode``, ...) are not written; the experiment identity in
-    ``run.yaml`` still carries them.
+    ``run.yaml`` still carries them. ``dense`` without a tiling is written as the tiling
+    it reads at (the layout derives the dense geometry from the tiling keys).
     """
+    from soma.preprocessing.resolution import reconcile_dense_tiling
+
     extraction, execution, dense = features.extraction, features.execution, features.dense
     tiling = extraction.tiling
+    if tiling is None:
+        tiling = reconcile_dense_tiling(extraction, dense).tiling
     segmentation = extraction.segmentation
     preprocessing: dict[str, Any] = {
         "backend": "auto" if tiling is None else tiling.backend,

@@ -20,6 +20,7 @@ from soma.extraction_contracts import (
     FeatureProvenance,
 )
 from soma.encoders.validation import resolve_preprocessing_config
+from soma.preprocessing.resolution import reconcile_dense_tiling
 
 Shape = Literal["set", "grid"]
 Unit = Literal["slide", "tile"]
@@ -127,11 +128,13 @@ class FeatureExtractor:
         return self._extract_impl()
 
     def _dense_preprocessing(self) -> PreprocessingConfig:
-        """The preprocessing with the tiling and filter the encoder decides filled in."""
+        """The preprocessing with its tiling reconciled with ``dense`` (ROIs are sampled at
+        the geometry the grid reads them at), and the tiling and filter the encoder decides
+        filled in."""
         from slide2vec.encoders.registry import encoder_registry
 
         return resolve_preprocessing_config(
-            self._preprocessing,
+            reconcile_dense_tiling(self._preprocessing, self._dense),
             encoder_name=self._encoder.name,
             model_metadata=encoder_registry.info(self._encoder.name),
         )

@@ -28,7 +28,6 @@ import yaml
 
 from soma.atomic_io import atomic_write_text
 from soma.config import (
-    FeaturesConfig,
     PipelineConfig,
     config_yaml_dict,
     save_config,
@@ -259,11 +258,24 @@ def test_identity_digest(config: PipelineConfig) -> str:
     ).hexdigest()
 
 
-def _features_identity(features: FeaturesConfig, *, cache_dtype: bool = False) -> dict[str, Any]:
-    """The experiment-defining part of a run's features: every field of the held slide2vec
-    / hs2p dataclasses but the execution resources (only the precision counts)."""
-    from soma.cache.keys import _jsonable
+def _features_identity(config: PipelineConfig, *, cache_dtype: bool = False) -> dict[str, Any]:
+    """The experiment-defining part of a run's features: every field of the slide2vec /
+    hs2p dataclasses but the execution resources (only the precision counts).
 
+    The extraction and a grid run's dense options are hashed as the run resolves them
+    (the geometry left to the encoder preset or to ``dense`` filled in), so a Python config
+    and the ``config.yaml`` it saves, which spells that geometry out, share one identity.
+    """
+    from soma.cache.keys import _jsonable
+    from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+
+    features = config.features
+    extraction = resolve_pipeline_preprocessing(config)
+    dense = None
+    if config.dataset_type in {"segmentation", "detection"}:
+        dense = features.dense
+        if dense is None and extraction.tiling is not None:
+            dense = resolve_pipeline_dense(config)
     cache: dict[str, Any] = {
         "enabled": features.cache.enabled,
         "reuse_policy": features.cache.reuse_policy,
@@ -273,8 +285,8 @@ def _features_identity(features: FeaturesConfig, *, cache_dtype: bool = False) -
     return {
         "kind": features.kind,
         "encoder": None if features.encoder is None else _jsonable(features.encoder),
-        "extraction": _jsonable(features.extraction),
-        "dense": None if features.dense is None else _jsonable(features.dense),
+        "extraction": _jsonable(extraction),
+        "dense": None if dense is None else _jsonable(dense),
         "spacing_policy": features.spacing_policy,
         "precision": features.execution.precision,
         "cache": cache,
@@ -296,7 +308,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             "dataset": {"checksum": dataset_digest},
             "splits": {"checksum": splits_digest},
             "dataset_type": config.dataset_type,
-            "features": _features_identity(config.features, cache_dtype=True),
+            "features": _features_identity(config, cache_dtype=True),
             "task": None,
             "representation": representation,
         }
@@ -322,7 +334,7 @@ def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
             "checksum": splits_digest,
         },
         "dataset_type": config.dataset_type,
-        "features": _features_identity(config.features),
+        "features": _features_identity(config),
         "aggregator": asdict(config.aggregator) if config.aggregator is not None else None,
         "decoder": asdict(config.decoder) if config.decoder is not None else None,
         "task": task_config_dict(config.task),

@@ -1710,6 +1710,8 @@ def live_encoder_spec(config: PipelineConfig) -> dict[str, Any]:
         "allow_non_recommended_settings": encoder.allow_non_recommended_settings,
         "tolerance": float(dense.tolerance),
         "backend": dense.backend,
+        "pad_mode": dense.pad_mode,
+        "image_pad_value": dense.image_pad_value,
         "attention_blocks": tuple(dense.attention_blocks),
         "attention_include_registers": bool(dense.attention_include_registers),
     }

@@ -270,11 +270,13 @@ class FeaturesConfig:
     * ``encoder``: a slide2vec encoder or ``composite`` (a name is accepted for a leaf
       without params).
     * ``extraction``: what slide2vec tiles and how. ``tiling=None`` takes the spacing
-      and tile size from the encoder preset when the features are extracted.
+      and tile size from ``dense`` in a grid run that sets it, else from the encoder
+      preset, when the features are extracted.
     * ``execution``: batch size, precision, GPUs and workers. ``precision=None`` takes
       the encoder's recommendation.
     * ``dense``: the grid shape's read and encode recipe; ``None`` reads at the resolved
-      tiling's spacing and tile size with slide2vec's dense defaults.
+      tiling's spacing and tile size with slide2vec's dense defaults. A tiling set beside
+      it must name the same spacing, tile size, tolerance and backend.
     * ``spacing_policy``: how a grid run applies the requested spacing to each sample:
       ``strict`` reads every sample at it, ``native_if_coarser`` reads a sample whose
       level 0 is coarser than requested at its native spacing.

@@ -403,6 +403,19 @@ def test_execution_options_forward_the_held_worker_tuning(tmp_path: Path):
     )
 
 
+def test_execution_options_write_the_pt_payloads_the_cache_reads(tmp_path: Path):
+    from soma import slide2vec_adapter as adapter
+
+    execution = adapter.execution_options(
+        ExecutionOptions(output_format="npz"),
+        encoder_name=_TEST_TILE,
+        output_dir=tmp_path,
+        save_tile_embeddings=False,
+    )
+
+    assert execution.output_format == "pt"
+
+
 def test_load_model_forwards_allow_non_recommended_settings():
     with patch("soma.extraction.orchestration.Model.from_preset") as from_preset:
         _load_model(

@@ -261,6 +261,48 @@ def test_a_saved_config_loads_back_into_the_same_features(tmp_path: Path, data: 
     assert load_config(saved) == config
 
 
+_DENSE_ONLY = slide2vec.DenseOptions(spacing_um=1.0, target_size=512, tolerance=0.1, backend="openslide")
+
+
+def _geometry(options) -> tuple:
+    if isinstance(options, TilingConfig):
+        return (options.requested_spacing_um, options.requested_tile_size_px, options.tolerance, options.backend)
+    return (options.spacing_um, options.target_size, options.tolerance, options.backend)
+
+
+def test_a_grid_run_tiles_at_its_dense_geometry():
+    """A grid run samples ROIs at the tiling and reads them at ``dense``: an unset tiling
+    takes the dense geometry, not the encoder preset's, and a disagreeing one is refused."""
+    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+
+    config = _seg_config(features=FeaturesConfig(encoder="phikon", dense=_DENSE_ONLY))
+
+    assert _geometry(resolve_pipeline_preprocessing(config).tiling) == (1.0, 512, 0.1, "openslide")
+    conflicting = replace(
+        config,
+        features=replace(
+            config.features,
+            extraction=slide2vec.PreprocessingConfig(
+                tiling=TilingConfig(requested_spacing_um=0.5, requested_tile_size_px=224, tolerance=0.05, overlap=0.0)
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="disagree"):
+        resolve_pipeline_preprocessing(conflicting)
+
+
+def test_a_saved_config_keeps_the_dense_read_geometry(tmp_path: Path):
+    """``dense`` without a tiling is saved as the tiling it reads at, not the encoder
+    preset's (phikon's is 0.5 µm/px, 224 px)."""
+    config = _seg_config(features=FeaturesConfig(encoder="phikon", dense=_DENSE_ONLY))
+    saved = tmp_path / "saved.yaml"
+
+    save_config(config, saved)
+
+    features = load_config(saved).features
+    assert _geometry(features.dense) == _geometry(features.extraction.tiling) == _geometry(_DENSE_ONLY)
+
+
 def test_the_encoder_leaf_is_validated_by_the_encoders_registry():
     with pytest.raises(ValueError, match="Unknown encoder name 'not_a_real_encoder'"):
         FeaturesConfig(encoder="not_a_real_encoder")

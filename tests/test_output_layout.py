@@ -23,6 +23,8 @@ from soma.config import (
     TaskConfig,
     TrainingConfig,
     config_yaml_dict,
+    load_config,
+    save_config,
 )
 from soma.pipeline.layout import (
     ExperimentSpec,
@@ -534,6 +536,25 @@ def test_build_experiment_spec_is_stable_for_equivalent_configurations(tmp_path:
 
     assert first_spec.experiment_id == repeated_first_spec.experiment_id
     assert first_spec.experiment_id == second_spec.experiment_id
+
+
+@pytest.mark.parametrize(
+    ("make", "features"),
+    [
+        (_make_pipeline_config, FeaturesConfig(encoder="phikon")),
+        (_make_segmentation_config, FeaturesConfig(encoder="phikon")),
+        (_make_segmentation_config, FeaturesConfig(encoder="phikon", dense=DenseOptions(spacing_um=1.0, target_size=512))),
+    ],
+    ids=["slide-preset", "segmentation-preset", "segmentation-dense"],
+)
+def test_a_config_and_its_saved_yaml_share_one_experiment_identity(tmp_path: Path, make, features):
+    """The geometry left to the encoder preset or to ``dense`` is hashed as resolved, so
+    resuming from the ``config.yaml`` a Python config saved (which spells it out) finds the
+    same experiment."""
+    config = make(tmp_path, features=features)
+    save_config(config, tmp_path / "config.yaml")
+
+    assert canonical_experiment_payload(load_config(tmp_path / "config.yaml")) == canonical_experiment_payload(config)
 
 
 def test_build_experiment_spec_ignores_inactive_heatmap_rendering_settings(tmp_path: Path):

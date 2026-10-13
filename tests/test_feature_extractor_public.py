@@ -650,6 +650,48 @@ def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
     )
 
 
+def test_annotation_sampling_samples_rois_at_the_geometry_the_grid_reads_them_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ROIs are sampled (and their masks cropped) at the tiling and read at ``dense``: an
+    unset tiling takes the dense geometry, not the encoder preset's, and a tiling that
+    disagrees with ``dense`` is refused."""
+    from soma import CacheConfig
+
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label_mask_path\ns0,s0.svs,s0-mask.tif\n",
+        encoding="utf-8",
+    )
+    tilings = []
+
+    def fake_tile_slide(_slide, *, tiling, **_kwargs):
+        tilings.append(tiling)
+        empty = np.asarray([], dtype=np.int64)
+        return {None: SimpleNamespace(tiles=SimpleNamespace(x=empty, y=empty))}
+
+    monkeypatch.setattr("hs2p.tile_slide", fake_tile_slide)
+    masks = annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0})
+
+    def extract(preprocessing):
+        return FeatureExtractor(
+            legacy_samples_from_csv(dataset_csv),
+            "phikon",
+            preprocessing=preprocessing,
+            dense=DenseOptions(spacing_um=1.0, target_size=512, tolerance=0.1),
+            cache=CacheConfig(enabled=False),
+            output_root=tmp_path / "output",
+            shape="grid",
+        ).extract()
+
+    extract(extraction(None, None, masks=masks))
+    assert [
+        (t.requested_spacing_um, t.requested_tile_size_px, t.tolerance) for t in tilings
+    ] == [(1.0, 512, 0.1)]
+    with pytest.raises(ValueError, match="disagree"):
+        extract(extraction(0.5, 224, masks=masks))
+
+
 def test_tile_extraction_missing_returned_outputs_commits_nothing_and_publishes_on_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

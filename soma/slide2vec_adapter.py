@@ -86,7 +86,8 @@ def execution_options(
     """The run's ``ExecutionOptions`` for one slide2vec call.
 
     soma states what is its to decide: where slide2vec writes (the resolved cache
-    directory), the on-disk dtype folded into the cache key (#164), whether tile
+    directory) and in which format (``pt``, the only one soma's caches read), the
+    on-disk dtype folded into the cache key (#164), whether tile
     embeddings are kept, what to do with an image re-pointed under its ``sample_id``, and
     the precision the cache key was derived at (``execution.precision``, else the
     encoder's recommendation), so the key and the computed features cannot disagree.
@@ -95,6 +96,7 @@ def execution_options(
     """
     values: dict[str, object] = {
         "output_dir": Path(output_dir),
+        "output_format": "pt",
         "precision": resolve_encoder_precision(execution.precision, encoder_name=encoder_name),
         "save_tile_embeddings": bool(save_tile_embeddings),
         "output_dtype": output_dtype,
