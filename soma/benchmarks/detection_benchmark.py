@@ -1254,13 +1254,11 @@ class DetectionBenchmark:
                 merged.setdefault(section, {}).update(values)
         cfg = load_config(config_path, overrides=merged)
         spec = dataset_spec(dataset)
-        if (
-            spec.tile_px is not None
-            and int(cfg.preprocessing.requested_tile_size_px) != spec.tile_px
-        ):
+        tile_px = cfg.features.dense.target_size if cfg.features.dense is not None else None
+        if spec.tile_px is not None and tile_px is not None and int(tile_px) != spec.tile_px:
             raise ValueError(
                 f"{spec.config_file} declares requested_tile_size_px "
-                f"{cfg.preprocessing.requested_tile_size_px} but the {dataset} curator "
+                f"{tile_px} but the {dataset} curator "
                 f"tiles at {spec.tile_px}; the supervision size must equal the tile size."
             )
         return cfg

@@ -1,277 +1,61 @@
-"""Tests for soma.encoders.validation — config vs recommended settings checks."""
+"""What an encoder decides about extraction: the tiling and precision left to it.
+
+soma holds slide2vec's ``PreprocessingConfig`` and ``ExecutionOptions`` as given (ADR
+0019); ``tiling=None`` and ``precision=None`` are resolved from slide2vec's encoder
+registry, as slide2vec does when it runs.
+"""
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
+import slide2vec
+from hs2p import FilterConfig
 
-from soma.config import EncoderConfig, PreprocessingConfig
-from slide2vec.encoders.registry import encoder_registry
-from soma.encoders.validation import resolve_preprocessing_config, validate_encoder_config
-from hs2p.preprocessing import TileGeometry
-
-
-def _metadata(
-    *,
-    output_variants: dict | None = None,
-    default_output_variant: str = "default",
-    level: str = "tile",
-    input_size: int | None = 224,
-    tile_encoder: str | None = None,
-    tile_encoder_output_variant: str | None = None,
-    supported_spacing_um: float | list[float] = 0.5,
-    precision: str | None = "fp16",
-    source: str = "",
-) -> dict:
-    payload = {
-        "output_variants": output_variants or {"default": {"encode_dim": 1536}},
-        "default_output_variant": default_output_variant,
-        "level": level,
-        "input_size": input_size,
-        "tile_encoder": tile_encoder,
-        "tile_encoder_output_variant": tile_encoder_output_variant,
-        "supported_spacing_um": supported_spacing_um,
-        "source": source,
-    }
-    if precision is not None:
-        payload["precision"] = precision
-    return payload
-
-
-def _tiling_result(
-    read_spacing_um: float = 0.5,
-    requested_tile_size_px: int = 256,
-    requested_spacing_um: float = 0.5,
-) -> TileGeometry:
-    return TileGeometry(
-        x=np.array([0], dtype=np.int64),
-        y=np.array([0], dtype=np.int64),
-        tissue_fractions=np.array([1.0], dtype=np.float32),
-        requested_tile_size_px=requested_tile_size_px,
-        requested_spacing_um=requested_spacing_um,
-        read_level=0,
-        read_tile_size_px=requested_tile_size_px,
-        read_spacing_um=read_spacing_um,
-        tile_size_lv0=requested_tile_size_px,
-        is_within_tolerance=True,
-        base_spacing_um=0.25,
-        slide_dimensions=[1000, 1000],
-        level_downsamples=[1.0],
-        overlap=0.0,
-        min_tissue_fraction=0.5,
-    )
+from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
+from tests.extraction_configs import tiling
 
 
 @pytest.mark.parametrize(
     ("encoder_name", "expected_tile_size"),
     [("dinov2-vitb14", 224), ("dinov3-vitb16", 256)],
 )
-@pytest.mark.parametrize("requested_spacing", [None, 0.25])
-def test_spacing_agnostic_encoder_resolves_defaults_and_preserves_explicit_spacing(
-    encoder_name, expected_tile_size, requested_spacing
-):
-    resolved = resolve_preprocessing_config(
-        EncoderConfig(name=encoder_name),
-        PreprocessingConfig(requested_spacing_um=requested_spacing),
+def test_an_unset_tiling_takes_the_encoder_preset(encoder_name, expected_tile_size):
+    resolved = resolve_preprocessing_config(slide2vec.PreprocessingConfig(), encoder_name=encoder_name)
+
+    assert resolved.tiling == tiling(0.5, expected_tile_size)
+    # slide2vec's default filter: hs2p's, with the reference tile at the tile size.
+    assert resolved.filter == FilterConfig(ref_tile_size=expected_tile_size)
+
+
+def test_an_explicit_tiling_and_filter_are_kept():
+    held = slide2vec.PreprocessingConfig(
+        tiling=tiling(0.25, 256, overlap=0.5),
+        filter=FilterConfig(ref_tile_size=64, a_t=2),
     )
 
-    assert resolved.requested_tile_size_px == expected_tile_size
-    assert resolved.requested_spacing_um == (0.5 if requested_spacing is None else 0.25)
+    resolved = resolve_preprocessing_config(held, encoder_name="dinov3-vitb16")
+
+    assert (resolved.tiling, resolved.filter) == (held.tiling, held.filter)
 
 
-class TestValidateEncoderConfig:
-    def test_spacing_agnostic_encoder_accepts_any_requested_spacing(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="dinov3-vitb16"),
-            encoder_registry.info("dinov3-vitb16"),
-            preprocessing_config=PreprocessingConfig(
-                requested_tile_size_px=256, requested_spacing_um=0.25
-            ),
+def test_region_geometry_is_completed_from_either_side():
+    from_multiple = resolve_preprocessing_config(
+        slide2vec.PreprocessingConfig(tiling=tiling(0.5, 224), region_tile_multiple=4), encoder_name="uni2"
+    )
+    from_size = resolve_preprocessing_config(
+        slide2vec.PreprocessingConfig(tiling=tiling(0.5, 224), requested_region_size_px=896), encoder_name="uni2"
+    )
+
+    assert (from_multiple.requested_region_size_px, from_multiple.region_tile_multiple) == (896, 4)
+    assert (from_size.requested_region_size_px, from_size.region_tile_multiple) == (896, 4)
+    with pytest.raises(ValueError, match="divisible"):
+        resolve_preprocessing_config(
+            slide2vec.PreprocessingConfig(tiling=tiling(0.5, 224), requested_region_size_px=900),
+            encoder_name="uni2",
         )
 
-        assert warnings == []
 
-    def test_no_warnings_when_matching(self):
-        config = EncoderConfig(name="uni2", precision="fp16")
-        warnings = validate_encoder_config(config, _metadata())
-        assert warnings == []
-
-    def test_missing_level_metadata_errors(self):
-        with pytest.raises(ValueError, match="level metadata"):
-            validate_encoder_config(
-                EncoderConfig(name="uni2", precision="fp16"),
-                {
-                    "output_variants": {"default": {"encode_dim": 1536}},
-                    "default_output_variant": "default",
-                    "input_size": 224,
-                    "supported_spacing_um": 0.5,
-                    "precision": "fp16",
-                    "source": "",
-                },
-            )
-
-    def test_unset_precision_uses_model_recommendation_without_warning(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="uni2", precision=None),
-            _metadata(precision="fp16"),
-        )
-        assert not any("precision" in w.lower() for w in warnings)
-
-    def test_unset_precision_falls_back_to_fp32_when_metadata_has_no_recommendation(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="uni2", precision=None),
-            _metadata(precision=None),
-        )
-        assert not any("precision" in w.lower() for w in warnings)
-
-    def test_precision_mismatch(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="conch", precision="fp16"),
-            _metadata(precision="fp32"),
-        )
-        assert any("precision" in w.lower() for w in warnings)
-
-    def test_spacing_mismatch(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="uni2"),
-            _metadata(supported_spacing_um=0.5),
-            preprocessing_config=PreprocessingConfig(requested_spacing_um=1.0),
-        )
-        assert any("spacing" in w.lower() for w in warnings)
-
-    def test_spacing_matches_one_of_multiple(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="model"),
-            _metadata(supported_spacing_um=[0.5, 1.0]),
-            preprocessing_config=PreprocessingConfig(requested_spacing_um=1.0),
-        )
-        assert not any("spacing" in w.lower() for w in warnings)
-
-    def test_spacing_none_multiple_recommended_errors(self):
-        with pytest.raises(ValueError, match="spacing"):
-            validate_encoder_config(
-                EncoderConfig(name="model"),
-                _metadata(supported_spacing_um=[0.5, 1.0]),
-            )
-
-    def test_requested_spacing_match_does_not_warn_when_read_spacing_differs(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="uni2"),
-            _metadata(supported_spacing_um=0.5),
-            preprocessing_config=PreprocessingConfig(requested_spacing_um=0.5),
-            tiling_result=_tiling_result(read_spacing_um=0.75),
-        )
-        assert not any("spacing" in w.lower() for w in warnings)
-
-    def test_requested_spacing_mismatch_with_tiling_warns(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="uni2"),
-            _metadata(supported_spacing_um=0.5),
-            preprocessing_config=PreprocessingConfig(requested_spacing_um=0.5),
-            tiling_result=_tiling_result(
-                requested_spacing_um=0.75,
-                read_spacing_um=0.5,
-            ),
-        )
-        assert any("requested tiling spacing" in w.lower() for w in warnings)
-
-    def test_preprocessing_tile_size_mismatch(self):
-        if "test-validate-slide-base" not in encoder_registry:
-            encoder_registry.register(
-                "test-validate-slide-base",
-                object,
-                metadata={
-                    "level": "tile",
-                    "input_size": 224,
-                    "output_variants": {"default": {"encode_dim": 224}},
-                    "default_output_variant": "default",
-                    "supported_spacing_um": 0.5,
-                },
-            )
-        warnings = validate_encoder_config(
-            EncoderConfig(name="prism"),
-            _metadata(
-                level="slide",
-                tile_encoder="test-validate-slide-base",
-                tile_encoder_output_variant="default",
-            ),
-            preprocessing_config=PreprocessingConfig(requested_tile_size_px=256),
-        )
-        assert any("tile size" in w.lower() for w in warnings)
-
-    def test_slide_encoder_rejects_output_variant_override(self):
-        with pytest.raises(ValueError, match="output_variant"):
-            validate_encoder_config(
-                EncoderConfig(name="prism", output_variant="cls"),
-                _metadata(
-                    level="slide",
-                    tile_encoder="test-validate-slide-base",
-                    tile_encoder_output_variant="default",
-                ),
-            )
-
-    def test_slide_encoder_requires_tile_encoder_metadata(self):
-        with pytest.raises(ValueError, match="tile_encoder"):
-            validate_encoder_config(
-                EncoderConfig(name="prism"),
-                _metadata(level="slide", tile_encoder=None),
-            )
-
-    def test_slide_encoder_dependency_must_exist(self):
-        with pytest.raises(KeyError):
-            validate_encoder_config(
-                EncoderConfig(name="prism"),
-                _metadata(level="slide", tile_encoder="missing-tile-encoder"),
-            )
-
-    def test_slide_encoder_dependency_must_be_tile_level(self):
-        class DummySlide:
-            pass
-
-        if "test-slide-validation-dep" not in encoder_registry:
-            encoder_registry.register(
-                "test-slide-validation-dep",
-                DummySlide,
-                metadata={"level": "slide"},
-            )
-
-        with pytest.raises(ValueError, match="tile encoder"):
-            validate_encoder_config(
-                EncoderConfig(name="prism"),
-                _metadata(level="slide", tile_encoder="test-slide-validation-dep"),
-            )
-
-    def test_slide_encoder_dependency_requires_level_metadata(self):
-        class DummyMissingLevel:
-            pass
-
-        if "test-slide-validation-missing-level" not in encoder_registry:
-            encoder_registry.register(
-                "test-slide-validation-missing-level",
-                DummyMissingLevel,
-                metadata={},
-            )
-
-        with pytest.raises(ValueError, match="level metadata"):
-            validate_encoder_config(
-                EncoderConfig(name="prism"),
-                _metadata(
-                    level="slide",
-                    tile_encoder="test-slide-validation-missing-level",
-                    tile_encoder_output_variant="default",
-                ),
-            )
-
-    def test_hoptimus_models_reject_non_default_output_variants(self):
-        with pytest.raises(ValueError, match="output_variant"):
-            validate_encoder_config(
-                EncoderConfig(name="h-optimus-1", output_variant="cls"),
-                encoder_registry.info("h-optimus-1"),
-            )
-
-    def test_h0_mini_allows_cls_output_variant(self):
-        warnings = validate_encoder_config(
-            EncoderConfig(name="h0-mini", output_variant="cls"),
-            encoder_registry.info("h0-mini"),
-        )
-        assert warnings == []
+def test_precision_is_explicit_else_the_recommendation_else_fp32():
+    assert resolve_encoder_precision("bf16", encoder_name="uni2") == "bf16"
+    assert resolve_encoder_precision(None, encoder_name="x", model_metadata={"precision": "fp16"}) == "fp16"
+    assert resolve_encoder_precision(None, encoder_name="x", model_metadata={}) == "fp32"

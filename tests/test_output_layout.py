@@ -5,26 +5,28 @@ from pathlib import Path
 
 import pytest
 import yaml
+from slide2vec import DenseOptions
+
+from tests.extraction_configs import annotation_masks, extraction
 
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
-    CompositeConfig,
     DecoderConfig,
-    EncoderConfig,
+    EncoderLeaf,
     EvalConfig,
-    EncoderMemberConfig,
+    FeaturesConfig,
     HeatmapConfig,
-    MasksConfig,
     NormalizationConfig,
     PipelineConfig,
-    PreprocessingConfig,
     ProjectionConfig,
-    SamplingConfig,
     TaskConfig,
     TrainingConfig,
     config_yaml_dict,
+    load_config,
+    save_config,
 )
+from soma.encoders import CompositeMember
 from soma.pipeline.layout import (
     ExperimentSpec,
     build_experiment_spec,
@@ -61,9 +63,7 @@ def _make_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
         splits_csv=splits_csv,
         output_root=tmp_path / "outputs",
         dataset_type="slide",
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        cache=CacheConfig(),
-        encoder=EncoderConfig(name="uni2"),
+        features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
         task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),
@@ -71,6 +71,16 @@ def _make_pipeline_config(tmp_path: Path, **overrides) -> PipelineConfig:
     )
     defaults.update(overrides)
     return PipelineConfig(**defaults)
+
+
+def _segmentation_features(**overrides) -> FeaturesConfig:
+    values = dict(
+        encoder="uni2",
+        extraction=extraction(0.5, 256),
+        dense=DenseOptions(spacing_um=0.5, target_size=256),
+    )
+    values.update(overrides)
+    return FeaturesConfig(**values)
 
 
 def _make_segmentation_config(tmp_path: Path, **overrides) -> PipelineConfig:
@@ -87,9 +97,7 @@ def _make_segmentation_config(tmp_path: Path, **overrides) -> PipelineConfig:
         splits_csv=splits_csv,
         output_root=tmp_path / "outputs",
         dataset_type="segmentation",
-        preprocessing=PreprocessingConfig(requested_tile_size_px=256, requested_spacing_um=0.5),
-        cache=CacheConfig(),
-        encoder=EncoderConfig(name="uni2"),
+        features=_segmentation_features(),
         aggregator=None,
         decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
         task=TaskConfig(name="segmentation", params={"num_classes": 2}),
@@ -153,7 +161,7 @@ def test_canonical_experiment_payload_names_checkpoint_selection_unconditionally
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
     assert payload["training"]["checkpoint_selection"] == "best"
-    assert payload["identity_version"] == 7
+    assert payload["identity_version"] == 8
 
 
 def test_canonical_epoch_experiment_payload_names_null_step_budget(tmp_path: Path):
@@ -199,7 +207,7 @@ def test_loader_plumbing_is_not_part_of_identity(tmp_path: Path):
 def test_spacing_policy_is_always_part_of_identity(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 
-    assert payload["preprocessing"]["spacing_policy"] == "strict"
+    assert payload["features"]["spacing_policy"] == "strict"
 
 
 def test_null_class_request_ratios_are_explicit_in_sampling_identity(tmp_path: Path):
@@ -376,16 +384,16 @@ def test_build_experiment_spec_distinguishes_dense_decoder_settings(tmp_path: Pa
 def test_build_experiment_spec_distinguishes_dense_composite_model_choices(tmp_path: Path):
     l2_composite = _make_segmentation_config(
         tmp_path,
-        encoder=None,
-        composite=CompositeConfig(
-            encoders=[EncoderMemberConfig(name="uni2", member_norm="l2")]
+        features=_segmentation_features(
+            encoder=EncoderLeaf("composite", {"members": [{"name": "uni2", "member_norm": "l2"}]})
         ),
     )
     layernorm_composite = _make_segmentation_config(
         tmp_path,
-        encoder=None,
-        composite=CompositeConfig(
-            encoders=[EncoderMemberConfig(name="uni2", member_norm="layernorm")]
+        features=_segmentation_features(
+            encoder=EncoderLeaf(
+                "composite", {"members": [{"name": "uni2", "member_norm": "layernorm"}]}
+            )
         ),
     )
 
@@ -441,22 +449,18 @@ def test_build_experiment_spec_distinguishes_heatmap_artifact_settings(tmp_path:
     assert disabled_spec.experiment_id != enabled_spec.experiment_id
 
 
-def test_build_experiment_spec_distinguishes_mask_settings_via_preprocessing(tmp_path: Path):
+def _masked_features(masks) -> FeaturesConfig:
+    return FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224, masks=masks))
+
+
+def test_build_experiment_spec_distinguishes_mask_settings_via_extraction(tmp_path: Path):
     tumor_mask = _make_pipeline_config(
         tmp_path,
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(pixel_mapping={"tumor": 1}, min_coverage={"tumor": 0.2}),
-        ),
+        features=_masked_features(annotation_masks({"tumor": 1}, {"tumor": 0.2})),
     )
     stroma_mask = _make_pipeline_config(
         tmp_path,
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            masks=MasksConfig(pixel_mapping={"stroma": 2}, min_coverage={"stroma": 0.2}),
-        ),
+        features=_masked_features(annotation_masks({"stroma": 2}, {"stroma": 0.2})),
     )
 
     tumor_spec = build_experiment_spec(tumor_mask)
@@ -465,24 +469,17 @@ def test_build_experiment_spec_distinguishes_mask_settings_via_preprocessing(tmp
     assert tumor_spec.experiment_id != stroma_spec.experiment_id
 
 
-def test_build_experiment_spec_distinguishes_sampling_settings_via_preprocessing(tmp_path: Path):
-    mask = MasksConfig(pixel_mapping={"tumor": 1}, min_coverage={"tumor": 0.2})
+def test_build_experiment_spec_distinguishes_sampling_settings_via_extraction(tmp_path: Path):
     joint_sampling = _make_pipeline_config(
         tmp_path,
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            masks=mask,
-            sampling=SamplingConfig(strategy="joint", output_mode="merged"),
+        features=_masked_features(
+            annotation_masks({"tumor": 1}, {"tumor": 0.2}, strategy="joint")
         ),
     )
     independent_sampling = _make_pipeline_config(
         tmp_path,
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224,
-            requested_spacing_um=0.5,
-            masks=mask,
-            sampling=SamplingConfig(strategy="independent", output_mode="merged"),
+        features=_masked_features(
+            annotation_masks({"tumor": 1}, {"tumor": 0.2}, strategy="independent")
         ),
     )
 
@@ -492,9 +489,9 @@ def test_build_experiment_spec_distinguishes_sampling_settings_via_preprocessing
     assert joint_spec.experiment_id != independent_spec.experiment_id
 
 
-def test_build_experiment_spec_distinguishes_feature_mode(tmp_path: Path):
-    cached = _make_segmentation_config(tmp_path, feature_mode="cached")
-    live = _make_segmentation_config(tmp_path, feature_mode="live")
+def test_build_experiment_spec_distinguishes_features_kind(tmp_path: Path):
+    cached = _make_segmentation_config(tmp_path, features=_segmentation_features(kind="cached"))
+    live = _make_segmentation_config(tmp_path, features=_segmentation_features(kind="live"))
 
     cached_spec = build_experiment_spec(cached)
     live_spec = build_experiment_spec(live)
@@ -503,10 +500,12 @@ def test_build_experiment_spec_distinguishes_feature_mode(tmp_path: Path):
 
 
 def test_build_experiment_spec_distinguishes_live_augmentation_choices(tmp_path: Path):
-    no_augmentation = _make_segmentation_config(tmp_path, feature_mode="live")
+    no_augmentation = _make_segmentation_config(
+        tmp_path, features=_segmentation_features(kind="live")
+    )
     horizontal_flip = _make_segmentation_config(
         tmp_path,
-        feature_mode="live",
+        features=_segmentation_features(kind="live"),
         augmentation={"name": "segmentation", "params": {"horizontal_flip": 0.5}},
     )
 
@@ -538,6 +537,69 @@ def test_build_experiment_spec_is_stable_for_equivalent_configurations(tmp_path:
 
     assert first_spec.experiment_id == repeated_first_spec.experiment_id
     assert first_spec.experiment_id == second_spec.experiment_id
+
+
+@pytest.mark.parametrize(
+    ("make", "features"),
+    [
+        (_make_pipeline_config, FeaturesConfig(encoder="phikon")),
+        (_make_segmentation_config, FeaturesConfig(encoder="phikon")),
+        (_make_segmentation_config, FeaturesConfig(encoder="phikon", dense=DenseOptions(spacing_um=1.0, target_size=512))),
+    ],
+    ids=["slide-preset", "segmentation-preset", "segmentation-dense"],
+)
+def test_a_config_and_its_saved_yaml_share_one_experiment_identity(tmp_path: Path, make, features):
+    """The geometry left to the encoder preset or to ``dense`` is hashed as resolved, so
+    resuming from the ``config.yaml`` a Python config saved (which spells it out) finds the
+    same experiment."""
+    config = make(tmp_path, features=features)
+    save_config(config, tmp_path / "config.yaml")
+
+    assert canonical_experiment_payload(load_config(tmp_path / "config.yaml")) == canonical_experiment_payload(config)
+
+
+@pytest.mark.parametrize(
+    ("make", "features"),
+    [
+        (
+            _make_pipeline_config,
+            FeaturesConfig(
+                encoder=EncoderLeaf("uni2", {"allow_non_recommended_settings": False}),
+                extraction=extraction(0.5, 224),
+            ),
+        ),
+        (
+            _make_segmentation_config,
+            _segmentation_features(encoder=EncoderLeaf("composite", {"members": [{"name": "uni2"}, {"name": "phikon"}]})),
+        ),
+        (
+            _make_segmentation_config,
+            _segmentation_features(
+                encoder=EncoderLeaf("composite", {"members": [CompositeMember("uni2"), CompositeMember("phikon")]})
+            ),
+        ),
+        (
+            _make_segmentation_config,
+            _segmentation_features(
+                encoder=EncoderLeaf(
+                    "composite",
+                    {"members": [{"name": "uni2", "params": {"allow_non_recommended_settings": False}}]},
+                )
+            ),
+        ),
+    ],
+    ids=["leaf-default-param", "composite-default-resolution", "composite-member-dataclasses", "composite-member-default-param"],
+)
+def test_encoder_params_are_hashed_as_their_params_dataclass_holds_them(tmp_path: Path, make, features):
+    """Encoder params left to their defaults, spelling them, or given as dataclasses rather
+    than mappings define the same experiment, so a Python config and the ``config.yaml``
+    it saves share one experiment id."""
+    config = make(tmp_path, features=features)
+    save_config(config, tmp_path / "config.yaml")
+
+    reloaded = load_config(tmp_path / "config.yaml")
+
+    assert build_experiment_spec(reloaded).experiment_id == build_experiment_spec(config).experiment_id
 
 
 def test_build_experiment_spec_ignores_inactive_heatmap_rendering_settings(tmp_path: Path):
@@ -641,8 +703,8 @@ def test_run_manifest_records_identity_version(tmp_path: Path):
         config=config, experiment=layout.experiment, run_dir=layout.run_dir,
         run_id=layout.run_id, status="running",
     )
-    assert run.to_dict()["identity_version"] == 7
-    assert layout.experiment.to_dict()["identity_version"] == 7
+    assert run.to_dict()["identity_version"] == 8
+    assert layout.experiment.to_dict()["identity_version"] == 8
 
 
 def test_git_provenance_comes_from_the_soma_checkout_not_cwd(tmp_path: Path, monkeypatch):
@@ -730,9 +792,7 @@ def _make_config_with_manifests(
         splits_csv=splits_csv,
         output_root=tmp_path / "outputs",
         dataset_type="slide",
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=0.5),
-        cache=CacheConfig(),
-        encoder=EncoderConfig(name="uni2"),
+        features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
         aggregator=AggregatorConfig(name="abmil", params={"hidden_dim": 128}),
         task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(seed=7, epochs=10, learning_rate=1e-4),

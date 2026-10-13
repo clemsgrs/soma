@@ -65,10 +65,10 @@ def test_build_config_loads_committed_anchor_yaml():
         dataset_csv="/x/dataset.csv", splits_csv="/x/splits.csv", output_root="/out", seed=3
     )
     assert cfg.dataset_type == "detection"
-    assert cfg.encoder.name == "virchow2"
+    assert cfg.features.encoder.name == "virchow2"
     assert cfg.decoder.name == "lightweight_conv"
     # No spacing given (as reproduce now calls it): the protocol fixes it at the anchor.
-    assert cfg.preprocessing.requested_spacing_um == pytest.approx(0.2)
+    assert cfg.features.extraction.tiling.requested_spacing_um == pytest.approx(0.2)
     assert str(cfg.dataset_csv) == "/x/dataset.csv"
     assert str(cfg.splits_csv) == "/x/splits.csv"
     assert str(cfg.output_root) == "/out"
@@ -90,18 +90,18 @@ def test_build_config_selects_one_native_manifest_for_every_protocol(
 ):
     cfg = OCELOT.build_config(encoder=encoder, spacing=spacing)
 
-    assert cfg.encoder.name == encoder
-    assert cfg.preprocessing.requested_spacing_um == pytest.approx(spacing)
-    assert cfg.preprocessing.requested_tile_size_px == target_size
+    assert cfg.features.encoder.name == encoder
+    assert cfg.features.extraction.tiling.requested_spacing_um == pytest.approx(spacing)
+    assert cfg.features.extraction.tiling.requested_tile_size_px == target_size
     assert Path(cfg.dataset_csv).parts[-3:] == ("ocelot", "curated", "dataset.csv")
     assert Path(cfg.splits_csv).parts[-3:] == ("ocelot", "curated", "splits.csv")
 
 
 def test_build_config_accepts_unreferenced_encoder_at_packaged_spacing():
     cfg = OCELOT.build_config(encoder="phikon", spacing=0.2)
-    assert cfg.encoder.name == "phikon"
-    assert cfg.preprocessing.requested_spacing_um == pytest.approx(0.2)
-    assert cfg.encoder.allow_non_recommended_settings is True
+    assert cfg.features.encoder.name == "phikon"
+    assert cfg.features.extraction.tiling.requested_spacing_um == pytest.approx(0.2)
+    assert cfg.features.encoder.allow_non_recommended_settings is True
 
 
 def test_expected_returns_broad_band():

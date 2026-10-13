@@ -2,39 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-import torch
 from hs2p import SlideSpec
-from hs2p.configs import TilingConfig
 from hs2p.preprocessing import validate_tiling_result_provenance
-import slide2vec.progress as slide2vec_progress
-
-from slide2vec import (
-    ExecutionOptions,
-    PreprocessingConfig as Slide2VecPreprocessingConfig,
-)
+from slide2vec import ExecutionOptions
 import slide2vec.api as slide2vec_api
 import slide2vec.progress as slide2vec_progress
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
-from soma.config import EncoderConfig, ExecutionConfig, PreprocessingConfig, PreviewConfig
 from soma.data._legacy import LegacySamples, LegacyRecord
 from soma.encoders.validation import resolve_encoder_precision
-
-# slide2vec deep-merges a partial ``masks`` block over these shipped default labels. A
-# customized annotation vocabulary that omits one of them (notably ``tissue``) must null it
-# out so the merge does not re-admit it (see ``_build_masks_block``).
-_SLIDE2VEC_DEFAULT_MASK_LABELS: tuple[str, ...] = tuple(
-    slide2vec_api.DEFAULT_MASKS["pixel_mapping"].keys()
-)
-
-# hs2p tiling fields soma routes somewhere other than the pooled payload's like-named field.
-# ``min_coverage`` is the tissue-coverage threshold, which slide2vec keeps inside its
-# ``masks`` block (it has no top-level field) — see ``_build_masks_block``.
-_TILING_FIELDS_ROUTED_ELSEWHERE = frozenset({"min_coverage"})
 
 
 @dataclass(frozen=True)
@@ -94,196 +73,41 @@ def validate_tiling_result_segmentation(
         )
 
 
-def ensure_supported_mask_value(
-    dataset: LegacySamples,
-    preprocessing: PreprocessingConfig,
-) -> None:
-    # A customized masks block governs tile selection by per-class coverage over its own
-    # pixel_mapping (the single source of truth, #110): arbitrary mask values like
-    # {background:1, tumor:2} are honored, so the legacy tissue-value==1 guard must not fire.
-    if preprocessing.masks is not None:
-        return
-    if int(preprocessing.tissue_mask_tissue_value) == 1:
-        return
-    # Supplied coordinates skip tiling, so no tissue mask is ever sampled.
-    if dataset.supplies_coordinates:
-        return
-    if not any(record.mask_path is not None for record in dataset.samples.values()):
-        return
-    raise ValueError(
-        "slide2vec-backed tiling currently supports only tissue_mask_tissue_value=1 "
-        "when mask_path is provided."
-    )
-
-
-def _build_masks_block(preprocessing: PreprocessingConfig) -> dict[str, object]:
-    """Translate soma preprocessing into slide2vec's ``masks`` block.
-
-    Two regimes:
-
-    * No annotation ``masks`` block (the default tissue path): emit only the tissue threshold
-      (``min_coverage.tissue``). slide2vec deep-merges this over its shipped DEFAULT_MASKS, so
-      the untouched ``{background:0, tissue:1}`` / ``per_annotation`` default stays byte-for-byte
-      tissue tiling.
-    * A customized annotation ``masks`` block (the annotation-restricted merged bag, #110):
-      forward the FULL annotation vocabulary — ``pixel_mapping``, per-class ``min_coverage``,
-      and ``colors`` — plus an EXPLICIT ``output_mode``. The explicit ``output_mode`` is
-      load-bearing: slide2vec's DEFAULT_MASKS ``output_mode`` is ``per_annotation`` and is
-      deep-merged, so omitting it would silently route a customized bag run to per-annotation
-      tiling (which collides on sample_id in load_tilings).
-
-    The companion ``independent_sampling`` toggle is not decided here: it is
-    ``PreprocessingConfig.independent_sampling``, and reaches the payload with the rest of
-    the hs2p tiling vocabulary.
-    """
-    masks = preprocessing.masks
-    if masks is None:
-        return {"min_coverage": {"tissue": float(preprocessing.min_coverage.get("tissue") or 0.0)}}
-
-    sampling = preprocessing.sampling
-    output_mode = sampling.output_mode if sampling is not None else "merged"
-    pixel_mapping: dict[str, object] = dict(masks.pixel_mapping)
-    min_coverage: dict[str, object] = dict(masks.min_coverage)
-    # Always forward a colors map covering every label in the vocabulary. hs2p validates that
-    # ``colors`` carries a key for each ``pixel_mapping`` label, and slide2vec's deep-merge
-    # leaves the default ``{background, tissue}`` colors in place; without an explicit entry
-    # for each user class (e.g. ``tumor``) that check raises. Unspecified classes get ``None``
-    # (no overlay) — cosmetic only, excluded from cache identity.
-    user_colors = masks.colors or {}
-    colors: dict[str, object] = {
-        label: (list(user_colors[label]) if user_colors.get(label) is not None else None)
-        for label in pixel_mapping
-    }
-    # slide2vec deep-merges this block over its DEFAULT_MASKS ``{background:0, tissue:1}``,
-    # so a default label the user's vocabulary omits (notably ``tissue``) would otherwise
-    # survive the merge — colliding pixel values and re-admitting tissue-only tiles. Drop
-    # each such default label via hs2p's null-to-drop idiom (set its pixel value to null;
-    # hs2p strips it from sampling, and from the companion maps for coherence).
-    for default_label in _SLIDE2VEC_DEFAULT_MASK_LABELS:
-        if default_label not in pixel_mapping:
-            pixel_mapping[default_label] = None
-            min_coverage[default_label] = None
-            colors[default_label] = None
-    return {
-        "output_mode": output_mode,
-        "pixel_mapping": pixel_mapping,
-        "min_coverage": min_coverage,
-        "colors": colors,
-    }
-
-
-def build_preprocessing_config(
-    preprocessing: PreprocessingConfig,
-) -> Slide2VecPreprocessingConfig:
-    if preprocessing.tissue_method is None:
-        raise ValueError(
-            "tissue_method is required unless the dataset provides precomputed masks"
-        )
-    masks_block = _build_masks_block(preprocessing)
-    # ADR 0009: the geometry block is hs2p's vocabulary, so it is forwarded field by field
-    # off the composed TilingConfig rather than restated here. A knob hs2p adds and slide2vec
-    # accepts (``mask_backend`` was the one due) then reaches the pooled path without a soma
-    # edit, and reaches it with the same value the cache key and the dense seam already use.
-    tiling = preprocessing.tiling_config()
-    payload: dict[str, object] = {
-        name: getattr(tiling, name)
-        for name in TilingConfig.__dataclass_fields__
-        if name not in _TILING_FIELDS_ROUTED_ELSEWHERE
-    }
-    payload |= {
-        # soma expresses the tissue coverage threshold as ``preprocessing.min_coverage["tissue"]``
-        # (hs2p's ``TilingConfig.min_coverage``). slide2vec has no top-level ``tissue_threshold``
-        # field — the threshold lives in the ``masks`` block as ``min_coverage.tissue`` (the
-        # single source of truth). slide2vec deep-merges a partial ``masks`` over its shipped
-        # DEFAULT_MASKS, so we only state the override. When a customized annotation masks block
-        # is active (#110), ``_build_masks_block`` instead forwards the full annotation
-        # vocabulary + an explicit output_mode.
-        "masks": masks_block,
-        "on_the_fly": True,
-        "adaptive_batching": False,
-        "use_supertiles": True,
-        "segmentation": {
-            "method": preprocessing.tissue_method,
-            "downsample": int(preprocessing.seg_downsample),
-        },
-        "filtering": {
-            "ref_tile_size": int(
-                preprocessing.ref_tile_size_px
-                if preprocessing.ref_tile_size_px is not None
-                else preprocessing.requested_tile_size_px
-            ),
-            "a_t": int(preprocessing.a_t),
-        },
-        "preview": asdict(preprocessing.preview),
-    }
-    if preprocessing.sam2_num_workers is not None:
-        payload["segmentation"]["sam2_num_workers"] = int(preprocessing.sam2_num_workers)
-    if preprocessing.sam2_device is not None:
-        payload["segmentation"]["sam2_device"] = str(preprocessing.sam2_device)
-    if preprocessing.requested_region_size_px is not None:
-        payload["requested_region_size_px"] = int(preprocessing.requested_region_size_px)
-    if preprocessing.region_tile_multiple is not None:
-        payload["region_tile_multiple"] = int(preprocessing.region_tile_multiple)
-    if preprocessing.read_tile_size_px is not None:
-        payload["read_tile_size_px"] = int(preprocessing.read_tile_size_px)
-    if preprocessing.read_region_size_px is not None:
-        payload["read_region_size_px"] = int(preprocessing.read_region_size_px)
-    allowed_fields = set(getattr(Slide2VecPreprocessingConfig, "__dataclass_fields__", {}))
-    filtered = {key: value for key, value in payload.items() if key in allowed_fields}
-    return Slide2VecPreprocessingConfig(**filtered)
-
-
-def build_preview_config(preview: dict[str, object] | None = None) -> PreviewConfig:
-    return PreviewConfig(**({} if preview is None else dict(preview)))
-
-
-def build_execution_options(
-    encoder: EncoderConfig,
+def execution_options(
+    execution: ExecutionOptions,
     *,
-    execution: ExecutionConfig | None = None,
-    encoder_name: str | None = None,
+    encoder_name: str,
     output_dir: Path,
-    num_gpus: int | None,
     save_tile_embeddings: bool,
     output_dtype: str | None = None,
     on_image_mismatch: str = "raise",
+    num_gpus: int | None = None,
 ) -> ExecutionOptions:
-    execution = execution or ExecutionConfig()
-    num_gpus_value = num_gpus if num_gpus is not None else execution.num_gpus
-    resolved_num_gpus = (
-        int(num_gpus_value)
-        if num_gpus_value is not None
-        else (torch.cuda.device_count() if torch.cuda.is_available() else 1)
-    )
-    precision = execution.precision
-    if precision is None:
-        precision = resolve_encoder_precision(encoder, encoder_name=encoder_name)
-    prefetch_factor = 4 if execution.prefetch_factor is None else int(execution.prefetch_factor)
+    """The run's ``ExecutionOptions`` for one slide2vec call.
+
+    soma states what is its to decide: where slide2vec writes (the resolved cache
+    directory) and in which format (``pt``, the only one soma's caches read), the
+    on-disk dtype folded into the cache key (#164), whether tile
+    embeddings are kept, what to do with an image re-pointed under its ``sample_id``, and
+    the precision the cache key was derived at (``execution.precision``, else the
+    encoder's recommendation), so the key and the computed features cannot disagree.
+    An unset ``num_workers_per_gpu`` keeps soma's loader budget: the CPU budget split
+    across the GPUs, capped at 16 (slide2vec would give image routes no workers).
+    """
+    values: dict[str, object] = {
+        "output_dir": Path(output_dir),
+        "output_format": "pt",
+        "precision": resolve_encoder_precision(execution.precision, encoder_name=encoder_name),
+        "save_tile_embeddings": bool(save_tile_embeddings),
+        "output_dtype": output_dtype,
+        "on_image_mismatch": on_image_mismatch,
+    }
+    if num_gpus is not None:
+        values["num_gpus"] = int(num_gpus)
     if execution.num_workers_per_gpu is None:
-        num_workers_per_gpu = min(16, max(1, slide2vec_api.cpu_worker_limit() // max(1, resolved_num_gpus)))
-    else:
-        num_workers_per_gpu = int(execution.num_workers_per_gpu)
-    return ExecutionOptions(
-        output_dir=output_dir,
-        output_format="pt",
-        batch_size=int(encoder.batch_size),
-        num_workers_per_gpu=num_workers_per_gpu,
-        num_preprocessing_workers=execution.num_preprocessing_workers,
-        num_gpus=num_gpus_value,
-        precision=precision,
-        prefetch_factor=prefetch_factor,
-        save_tile_embeddings=save_tile_embeddings,
-        save_slide_embeddings=False,
-        save_latents=False,
-        # On-disk feature precision (#164). soma resolves cache.dtype → 'fp16'/'fp32' once
-        # and passes the concrete value, so slide2vec casts at its artifact writer to the
-        # exact dtype folded into the cache key (key and storage can never drift). None
-        # would let slide2vec follow precision; soma always passes a resolved value.
-        output_dtype=output_dtype,
-        # Model.embed_images only: what slide2vec does with an image embedding recorded
-        # for another source path under the same sample_id.
-        on_image_mismatch=on_image_mismatch,
-    )
+        gpus = max(1, int(values.get("num_gpus", execution.num_gpus)))
+        values["num_workers_per_gpu"] = min(16, max(1, slide2vec_api.cpu_worker_limit() // gpus))
+    return replace(execution, **values)
 
 
 def load_tilings(
@@ -291,15 +115,14 @@ def load_tilings(
     dataset: LegacySamples,
     tiling_dir: Path,
     requested_seg_downsample: int,
-    tissue_mask_tissue_value: int,
-    masks_active: bool = False,
+    annotation_sampling: bool = False,
 ) -> list[LoadedTiling]:
-    # Under a customized annotation masks block (#110), tile selection gates on per-class
-    # coverage over the masks' own pixel_mapping — arbitrary mask values are honored — so the
-    # hs2p provenance validator's tissue-value==1 check must not fire. Passing None to its
-    # ``tissue_mask_tissue_value`` skips that check while keeping the rest of the provenance
-    # validation (image/mask path identity) intact.
-    effective_tissue_value = None if masks_active else int(tissue_mask_tissue_value)
+    # Binary tissue tiling reads a precomputed tissue mask's tissue label as 1, which hs2p
+    # records on the result. Under annotation sampling (#110) tile selection gates on
+    # per-class coverage over the masks' own pixel_mapping and hs2p records no tissue
+    # value, so the provenance check expects ``None``; the image/mask path identity checks
+    # stay intact.
+    effective_tissue_value = None if annotation_sampling else 1
     process_list_path = tiling_dir / "process_list.csv"
     if not process_list_path.is_file():
         raise ValueError(

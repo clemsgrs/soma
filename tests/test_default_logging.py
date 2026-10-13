@@ -13,7 +13,6 @@ from soma import (
 
     AggregatorConfig,
 
-    EncoderConfig,
 
     FeatureExtractor,
 
@@ -103,7 +102,7 @@ def test_feature_extractor_turns_on_soma_info_output_without_logging_setup(
     with no_logging_setup():
         FeatureExtractor(
             legacy_samples_from_csv(dataset_csv),
-            EncoderConfig(name="phikon"),
+            "phikon",
             output_root=tmp_path / "output",
         )
         logging.getLogger("soma.extraction").info("feature cache resolved")

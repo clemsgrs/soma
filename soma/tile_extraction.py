@@ -30,11 +30,11 @@ from soma.cache import (
     resolve_image_cache,
 )
 from soma.cache.compute_key import resolved_output_variant
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
+from soma.config import CacheConfig, EncoderLeaf
 from soma.data._legacy import LegacySamples, LegacyRecord
 from soma.cache._types import PACKED_FILENAME
 from soma.data import CachedSetSource
-from soma.slide2vec_adapter import build_execution_options
+from soma.slide2vec_adapter import execution_options
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,8 @@ class _TileFeatureExtractor:
 
     Args:
         dataset: LegacySamples whose ``image_path`` fields point to tile images.
-        encoder: Encoder configuration (name, precision, batch_size, etc.).
+        encoder: The encoder leaf (a slide2vec encoder and its params).
+        execution: slide2vec's ``ExecutionOptions`` (batch size, precision, GPUs).
         cache: Optional cache configuration. When enabled, features are stored
             in a content-addressed cache directory and reused across runs.
     """
@@ -61,14 +62,14 @@ class _TileFeatureExtractor:
     def __init__(
         self,
         dataset: LegacySamples,
-        encoder: EncoderConfig,
+        encoder: EncoderLeaf,
         *,
-        execution: ExecutionConfig = ExecutionConfig(),
+        execution: ExecutionOptions | None = None,
         cache: CacheConfig | None = None,
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
-        self._execution = execution
+        self._execution = execution if execution is not None else ExecutionOptions()
         self._cache = cache or CacheConfig(enabled=False)
 
     def run(self, feature_dir: str | Path) -> CachedSetSource:
@@ -87,7 +88,7 @@ class _TileFeatureExtractor:
         # On-disk feature dtype (#164): one resolved value folded into the cache key and
         # handed to slide2vec as output_dtype, so storage matches the key.
         dtype = resolve_cache_dtype(
-            self._cache.dtype, self._encoder, encoder_name=self._encoder.name
+            self._cache.dtype, self._execution, encoder_name=self._encoder.name
         )
         # Key on the *resolved* output variant, as the pooled WSI path does, so a config
         # that leaves ``encoder.output_variant`` null shares the cache of one that names
@@ -116,7 +117,7 @@ class _TileFeatureExtractor:
             cache_root=resolve_cache_root(self._cache, feature_dir=feature_dir),
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
-            execution=self._encoder,
+            execution=self._execution,
             output_variant=output_variant,
             dtype=dtype,
             validate_payloads=self._cache.validate_payloads,
@@ -160,13 +161,9 @@ class _TileFeatureExtractor:
             "Embedding %d tile images with '%s' (batch_size=%d)...",
             len(records),
             self._encoder.name,
-            self._encoder.batch_size,
+            self._execution.batch_size,
         )
-        model = Model.from_preset(
-            self._encoder.name,
-            output_variant=self._encoder.output_variant,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-        )
+        model = Model.from_preset(self._encoder.name, **self._encoder.params)
         artifacts = model.embed_images(
             [ImageSpec(sample_id=record.sample_id, image_path=record.image_path) for record in records],
             execution=self._execution_options(out_root, dtype=dtype),
@@ -184,12 +181,10 @@ class _TileFeatureExtractor:
         return feature_dim
 
     def _execution_options(self, output_dir: Path, *, dtype: str) -> ExecutionOptions:
-        return build_execution_options(
-            self._encoder,
-            execution=self._execution,
+        return execution_options(
+            self._execution,
             encoder_name=self._encoder.name,
             output_dir=output_dir,
-            num_gpus=self._execution.num_gpus,
             save_tile_embeddings=True,
             output_dtype=dtype,
             on_image_mismatch=_ON_IMAGE_MISMATCH,
@@ -199,11 +194,7 @@ class _TileFeatureExtractor:
         """Verify a cache against the identity slide2vec would give these images now."""
 
         def differing(recorded: dict) -> dict:
-            model = Model.from_preset(
-                self._encoder.name,
-                output_variant=self._encoder.output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            )
+            model = Model.from_preset(self._encoder.name, **self._encoder.params)
             return model.pooled_identity_differences(
                 recorded,
                 # Given geometry: pre-cropped images declare no tiling.

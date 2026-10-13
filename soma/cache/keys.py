@@ -1,28 +1,69 @@
-"""Cache key and sample-stem derivation."""
+"""Cache key and sample-stem derivation.
+
+Every key derives from the slide2vec and hs2p dataclasses soma holds (ADR 0019): the
+pooled keys from slide2vec's ``PreprocessingConfig`` (hs2p's tiling, segmentation,
+filter and mask-sampling configs) and the precision of slide2vec's ``ExecutionOptions``,
+the dense keys from slide2vec's ``DenseOptions``. A field the upstream dataclasses gain
+enters the key without a soma edit; only the fields that cannot change a feature are
+left out, by name.
+"""
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from hs2p.wsi.reader import resolve_backend
+from slide2vec import DenseImageOptions, DenseOptions, ExecutionOptions, PreprocessingConfig
 from slide2vec.encoders.registry import encoder_registry
 
 from soma.cache._types import SCHEMA_VERSION, _FEATURE_TYPE_TO_RANK
-from soma.config import EncoderConfig, PreprocessingConfig, canonical_pixel_mapping
 from soma.data._legacy import LegacySamples
 from soma.encoders.validation import resolve_encoder_precision
 from soma.preprocessing.supplied_coordinates import coordinates_digest
 
+#: slide2vec ``PreprocessingConfig`` fields that change how tiles are written, batched or
+#: previewed, never which pixels a feature is computed from.
+_RUNTIME_PREPROCESSING_FIELDS = frozenset(
+    {"preview", "save_tiles", "adaptive_batching", "use_supertiles", "num_cucim_workers", "resume"}
+)
+#: Nested hs2p fields left out of the key: the requested-backend echoes restate
+#: ``backend``/``mask_backend``; the SAM2 device and worker cap are runtime placement; the
+#: mask colors only paint previews.
+_RUNTIME_NESTED_FIELDS = {
+    "tiling": frozenset({"requested_backend", "requested_mask_backend"}),
+    "segmentation": frozenset({"sam2_device", "sam2_num_workers"}),
+    "masks": frozenset({"colors"}),
+}
+
 
 def _resolve_encoder_precision(
-    encoder_config: EncoderConfig,
+    execution: ExecutionOptions | None,
     *,
-    encoder_name: str | None = None,
+    encoder_name: str,
 ) -> str:
-    return resolve_encoder_precision(encoder_config, encoder_name=encoder_name)
+    """The precision the features are computed at: ``execution.precision`` when set,
+    else the encoder's recommendation."""
+    return resolve_encoder_precision(
+        None if execution is None else execution.precision,
+        encoder_name=encoder_name,
+    )
+
+
+def _jsonable(value: Any) -> Any:
+    """Canonical JSON primitives of a dataclass field value."""
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return {field.name: _jsonable(getattr(value, field.name)) for field in dataclasses.fields(value)}
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(key): _jsonable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(item) for item in value]
+    return value
 
 
 def _canonical_json(payload: Any) -> str:
@@ -89,60 +130,31 @@ def _sample_cache_stem(*, sample_signature: str, identity_payload: dict[str, Any
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
-def annotation_sampling_signature(config: PreprocessingConfig) -> dict[str, Any] | None:
-    """Selection-relevant projection of the annotation ``masks``/``sampling`` block.
+def preprocessing_signature(preprocessing: PreprocessingConfig) -> dict[str, Any]:
+    """Canonical signature of a resolved slide2vec ``PreprocessingConfig``.
 
-    Returns ``None`` when no ``masks`` block is active (the default tissue path), so legacy
-    tissue-only cache keys stay byte-stable. When a customized masks block governs tile
-    selection (the annotation-restricted bag, #110), the projection folds the fields that
-    change *which tiles are sampled* — the ``pixel_mapping`` vocabulary, per-class
-    ``min_coverage`` (the active class set), and the ``sampling`` ``strategy`` /
-    ``output_mode`` — into cache identity, so a tumor-restricted bag never aliases a
-    full-tissue bag of the same slide/encoder. ``colors`` is cosmetic (preview overlay only)
-    and is deliberately excluded.
+    Every field of slide2vec's config and of the hs2p configs it holds (tiling,
+    segmentation, filter, mask sampling), except the ones named in
+    :data:`_RUNTIME_PREPROCESSING_FIELDS` and :data:`_RUNTIME_NESTED_FIELDS`. The raw
+    values a mask label merges are sorted: their order does not change what is sampled.
     """
-    masks = config.masks
-    if masks is None:
-        return None
-    sampling = config.sampling
-    return {
-        "pixel_mapping": {
-            k: v for k, v in sorted(canonical_pixel_mapping(masks.pixel_mapping).items())
-        },
-        "min_coverage": {k: masks.min_coverage[k] for k in sorted(masks.min_coverage)},
-        "strategy": sampling.strategy if sampling is not None else "joint",
-        "output_mode": sampling.output_mode if sampling is not None else "merged",
+    if preprocessing.tiling is None:
+        raise ValueError(
+            "preprocessing.tiling must be resolved before a cache key is derived from it."
+        )
+    signature: dict[str, Any] = {}
+    for field in dataclasses.fields(preprocessing):
+        if field.name in _RUNTIME_PREPROCESSING_FIELDS:
+            continue
+        value = _jsonable(getattr(preprocessing, field.name))
+        if isinstance(value, dict) and field.name in _RUNTIME_NESTED_FIELDS:
+            value = {
+                key: item for key, item in value.items() if key not in _RUNTIME_NESTED_FIELDS[field.name]
+            }
+        signature[field.name] = value
+    signature["masks"]["pixel_mapping"] = {
+        label: sorted(values) for label, values in signature["masks"]["pixel_mapping"].items()
     }
-
-
-def preprocessing_signature(config: PreprocessingConfig) -> dict[str, Any]:
-    """Canonical preprocessing signature: hs2p's tiling vocabulary plus soma's own knobs.
-
-    The tiling half is not restated here — it comes from ``config.tiling_values()``, the
-    same mapping the composed hs2p ``TilingConfig`` is built from (ADR 0009), so the key
-    cannot fall behind the geometry it is meant to key. What remains below is genuinely
-    soma's: tissue segmentation, region (hierarchical) geometry and the read-size overrides.
-    """
-    signature: dict[str, Any] = {
-        **config.tiling_values(),
-        "requested_region_size_px": config.requested_region_size_px,
-        "region_tile_multiple": config.region_tile_multiple,
-        "read_tile_size_px": config.read_tile_size_px,
-        "read_region_size_px": config.read_region_size_px,
-        "tissue_method": config.tissue_method,
-        "tissue_mask_tissue_value": config.tissue_mask_tissue_value,
-        "seg_downsample": config.seg_downsample,
-        "ref_tile_size_px": config.ref_tile_size_px,
-        "a_t": config.a_t,
-    }
-    if config.spacing_policy != "strict":
-        # Keep the historical strict payload byte-stable while separating the
-        # opt-in policy, whose ROI coordinates can differ on coarse slides.
-        signature["spacing_policy"] = config.spacing_policy
-    annotation = annotation_sampling_signature(config)
-    if annotation is not None:
-        # Injected only when a masks block is active — keeps tissue-only keys byte-stable.
-        signature["annotation_sampling"] = annotation
     return signature
 
 
@@ -196,80 +208,42 @@ def probe_resolved_backends(
 
 
 def execution_signature(
-    encoder_config: EncoderConfig,
+    execution: ExecutionOptions | None,
     *,
-    encoder_name: str | None = None,
+    encoder_name: str,
     preprocessing: PreprocessingConfig | None = None,
     output_variant: str | None = None,
 ) -> dict[str, Any]:
+    """What the encoder decides about a pooled feature: the precision it runs at
+    (``ExecutionOptions.precision``, else its recommendation), its output variant, its
+    registry input size and the spacing it reads at."""
     signature: dict[str, Any] = {
-        "precision": _resolve_encoder_precision(encoder_config, encoder_name=encoder_name),
-        "output_variant": output_variant if output_variant is not None else encoder_config.output_variant,
+        "precision": _resolve_encoder_precision(execution, encoder_name=encoder_name),
+        "output_variant": output_variant,
     }
-    effective_encoder_name = encoder_name or encoder_config.name
     try:
-        metadata = encoder_registry.info(effective_encoder_name)
+        metadata = encoder_registry.info(encoder_name)
     except Exception:
         metadata = None
-
-    if metadata is not None:
-        recommended_input_size = metadata.get("input_size")
-        if recommended_input_size is not None:
-            signature["input_size"] = int(recommended_input_size)
-
-    spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
+    if metadata is not None and metadata.get("input_size") is not None:
+        signature["input_size"] = int(metadata["input_size"])
+    spacing_um = None
+    if preprocessing is not None and preprocessing.tiling is not None:
+        spacing_um = preprocessing.tiling.requested_spacing_um
     if spacing_um is None and metadata is not None:
         recommended_spacing = metadata.get("supported_spacing_um")
         if isinstance(recommended_spacing, (int, float)):
             spacing_um = float(recommended_spacing)
     if spacing_um is not None:
         signature["spacing_um"] = float(spacing_um)
-
     return signature
-
-
-def dense_execution_signature(
-    encoder_config: EncoderConfig,
-    *,
-    encoder_name: str | None = None,
-    preprocessing: PreprocessingConfig | None = None,
-) -> dict[str, Any]:
-    """Execution signature of a dense cache: the pooled one minus two fields.
-
-    ``output_variant`` only changes pooling, and a dense grid is pre-pooling. The
-    registry default ``input_size`` does not decide what a dense extraction computes:
-    the real encoder input is the configured target or window, which the dense key
-    carries itself. Keying on the registry default would move the key on a registry
-    edit that leaves the features byte-identical.
-    """
-    signature = execution_signature(
-        encoder_config,
-        encoder_name=encoder_name,
-        preprocessing=preprocessing,
-        output_variant=None,
-    )
-    signature.pop("output_variant", None)
-    signature.pop("input_size", None)
-    return signature
-
-
-def _maybe_fold_dtype(payload: dict[str, Any], dtype: str) -> None:
-    """Fold the on-disk dtype into a pooled cache-key payload, in place.
-
-    Injected only for non-fp32 storage — legacy fp32 caches (the historical default,
-    since soma force-upcast pooled features to fp32 before slide2vec grew a pooled
-    ``output_dtype``) keep their byte-stable keys, while an fp16 cache resolves to a
-    distinct key so the two can never be mixed. Mirrors the dense key's dtype guard.
-    """
-    if dtype != "fp32":
-        payload["dtype"] = str(dtype)
 
 
 def build_tile_cache_key(
     *,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig | None = None,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     feature_type: str = "bag",
     dtype: str = "fp32",
@@ -287,10 +261,10 @@ def build_tile_cache_key(
             preprocessing=preprocessing,
             output_variant=output_variant,
         ),
+        "dtype": str(dtype),
     }
     if preprocessing is not None:
         payload["preprocessing"] = preprocessing_signature(preprocessing)
-    _maybe_fold_dtype(payload, dtype)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -298,7 +272,7 @@ def build_slide_cache_key(
     *,
     slide_encoder_name: str,
     tile_dependency_signature: dict[str, Any],
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
 ) -> str:
@@ -313,8 +287,8 @@ def build_slide_cache_key(
             preprocessing=None,
             output_variant=output_variant,
         ),
+        "dtype": str(dtype),
     }
-    _maybe_fold_dtype(payload, dtype)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -322,7 +296,7 @@ def build_patient_cache_key(
     *,
     patient_encoder_name: str,
     tile_dependency_signature: dict[str, Any],
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
 ) -> str:
@@ -337,8 +311,8 @@ def build_patient_cache_key(
             preprocessing=None,
             output_variant=output_variant,
         ),
+        "dtype": str(dtype),
     }
-    _maybe_fold_dtype(payload, dtype)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -346,7 +320,7 @@ def build_hierarchical_cache_key(
     *,
     tile_encoder_name: str,
     preprocessing: PreprocessingConfig,
-    execution: EncoderConfig,
+    execution: ExecutionOptions | None,
     output_variant: str | None = None,
     dtype: str = "fp32",
 ) -> str:
@@ -361,8 +335,8 @@ def build_hierarchical_cache_key(
             preprocessing=preprocessing,
             output_variant=output_variant,
         ),
+        "dtype": str(dtype),
     }
-    _maybe_fold_dtype(payload, dtype)
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
@@ -390,165 +364,62 @@ def resolve_output_dtype(dtype: str | None, precision: str | None) -> str:
 
 def resolve_cache_dtype(
     cache_dtype: str | None,
-    encoder_config: EncoderConfig,
+    execution: ExecutionOptions | None,
     *,
-    encoder_name: str | None = None,
+    encoder_name: str,
 ) -> str:
-    """Resolve the on-disk dtype for a cache keyed on ``encoder_config``.
+    """Resolve the on-disk dtype for a cache of ``encoder_name``'s features.
 
     The one entry point for the pooled, tile-image and dense paths: an explicit
-    ``cache.dtype`` wins; otherwise the dtype follows the encoder's resolved compute
-    precision (``encoder.precision`` override, else the registry recommendation, else
-    fp32). ``execution.precision`` is deliberately not consulted so the key stays
-    stable across runtime overrides; pin ``cache.dtype`` when the storage dtype matters.
+    ``cache.dtype`` wins; otherwise the dtype follows the precision the encoder runs at
+    (``execution.precision``, else the registry recommendation, else fp32).
     """
-    precision = _resolve_encoder_precision(encoder_config, encoder_name=encoder_name)
+    precision = _resolve_encoder_precision(execution, encoder_name=encoder_name)
     return resolve_output_dtype(cache_dtype, precision)
+
+
+def _hw(size: int | Sequence[int]) -> list[int]:
+    if isinstance(size, (int,)) and not isinstance(size, bool):
+        return [int(size), int(size)]
+    height, width = size
+    return [int(height), int(width)]
+
+
+def dense_signature(dense: DenseOptions | DenseImageOptions) -> dict[str, Any]:
+    """Every field of the slide2vec dense options a grid is read and encoded with, the
+    ``target_size`` spelled ``[h, w]``."""
+    signature = _jsonable(dense)
+    signature["target_size"] = _hw(dense.target_size)
+    return signature
 
 
 def build_dense_cache_key(
     *,
     tile_encoder_name: str,
-    target_size: tuple[int, int],
-    patch_size: tuple[int, int],
-    pad_mode: str,
-    execution: EncoderConfig,
-    preprocessing: PreprocessingConfig | None = None,
-    dense_input_mode: str = "whole",
-    window_size: int | None,
-    overlap: float,
-    feature_kind: str = "patch_features",
-    attention_blocks: tuple[int, ...] | None = None,
-    attention_include_registers: bool = False,
+    patch_size: Sequence[int],
+    dense: DenseOptions | DenseImageOptions,
+    execution: ExecutionOptions | None,
     dtype: str = "fp32",
     sampling_signature: dict[str, Any] | None = None,
 ) -> str:
     """Cache key for a dense ``(d, h, w)`` grid extraction.
 
-    Distinct from the pooled tile key by ``feature_type="dense_grid"`` and by the
-    dense geometry (``target_size``/``patch_size``/``pad_mode``) and
-    ``dense_input_mode`` — so a 512px run and a 224px run, or whole-tile vs
-    sliding-window, never collide. Sliding runs additionally key on
-    ``window_size``/``overlap`` (different windows ⇒ different grids); these are
-    injected **only** when ``window_size`` is set, so existing ``whole`` keys are
-    unchanged. ``output_variant`` is intentionally omitted: the dense grid is
-    pre-pooling (``forward_features`` → reshape), so the variant (which only changes
-    pooling) does not affect it; keying on it would split identical caches.
-
-    ``feature_kind`` discriminates the post-norm patch grid from the pre-norm grid and
-    from a CLS-attention grid (none may alias another); the attention sub-knobs
-    (``attention_blocks``/``attention_include_registers``) join the key too, since
-    different blocks / register inclusion yield different channels. These are injected
-    **only** for ``feature_kind != "patch_features"``, so legacy patch-feature keys are
-    byte-stable.
+    Keys on the encoder, its static ``patch_size``, the precision it runs at, the
+    on-disk dtype and every field of the slide2vec dense options (spacing, supervision
+    size, padding, window, feature kind and attention recipe). An annotation-sampled ROI
+    cache adds the sampling signature: the ROIs are a function of it.
     """
-    return _dense_cache_key(
-        schema_version=SCHEMA_VERSION,
-        tile_encoder_name=tile_encoder_name,
-        target_size=target_size,
-        patch_size=patch_size,
-        pad_mode=pad_mode,
-        execution_payload=dense_execution_signature(
-            execution,
-            encoder_name=tile_encoder_name,
-            preprocessing=preprocessing,
-        ),
-        preprocessing_payload=(
-            preprocessing_signature(preprocessing) if preprocessing is not None else None
-        ),
-        dense_input_mode=dense_input_mode,
-        window_size=window_size,
-        overlap=overlap,
-        feature_kind=feature_kind,
-        attention_blocks=attention_blocks,
-        attention_include_registers=attention_include_registers,
-        dtype=dtype,
-        sampling_signature=sampling_signature,
-    )
-
-
-def dense_cache_key_from_metadata(metadata: dict[str, Any]) -> str:
-    """The dense cache key that hashes to a recorded ``cache_metadata.json``.
-
-    Rebuilds the key from the recorded fields alone — no encoder, no registry, no
-    config — so a cache can be re-keyed offline. The recorded ``execution`` block is
-    hashed as found: pass legacy metadata to reproduce a legacy key, or metadata whose
-    ``execution`` was brought to :func:`dense_execution_signature` to get the current one.
-    """
-    window_size = metadata.get("window_size")
-    attention_blocks = metadata.get("attention_blocks")
-    return _dense_cache_key(
-        schema_version=str(metadata["schema_version"]),
-        tile_encoder_name=str(metadata["encoder_name"]),
-        target_size=metadata["target_size"],
-        patch_size=metadata["patch_size"],
-        pad_mode=metadata["pad_mode"],
-        execution_payload=dict(metadata["execution"]),
-        preprocessing_payload=metadata.get("preprocessing"),
-        dense_input_mode=metadata["dense_input_mode"],
-        window_size=window_size,
-        overlap=metadata.get("overlap", 0.0),
-        feature_kind=metadata.get("feature_kind", "patch_features"),
-        attention_blocks=tuple(attention_blocks) if attention_blocks is not None else None,
-        attention_include_registers=bool(metadata.get("attention_include_registers")),
-        # Metadata written before the dtype field existed is fp32 (the only dtype then).
-        dtype=metadata.get("dtype", "fp32"),
-        sampling_signature=metadata.get("sampling"),
-    )
-
-
-def _dense_cache_key(
-    *,
-    schema_version: str,
-    tile_encoder_name: str,
-    target_size: Sequence[int],
-    patch_size: Sequence[int],
-    pad_mode: str,
-    execution_payload: dict[str, Any],
-    preprocessing_payload: dict[str, Any] | None,
-    dense_input_mode: str,
-    window_size: int | None,
-    overlap: float,
-    feature_kind: str,
-    attention_blocks: Sequence[int] | None,
-    attention_include_registers: bool,
-    dtype: str,
-    sampling_signature: dict[str, Any] | None,
-) -> str:
-    payload = {
-        "schema_version": schema_version,
+    payload: dict[str, Any] = {
+        "schema_version": SCHEMA_VERSION,
         "artifact_kind": "dense",
         "tile_encoder_name": tile_encoder_name,
         "feature_type": "dense_grid",
-        "dense_input_mode": str(dense_input_mode),
-        "target_size": [int(target_size[0]), int(target_size[1])],
-        "patch_size": [int(patch_size[0]), int(patch_size[1])],
-        "pad_mode": str(pad_mode),
-        "execution": execution_payload,
+        "patch_size": _hw(patch_size),
+        "precision": _resolve_encoder_precision(execution, encoder_name=tile_encoder_name),
+        "dense": dense_signature(dense),
+        "dtype": str(dtype),
     }
-    if window_size is not None:
-        # Only sliding runs carry these — keeps legacy 'whole' keys byte-stable.
-        payload["window_size"] = int(window_size)
-        payload["overlap"] = float(overlap)
-    if feature_kind != "patch_features":
-        # Only attention (or future non-default) kinds carry these — keeps legacy
-        # patch-feature keys byte-stable.
-        payload["feature_kind"] = str(feature_kind)
-        payload["attention_blocks"] = [int(b) for b in (attention_blocks or ())]
-        payload["attention_include_registers"] = bool(attention_include_registers)
-    if dtype != "fp32":
-        # Injected only for non-fp32 storage — legacy fp32 caches (the historical default
-        # when slide2vec force-upcast every grid) keep their byte-stable keys, while an
-        # fp16 cache resolves to a distinct key so the two can never be mixed.
-        payload["dtype"] = str(dtype)
-    if preprocessing_payload is not None:
-        payload["preprocessing"] = preprocessing_payload
     if sampling_signature is not None:
-        # Slide-manifest segmentation: the ROIs (and thus the grids) are a function of the
-        # annotation-sampling spec — pixel mapping, per-class coverage, strategy, output
-        # mode, spacing/tile size. Folding it in means distinct sampling ⇒ distinct cache,
-        # even when two specs happen to yield colliding coordinates. Absent (None) for
-        # pre-cropped-tile inputs, which have no sampling step.
         payload["sampling"] = sampling_signature
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
@@ -565,23 +436,26 @@ def build_tiling_cache_key(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 
 
+def roi_sampling_signature(preprocessing: PreprocessingConfig, *, spacing_policy: str = "strict") -> dict[str, Any]:
+    """What decides an annotation-sampled ROI set: the extraction's signature and the
+    spacing policy that sets each slide's read spacing."""
+    return {"preprocessing": preprocessing_signature(preprocessing), "spacing_policy": str(spacing_policy)}
+
+
 def build_roi_sampling_cache_key(
     *,
     preprocessing: PreprocessingConfig,
+    spacing_policy: str = "strict",
 ) -> str:
     """Directory key for the ``roi_sampling`` cache kind.
 
-    Hashes exactly ``{artifact_kind, preprocessing}`` — the canonical preprocessing
-    signature reused wholesale (it already folds the annotation-sampling projection,
-    colors excluded, when a masks block is active). Deliberately **no**
-    ``SCHEMA_VERSION`` (this kind is born without the unused constant — #364 removes
-    it from the rest of the layer on its own cache-busting schedule) and no engine
-    version (consistent with the tiling key: an hs2p sampling-behavior change requires
-    manual invalidation).
+    Hashes ``{artifact_kind}`` plus :func:`roi_sampling_signature`. No ``SCHEMA_VERSION``
+    and no engine version (consistent with the tiling key: an hs2p sampling-behavior
+    change requires manual invalidation).
     """
     payload = {
         "artifact_kind": "roi_sampling",
-        "preprocessing": preprocessing_signature(preprocessing),
+        **roi_sampling_signature(preprocessing, spacing_policy=spacing_policy),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:16]
 

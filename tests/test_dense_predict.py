@@ -308,6 +308,43 @@ def test_live_encoder_wraps_the_public_dense_kit(monkeypatch):
     assert tuple(stage(torch.zeros(2, 3, 8, 8, dtype=torch.uint8)).shape) == (2, 7, 2, 2)
 
 
+def test_live_encoder_pads_as_the_configured_dense_options(monkeypatch):
+    """A live run pads its tiles as the cached path does: the spec a live config records
+    carries ``DenseOptions``' padding and the stage hands it to slide2vec."""
+    import slide2vec
+
+    from soma.config import DecoderConfig, FeaturesConfig, PipelineConfig, TaskConfig
+    from soma.extract import live_encoder
+    from soma.pipeline.build import live_encoder_spec
+
+    prepared = {}
+
+    class _Model:
+        device = torch.device("cpu")
+
+        def prepare_dense_encoder(self, *, dense, execution):
+            prepared["dense"] = dense
+            return _Kit()
+
+    config = PipelineConfig(
+        dataset_csv="data.csv",
+        splits_csv="splits.csv",
+        output_root="out",
+        dataset_type="segmentation",
+        features=FeaturesConfig(
+            kind="live",
+            encoder="virchow2",
+            dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=8, pad_mode="constant", image_pad_value=0.0),
+        ),
+        decoder=DecoderConfig(name="lightweight_conv"),
+        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+    )
+    monkeypatch.setattr(slide2vec.Model, "from_preset", lambda *a, **k: _Model())
+    live_encoder(**live_encoder_spec(config))
+
+    assert (prepared["dense"].pad_mode, prepared["dense"].image_pad_value) == ("constant", 0.0)
+
+
 def test_live_encoder_requests_the_indexed_cuda_device(monkeypatch):
     import slide2vec
 

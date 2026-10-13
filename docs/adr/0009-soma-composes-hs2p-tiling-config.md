@@ -1,5 +1,7 @@
 # soma composes hs2p's TilingConfig rather than mirroring its fields
 
+> Superseded by [ADR 0019](0019-soma-holds-the-upstream-extraction-dataclasses.md): soma now holds slide2vec's `PreprocessingConfig`, which composes hs2p's `TilingConfig` and the rest of hs2p's preprocessing dataclasses, instead of its own `PreprocessingConfig` around a `TilingConfig`.
+
 soma's preprocessing configuration **holds** an hs2p `TilingConfig` instead of re-declaring its vocabulary field by field, and adds only what is genuinely soma's (cache, masks vocabulary, previews). Geometry belongs to hs2p; mirroring it means soma is one field behind on every hs2p release, and the failure mode is silent — a knob the user cannot reach rather than an error.
 
 ## Why now

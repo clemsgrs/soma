@@ -18,14 +18,14 @@ from soma.benchmarks import (
 from soma.cli import main
 from soma.config import (
     CacheConfig,
-    EncoderConfig,
     EvalConfig,
-    ExecutionConfig,
+    FeaturesConfig,
     PipelineConfig,
     TaskConfig,
     TrainingConfig,
 )
 from soma.curation.manifest import write_manifest
+from slide2vec import ExecutionOptions
 from slide2vec.encoders import encoder_registry
 
 
@@ -117,9 +117,11 @@ class ByomSmokeBenchmark:
             splits_csv=splits_csv,
             output_root=output_root,
             dataset_type="tile",
-            encoder=EncoderConfig(name=encoder, batch_size=4),
-            execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
-            cache=CacheConfig(**(overrides or {}).get("cache", {})),
+            features=FeaturesConfig(
+                encoder=encoder,
+                execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, batch_size=4),
+                cache=CacheConfig(**(overrides or {}).get("cache", {})),
+            ),
             task=TaskConfig(name="binary_classification"),
             evaluation=EvalConfig(metrics=["accuracy"]),
             training=TrainingConfig(

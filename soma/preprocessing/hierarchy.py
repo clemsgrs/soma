@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from soma.config import AggregatorConfig, PreprocessingConfig
+from slide2vec import PreprocessingConfig
+
+from soma.config import AggregatorConfig
 
 
 def derive_preprocessing_for_aggregator(
@@ -20,7 +22,7 @@ def derive_preprocessing_for_aggregator(
     patch_size = params.get("patch_size")
 
     if tile_multiple is None and region_size is None and patch_size is None:
-        if preprocessing.has_hierarchical_geometry:
+        if preprocessing.region_tile_multiple is not None or preprocessing.requested_region_size_px is not None:
             resolved_region_tile_multiple = preprocessing.region_tile_multiple
             if resolved_region_tile_multiple is not None:
                 resolved_region_tile_multiple = int(resolved_region_tile_multiple)

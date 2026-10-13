@@ -9,15 +9,12 @@ import json
 import os
 import shutil
 import tempfile
-from dataclasses import asdict, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
 import torch
-from slide2vec import (
-    Pipeline,
-    PreprocessingConfig as Slide2VecPreprocessingConfig,
-)
+from slide2vec import ExecutionOptions, Pipeline, PreprocessingConfig
 from slide2vec.encoders.registry import (
     encoder_registry,
     resolve_encoder_level,
@@ -51,7 +48,7 @@ from soma.cache import (
     write_tiling_cache_payload,
     write_tiling_cache_stub,
 )
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
+from soma.config import CacheConfig, EncoderLeaf, is_annotation_sampling
 from soma.data import ensure_filename_safe_id
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.extraction.orchestration import (
@@ -71,14 +68,13 @@ from soma.extraction.reporters import (
 )
 from soma.extraction.slide_aggregation_spawn import spawn_slide_aggregation_workers
 from soma.cache._types import PACKED_FILENAME
+from soma.cache.keys import _jsonable
 from soma.data import CachedSetSource
 from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
 from soma.slide2vec_adapter import (
     LoadedTiling,
-    build_execution_options,
-    build_preprocessing_config,
     build_slide_specs,
-    ensure_supported_mask_value,
+    execution_options,
     load_tilings,
     tiling_num_tiles,
 )
@@ -88,7 +84,8 @@ def _validate_runtime(
     *,
     encoder_name: str,
     output_variant: str | None,
-    encoder: EncoderConfig,
+    encoder: EncoderLeaf,
+    execution: ExecutionOptions,
     preprocessing: PreprocessingConfig,
     tiling_results: Sequence[object],
 ) -> None:
@@ -96,9 +93,9 @@ def _validate_runtime(
         return
     validate_slide2vec_encoder_config(
         encoder_name,
-        requested_tile_size_px=int(preprocessing.requested_tile_size_px),
-        requested_spacing_um=float(preprocessing.requested_spacing_um),
-        precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
+        requested_tile_size_px=int(preprocessing.tiling.requested_tile_size_px),
+        requested_spacing_um=float(preprocessing.tiling.requested_spacing_um),
+        precision=resolve_encoder_precision(execution.precision, encoder_name=encoder_name),
         output_variant=output_variant,
         allow_non_recommended=bool(encoder.allow_non_recommended_settings),
     )
@@ -107,14 +104,15 @@ def _validate_runtime(
 def _validate_preprocessing_runtime(
     *,
     encoder_name: str,
-    encoder: EncoderConfig,
+    encoder: EncoderLeaf,
+    execution: ExecutionOptions,
     preprocessing: PreprocessingConfig,
 ) -> None:
     validate_slide2vec_encoder_config(
         encoder_name,
-        requested_tile_size_px=int(preprocessing.requested_tile_size_px),
-        requested_spacing_um=float(preprocessing.requested_spacing_um),
-        precision=resolve_encoder_precision(encoder, encoder_name=encoder_name),
+        requested_tile_size_px=int(preprocessing.tiling.requested_tile_size_px),
+        requested_spacing_um=float(preprocessing.tiling.requested_spacing_um),
+        precision=resolve_encoder_precision(execution.precision, encoder_name=encoder_name),
         allow_non_recommended=bool(encoder.allow_non_recommended_settings),
     )
 
@@ -264,25 +262,25 @@ class _PooledFeatureExtractor:
     def __init__(
         self,
         dataset: Dataset,
-        encoder: EncoderConfig,
-        preprocessing: PreprocessingConfig = PreprocessingConfig(),
+        encoder: EncoderLeaf,
+        preprocessing: PreprocessingConfig | None = None,
         *,
         output_root: str | Path,
-        execution: ExecutionConfig = ExecutionConfig(),
+        execution: ExecutionOptions | None = None,
         cache: CacheConfig = CacheConfig(),
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
-        self._preprocessing = preprocessing
-        self._execution = execution
+        self._preprocessing = preprocessing if preprocessing is not None else PreprocessingConfig()
+        self._execution = execution if execution is not None else ExecutionOptions()
         self._cache = cache
         self._output_root = Path(output_root).resolve()
 
     def _resolved_preprocessing(self) -> PreprocessingConfig:
         encoder_info = encoder_registry.info(self._encoder.name)
         return resolve_preprocessing_config(
-            self._encoder,
             self._preprocessing,
+            encoder_name=self._encoder.name,
             model_metadata=encoder_info,
         )
 
@@ -301,12 +299,10 @@ class _PooledFeatureExtractor:
         has_precomputed_masks = all(
             record.mask_path is not None for record in self._dataset.samples.values()
         )
-        if preprocessing.tissue_method == "precomputed_mask" or has_precomputed_masks:
-            return replace(preprocessing, tissue_method="precomputed_mask")
-        if preprocessing.tissue_method is None:
-            raise ValueError(
-                "tissue_method is required when no precomputed tissue mask is provided "
-                "for every sample in the dataset."
+        if has_precomputed_masks and preprocessing.segmentation.method != "precomputed_mask":
+            return replace(
+                preprocessing,
+                segmentation=replace(preprocessing.segmentation, method="precomputed_mask"),
             )
         return preprocessing
 
@@ -318,18 +314,6 @@ class _PooledFeatureExtractor:
             metadata=encoder_info,
         )
 
-    def _resolved_execution_for_cache(
-        self,
-        *,
-        encoder_name: str,
-        resolved_preprocessing: PreprocessingConfig | None,
-        output_variant: str | None,
-    ) -> EncoderConfig:
-        return replace(
-            self._encoder,
-            output_variant=output_variant if output_variant is not None else self._encoder.output_variant,
-        )
-
     def _resolved_dtype(self, *, encoder_name: str | None = None) -> str:
         """Resolve the on-disk feature dtype ('fp16'/'fp32') from cache.dtype + precision.
 
@@ -339,7 +323,7 @@ class _PooledFeatureExtractor:
         the tile encoder for a tile-dependency cache, the slide/patient encoder for its own.
         """
         name = encoder_name or self._encoder.name
-        return resolve_cache_dtype(self._cache.dtype, self._encoder, encoder_name=name)
+        return resolve_cache_dtype(self._cache.dtype, self._execution, encoder_name=name)
 
     def preprocess(
         self,
@@ -359,10 +343,10 @@ class _PooledFeatureExtractor:
                     f"is a {level}-level encoder."
                 )
         cfg = self._effective_preprocessing()
-        ensure_supported_mask_value(self._dataset, cfg)
         _validate_preprocessing_runtime(
             encoder_name=self._encoder.name,
             encoder=self._encoder,
+            execution=self._execution,
             preprocessing=cfg,
         )
         if self._dataset.supplies_coordinates:
@@ -374,10 +358,9 @@ class _PooledFeatureExtractor:
         if not self._cache.enabled:
             if skip_existing and process_list_path.is_file():
                 return
-            preprocessing = build_preprocessing_config(cfg)
-            execution = build_execution_options(
-                self._encoder,
-                execution=self._execution,
+            preprocessing = cfg
+            execution = execution_options(
+                self._execution,
                 encoder_name=self._encoder.name,
                 output_dir=tiling_dir,
                 num_gpus=self._execution.num_gpus,
@@ -399,10 +382,10 @@ class _PooledFeatureExtractor:
 
         backend_by_sample_id = probe_resolved_backends(
             dataset=self._dataset,
-            requested_backend=cfg.backend,
+            requested_backend=cfg.tiling.backend,
         )
         backend_provenance = _backend_provenance_from_mapping(
-            requested_backend=cfg.backend,
+            requested_backend=cfg.tiling.backend,
             backend_by_sample_id=backend_by_sample_id,
         )
         cache_root = resolve_tiling_cache_root(
@@ -416,16 +399,15 @@ class _PooledFeatureExtractor:
             preprocessing=cfg,
             backend_provenance=backend_provenance,
             encoder_name=self._encoder.name,
-            requested_preprocessing=asdict(self._preprocessing),
+            requested_preprocessing=_jsonable(self._preprocessing),
         )
         if cache_resolution.complete:
             write_tiling_cache_stub(tiling_dir, cache_resolution=cache_resolution)
             return
 
-        preprocessing = build_preprocessing_config(cfg)
-        execution = build_execution_options(
-            self._encoder,
-            execution=self._execution,
+        preprocessing = cfg
+        execution = execution_options(
+            self._execution,
             encoder_name=self._encoder.name,
             output_dir=tiling_dir,
             num_gpus=self._execution.num_gpus,
@@ -457,7 +439,7 @@ class _PooledFeatureExtractor:
                 preprocessing=cfg,
                 backend_provenance=backend_provenance,
                 encoder_name=self._encoder.name,
-                requested_preprocessing=asdict(self._preprocessing),
+                requested_preprocessing=_jsonable(self._preprocessing),
                 complete_state="populated",
             )
             if refreshed.complete:
@@ -492,15 +474,13 @@ class _PooledFeatureExtractor:
         level = resolve_encoder_level(self._encoder.name, encoder_info)
         resolved_output = self._resolved_output()
         resolved_preprocessing = self._effective_preprocessing()
-        ensure_supported_mask_value(self._dataset, resolved_preprocessing)
         is_hierarchical = resolved_preprocessing.region_tile_multiple is not None
 
         loaded_tilings = load_tilings(
             dataset=self._dataset,
             tiling_dir=tiling_dir,
-            requested_seg_downsample=int(resolved_preprocessing.seg_downsample),
-            tissue_mask_tissue_value=int(resolved_preprocessing.tissue_mask_tissue_value),
-            masks_active=resolved_preprocessing.masks is not None,
+            requested_seg_downsample=int(resolved_preprocessing.segmentation.downsample),
+            annotation_sampling=is_annotation_sampling(resolved_preprocessing.masks),
         )
 
         if is_hierarchical and level != "tile":
@@ -510,7 +490,7 @@ class _PooledFeatureExtractor:
 
         prepared_tilings: list[object] = [loaded.tiling_result for loaded in loaded_tilings]
         backend_provenance = preprocessing_backend_provenance(
-            requested_backend=resolved_preprocessing.backend,
+            requested_backend=resolved_preprocessing.tiling.backend,
             loaded_tilings=loaded_tilings,
         )
         resolved_output_variant = str(resolved_output["output_variant"])
@@ -519,13 +499,14 @@ class _PooledFeatureExtractor:
             level=level,
             resolved_output=resolved_output,
         )
-        s2v_preprocessing = build_preprocessing_config(resolved_preprocessing)
+        s2v_preprocessing = resolved_preprocessing
         allow_non_recommended_settings = bool(self._encoder.allow_non_recommended_settings)
 
         _validate_runtime(
             encoder_name=self._encoder.name,
             output_variant=runtime_output_variant,
             encoder=self._encoder,
+            execution=self._execution,
             preprocessing=resolved_preprocessing,
             tiling_results=prepared_tilings,
         )
@@ -824,20 +805,19 @@ class _PooledFeatureExtractor:
         loaded_tilings: list[LoadedTiling],
         prepared_tilings: list[object],
         tiling_dir: Path,
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
         level: str,
         output_variant: str,
         allow_non_recommended_settings: bool,
         num_gpus: int | None,
         hierarchical: bool = False,
     ) -> None:
-        execution = build_execution_options(
-            self._encoder,
-            execution=self._execution,
+        execution = execution_options(
+            self._execution,
             encoder_name=self._encoder.name,
             output_dir=feature_dir,
             num_gpus=num_gpus,
-            save_tile_embeddings=(level == "tile" or self._encoder.save_tile_features or hierarchical),
+            save_tile_embeddings=(level == "tile" or self._execution.save_tile_embeddings or hierarchical),
             output_dtype=self._resolved_dtype(),
         )
         embeddable_tilings = _non_empty_loaded_tilings(loaded_tilings)
@@ -883,15 +863,14 @@ class _PooledFeatureExtractor:
 
         tile_dir_context = (
             contextlib.nullcontext(None)
-            if self._encoder.save_tile_features
+            if self._execution.save_tile_embeddings
             else tempfile.TemporaryDirectory(prefix="soma-tiles-")
         )
         with tile_dir_context as tmp_dir:
             tile_execution = execution
             if tmp_dir is not None:
-                tile_execution = build_execution_options(
-                    self._encoder,
-                    execution=self._execution,
+                tile_execution = execution_options(
+                    self._execution,
                     encoder_name=self._encoder.name,
                     output_dir=Path(tmp_dir),
                     num_gpus=num_gpus,
@@ -939,7 +918,7 @@ class _PooledFeatureExtractor:
                     read_by_id[str(loaded.slide.sample_id)] = int(read_size)
         return pooled_extraction_geometry(
             encoder_name=self._encoder.name,
-            requested_tile_size_px=resolved_preprocessing.requested_tile_size_px,
+            requested_tile_size_px=resolved_preprocessing.tiling.requested_tile_size_px,
             allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
             read_tile_size_px_by_id=read_by_id or None,
         )
@@ -949,7 +928,7 @@ class _PooledFeatureExtractor:
         *,
         encoder_name: str,
         output_variant: str | None,
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
     ) -> FeatureIdentityCheck:
         """Verify a cache against the identity slide2vec would give its features now.
 
@@ -967,9 +946,8 @@ class _PooledFeatureExtractor:
             return model.pooled_identity_differences(
                 recorded,
                 preprocessing=preprocessing,
-                execution=build_execution_options(
-                    self._encoder,
-                    execution=self._execution,
+                execution=execution_options(
+                    self._execution,
                     encoder_name=encoder_name,
                     output_dir=self._output_root,
                     num_gpus=self._execution.num_gpus,
@@ -991,7 +969,7 @@ class _PooledFeatureExtractor:
         loaded_tilings: list[LoadedTiling],
         prepared_tilings: list[object],
         tiling_dir: Path,
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
         resolved_preprocessing: PreprocessingConfig,
         backend_provenance: dict[str, object],
         resolved_output_variant: str,
@@ -1007,11 +985,7 @@ class _PooledFeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._resolved_execution_for_cache(
-                encoder_name=self._encoder.name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=resolved_output_variant,
-            ),
+            execution=self._execution,
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
@@ -1043,11 +1017,7 @@ class _PooledFeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._resolved_execution_for_cache(
-                encoder_name=self._encoder.name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=resolved_output_variant,
-            ),
+            execution=self._execution,
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
@@ -1071,7 +1041,7 @@ class _PooledFeatureExtractor:
         loaded_tilings: list[LoadedTiling],
         prepared_tilings: list[object],
         tiling_dir: Path,
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
         resolved_preprocessing: PreprocessingConfig,
         backend_provenance: dict[str, object],
         resolved_output_variant: str,
@@ -1087,11 +1057,7 @@ class _PooledFeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._resolved_execution_for_cache(
-                encoder_name=self._encoder.name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=resolved_output_variant,
-            ),
+            execution=self._execution,
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
@@ -1123,11 +1089,7 @@ class _PooledFeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=self._encoder.name,
             preprocessing=resolved_preprocessing,
-            execution=self._resolved_execution_for_cache(
-                encoder_name=self._encoder.name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=resolved_output_variant,
-            ),
+            execution=self._execution,
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
@@ -1152,7 +1114,7 @@ class _PooledFeatureExtractor:
         loaded_tilings: list[LoadedTiling],
         prepared_tilings: list[object],
         tiling_dir: Path,
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
         resolved_preprocessing: PreprocessingConfig,
         resolved_output: dict[str, object],
         backend_provenance: dict[str, object],
@@ -1181,11 +1143,7 @@ class _PooledFeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._resolved_execution_for_cache(
-                encoder_name=tile_encoder_name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=str(tile_dependency_output["output_variant"]),
-            ),
+            execution=self._execution,
             output_variant=str(tile_dependency_output["output_variant"]),
             dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
@@ -1198,17 +1156,9 @@ class _PooledFeatureExtractor:
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._resolved_execution_for_cache(
-                encoder_name=tile_encoder_name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=str(tile_dependency_output["output_variant"]),
-            ),
+            tile_execution=self._execution,
             tile_output_variant=str(tile_dependency_output["output_variant"]),
-            execution=self._resolved_execution_for_cache(
-                encoder_name=self._encoder.name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=resolved_output_variant,
-            ),
+            execution=self._execution,
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
@@ -1243,11 +1193,7 @@ class _PooledFeatureExtractor:
                 dataset=self._dataset,
                 tile_encoder_name=tile_encoder_name,
                 preprocessing=resolved_preprocessing,
-                execution=self._resolved_execution_for_cache(
-                    encoder_name=tile_encoder_name,
-                    resolved_preprocessing=resolved_preprocessing,
-                    output_variant=str(tile_dependency_output["output_variant"]),
-                ),
+                execution=self._execution,
                 output_variant=str(tile_dependency_output["output_variant"]),
                 dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
                 backend_provenance=backend_provenance,
@@ -1271,17 +1217,9 @@ class _PooledFeatureExtractor:
             slide_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._resolved_execution_for_cache(
-                encoder_name=tile_encoder_name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=str(tile_dependency_output["output_variant"]),
-            ),
+            tile_execution=self._execution,
             tile_output_variant=str(tile_dependency_output["output_variant"]),
-            execution=self._resolved_execution_for_cache(
-                encoder_name=self._encoder.name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=resolved_output_variant,
-            ),
+            execution=self._execution,
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
@@ -1302,7 +1240,7 @@ class _PooledFeatureExtractor:
         loaded_tilings: list[LoadedTiling],
         prepared_tilings: list[object],
         tiling_dir: Path,
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
         resolved_preprocessing: PreprocessingConfig,
         resolved_output: dict[str, object],
         backend_provenance: dict[str, object],
@@ -1331,11 +1269,7 @@ class _PooledFeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._resolved_execution_for_cache(
-                encoder_name=tile_encoder_name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=str(tile_dependency_output["output_variant"]),
-            ),
+            execution=self._execution,
             output_variant=str(tile_dependency_output["output_variant"]),
             dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
@@ -1348,17 +1282,9 @@ class _PooledFeatureExtractor:
             patient_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._resolved_execution_for_cache(
-                encoder_name=tile_encoder_name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=str(tile_dependency_output["output_variant"]),
-            ),
+            tile_execution=self._execution,
             tile_output_variant=str(tile_dependency_output["output_variant"]),
-            execution=self._resolved_execution_for_cache(
-                encoder_name=self._encoder.name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=resolved_output_variant,
-            ),
+            execution=self._execution,
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
@@ -1388,11 +1314,7 @@ class _PooledFeatureExtractor:
             dataset=self._dataset,
             tile_encoder_name=tile_encoder_name,
             preprocessing=resolved_preprocessing,
-            execution=self._resolved_execution_for_cache(
-                encoder_name=tile_encoder_name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=str(tile_dependency_output["output_variant"]),
-            ),
+            execution=self._execution,
             output_variant=str(tile_dependency_output["output_variant"]),
             dtype=self._resolved_dtype(encoder_name=tile_encoder_name),
             backend_provenance=backend_provenance,
@@ -1415,17 +1337,9 @@ class _PooledFeatureExtractor:
             patient_encoder_name=self._encoder.name,
             tile_encoder_name=tile_encoder_name,
             tile_preprocessing=resolved_preprocessing,
-            tile_execution=self._resolved_execution_for_cache(
-                encoder_name=tile_encoder_name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=str(tile_dependency_output["output_variant"]),
-            ),
+            tile_execution=self._execution,
             tile_output_variant=str(tile_dependency_output["output_variant"]),
-            execution=self._resolved_execution_for_cache(
-                encoder_name=self._encoder.name,
-                resolved_preprocessing=resolved_preprocessing,
-                output_variant=resolved_output_variant,
-            ),
+            execution=self._execution,
             output_variant=resolved_output_variant,
             dtype=self._resolved_dtype(),
             backend_provenance=backend_provenance,
@@ -1474,18 +1388,16 @@ class _PooledFeatureExtractor:
             record_empty_sample_ids(patient_cache, empty_patient_ids)
         if not selected_loaded:
             return
-        slide_exec = build_execution_options(
-            self._encoder,
-            execution=self._execution,
+        slide_exec = execution_options(
+            self._execution,
             encoder_name=model_name,
             output_dir=patient_cache.cache_dir,
             num_gpus=num_gpus,
             save_tile_embeddings=False,
             output_dtype=self._resolved_dtype(encoder_name=model_name),
         )
-        patient_exec = build_execution_options(
-            self._encoder,
-            execution=self._execution,
+        patient_exec = execution_options(
+            self._execution,
             encoder_name=model_name,
             output_dir=patient_cache.cache_dir,
             num_gpus=num_gpus,
@@ -1605,7 +1517,7 @@ class _PooledFeatureExtractor:
         loaded_tilings: Sequence[LoadedTiling],
         prepared_tilings: Sequence[object],
         tiling_dir: Path,
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
         encoder_name: str,
         output_variant: str,
         num_gpus: int | None,
@@ -1625,9 +1537,8 @@ class _PooledFeatureExtractor:
                 record_empty_sample_ids(cache_resolution, empty_sample_ids)
             return
         with _slide2vec_output_dir(cache_resolution) as output_dir:
-            execution = build_execution_options(
-                self._encoder,
-                execution=self._execution,
+            execution = execution_options(
+                self._execution,
                 encoder_name=encoder_name,
                 output_dir=output_dir,
                 num_gpus=num_gpus,
@@ -1658,7 +1569,7 @@ class _PooledFeatureExtractor:
         loaded_tilings: Sequence[LoadedTiling],
         prepared_tilings: Sequence[object],
         tiling_dir: Path,
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
         encoder_name: str,
         output_variant: str,
         num_gpus: int | None,
@@ -1677,9 +1588,8 @@ class _PooledFeatureExtractor:
             if empty_sample_ids:
                 record_empty_sample_ids(cache_resolution, empty_sample_ids)
             return
-        execution = build_execution_options(
-            self._encoder,
-            execution=self._execution,
+        execution = execution_options(
+            self._execution,
             encoder_name=encoder_name,
             output_dir=cache_resolution.cache_dir,
             num_gpus=num_gpus,
@@ -1709,7 +1619,7 @@ class _PooledFeatureExtractor:
         tile_cache,
         slide_cache,
         loaded_tilings: Sequence[LoadedTiling],
-        preprocessing: Slide2VecPreprocessingConfig,
+        preprocessing: PreprocessingConfig,
         model_name: str,
         output_variant: str | None,
         num_gpus: int | None,
@@ -1733,9 +1643,8 @@ class _PooledFeatureExtractor:
         empty_sample_ids = set(_empty_sample_ids_from_loaded_tilings(loaded_tilings))
         selected_loaded = self._filter_tilings_for_ids(loaded_tilings, slide_missing, empty_sample_ids)
         if selected_loaded:
-            slide_execution = build_execution_options(
-                self._encoder,
-                execution=self._execution,
+            slide_execution = execution_options(
+                self._execution,
                 encoder_name=model_name,
                 output_dir=slide_cache.cache_dir,
                 num_gpus=num_gpus,

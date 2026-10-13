@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from soma.config import AggregatorConfig, EncoderConfig, PipelineConfig, TaskConfig
+from soma.config import AggregatorConfig, FeaturesConfig, PipelineConfig, TaskConfig
 from soma.encoders import resolve_aggregator
 
 
@@ -21,6 +21,12 @@ class _SlideMetadataRegistry:
     def info(self, name: str) -> dict[str, str]:
         assert name == "prism"
         return {"level": "slide"}
+
+    def __contains__(self, name: str) -> bool:
+        return name == "prism"
+
+    def require(self, name: str):
+        return object
 
 
 class _PatientMetadataRegistry:
@@ -57,7 +63,7 @@ def test_slide_encoder_omits_aggregator_in_valid_slide_pipeline(monkeypatch):
         splits_csv="splits.csv",
         output_root="out",
         dataset_type="slide",
-        encoder=EncoderConfig(name="prism"),
+        features=FeaturesConfig(encoder="prism"),
         aggregator=resolved,
         task=TaskConfig(name="binary_classification"),
     )

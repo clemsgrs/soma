@@ -49,7 +49,9 @@ from soma.cache.keys import (
     preprocessing_signature,
     probe_resolved_backends,
     roi_sampling_identity_signature,
+    roi_sampling_signature,
     sample_identity_signature,
+    dense_signature,
 )
 from soma.cache.io import (
     _emit_cache_resolve_log,
@@ -140,6 +142,7 @@ __all__ = [
     "commit_extracted_samples",
     "compute_cache_key",
     "dataset_manifest_rows",
+    "dense_signature",
     "execution_signature",
     "invalidate_sample_identities",
     "manifest_digest",
@@ -160,6 +163,7 @@ __all__ = [
     "resolve_tile_cache",
     "resolve_tiling_cache",
     "resolve_tiling_cache_root",
+    "roi_sampling_signature",
     "sample_identity_signature",
     "write_cache_payload",
     "write_feature_payload",

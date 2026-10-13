@@ -650,7 +650,8 @@ def _point_frame(cfg, spec, predictions):
 
     params = dict(cfg.task.params)
     match_um = float(params["match_distance"])
-    effective = float(cfg.preprocessing.requested_spacing_um or spec.spacing_um)
+    tiling = cfg.features.extraction.tiling
+    effective = float((tiling.requested_spacing_um if tiling is not None else None) or spec.spacing_um)
     spacing = DenseSampleSpacing(
         source_spacing_um=match_um / float(predictions.match_distance_px),
         effective_spacing_um=effective,
@@ -705,7 +706,7 @@ def _decode_cell_points(
         if path.name != "predictions_tune.parquet"
     ]
     frame = _point_frame(cfg, spec, tune)
-    tile_px = int(cfg.preprocessing.requested_tile_size_px)
+    tile_px = int(cfg.features.extraction.tiling.requested_tile_size_px)
     if spec.stitch_to_roi:
         score_thresholds = _sweep_thresholds_on_rois(tune, targets, manifest, frame, tile_px=tile_px)
     else:
@@ -724,7 +725,7 @@ def _decode_cell_points(
             )
         )
 
-    encoder_label = cfg.encoder.name if cfg.encoder is not None else cfg.composite.label
+    encoder_label = _encoder_label(cfg)
     make = lambda samples: CellPredictions(  # noqa: E731
         encoder=encoder_label, dataset=dataset, replicate=replicate,
         metric_name=spec.metric_name, spacing_um=spec.spacing_um, samples=samples,
@@ -1021,9 +1022,19 @@ def _composite_roster(args) -> tuple[RosterEntry, ...]:
             "(not the headline sweep's)"
         )
     cfg = load_config(str(args.config))
-    if cfg.composite is None:
+    if not cfg.features.is_composite:
         raise SystemExit(f"{args.config} has no composite: block; --config is for rung-4 recipes")
-    return (RosterEntry(cfg.composite.label),)
+    return (RosterEntry(_encoder_label(cfg)),)
+
+
+def _encoder_label(cfg) -> str:
+    """The cell's encoder name: a composite is labelled by its members joined with ``+``."""
+    from soma.encoders import CompositeParams
+
+    encoder = cfg.features.encoder
+    if cfg.features.is_composite:
+        return CompositeParams(**encoder.params).label
+    return encoder.name
 
 
 def main(argv: list[str] | None = None) -> int:

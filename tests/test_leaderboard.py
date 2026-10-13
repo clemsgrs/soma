@@ -20,13 +20,13 @@ import pytest
 from soma.benchmarks import get_benchmark
 from soma.benchmarks import registry as registry_mod
 from soma.benchmarks.registry import Facet, ReferenceRow, register_benchmark
+from tests.extraction_configs import extraction
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
-    EncoderConfig,
+    FeaturesConfig,
     EvalConfig,
     PipelineConfig,
-    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
     save_config,
@@ -100,9 +100,7 @@ def _make_config(
         splits_csv=splits_csv,
         output_root=output_root,
         dataset_type="slide",
-        preprocessing=PreprocessingConfig(requested_tile_size_px=224, requested_spacing_um=spacing),
-        cache=CacheConfig(),
-        encoder=EncoderConfig(name=encoder),
+        features=FeaturesConfig(encoder=encoder, extraction=extraction(spacing, 224)),
         aggregator=AggregatorConfig(name=aggregator, params={"hidden_dim": hidden_dim}),
         task=TaskConfig(name=task),
         evaluation=EvalConfig(metrics=_TASK_METRICS[task]),
@@ -292,7 +290,7 @@ def test_vary_axis_is_stripped_from_config_diff(tmp_path: Path):
     table = project_leaderboard([d_a, d_b], LeaderboardFacet(vary=("encoder",)))
     # The encoder name is the headline column, so it is not repeated in the diff.
     for row in table.rows:
-        assert "encoder.name" not in row.config_diff
+        assert "features.encoder.name" not in row.config_diff
 
 
 # --- facet filtering: cross-encoder vs encoder-specific vs flat -----------------------
@@ -333,7 +331,7 @@ def test_flat_facet_ranks_all_no_vary(tmp_path: Path):
     table = project_leaderboard([a, b], LeaderboardFacet(vary=()))
     assert len(table.rows) == 2
     # No vary axis -> the distinguishing config surfaces in the diff instead.
-    assert all("encoder.name" in r.config_diff for r in table.rows)
+    assert all("features.encoder.name" in r.config_diff for r in table.rows)
 
 
 # --- triple discovery + disambiguation ----------------------------------------------

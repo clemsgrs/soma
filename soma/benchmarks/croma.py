@@ -19,9 +19,12 @@ from soma.benchmarks.registry import (
     register_benchmark,
     score_from_summary,
 )
+from slide2vec import ExecutionOptions
+
 from soma.config import (
     CacheConfig,
-    EncoderConfig,
+    EncoderLeaf,
+    FeaturesConfig,
     PipelineConfig,
     RepresentationConfig,
     TrainingConfig,
@@ -217,17 +220,21 @@ class CromaBenchmark:
                 else Path("output/croma")
             ),
             dataset_type="tile",
-            cache=(
-                CacheConfig(**cache_overrides)
-                if cache_overrides
-                else CacheConfig(enabled=True)
-            ),
-            encoder=EncoderConfig(
-                name=encoder,
-                output_variant=(
-                    panel_spec.output_variant if panel_spec is not None else None
+            features=FeaturesConfig(
+                encoder=EncoderLeaf(
+                    name=encoder,
+                    params=(
+                        {"output_variant": panel_spec.output_variant}
+                        if panel_spec is not None and panel_spec.output_variant is not None
+                        else {}
+                    ),
                 ),
-                batch_size=encoder_batch_size,
+                execution=ExecutionOptions(batch_size=encoder_batch_size),
+                cache=(
+                    CacheConfig(**cache_overrides)
+                    if cache_overrides
+                    else CacheConfig(enabled=True)
+                ),
             ),
             task=None,
             representation=RepresentationConfig(**REPRESENTATION_PROTOCOL),

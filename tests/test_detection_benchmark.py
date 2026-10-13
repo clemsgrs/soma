@@ -84,7 +84,7 @@ def test_registered_per_dataset_not_as_the_harness():
 def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
     bench = get_benchmark("detection/midog")
     cfg = bench.build_config(encoder="uni2", dataset_csv="/x/d.csv", output_root="/out", seed=3)
-    assert cfg.encoder.name == "uni2" and cfg.task.params["num_classes"] == 1
+    assert cfg.features.encoder.name == "uni2" and cfg.task.params["num_classes"] == 1
     assert cfg.training.seed == 3 and str(cfg.dataset_csv) == "/x/d.csv"
     # expected() reads reference/midog.csv (external anchors only, so any encoder matches).
     rows = bench.expected(encoder="uni2")
@@ -108,7 +108,7 @@ def test_build_config_resolves_encoder_dataset(dataset, num_classes, metric):
         dataset_csv="/x/d.csv", splits_csv="/x/s.csv", output_root="/out", seed=5,
     )
     assert cfg.dataset_type == "detection"
-    assert cfg.encoder.name == "uni2"  # roster encoder swapped into the committed base
+    assert cfg.features.encoder.name == "uni2"  # roster encoder swapped into the committed base
     assert cfg.decoder.name == "lightweight_conv"
     assert cfg.task.params["num_classes"] == num_classes
     assert str(cfg.dataset_csv) == "/x/d.csv"
@@ -120,19 +120,20 @@ def test_build_config_resolves_encoder_dataset(dataset, num_classes, metric):
 def test_build_config_is_roster_size_agnostic():
     # An encoder not in DEFAULT_ROSTER still resolves (extraction is per-encoder additive).
     cfg = DETECTION_BENCHMARK.build_config(encoder="phikon", dataset="ocelot")
-    assert cfg.encoder.name == "phikon"
+    assert cfg.features.encoder.name == "phikon"
 
 
 def test_midog_config_carries_relaxed_tolerance():
     cfg = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset="midog")
-    assert cfg.preprocessing.tolerance == pytest.approx(0.10)
+    assert cfg.features.extraction.tiling.tolerance == pytest.approx(0.10)
+    assert cfg.features.dense.tolerance == pytest.approx(0.10)
 
 
 @pytest.mark.parametrize("dataset", ["midog", "monkey"])
 def test_tiled_datasets_store_the_dense_cache_in_fp16(dataset):
     # The tiled datasets' dense grids are large: fp16 halves the cache for the big encoders.
     cfg = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset=dataset)
-    assert cfg.cache.dtype == "fp16"
+    assert cfg.features.cache.dtype == "fp16"
 
 
 def test_unknown_dataset_raises():
@@ -1158,38 +1159,42 @@ def test_ensemble_configs_load_with_agreed_semantics(dataset, comp, members):
     cfg = load_config(
         repo_root / "examples" / "detection_benchmark" / f"ensemble_{comp}_{dataset}.yaml"
     )
-    assert cfg.encoder is None and cfg.composite is not None
-    assert [m.name for m in cfg.composite.encoders] == members
-    assert cfg.composite.concat_resolution == "grid"
-    assert cfg.composite.concat_grid_size is None
-    assert all(m.member_norm == "l2" for m in cfg.composite.encoders)
-    assert all(m.feature_kind == "patch_features" for m in cfg.composite.encoders)
+    from soma.encoders import CompositeParams
+
+    assert cfg.features.is_composite
+    composite = CompositeParams(**cfg.features.encoder.params)
+    assert [m.name for m in composite.members] == members
+    assert composite.concat_resolution == "grid"
+    assert composite.concat_grid_size is None
+    assert all(m.member_norm == "l2" for m in composite.members)
+    assert all(
+        m.dense_options(cfg.features.dense).feature_kind == "patch_features"
+        for m in composite.members
+    )
     assert cfg.decoder is not None and cfg.decoder.name == "lightweight_conv"
     # The recipe below the composite matches the dataset base config.
     base = load_config(
         resources.files("soma.benchmarks") / "configs" / "detection" / f"{dataset}.yaml"
     )
     assert cfg.task == base.task
-    assert cfg.preprocessing.requested_tile_size_px == base.preprocessing.requested_tile_size_px
-    assert cfg.preprocessing.requested_spacing_um == base.preprocessing.requested_spacing_um
-    assert cfg.preprocessing.dense_window_size == base.preprocessing.dense_window_size
-    assert cfg.preprocessing.dense_window_overlap == base.preprocessing.dense_window_overlap
-    assert cfg.cache.dtype == base.cache.dtype
+    assert cfg.features.extraction.tiling == base.features.extraction.tiling
+    assert cfg.features.dense == base.features.dense
+    assert cfg.features.cache.dtype == base.features.cache.dtype
     assert cfg.training == base.training
 
 
 def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
     """A composite member resolves to the SAME dense cache key as a single-encoder run.
 
-    Regression for the rung-4 cache-miss: ``resolve_pipeline_preprocessing`` only applies
-    the encoder-aware fill (``ref_tile_size_px``/``read_tile_size_px``) when ``encoder:``
-    is set, so composite members used to key on the unresolved preprocessing and could
-    never hit the caches the ranking sweep already extracted.
+    Regression for the rung-4 cache-miss: composite members used to key on an unresolved
+    recipe and could never hit the caches the ranking sweep already extracted. A member
+    now extracts with the run's slide2vec ``DenseOptions`` / ``ExecutionOptions`` plus its
+    own overrides, exactly as a single-encoder run of it does.
     """
-    from soma.config import load_config
+    from soma.config import EncoderLeaf, load_config
     from soma.dense_extraction import _DenseImageExtractor
-    from soma.pipeline.build import composite_member_extraction_spec
-    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+    from soma.encoders import CompositeParams
+    from soma.preprocessing.resolution import resolve_pipeline_dense
 
     repo_root = Path(__file__).resolve().parents[1]
     overrides = {"cache": {"root_dir": str(tmp_path)}}
@@ -1198,32 +1203,26 @@ def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
         resources.files("soma.benchmarks") / "configs" / "detection" / "midog.yaml",
         overrides={"encoder": {"name": "virchow2"}, **overrides},
     )
-    pre_single = resolve_pipeline_preprocessing(single)
     key_single = _DenseImageExtractor(
-        None, single.encoder,
-        target_size=int(pre_single.requested_tile_size_px),
-        spacing_um=float(pre_single.requested_spacing_um),
-        backend=pre_single.backend, tolerance=float(pre_single.tolerance),
-        window_size=pre_single.dense_window_size,
-        overlap=float(pre_single.dense_window_overlap),
-        execution=single.execution, cache=single.cache, preprocessing=pre_single,
+        None,
+        single.features.encoder,
+        dense=resolve_pipeline_dense(single),
+        execution=single.features.execution,
+        cache=single.features.cache,
     ).cache_dir().name
 
     ensemble = load_config(
         repo_root / "examples" / "detection_benchmark" / "ensemble_top3_midog.yaml",
         overrides=overrides,
     )
-    pre = resolve_pipeline_preprocessing(ensemble)
-    member = next(m for m in ensemble.composite.encoders if m.name == "virchow2")
-    enc, member_prep = composite_member_extraction_spec(member, pre)
+    composite = CompositeParams(**ensemble.features.encoder.params)
+    member = next(m for m in composite.members if m.name == "virchow2")
     key_member = _DenseImageExtractor(
-        None, enc,
-        target_size=int(pre.requested_tile_size_px),
-        spacing_um=float(pre.requested_spacing_um),
-        backend=pre.backend, tolerance=float(pre.tolerance),
-        window_size=member_prep.dense_window_size,
-        overlap=float(member_prep.dense_window_overlap),
-        execution=ensemble.execution, cache=ensemble.cache, preprocessing=member_prep,
+        None,
+        EncoderLeaf(name=member.name, params=dict(member.params)),
+        dense=member.dense_options(resolve_pipeline_dense(ensemble)),
+        execution=member.execution_options(ensemble.features.execution),
+        cache=ensemble.features.cache,
     ).cache_dir().name
 
     assert key_member == key_single

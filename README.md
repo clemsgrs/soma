@@ -25,8 +25,8 @@ For slide classification, prepare `dataset.csv` (sample ID, image path, label) a
 ```python
 from soma import (
     AggregatorConfig,
-    EncoderConfig,
     EvalConfig,
+    FeaturesConfig,
     Pipeline,
     PipelineConfig,
     TaskConfig,
@@ -38,7 +38,7 @@ config = PipelineConfig(
     splits_csv="splits.csv",
     output_root="output",
     dataset_type="slide",
-    encoder=EncoderConfig(name="phikon"),
+    features=FeaturesConfig(encoder="phikon"),
     aggregator=AggregatorConfig(name="abmil"),
     task=TaskConfig(name="binary_classification"),
     training=TrainingConfig(epochs=5, learning_rate=1e-4, seed=0),

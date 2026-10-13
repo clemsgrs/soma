@@ -18,7 +18,7 @@ from PIL import Image
 
 from soma.benchmarks import get_benchmark
 from soma.benchmarks.run import _from_run_dir_axes
-from soma.config import ExecutionConfig
+from slide2vec import ExecutionOptions
 from soma.leaderboard import load_run_record
 from tests.e2e.harness import CPU_EXECUTION
 
@@ -62,7 +62,7 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
         output_root=tmp_path / "run",
         overrides={"cache": {"enabled": True, "root_dir": str(tmp_path / "cache")}},
         pca_components=2,
-        execution=ExecutionConfig(**CPU_EXECUTION),
+        execution=ExecutionOptions(**CPU_EXECUTION),
     )
 
     summary = benchmark.run(config)
@@ -125,7 +125,7 @@ def test_hest_runs_of_two_encoders_under_one_root_keep_their_own_outputs(tmp_pat
                 output_root=tmp_path / "seed_0",
                 overrides={"cache": {"enabled": True, "root_dir": str(tmp_path / "cache")}},
                 pca_components=2,
-                execution=ExecutionConfig(**CPU_EXECUTION),
+                execution=ExecutionOptions(**CPU_EXECUTION),
             )
             benchmark.run(config)
             (run_dir,) = {p.parent for p in (tmp_path / "seed_0").glob("experiments/*/runs/*/config.yaml")} - set(

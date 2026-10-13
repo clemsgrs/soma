@@ -25,7 +25,9 @@ import soma.cache.io as cache_io
 import soma.tile_extraction as tile_extraction
 from soma.cache import MissingFeatureIdentity, resolve_cache_dtype
 from soma.cache.keys import build_tile_cache_key
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig
+from slide2vec import ExecutionOptions
+
+from soma.config import CacheConfig, EncoderLeaf
 from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
 from soma.tile_extraction import _TileFeatureExtractor
@@ -234,8 +236,8 @@ def test_repointed_sample_is_not_served_from_a_pack_of_the_old_features(tmp_path
 def _extract_images_uncached(dataset, root: Path):
     return FeatureExtractor(
         dataset,
-        EncoderConfig(name=STUB_ENCODER, precision="fp32", batch_size=2),
-        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
+        STUB_ENCODER,
+        execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=2),
         cache=CacheConfig(enabled=False),
         output_root=root / "run",
         unit="tile",
@@ -459,14 +461,14 @@ def test_null_output_variant_shares_the_cache_of_the_explicit_default(
     dataset = _make_tile_dataset(tmp_path, ("s0",))
     implicit = _TileFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
-        execution=ExecutionConfig(num_workers_per_gpu=0),
+        EncoderLeaf(name=_TEST_TILE),
+        execution=ExecutionOptions(num_workers_per_gpu=0),
         cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
     ).run(feature_dir=tmp_path / "f1")
     explicit = _TileFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE, output_variant="default"),
-        execution=ExecutionConfig(num_workers_per_gpu=0),
+        EncoderLeaf(name=_TEST_TILE, params={"output_variant": "default"}),
+        execution=ExecutionOptions(num_workers_per_gpu=0),
         cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
     ).run(feature_dir=tmp_path / "f2")
 
@@ -476,7 +478,7 @@ def test_null_output_variant_shares_the_cache_of_the_explicit_default(
     assert meta["cache_key"] == build_tile_cache_key(
         tile_encoder_name=_TEST_TILE,
         preprocessing=None,
-        execution=EncoderConfig(name=_TEST_TILE),
+        execution=None,
         output_variant="default",
         feature_type="tile",
         dtype="fp16",
@@ -488,13 +490,14 @@ class TestSharedDtypeResolver:
         _register_test_encoders()
         # _TEST_TILE recommends fp16 in the registry; the old dense resolution ignored
         # the registry and keyed fp32 while slide2vec computed in fp16.
-        assert resolve_cache_dtype(None, EncoderConfig(name=_TEST_TILE)) == "fp16"
+        assert resolve_cache_dtype(None, None, encoder_name=_TEST_TILE) == "fp16"
 
     def test_encoder_override_and_explicit_dtype(self):
         _register_test_encoders()
-        assert resolve_cache_dtype(None, EncoderConfig(name=_TEST_TILE, precision="fp32")) == "fp32"
-        assert resolve_cache_dtype("fp32", EncoderConfig(name=_TEST_TILE)) == "fp32"
-        assert resolve_cache_dtype("fp16", EncoderConfig(name=_TEST_TILE, precision="fp32")) == "fp16"
+        fp32 = ExecutionOptions(precision="fp32")
+        assert resolve_cache_dtype(None, fp32, encoder_name=_TEST_TILE) == "fp32"
+        assert resolve_cache_dtype("fp32", None, encoder_name=_TEST_TILE) == "fp32"
+        assert resolve_cache_dtype("fp16", fp32, encoder_name=_TEST_TILE) == "fp16"
 
 
 def test_features_written_without_a_feature_identity_are_not_committed(
@@ -515,8 +518,8 @@ def test_features_written_without_a_feature_identity_are_not_committed(
     monkeypatch.setattr(recording_model, "embed_images", embed_without_identity)
     extractor = _TileFeatureExtractor(
         _make_tile_dataset(tmp_path, ("s0", "s1")),
-        EncoderConfig(name=_TEST_TILE),
-        execution=ExecutionConfig(num_workers_per_gpu=0),
+        EncoderLeaf(name=_TEST_TILE),
+        execution=ExecutionOptions(num_workers_per_gpu=0),
         cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
     )
 

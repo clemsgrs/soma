@@ -177,13 +177,13 @@ def flat_tile_images(
     )
 
 
-def overlay_images(records: Sequence[LegacyRecord], *, size, preprocessing):
+def overlay_images(records: Sequence[LegacyRecord], *, size, dense, spacing_policy: str = "strict"):
     """The pixels :class:`~soma.evaluation.SaveOverlays` blends over: the flat tiles, or
-    each slide-manifest ROI's window of its whole slide at the run spacing."""
-    spacing_um = preprocessing.requested_spacing_um if preprocessing is not None else None
-    spacing_policy = preprocessing.spacing_policy if preprocessing is not None else "strict"
-    backend = preprocessing.backend if preprocessing is not None else "auto"
-    tolerance = float(preprocessing.tolerance) if preprocessing is not None else 0.05
+    each slide-manifest ROI's window of its whole slide at the run spacing (read as the
+    grid run's slide2vec ``DenseOptions`` read it)."""
+    spacing_um = dense.spacing_um if dense is not None else None
+    backend = dense.backend if dense is not None else "auto"
+    tolerance = float(dense.tolerance) if dense is not None else 0.05
     if spacing_um is None or not any(record.region is not None for record in records):
         return flat_tile_images(
             records,

@@ -81,6 +81,19 @@ class Registry:
         entry.params(**given)
         return given
 
+    def canonical_params(self, name: str, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """``params`` as the entry's params dataclass holds them: every field, defaults filled in.
+
+        Spellings of the same params (a default left out or stated, a nested dataclass or
+        its mapping) give one dict, so it is what an identity hashes. An entry without a
+        params dataclass gives ``params`` as they are.
+        """
+        given = dict(params or {})
+        _, entry = self._lookup(name)
+        if entry is None or entry.params is None:
+            return given
+        return dataclasses.asdict(entry.params(**given))
+
     def infer(self, name: str, cohort: Any, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """The fields the entry's ``infer`` hook decides from ``cohort`` (``{}`` without one).
 
@@ -124,7 +137,7 @@ class Registry:
             return name
         if entry is None:
             return name
-        return next(key for key, candidate in self._entries.items() if candidate is entry)
+        return next((key for key, candidate in self._entries.items() if candidate is entry), name)
 
     def _lookup(self, name: str) -> tuple[Any, _Entry | None]:
         """``(object, entry)`` for a key or a dotted path; ``entry`` is ``None`` when unregistered."""

@@ -35,7 +35,7 @@ from soma.cache.keys import (
     dataset_manifest_rows,
     preprocessing_signature,
 )
-from soma.config import PreprocessingConfig
+from slide2vec import PreprocessingConfig
 from soma.data._legacy import LegacySamples
 
 
@@ -194,7 +194,7 @@ def _validate_tiling_cache_contents(
             expected_requested_tile_size_px = (
                 preprocessing.requested_region_size_px
                 if preprocessing.requested_region_size_px is not None
-                else preprocessing.requested_tile_size_px
+                else preprocessing.tiling.requested_tile_size_px
             )
             row_tile_size = row.get("requested_tile_size_px")
             if row_tile_size is not None and str(row_tile_size).strip() not in {"", "nan", "NaN"}:
@@ -202,7 +202,7 @@ def _validate_tiling_cache_contents(
                     return CacheValidationResult(complete=False, reason=f"tile size mismatch for {sample_id}")
             row_spacing = row.get("requested_spacing_um")
             if row_spacing is not None and str(row_spacing).strip() not in {"", "nan", "NaN"}:
-                if float(row_spacing) != float(preprocessing.requested_spacing_um):
+                if float(row_spacing) != float(preprocessing.tiling.requested_spacing_um):
                     return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
             expected_backend = None
             if expected_backend_provenance is not None:

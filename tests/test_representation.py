@@ -11,7 +11,8 @@ import torch
 import yaml
 
 from soma.config import (
-    EncoderConfig,
+    EncoderLeaf,
+    FeaturesConfig,
     PipelineConfig,
     RepresentationConfig,
     TaskConfig,
@@ -168,10 +169,10 @@ def test_ordinary_task_default_and_identity_match_semantic_manifest_contract(
     assert payload["task"] == {"name": "binary_classification", "params": {}}
     assert "representation" not in payload
     assert experiment.experiment_id == (
-        "e5042d6c81f06435914f679313822baac3405392180393bb0b7406ea150fb0b7"
+        "9ef20e237e7373f82e61583f4499ac6721413d7883c9c1d7bbd4987100a4641f"
     )
     assert experiment.slug == (
-        "dataset-precomputed-slide-binary-classification_e5042d6c81f0"
+        "dataset-precomputed-slide-binary-classification_9ef20e237e73"
     )
 
 
@@ -340,10 +341,15 @@ def test_representation_identity_covers_encoder_output_variant(tmp_path: Path):
         dataset_rows="held,/images/held.png,B,g1,south\n",
         split_rows="0,held,test\n",
     )
-    cls = replace(base, encoder=EncoderConfig(name="h0-mini", output_variant="cls"))
+    cls = replace(
+        base,
+        features=replace(base.features, encoder=EncoderLeaf(name="h0-mini", params={"output_variant": "cls"})),
+    )
     patch_mean = replace(
         base,
-        encoder=EncoderConfig(name="h0-mini", output_variant="cls_patch_mean"),
+        features=replace(
+            base.features, encoder=EncoderLeaf(name="h0-mini", params={"output_variant": "cls_patch_mean"})
+        ),
     )
 
     assert build_experiment_spec(cls).experiment_id != build_experiment_spec(

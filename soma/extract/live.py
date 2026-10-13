@@ -85,6 +85,8 @@ def live_encoder(
     allow_non_recommended_settings: bool = False,
     tolerance: float = 0.05,
     backend: str = "auto",
+    pad_mode: str = "reflect",
+    image_pad_value: float | None = None,
     attention_blocks: Sequence[int] = (-1,),
     attention_include_registers: bool = False,
     num_gpus: int | None = None,
@@ -102,6 +104,8 @@ def live_encoder(
         feature_kind: slide2vec dense feature kind (``patch_features``,
             ``patch_features_prenorm``, ``cls_attention``).
         precision: Encoder precision; ``None`` resolves the preset's recommendation.
+        pad_mode / image_pad_value: How the tile is padded to the encoder's patch
+            multiple, as ``DenseOptions`` states it for the cached path.
         attention_blocks / attention_include_registers: The ``cls_attention`` recipe.
 
     The stage probe-encodes one blank tile to learn its feature width and to check that
@@ -109,7 +113,6 @@ def live_encoder(
     """
     from slide2vec import DenseImageOptions, ExecutionOptions, Model
 
-    from soma.config import EncoderConfig
     from soma.dense.sliding import describe_dense_mode
     from soma.encoders.validation import resolve_encoder_precision
 
@@ -121,10 +124,7 @@ def live_encoder(
         allow_non_recommended_settings=allow_non_recommended_settings,
         device=device,
     )
-    resolved_precision = resolve_encoder_precision(
-        EncoderConfig(name=encoder, precision=precision, output_variant=output_variant),
-        encoder_name=encoder,
-    )
+    resolved_precision = resolve_encoder_precision(precision, encoder_name=encoder)
     logger.info("Live dense mode: %s", describe_dense_mode(window, float(overlap)))
     attention = feature_kind == "cls_attention"
     dense = DenseImageOptions(
@@ -132,8 +132,8 @@ def live_encoder(
         spacing_um=float(spacing_um),
         tolerance=float(tolerance),
         backend=backend,
-        pad_mode="reflect",
-        image_pad_value=None,
+        pad_mode=pad_mode,
+        image_pad_value=image_pad_value,
         window_size=window,
         overlap=float(overlap),
         feature_kind=feature_kind,

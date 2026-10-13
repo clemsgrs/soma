@@ -1,452 +1,316 @@
-"""Tests for soma.cache.compute_cache_key — deterministic cache-key recovery
-from explicit operator inputs.
+"""Tests for soma.cache.compute_cache_key and the pooled key derivation (ADR 0019).
 
-Ground-truth hashes were seeded from on-disk caches in
-output/debug/feature_cache/{kind}/{cache_key}/cache_metadata.json — the values
-soma itself produced during extraction. The helper exists so that downstream
-tools (e.g. pneuma) can recompute a cache_key from the same operator inputs
-without running extraction or loading model weights.
+Every pooled key derives from the slide2vec / hs2p dataclasses soma holds: the fields of
+slide2vec's ``PreprocessingConfig`` and of hs2p's tiling, segmentation, filter and
+mask-sampling configs it holds, plus the precision of slide2vec's ``ExecutionOptions``.
+Only fields that cannot change a feature are left out, by name.
 
-NOTE: these keys were rotated by the #98 migration (PreprocessingConfig's
-tissue_threshold scalar → a min_coverage map), which deliberately changed the
-preprocessing signature. Pre-#98 on-disk caches are orphaned and must be
-re-extracted; the hashes below are anchored to the current signature.
+The golden hashes below are regression pins of that derivation (cache schema v2). The
+1.x hashes of the same recipes are kept to show that every pooled key moved once.
 """
 
-import pytest
+from __future__ import annotations
 
-from soma.cache import compute_cache_key
+import dataclasses
 from dataclasses import replace
 
+import pytest
+import slide2vec
+from hs2p import FilterConfig, PreviewConfig, SegmentationConfig
+
+from soma.cache import compute_cache_key
+from soma.cache.keys import (
+    build_hierarchical_cache_key,
+    build_patient_cache_key,
+    build_slide_cache_key,
+    build_tile_cache_key,
+    build_tiling_cache_key,
+    execution_signature,
+    preprocessing_signature,
+)
 from soma.config import (
     AggregatorConfig,
-    EncoderConfig,
+    FeaturesConfig,
     NormalizationConfig,
     PipelineConfig,
-    PreprocessingConfig,
     ProjectionConfig,
     TaskConfig,
 )
+from tests.extraction_configs import annotation_masks, extraction, tiling
+
+_ASAP = {"backend": "asap"}
+
+
+def _tile_key(preprocessing, execution=None, **kwargs) -> str:
+    return build_tile_cache_key(
+        tile_encoder_name="virchow",
+        preprocessing=preprocessing,
+        execution=execution,
+        output_variant="default",
+        **kwargs,
+    )
+
+
+def _resolved(**fields) -> slide2vec.PreprocessingConfig:
+    """A resolved extraction (tiling and filter set), as the extractor keys it."""
+    return extraction(0.5, 224, filter=FilterConfig(ref_tile_size=224), **fields)
+
+
+# --- Golden keys ------------------------------------------------------------------------
 
 
 def test_compute_cache_key_tile_virchow():
-    """tile + virchow @ 0.5 µm / 224 px → 2b0452e96803da2b."""
-    preprocessing = PreprocessingConfig(
-        backend="asap",
-        requested_spacing_um=0.5,
-        requested_tile_size_px=224,
-        tissue_method="hsv",
-    )
-    execution = EncoderConfig(name="virchow")
     key = compute_cache_key(
         kind="tile",
         encoder_name="virchow",
-        preprocessing=preprocessing,
-        execution=execution,
+        preprocessing=extraction(0.5, 224, tiling_fields=_ASAP),
     )
-    assert key == "2b0452e96803da2b"
+    assert key == "7c61518e6c647449"
+    assert key != "2b0452e96803da2b"  # the 1.x key of the same recipe
 
 
 def test_compute_cache_key_hierarchical_conch():
-    """hierarchical + conch @ 0.5 µm / 448 px / region 3584 / multiple 8 →
-    b8c228c6666d9c68. Uses precomputed masks (the PANDA-debug dataset ships
-    them for all samples, so soma promotes tissue_method automatically)."""
-    preprocessing = PreprocessingConfig(
-        backend="asap",
-        requested_spacing_um=0.5,
-        requested_tile_size_px=448,
-        requested_region_size_px=3584,
-        region_tile_multiple=8,
-        tissue_method="precomputed_mask",
-    )
-    execution = EncoderConfig(name="conch")
     key = compute_cache_key(
         kind="hierarchical",
         encoder_name="conch",
-        preprocessing=preprocessing,
-        execution=execution,
+        preprocessing=extraction(
+            0.5,
+            448,
+            tiling_fields=_ASAP,
+            method="precomputed_mask",
+            requested_region_size_px=3584,
+            region_tile_multiple=8,
+        ),
     )
-    assert key == "b8c228c6666d9c68"
+    assert key == "1ae7b9247ff9139c"
+    assert key != "b8c228c6666d9c68"  # the 1.x key of the same recipe
+
+
+def test_compute_cache_key_tile_virchow_has_precomputed_masks():
+    """The dataset has a mask for every sample, so soma promotes the segmentation method
+    to ``precomputed_mask``; ``has_precomputed_masks=True`` mirrors that promotion."""
+    preprocessing = extraction(1.0, 224, tiling_fields=_ASAP)
+    key = compute_cache_key(
+        kind="tile", encoder_name="virchow", preprocessing=preprocessing, has_precomputed_masks=True
+    )
+    assert key == "1c7b23341398c215"
+    assert key != "dc3b9499693b0772"  # the 1.x key of the same recipe
+    assert key == compute_cache_key(
+        kind="tile",
+        encoder_name="virchow",
+        preprocessing=replace(preprocessing, segmentation=SegmentationConfig(method="precomputed_mask")),
+    )
 
 
 def test_compute_cache_key_slide_prism_matches_soma_resolver():
-    """slide + prism (tile_encoder=virchow auto from registry): the helper
-    must produce the same key that soma's own slide-cache resolver does for
-    identical inputs. Self-consistency test rather than golden-hash because
-    soma's slide keying changed in commit 64c4dfc (2026-04-26) and the
-    on-disk legacy cache (d5a9609d2ce55dfd) predates that refactor."""
-    from dataclasses import replace
-    from soma.cache.keys import (
-        build_slide_cache_key,
-        preprocessing_signature,
-        execution_signature,
-    )
+    """slide + prism (tile_encoder=virchow auto from registry): the helper produces the key
+    soma's own slide-cache resolver builds for identical inputs."""
+    from slide2vec.encoders.registry import encoder_registry, resolve_encoder_output
+
     from soma.encoders.validation import resolve_preprocessing_config
-    from slide2vec.encoders.registry import encoder_registry
-    from slide2vec.encoders.registry import resolve_encoder_output
 
-    preprocessing = PreprocessingConfig(
-        backend="asap",
-        requested_spacing_um=0.5,
-        requested_tile_size_px=224,
-        tissue_method="hsv",
-    )
+    preprocessing = extraction(0.5, 224, tiling_fields=_ASAP)
+    helper_key = compute_cache_key(kind="slide", encoder_name="prism", preprocessing=preprocessing)
 
-    helper_key = compute_cache_key(
-        kind="slide",
-        encoder_name="prism",
-        preprocessing=preprocessing,
-    )
-
-    tile_info = encoder_registry.info("virchow")
-    tile_exec = EncoderConfig(name="virchow")
-    tile_ov = resolve_encoder_output("virchow", metadata=tile_info)["output_variant"]
-    resolved_tile_prep = resolve_preprocessing_config(tile_exec, preprocessing, model_metadata=tile_info)
-    slide_info = encoder_registry.info("prism")
-    slide_exec = EncoderConfig(name="prism")
-    slide_ov = resolve_encoder_output("prism", metadata=slide_info)["output_variant"]
+    tile_ov = resolve_encoder_output("virchow", metadata=encoder_registry.info("virchow"))["output_variant"]
+    resolved_tile_prep = resolve_preprocessing_config(preprocessing, encoder_name="virchow")
+    slide_ov = resolve_encoder_output("prism", metadata=encoder_registry.info("prism"))["output_variant"]
     tile_dep = {
         "tile_encoder_name": "virchow",
         "tile_preprocessing": preprocessing_signature(resolved_tile_prep),
         "tile_execution": execution_signature(
-            replace(tile_exec, output_variant=tile_ov),
-            encoder_name="virchow",
-            preprocessing=resolved_tile_prep,
-            output_variant=tile_ov,
+            None, encoder_name="virchow", preprocessing=resolved_tile_prep, output_variant=tile_ov
         ),
     }
     reference_key = build_slide_cache_key(
         slide_encoder_name="prism",
         tile_dependency_signature=tile_dep,
-        execution=replace(slide_exec, output_variant=slide_ov),
+        execution=None,
         output_variant=slide_ov,
     )
     assert helper_key == reference_key
 
 
-def test_compute_cache_key_tile_virchow_has_precomputed_masks():
-    """tile + virchow @ 1.0 µm / 224 px with has_precomputed_masks=True →
-    dc3b9499693b0772. The operator typed tissue_method='hsv' but the dataset
-    has masks for every sample, so soma promotes to 'precomputed_mask'
-    during extraction; has_precomputed_masks=True mirrors that promotion."""
-    preprocessing = PreprocessingConfig(
-        backend="asap",
-        requested_spacing_um=1.0,
-        requested_tile_size_px=224,
-        tissue_method="hsv",
-    )
-    execution = EncoderConfig(name="virchow")
-    key = compute_cache_key(
-        kind="tile",
-        encoder_name="virchow",
-        preprocessing=preprocessing,
-        execution=execution,
-        has_precomputed_masks=True,
-    )
-    assert key == "dc3b9499693b0772"
-
-
 def test_compute_cache_key_rejects_unknown_kind():
     with pytest.raises(ValueError, match="unsupported"):
-        compute_cache_key(
-            kind="bogus",
-            encoder_name="virchow",
-            preprocessing=PreprocessingConfig(tissue_method="hsv"),
-            execution=EncoderConfig(name="virchow"),
-        )
+        compute_cache_key(kind="bogus", encoder_name="virchow", preprocessing=extraction())
 
 
-# --- Pooled storage-dtype cache identity (#164) -----------------------------------------
-#
-# cache.dtype folds into every pooled key, guarded so fp32 (the legacy default) keys stay
-# byte-stable — i.e. the ground-truth hashes above never move — while an fp16 cache resolves
-# to a distinct key so the two precisions can never be mixed. Mirrors the dense key's guard.
+def test_an_unresolved_tiling_has_no_signature():
+    with pytest.raises(ValueError, match="tiling must be resolved"):
+        preprocessing_signature(extraction(None, None))
 
 
-def test_pooled_cache_keys_fp32_is_byte_stable_and_fp16_distinct():
-    from soma.cache.keys import (
-        build_hierarchical_cache_key,
-        build_patient_cache_key,
-        build_slide_cache_key,
-        build_tile_cache_key,
-    )
+# --- The key derives from the upstream dataclass fields ------------------------------
 
-    enc = EncoderConfig(name="virchow")
-    preprocessing = PreprocessingConfig(
-        backend="asap",
-        requested_spacing_um=0.5,
-        requested_tile_size_px=224,
-        tissue_method="hsv",
-    )
+
+def _hs2p_variations():
+    """One change per hs2p field soma keys, each a value its dataclass accepts."""
+    filter_default = FilterConfig(ref_tile_size=224)
+    for field in dataclasses.fields(FilterConfig):
+        value = getattr(filter_default, field.name)
+        changed = (not value) if isinstance(value, bool) else value * 2
+        yield f"filter.{field.name}", {"filter": replace(filter_default, **{field.name: changed})}
+    for name, value in (("tolerance", 0.1), ("overlap", 0.25), ("backend", "openslide"), ("mask_backend", "asap")):
+        yield f"tiling.{name}", {"tiling_fields": {name: value}}
+    yield "tiling.requested_spacing_um", {"spacing": 1.0}
+    yield "tiling.requested_tile_size_px", {"tile_size": 256}
+    yield "segmentation.method", {"method": "otsu"}
+    yield "segmentation.downsample", {"seg_downsample": 32}
+    yield "masks.min_coverage", {"masks": annotation_masks(min_coverage={"tumor": 0.25})}
+    yield "masks.strategy", {"masks": annotation_masks(strategy="independent")}
+    yield "masks.pixel_mapping", {"masks": annotation_masks(pixel_mapping={"background": 0, "tumor": 2})}
+    yield "region_tile_multiple", {"region_tile_multiple": 4}
+    yield "on_the_fly", {"on_the_fly": False}
+
+
+@pytest.mark.parametrize(("field", "change"), list(_hs2p_variations()), ids=lambda value: value if isinstance(value, str) else "")
+def test_every_feature_relevant_upstream_field_changes_the_key(field: str, change: dict):
+    """Including the hs2p knobs soma's former mirror never keyed (filter.a_h, the pixel
+    QC filters, ...): a field slide2vec or hs2p holds enters the key without a soma edit."""
+    base = {"spacing": 0.5, "tile_size": 224, "filter": FilterConfig(ref_tile_size=224)}
+    spacing = change.pop("spacing", base["spacing"])
+    tile_size = change.pop("tile_size", base["tile_size"])
+    changed = extraction(spacing, tile_size, **{"filter": base["filter"], **change})
+    assert _tile_key(changed) != _tile_key(_resolved()), field
+
+
+@pytest.mark.parametrize(
+    ("field", "change"),
+    [
+        ("preview", {"preview": PreviewConfig(save_mask_preview=False, save_tiling_preview=False)}),
+        ("adaptive_batching", {"adaptive_batching": True}),
+        ("use_supertiles", {"use_supertiles": False}),
+        ("num_cucim_workers", {"num_cucim_workers": 1}),
+        ("save_tiles", {"save_tiles": True}),
+        ("resume", {"resume": True}),
+    ],
+)
+def test_runtime_extraction_fields_leave_the_key_alone(field: str, change: dict):
+    assert _tile_key(_resolved(**change)) == _tile_key(_resolved()), field
+
+
+def test_mask_colors_and_sam2_placement_leave_the_key_alone():
+    plain = _resolved(masks=annotation_masks())
+    colored = _resolved(masks=annotation_masks(colors={"background": None, "tumor": [255, 0, 0]}))
+    sam2 = replace(plain, segmentation=replace(plain.segmentation, sam2_device="cuda", sam2_num_workers=2))
+    assert _tile_key(colored) == _tile_key(plain) == _tile_key(sam2)
+
+
+def test_the_order_of_merged_mask_values_leaves_the_key_alone():
+    a = _resolved(masks=annotation_masks(pixel_mapping={"background": 0, "tumor": [2, 1]}))
+    b = _resolved(masks=annotation_masks(pixel_mapping={"background": 0, "tumor": [1, 2]}))
+    assert _tile_key(a) == _tile_key(b)
+
+
+def test_only_the_execution_precision_enters_the_key():
+    """Batch size, GPUs and workers are resources; the precision changes the features.
+    ``precision=None`` keys on the encoder's recommendation."""
+    from slide2vec.encoders.registry import encoder_registry
+
+    recommended = encoder_registry.info("virchow").get("precision") or "fp32"
+    resources = slide2vec.ExecutionOptions(batch_size=7, num_gpus=1, num_workers_per_gpu=2, prefetch_factor=9)
+    assert _tile_key(_resolved(), resources) == _tile_key(_resolved(), None)
+    assert _tile_key(_resolved(), slide2vec.ExecutionOptions(precision=recommended)) == _tile_key(_resolved(), None)
+    other = "fp32" if recommended != "fp32" else "fp16"
+    assert _tile_key(_resolved(), slide2vec.ExecutionOptions(precision=other)) != _tile_key(_resolved(), None)
+
+
+def test_pooled_keys_separate_fp16_and_fp32_storage():
+    preprocessing = _resolved()
     tile_dep = {"tile_encoder_name": "virchow", "tile_execution": {"precision": "fp16"}}
-
     builders = {
-        "tile": lambda **kw: build_tile_cache_key(
-            tile_encoder_name="virchow", preprocessing=preprocessing, execution=enc, **kw
-        ),
+        "tile": lambda **kw: _tile_key(preprocessing, **kw),
         "slide": lambda **kw: build_slide_cache_key(
-            slide_encoder_name="prism", tile_dependency_signature=tile_dep, execution=enc, **kw
+            slide_encoder_name="prism", tile_dependency_signature=tile_dep, execution=None, **kw
         ),
         "patient": lambda **kw: build_patient_cache_key(
-            patient_encoder_name="prism", tile_dependency_signature=tile_dep, execution=enc, **kw
+            patient_encoder_name="prism", tile_dependency_signature=tile_dep, execution=None, **kw
         ),
         "hierarchical": lambda **kw: build_hierarchical_cache_key(
-            tile_encoder_name="virchow", preprocessing=preprocessing, execution=enc, **kw
+            tile_encoder_name="virchow", preprocessing=preprocessing, execution=None, **kw
         ),
     }
     for name, build in builders.items():
-        # Default == explicit fp32 == the pre-#164 key (guard drops dtype from the payload).
         assert build() == build(dtype="fp32"), name
-        # fp16 storage ⇒ a distinct key, so an fp16 cache never aliases the fp32 one.
         assert build(dtype="fp16") != build(dtype="fp32"), name
 
 
-# --- Annotation-restricted bag cache identity (#110) ------------------------------------
-#
-# A tumor-restricted merged bag must never alias a full-tissue bag of the same
-# slide/encoder/geometry: the selection-relevant projection of masks/sampling
-# (active pixel_mapping entries, per-class min_coverage, strategy, output_mode) folds into
-# the preprocessing signature that keys tiling/tile/slide caches. ``colors`` is cosmetic
-# and is excluded. The no-masks case stays byte-stable (asserted by the ground-truth hashes
-# above remaining unchanged).
-
-
-def _masks_preprocessing(**masks_kwargs):
-    from soma.config import MasksConfig, SamplingConfig
-
-    sampling_kwargs = {
-        key: masks_kwargs.pop(key)
-        for key in ("strategy", "output_mode")
-        if key in masks_kwargs
-    }
-    return PreprocessingConfig(
-        backend="asap",
-        requested_spacing_um=0.5,
-        requested_tile_size_px=224,
-        tissue_method="hsv",
-        masks=MasksConfig(**masks_kwargs),
-        sampling=SamplingConfig(**sampling_kwargs) if sampling_kwargs else None,
-    )
-
-
-def test_preprocessing_signature_omits_masks_when_absent():
-    """No masks block ⇒ no ``masks``/``sampling`` keys in the signature, so legacy
-    tissue-only cache keys are byte-stable."""
-    from soma.cache.keys import preprocessing_signature
-
-    sig = preprocessing_signature(
-        PreprocessingConfig(
-            backend="asap",
-            requested_spacing_um=0.5,
-            requested_tile_size_px=224,
-            tissue_method="hsv",
-        )
-    )
-    assert "masks" not in sig
-    assert "sampling" not in sig
+# --- Annotation-restricted bags (#110, #111) --------------------------------------------
 
 
 def test_tumor_restricted_bag_differs_from_tissue_bag():
-    """AC7: a tumor-restricted bag and a full-tissue bag of the same slide/encoder produce
-    different cache keys across tiling, tile, and slide kinds."""
-    from soma.cache.keys import (
-        build_slide_cache_key,
-        build_tile_cache_key,
-        build_tiling_cache_key,
-        execution_signature,
-        preprocessing_signature,
-    )
+    """A tumor-restricted bag and a full-tissue bag of the same slide/encoder produce
+    different tiling, tile and slide keys."""
+    tissue = _resolved()
+    tumor = _resolved(masks=annotation_masks())
 
-    tissue = PreprocessingConfig(
-        backend="asap",
-        requested_spacing_um=0.5,
-        requested_tile_size_px=224,
-        tissue_method="hsv",
-    )
-    tumor = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1},
-        min_coverage={"tumor": 0.5},
-    )
-    execution = EncoderConfig(name="virchow")
-
-    assert build_tiling_cache_key(preprocessing=tissue) != build_tiling_cache_key(
-        preprocessing=tumor
-    )
-    assert build_tile_cache_key(
-        tile_encoder_name="virchow", preprocessing=tissue, execution=execution
-    ) != build_tile_cache_key(
-        tile_encoder_name="virchow", preprocessing=tumor, execution=execution
-    )
+    assert build_tiling_cache_key(preprocessing=tissue) != build_tiling_cache_key(preprocessing=tumor)
+    assert _tile_key(tissue) != _tile_key(tumor)
 
     def _slide_key(prep):
         tile_dep = {
             "tile_encoder_name": "virchow",
             "tile_preprocessing": preprocessing_signature(prep),
-            "tile_execution": execution_signature(execution, encoder_name="virchow"),
+            "tile_execution": execution_signature(None, encoder_name="virchow"),
         }
-        return build_slide_cache_key(
-            slide_encoder_name="prism",
-            tile_dependency_signature=tile_dep,
-            execution=EncoderConfig(name="prism"),
-        )
+        return build_slide_cache_key(slide_encoder_name="prism", tile_dependency_signature=tile_dep, execution=None)
 
     assert _slide_key(tissue) != _slide_key(tumor)
 
 
 def test_annotation_bag_identical_specs_same_key():
-    """AC7: identical masks/sampling specs hash to the same key."""
-    from soma.cache.keys import build_tiling_cache_key
-
-    a = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}
-    )
-    b = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}
-    )
+    a = _resolved(masks=annotation_masks())
+    b = _resolved(masks=annotation_masks())
     assert build_tiling_cache_key(preprocessing=a) == build_tiling_cache_key(preprocessing=b)
 
 
-def test_annotation_bag_min_coverage_changes_key():
-    """AC7: changing ``min_coverage`` changes the key."""
-    from soma.cache.keys import build_tiling_cache_key
-
-    low = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.25}
-    )
-    high = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.75}
-    )
-    assert build_tiling_cache_key(preprocessing=low) != build_tiling_cache_key(preprocessing=high)
-
-
-def test_annotation_bag_strategy_changes_key():
-    """AC7: changing ``sampling.strategy`` changes the key."""
-    from soma.cache.keys import build_tiling_cache_key
-
-    joint = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1},
-        min_coverage={"tumor": 0.5},
-        strategy="joint",
-    )
-    independent = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1},
-        min_coverage={"tumor": 0.5},
-        strategy="independent",
-    )
-    assert build_tiling_cache_key(preprocessing=joint) != build_tiling_cache_key(
-        preprocessing=independent
-    )
-
-
-def test_annotation_bag_active_class_set_changes_key():
-    """AC7: changing the active class set (the ``pixel_mapping``/``min_coverage`` vocabulary)
-    changes the key."""
-    from soma.cache.keys import build_tiling_cache_key
-
-    tumor_only = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1},
-        min_coverage={"tumor": 0.5},
-    )
-    tumor_and_stroma = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1, "stroma": 2},
-        min_coverage={"tumor": 0.5, "stroma": 0.5},
-    )
-    assert build_tiling_cache_key(preprocessing=tumor_only) != build_tiling_cache_key(
-        preprocessing=tumor_and_stroma
-    )
-
-
-def test_annotation_bag_colors_do_not_change_key():
-    """AC7: ``colors`` is cosmetic and excluded from cache identity."""
-    from soma.cache.keys import build_tiling_cache_key
-
-    no_colors = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1},
-        min_coverage={"tumor": 0.5},
-    )
-    with_colors = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1},
-        min_coverage={"tumor": 0.5},
-        colors={"background": None, "tumor": [255, 0, 0]},
-    )
-    assert build_tiling_cache_key(preprocessing=no_colors) == build_tiling_cache_key(
-        preprocessing=with_colors
-    )
-
-
-# --- Annotation-restricted bag cache identity, patient path (#111) ----------------------
-#
-# A patient cache key wraps the upstream tile recipe via its ``tile_dependency_signature``
-# (the tile preprocessing_signature, which folds in the annotation-sampling projection when a
-# masks block is active). So a compartment-restricted patient run must never alias a
-# full-tissue patient run of the same encoder/geometry — exactly as on the slide path (#110).
-
-
 def test_patient_annotation_bag_differs_from_tissue_bag():
-    """AC3 (#111): a tumor-restricted patient run and a full-tissue patient run of the same
-    patient encoder produce different cache keys (the selection spec rides in the patient
-    key's tile_dependency_signature, just like slide)."""
-    tissue = PreprocessingConfig(
-        backend="asap",
-        requested_spacing_um=0.5,
-        requested_tile_size_px=224,
-        tissue_method="hsv",
-    )
-    tumor = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1},
-        min_coverage={"tumor": 0.5},
-    )
+    """A compartment-restricted patient run never aliases a full-tissue one: the selection
+    rides in the patient key's tile dependency, as on the slide path."""
+    tissue = extraction(0.5, 224, tiling_fields=_ASAP)
+    tumor = extraction(0.5, 224, tiling_fields=_ASAP, masks=annotation_masks())
     tissue_key = compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=tissue)
     tumor_key = compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=tumor)
     assert tissue_key != tumor_key
+    assert tumor_key == compute_cache_key(
+        kind="patient",
+        encoder_name="moozy",
+        preprocessing=extraction(0.5, 224, tiling_fields=_ASAP, masks=annotation_masks()),
+    )
 
 
-def test_patient_annotation_bag_identical_specs_same_key():
-    """AC3 (#111): identical masks/sampling specs hash to the same patient key (determinism)."""
-    a = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}
+# --- The feature adaptor consumes the cache, it does not define it ---------------------
+
+
+def _slide_config(**overrides) -> PipelineConfig:
+    return PipelineConfig(
+        dataset_csv="d.csv",
+        splits_csv="s.csv",
+        output_root="runs",
+        dataset_type="slide",
+        features=FeaturesConfig(encoder="virchow", extraction=extraction(0.5, 224, tiling_fields=_ASAP)),
+        aggregator=AggregatorConfig(name="mean_pool"),
+        task=TaskConfig(name="binary_classification"),
+        **overrides,
     )
-    b = _masks_preprocessing(
-        pixel_mapping={"background": 0, "tumor": 1}, min_coverage={"tumor": 0.5}
-    )
-    assert compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=a) == (
-        compute_cache_key(kind="patient", encoder_name="moozy", preprocessing=b)
+
+
+def _config_key(config: PipelineConfig) -> str:
+    return compute_cache_key(
+        kind="tile",
+        encoder_name=config.features.encoder.name,
+        preprocessing=config.features.extraction,
+        execution=config.features.execution,
     )
 
 
 @pytest.mark.parametrize("method", ["zscore", "l2", "layernorm"])
 def test_normalization_leaves_feature_cache_key_untouched(method):
-    """Issue #283: the feature adaptor consumes the cache, it does not define it.
-
-    Turning normalization on must never orphan an extracted feature cache, so the
-    key computed from a config's extraction inputs is identical either way.
-    """
-    off = PipelineConfig(
-        dataset_csv="d.csv",
-        splits_csv="s.csv",
-        output_root="runs",
-        dataset_type="slide",
-        preprocessing=PreprocessingConfig(
-            backend="asap",
-            requested_spacing_um=0.5,
-            requested_tile_size_px=224,
-            tissue_method="hsv",
-        ),
-        encoder=EncoderConfig(name="virchow"),
-        aggregator=AggregatorConfig(name="mean_pool"),
-        task=TaskConfig(name="binary_classification"),
-    )
+    """Issue #283: turning normalization on must never orphan an extracted feature cache."""
+    off = _slide_config()
     on = replace(off, normalization=NormalizationConfig(method=method))
-
-    def _key(config: PipelineConfig) -> str:
-        return compute_cache_key(
-            kind="tile",
-            encoder_name=config.encoder.name,
-            preprocessing=config.preprocessing,
-            execution=config.encoder,
-        )
-
-    assert _key(on) == _key(off) == "2b0452e96803da2b"
+    assert _config_key(on) == _config_key(off) == "7c61518e6c647449"
 
 
 @pytest.mark.parametrize(
@@ -457,34 +321,11 @@ def test_normalization_leaves_feature_cache_key_untouched(method):
     ],
 )
 def test_projection_leaves_feature_cache_key_untouched(projection):
-    """Issue #284: the projection consumes the cache, it does not define it.
-
-    The dim-matched ablation must never orphan an extracted feature cache — the whole
-    point is to re-use one shared extraction across every projection width.
-    """
-    off = PipelineConfig(
-        dataset_csv="d.csv",
-        splits_csv="s.csv",
-        output_root="runs",
-        dataset_type="slide",
-        preprocessing=PreprocessingConfig(
-            backend="asap",
-            requested_spacing_um=0.5,
-            requested_tile_size_px=224,
-            tissue_method="hsv",
-        ),
-        encoder=EncoderConfig(name="virchow"),
-        aggregator=AggregatorConfig(name="mean_pool"),
-        task=TaskConfig(name="binary_classification"),
-    )
+    """Issue #284: the dim-matched ablation re-uses one shared extraction."""
+    off = _slide_config()
     on = replace(off, projection=projection)
+    assert _config_key(on) == _config_key(off) == "7c61518e6c647449"
 
-    def _key(config: PipelineConfig) -> str:
-        return compute_cache_key(
-            kind="tile",
-            encoder_name=config.encoder.name,
-            preprocessing=config.preprocessing,
-            execution=config.encoder,
-        )
 
-    assert _key(on) == _key(off) == "2b0452e96803da2b"
+def test_tiling_helper_spells_hs2p_defaults():
+    assert tiling() == tiling(0.5, 224, tolerance=0.05, overlap=0.0, backend="auto", mask_backend="auto")

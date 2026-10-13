@@ -204,7 +204,15 @@ def test_composite_target_mode_is_byte_identical_without_norm(tmp_path: Path):
 
 
 def test_decoder_run_goes_through_composite_grid_mode(tmp_path: Path):
-    from soma.config import CacheConfig, DecoderConfig, EvalConfig, PipelineConfig, TaskConfig, TrainingConfig
+    from soma.config import (
+        CacheConfig,
+        DecoderConfig,
+        EvalConfig,
+        FeaturesConfig,
+        PipelineConfig,
+        TaskConfig,
+        TrainingConfig,
+    )
     from soma.pipeline import Pipeline
 
     ids = ["s0", "s1", "s2", "s3"]
@@ -238,7 +246,7 @@ def test_decoder_run_goes_through_composite_grid_mode(tmp_path: Path):
         training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
         decoder=DecoderConfig(name="lightweight_conv"),
         evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
-        cache=CacheConfig(enabled=False),
+        features=FeaturesConfig(encoder=None, cache=CacheConfig(enabled=False)),
     )
     result = Pipeline(config, source=comp).run().fold_results[0]
     assert "test" in result.test_evaluations
@@ -251,36 +259,49 @@ def test_decoder_run_goes_through_composite_grid_mode(tmp_path: Path):
 )
 def test_composite_spacing_auto_defaults_from_shared_member_spacing(member_names):
     # Constrained and spacing-agnostic members can share the same 0.5 µm/px default.
-    from soma.config import CompositeConfig, EncoderMemberConfig
     from soma.preprocessing.resolution import resolve_composite_spacing
 
-    comp = CompositeConfig(
-        encoders=[EncoderMemberConfig(name=name) for name in member_names]
-    )
-    assert resolve_composite_spacing(comp) == 0.5
+    assert resolve_composite_spacing(list(member_names)) == 0.5
 
 
-def test_pipeline_resolve_preprocessing_propagates_composite_spacing():
-    from soma.config import (
-        CompositeConfig,
-        DecoderConfig,
-        EncoderMemberConfig,
-        PipelineConfig,
-        PreprocessingConfig,
-        TaskConfig,
-    )
-    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+def _composite_layout(tmp_path: Path, members: list[str]) -> Path:
+    import yaml
 
-    cfg = PipelineConfig(
-        dataset_csv="data.csv",
-        splits_csv="splits.csv",
-        output_root="out",
-        dataset_type="segmentation",
-        preprocessing=PreprocessingConfig(requested_tile_size_px=TARGET),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        composite=CompositeConfig(
-            encoders=[EncoderMemberConfig(name="conch"), EncoderMemberConfig(name="h0-mini")]
-        ),
-        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        yaml.safe_dump(
+            {
+                "data": {"dataset_csv": "data.csv", "splits_csv": "splits.csv", "dataset_type": "segmentation"},
+                "preprocessing": {"requested_tile_size_px": TARGET},
+                "composite": {"encoders": [{"name": name} for name in members]},
+                "decoder": {"name": "lightweight_conv"},
+                "task": {"name": "segmentation", "params": {"num_classes": 2}},
+            }
+        )
     )
-    assert resolve_pipeline_preprocessing(cfg).requested_spacing_um == 0.5
+    return path
+
+
+def test_a_composite_without_a_spacing_reads_at_the_members_shared_spacing(tmp_path: Path):
+    from soma.config import load_config
+
+    config = load_config(_composite_layout(tmp_path, ["conch", "h0-mini"]))
+
+    assert config.features.extraction.tiling.requested_spacing_um == 0.5
+    assert config.features.dense.spacing_um == 0.5
+
+
+def test_a_composite_whose_members_disagree_on_spacing_must_state_one(tmp_path: Path, monkeypatch):
+    from slide2vec.encoders import registry
+
+    from soma.config import load_config
+
+    defaults = registry.resolve_preprocessing_defaults
+    monkeypatch.setattr(
+        registry,
+        "resolve_preprocessing_defaults",
+        lambda name: {**defaults(name), "spacing_um": 1.0} if name == "h0-mini" else defaults(name),
+    )
+
+    with pytest.raises(ValueError, match="do not share a single default spacing"):
+        load_config(_composite_layout(tmp_path, ["conch", "h0-mini"]))

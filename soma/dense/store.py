@@ -229,8 +229,9 @@ def dense_grid_metadata(
     ``spacing_um`` is the µm/px the tile was *read* at (``None`` = flat page-0 read).
     It is recorded so the segmentation fold can assert the mask is read at the same
     spacing the grid was extracted at — otherwise the supervision silently shifts
-    against the features. (It is also part of the cache *key*, via the plumbed
-    ``PreprocessingConfig``, so two spacings can never alias to one cache entry.)
+    against the features. (It is also part of the cache *key*, via the slide2vec
+    ``DenseOptions`` the grid was encoded with, so two spacings can never alias to one
+    cache entry.)
 
     ``feature_kind`` records what the channels mean: ``patch_features`` /
     ``patch_features_prenorm`` (ViT patch tokens after / before the final norm) or

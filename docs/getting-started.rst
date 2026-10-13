@@ -58,19 +58,19 @@ Both classes must appear in each scored split for AUROC to be defined. See
 2. Preprocess and encode
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
-Choose how to turn tissue into tiles, then select a foundation model. In
-this example, feature extraction runs once and returns a reusable feature
-store.
+Choose how to turn tissue into tiles, then select a foundation model. Tiling
+and encoding are slide2vec's: soma takes slide2vec's ``PreprocessingConfig``,
+which composes hs2p's tiling, segmentation and mask settings. In this example,
+feature extraction runs once and returns a reusable feature store.
 
 .. code-block:: python
 
-   from soma import (
-       Cohort,
-       EncoderConfig,
-       FeatureExtractor,
-       ImageManifest,
-       PreprocessingConfig,
-   )
+   from dataclasses import replace
+
+   from hs2p import DEFAULT_MASK_SAMPLING, SegmentationConfig, TilingConfig
+   from slide2vec import PreprocessingConfig
+
+   from soma import Cohort, FeatureExtractor, ImageManifest
    from soma.data._legacy import LegacyFolds, records_for_pipeline
 
    cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
@@ -78,27 +78,27 @@ store.
    splits = LegacyFolds.from_cohort(cohort)
 
    preprocessing = PreprocessingConfig(
-       tissue_method="hsv",
-       min_coverage={"tissue": 0.2},
-       overlap=0.0,
-       requested_spacing_um=0.5,
-       requested_tile_size_px=224,
-   )
-   encoder = EncoderConfig(
-       name="phikon",
+       tiling=TilingConfig(
+           requested_spacing_um=0.5,
+           requested_tile_size_px=224,
+           tolerance=0.05,
+           overlap=0.0,
+       ),
+       segmentation=SegmentationConfig(method="hsv"),
+       masks=replace(DEFAULT_MASK_SAMPLING, min_coverage={"tissue": 0.2}),
    )
 
    features = FeatureExtractor(
        dataset,
-       encoder,
+       "phikon",
        preprocessing=preprocessing,
        output_root="output",
    ).extract()
 
 The result contains ``source`` (the reusable feature reader), ``dataset`` (the
-exact samples indexed by that source), ``provenance``, and ``artifacts``. Omitted
-tile size and spacing resolve from the encoder's native configuration; see
-:doc:`preprocessing` and :doc:`encoders` for every option.
+exact samples indexed by that source), ``provenance``, and ``artifacts``. Without
+a ``tiling``, the tile size and spacing resolve from the encoder's native
+configuration; see :doc:`preprocessing` and :doc:`encoders` for every option.
 
 3. Train and evaluate
 ~~~~~~~~~~~~~~~~~~~~~
@@ -144,9 +144,14 @@ training, and evaluation with one call:
 
 .. code-block:: python
 
+   from dataclasses import replace
+
+   from hs2p import DEFAULT_MASK_SAMPLING, SegmentationConfig, TilingConfig
+   from slide2vec import PreprocessingConfig
+
    from soma import (
-       AggregatorConfig, EncoderConfig, EvalConfig, Pipeline, PipelineConfig,
-       PreprocessingConfig, TaskConfig, TrainingConfig,
+       AggregatorConfig, EvalConfig, FeaturesConfig, Pipeline, PipelineConfig,
+       TaskConfig, TrainingConfig,
    )
 
    config = PipelineConfig(
@@ -154,11 +159,17 @@ training, and evaluation with one call:
        splits_csv="splits.csv",
        output_root="output",
        dataset_type="slide",
-       preprocessing=PreprocessingConfig(
-           tissue_method="hsv", min_coverage={"tissue": 0.2}, overlap=0.0,
-           requested_spacing_um=0.5, requested_tile_size_px=224,
+       features=FeaturesConfig(
+           encoder="phikon",
+           extraction=PreprocessingConfig(
+               tiling=TilingConfig(
+                   requested_spacing_um=0.5, requested_tile_size_px=224,
+                   tolerance=0.05, overlap=0.0,
+               ),
+               segmentation=SegmentationConfig(method="hsv"),
+               masks=replace(DEFAULT_MASK_SAMPLING, min_coverage={"tissue": 0.2}),
+           ),
        ),
-       encoder=EncoderConfig(name="phikon"),
        aggregator=AggregatorConfig(name="abmil"),
        task=TaskConfig(name="binary_classification"),
        training=TrainingConfig(epochs=5, learning_rate=1e-4, seed=0),

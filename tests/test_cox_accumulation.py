@@ -16,10 +16,11 @@ import torch
 
 from soma.data import CachedSetSource
 from soma.aggregators.registry import aggregator_registry
+from tests.extraction_configs import extraction
 from soma.config import (
     AggregatorConfig,
     PipelineConfig,
-    PreprocessingConfig,
+    FeaturesConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -397,10 +398,7 @@ class TestMILCoxEndToEnd:
             splits_csv=splits_csv,
             output_root=tmp_path / "out",
             dataset_type="slide",
-            preprocessing=PreprocessingConfig(
-                requested_tile_size_px=4,
-                requested_region_size_px=8,
-            ),
+            features=FeaturesConfig(extraction=extraction(0.5, 4, requested_region_size_px=8)),
             aggregator=AggregatorConfig(
                 name="hipt",
                 params={

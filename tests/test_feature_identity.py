@@ -24,7 +24,11 @@ from slide2vec.encoders.registry import encoder_registry
 from torchvision.transforms import v2
 
 from soma.cache import CacheFeatureIdentityMismatch
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
+from hs2p import FilterConfig
+from slide2vec import ExecutionOptions
+
+from soma.config import CacheConfig
+from tests.extraction_configs import extraction, tissue_masks
 from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
 from tests.e2e.synthetic import write_tiff
@@ -174,8 +178,8 @@ def _image_dataset(root: Path, n: int = 4) -> TileDataset:
 def _extract_images(dataset, root: Path, **cache_settings):
     return FeatureExtractor(
         dataset,
-        EncoderConfig(name=STUB_ENCODER, precision="fp32", batch_size=2),
-        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0),
+        STUB_ENCODER,
+        execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=2),
         cache=CacheConfig(enabled=True, root_dir=root / "cache", **cache_settings),
         output_root=root / "run",
         unit="tile",
@@ -536,18 +540,20 @@ def _extract_slides(dataset_csv: Path, root: Path, kind: str, **cache_settings):
     """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``."""
     return FeatureExtractor(
         legacy_samples_from_csv(dataset_csv),
-        EncoderConfig(name=_SLIDE_KINDS[kind], precision="fp32", batch_size=64),
-        PreprocessingConfig(
-            backend="openslide",
-            requested_tile_size_px=32,
-            requested_spacing_um=0.5,
-            tissue_method="otsu",
+        _SLIDE_KINDS[kind],
+        extraction(
+            0.5,
+            32,
+            tiling_fields={"backend": "openslide"},
+            method="otsu",
             seg_downsample=16,
-            a_t=1,
-            min_coverage={"tissue": 0.5},
+            filter=FilterConfig(ref_tile_size=32, a_t=1),
+            masks=tissue_masks(0.5),
             region_tile_multiple=2 if kind == "hierarchical" else None,
         ),
-        execution=ExecutionConfig(num_gpus=1, num_workers_per_gpu=0, num_preprocessing_workers=0),
+        execution=ExecutionOptions(
+            num_gpus=1, num_workers_per_gpu=0, num_preprocessing_workers=0, precision="fp32", batch_size=64
+        ),
         cache=CacheConfig(enabled=True, root_dir=root / "cache", **cache_settings),
         output_root=root / "run",
     ).extract()

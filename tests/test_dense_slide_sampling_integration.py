@@ -20,11 +20,30 @@ import pytest
 
 tifffile = pytest.importorskip("tifffile")
 
-from soma.config import MasksConfig, PreprocessingConfig, SamplingConfig
+import slide2vec
+from hs2p import FilterConfig, MaskSamplingConfig
+
+from tests.extraction_configs import annotation_masks, extraction
 
 TARGET = 64
 SPACING_UM = 0.5
 PIXEL_MAPPING = {"background": 0, "tumor": 1}
+
+
+def _roi_preprocessing(masks: MaskSamplingConfig | None = None, *, spacing_um: float = SPACING_UM):
+    """slide2vec's extraction for ROI sampling: TARGET px at ``spacing_um`` (tolerance
+    0.07) over the given annotation vocabulary (tumor at any coverage by default).
+
+    hs2p drops annotation components no larger than ``a_t`` reference tiles, and an unset
+    filter puts the reference at TARGET; these fixtures annotate 4 tiles or less, so the
+    contour-area filter is off (``a_t=0``)."""
+    return extraction(
+        spacing_um,
+        TARGET,
+        tiling_fields={"tolerance": 0.07},
+        masks=masks if masks is not None else annotation_masks(PIXEL_MAPPING, {"tumor": 0.0}),
+        filter=FilterConfig(ref_tile_size=TARGET, a_t=0),
+    )
 
 
 def _write_pyramidal_tiff(
@@ -79,20 +98,9 @@ def test_sample_slide_rois_runs_real_hs2p_merged_mode(tmp_path: Path):
 
     slide_path, label_mask_path = _make_fixture(tmp_path)
     dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
-    masks = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0})
-    sampling = SamplingConfig(strategy="joint", output_mode="merged")
-    preprocessing = PreprocessingConfig(
-        backend="auto",
-        requested_tile_size_px=TARGET,
-        requested_spacing_um=SPACING_UM,
-        tolerance=0.07,
-        min_coverage={"tissue": 0.0},
-        overlap=0.0,
-    )
+    preprocessing = _roi_preprocessing()
 
-    coords_by_slide = sample_slide_rois(
-        dataset, masks=masks, sampling=sampling, preprocessing=preprocessing
-    )
+    coords_by_slide = sample_slide_rois(dataset, preprocessing=preprocessing)
 
     assert set(coords_by_slide) == {"s0"}
     coords = coords_by_slide["s0"]
@@ -117,20 +125,9 @@ def test_mask_region_read_back_from_fixture(tmp_path: Path):
 
     slide_path, label_mask_path = _make_fixture(tmp_path)
     dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
-    masks = MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0})
-    sampling = SamplingConfig(strategy="joint", output_mode="merged")
-    preprocessing = PreprocessingConfig(
-        backend="auto",
-        requested_tile_size_px=TARGET,
-        requested_spacing_um=SPACING_UM,
-        tolerance=0.07,
-        min_coverage={"tissue": 0.0},
-        overlap=0.0,
-    )
+    preprocessing = _roi_preprocessing()
 
-    coords = sample_slide_rois(
-        dataset, masks=masks, sampling=sampling, preprocessing=preprocessing
-    )["s0"]
+    coords = sample_slide_rois(dataset, preprocessing=preprocessing)["s0"]
     # Read the label window registered to the first sampled ROI.
     x, y = coords[0]
     region = _roi_labels(
@@ -300,35 +297,20 @@ def _make_split_tumor_fixture(root: Path) -> tuple[Path, Path]:
     return slide_path, label_mask_path
 
 
-def _sample_split_tumor(tmp_path: Path, masks: MasksConfig) -> list[tuple[int, int]]:
+def _sample_split_tumor(tmp_path: Path, masks: MaskSamplingConfig) -> list[tuple[int, int]]:
     from soma.dense_slide_extraction import sample_slide_rois
 
     tmp_path.mkdir()
     slide_path, label_mask_path = _make_split_tumor_fixture(tmp_path)
     dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
-    preprocessing = PreprocessingConfig(
-        backend="auto",
-        requested_tile_size_px=TARGET,
-        requested_spacing_um=SPACING_UM,
-        tolerance=0.07,
-        min_coverage={"tissue": 0.0},
-        overlap=0.0,
-    )
-    return sample_slide_rois(
-        dataset,
-        masks=masks,
-        sampling=SamplingConfig(strategy="joint", output_mode="merged"),
-        preprocessing=preprocessing,
-    )["s0"]
+    return sample_slide_rois(dataset, preprocessing=_roi_preprocessing(masks))["s0"]
 
 
 def test_merged_label_samples_a_tile_only_its_summed_coverage_qualifies(tmp_path: Path):
     """#484: a list-valued pixel_mapping entry is one sampling label whose coverage is the
     sum of its values, so a tile 31% value 1 + 31% value 2 passes min_coverage 0.5."""
 
-    merged = MasksConfig(
-        pixel_mapping={"background": 0, "tumor": [1, 2]}, min_coverage={"tumor": 0.5}
-    )
+    merged = annotation_masks({"background": 0, "tumor": [1, 2]}, {"tumor": 0.5})
     coords = _sample_split_tumor(tmp_path / "merged", merged)
     assert coords == [(0, 0)]
 
@@ -344,9 +326,8 @@ def test_merged_label_samples_a_tile_only_its_summed_coverage_qualifies(tmp_path
     )
     assert sorted(np.unique(region).tolist()) == [0, 1, 2]
 
-    separate = MasksConfig(
-        pixel_mapping={"background": 0, "tumor_a": 1, "tumor_b": 2},
-        min_coverage={"tumor_a": 0.5, "tumor_b": 0.5},
+    separate = annotation_masks(
+        {"background": 0, "tumor_a": 1, "tumor_b": 2}, {"tumor_a": 0.5, "tumor_b": 0.5}
     )
     assert _sample_split_tumor(tmp_path / "separate", separate) == []
 
@@ -444,10 +425,7 @@ def test_stored_roi_mask_crop_is_the_in_slide_part_of_the_window_read(
     write_roi_mask_crops(
         [record],
         spacing_um_by_sample_id={record.sample_id: SPACING_UM},
-        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-        preprocessing=PreprocessingConfig(
-            backend="auto", requested_tile_size_px=TARGET, requested_spacing_um=SPACING_UM
-        ),
+        preprocessing=_roi_preprocessing(),
     )
 
     labels, inside = read_mask_region_within_slide(
@@ -492,10 +470,7 @@ def test_roi_with_no_in_slide_pixel_stores_an_all_outside_crop(tmp_path: Path):
     write_roi_mask_crops(
         [record],
         spacing_um_by_sample_id={record.sample_id: spacing_um},
-        masks=MasksConfig(pixel_mapping=PIXEL_MAPPING, min_coverage={"tumor": 0.0}),
-        preprocessing=PreprocessingConfig(
-            backend="auto", requested_tile_size_px=TARGET, requested_spacing_um=spacing_um
-        ),
+        preprocessing=_roi_preprocessing(spacing_um=spacing_um),
     )
 
     live_labels, live_inside = read_mask_region_within_slide(

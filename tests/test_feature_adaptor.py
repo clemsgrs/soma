@@ -1338,9 +1338,9 @@ def test_dense_pca_preflight_fires_when_the_support_rois_have_too_few_positions(
         )
 
 
-def test_config_rejects_the_adaptor_together_with_feature_mode_live(tmp_path: Path):
+def test_config_rejects_the_adaptor_together_with_live_features(tmp_path: Path):
     """The same refusal at config-validation time, so the run never starts."""
-    from soma.config import DecoderConfig, PipelineConfig
+    from soma.config import DecoderConfig, FeaturesConfig, PipelineConfig
 
     def _config(**adaptor):
         return PipelineConfig(
@@ -1348,7 +1348,7 @@ def test_config_rejects_the_adaptor_together_with_feature_mode_live(tmp_path: Pa
             splits_csv=tmp_path / "splits.csv",
             output_root=tmp_path / "out",
             dataset_type="segmentation",
-            feature_mode="live",
+            features=FeaturesConfig(kind="live"),
             decoder=DecoderConfig(name="lightweight_conv"),
             task=TaskConfig(name="segmentation", params={"num_classes": 2}),
             **adaptor,
@@ -1359,7 +1359,7 @@ def test_config_rejects_the_adaptor_together_with_feature_mode_live(tmp_path: Pa
     with pytest.raises(ValueError, match="requires feature_mode='cached'"):
         _config(projection=ProjectionConfig(method="random", target_dim=2))
     # ...and the default (both off) is untouched by the guard.
-    assert _config().feature_mode == "live"
+    assert _config().features.kind == "live"
 
 
 _DETECTION_SPACING = 0.2  # µm/px; match_distance 0.6 µm -> 3 target-frame px
@@ -1427,7 +1427,9 @@ def _run_detection_fold(
     feature_dim: int = _DENSE_DIM,
     source=None,
 ):
-    from soma.config import DecoderConfig, PreprocessingConfig
+    from slide2vec import DenseOptions
+
+    from soma.config import DecoderConfig, FeaturesConfig
 
     data = tmp_path / "data"
     if not data.exists():
@@ -1441,7 +1443,7 @@ def _run_detection_fold(
         task=_DETECTION_TASK,
         training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=2, pin_memory=False),
         decoder=DecoderConfig(name="lightweight_conv"),
-        preprocessing=PreprocessingConfig(requested_spacing_um=_DETECTION_SPACING),
+        features=FeaturesConfig(dense=DenseOptions(spacing_um=_DETECTION_SPACING, target_size=16)),
         normalization=normalization or NormalizationConfig(),
         projection=projection or ProjectionConfig(),
     )
@@ -1613,22 +1615,17 @@ def test_a_bundle_rebuilds_a_registered_user_head_with_the_run_task_params(
 
 
 def _dense_pipeline_config(tmp_path: Path, **adaptor):
-    from soma.config import (
-        DecoderConfig,
-        EncoderConfig,
-        PipelineConfig,
-        PreprocessingConfig,
-    )
+    from soma.config import DecoderConfig, FeaturesConfig, PipelineConfig
+    from tests.extraction_configs import extraction
 
     return PipelineConfig(
         dataset_csv=tmp_path / "manifest.csv",
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "out",
         dataset_type="segmentation",
-        preprocessing=PreprocessingConfig(
-            backend="asap", requested_spacing_um=0.5, requested_tile_size_px=224
+        features=FeaturesConfig(
+            encoder="phikon", extraction=extraction(0.5, 224, tiling_fields={"backend": "asap"})
         ),
-        encoder=EncoderConfig(name="phikon"),
         decoder=DecoderConfig(name="lightweight_conv"),
         task=TaskConfig(name="segmentation", params={"num_classes": 2}),
         **adaptor,
@@ -1663,16 +1660,14 @@ def test_dense_adaptor_leaves_the_feature_extraction_cache_key_untouched(tmp_pat
         projection=ProjectionConfig(method="random", target_dim=64),
     )
 
+    from soma.preprocessing.resolution import resolve_pipeline_dense
+
     def key(config):
         return build_dense_cache_key(
-            tile_encoder_name=config.encoder.name,
-            target_size=(224, 224),
+            tile_encoder_name=config.features.encoder.name,
             patch_size=(16, 16),
-            pad_mode="reflect",
-            execution=config.encoder,
-            preprocessing=config.preprocessing,
-            window_size=None,
-            overlap=0.0,
+            dense=resolve_pipeline_dense(config),
+            execution=config.features.execution,
         )
 
     assert key(off) == key(on)

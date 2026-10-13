@@ -39,11 +39,12 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+from slide2vec import ExecutionOptions
+
 from soma import (
     CacheConfig,
-    EncoderConfig,
     EvalConfig,
-    ExecutionConfig,
+    FeaturesConfig,
     PipelineConfig,
     TaskConfig,
     TrainingConfig,
@@ -107,7 +108,12 @@ def build_config(
         splits_csv=str(splits_csv),
         output_root=Path(output_root),
         dataset_type="tile",
-        encoder=EncoderConfig(name=encoder),
+        features=FeaturesConfig(
+            encoder=encoder,
+            cache=cache,
+            # The dataset is tiny: skip dataloader worker processes.
+            execution=ExecutionOptions(num_workers_per_gpu=0),
+        ),
         task=TaskConfig(name="binary_classification"),
         evaluation=EvalConfig(metrics=["balanced_accuracy"]),
         training=TrainingConfig(
@@ -118,9 +124,6 @@ def build_config(
             pin_memory=False,
             persistent_workers=False,
         ),
-        cache=cache,
-        # The dataset is tiny: skip dataloader worker processes.
-        execution=ExecutionConfig(num_workers_per_gpu=0),
     )
 
 

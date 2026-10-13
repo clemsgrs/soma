@@ -43,7 +43,6 @@ requirements.
        AggregatorConfig,
        CacheConfig,
        Cohort,
-       EncoderConfig,
        FeatureExtractor,
        ImageManifest,
        Pipeline,
@@ -58,12 +57,11 @@ requirements.
    images = ImageManifest.from_csv("dataset.csv")
    # Extraction still reads one joined record per sample (see ``soma.data._legacy``).
    dataset = records_for_pipeline(cohort, images)
-   encoder = EncoderConfig(name="uni2")
    cache = CacheConfig(enabled=True, root_dir="shared/feature_cache")
 
    extractor = FeatureExtractor(
        dataset=dataset,
-       encoder=encoder,
+       encoder="uni2",
        cache=cache,
        output_root="output",
    )
@@ -115,28 +113,25 @@ Dense features over given images
 
 Dense extraction is an extraction setting, not a manifest kind: ``shape="grid"``
 asks for token grids and ``unit="tile"`` says each row is a pre-cropped image.
-Geometry remains part of ``PreprocessingConfig``:
+The grid recipe is slide2vec's ``DenseOptions`` (read spacing, supervision size,
+padding, window, feature kind); batch size and precision are slide2vec's
+``ExecutionOptions``:
 
 .. code-block:: python
 
-   from soma import (
-       CacheConfig,
-       EncoderConfig,
-       FeatureExtractor,
-       PreprocessingConfig,
-   )
+   from slide2vec import DenseOptions, ExecutionOptions
+
+   from soma import CacheConfig, FeatureExtractor
    from soma.data._legacy import legacy_samples_from_csv
 
    dataset = legacy_samples_from_csv("segmentation.csv")
    features = FeatureExtractor(
        dataset,
-       EncoderConfig(name="phikon", batch_size=64),
+       "phikon",
        shape="grid",
        unit="tile",
-       preprocessing=PreprocessingConfig(
-           requested_tile_size_px=224,
-           requested_spacing_um=0.5,
-       ),
+       dense=DenseOptions(spacing_um=0.5, target_size=224),
+       execution=ExecutionOptions(batch_size=64),
        cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
        output_root="output/dense",
    ).extract()
@@ -148,37 +143,35 @@ Annotation-sampled whole slides
 -------------------------------
 
 A table of whole-slide image and annotation paths becomes an annotation-sampled
-grid extraction when masks and sampling are configured (``shape="grid"`` over
-whole slides). The result's dataset is the persisted ROI table; parent-slide folds
-are projected explicitly:
+grid extraction when the preprocessing carries an annotation vocabulary (hs2p's
+``MaskSamplingConfig``) and ``shape="grid"`` runs over whole slides. The result's
+dataset is the persisted ROI table; parent-slide folds are projected explicitly:
 
 .. code-block:: python
 
-   from soma import (
-       CacheConfig,
-       Cohort,
-       EncoderConfig,
-       FeatureExtractor,
-       MasksConfig,
-       PreprocessingConfig,
-       SamplingConfig,
-   )
+   from hs2p import MaskSamplingConfig, SegmentationConfig, TilingConfig
+   from slide2vec import PreprocessingConfig
+
+   from soma import CacheConfig, Cohort, FeatureExtractor
    from soma.data._legacy import LegacyFolds, legacy_samples_from_csv
 
    slides = legacy_samples_from_csv("slides.csv")
    slide_splits = LegacyFolds.from_cohort(Cohort.from_csv("slides.csv", "splits.csv"))
    features = FeatureExtractor(
        slides,
-       EncoderConfig(name="phikon"),
+       "phikon",
        shape="grid",
        preprocessing=PreprocessingConfig(
-           requested_tile_size_px=512,
-           requested_spacing_um=0.5,
-           masks=MasksConfig(
+           tiling=TilingConfig(
+               requested_spacing_um=0.5, requested_tile_size_px=512, tolerance=0.05, overlap=0.0
+           ),
+           segmentation=SegmentationConfig(method="hsv"),
+           masks=MaskSamplingConfig(
                pixel_mapping={"background": 0, "tumor": 1},
                min_coverage={"tumor": 0.1},
+               strategy="joint",
+               output_mode="merged",
            ),
-           sampling=SamplingConfig(strategy="joint", output_mode="merged"),
        ),
        cache=CacheConfig(enabled=True, root_dir="shared/feature_cache"),
        output_root="output/annotation-rois",

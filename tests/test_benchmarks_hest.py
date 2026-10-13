@@ -66,8 +66,8 @@ def test_build_config_encodes_the_probe_recipe(tmp_path):
     assert config.dataset_type == "tile"
     assert config.task.name == "regression"
     assert config.task.params["pca_components"] == 256  # PCA latent dim
-    assert config.encoder.name == "uni2"
-    assert config.encoder.output_variant is None  # uni2 uses the slide2vec default
+    assert config.features.encoder.name == "uni2"
+    assert config.features.encoder.output_variant is None  # uni2 uses the slide2vec default
     assert config.evaluation.metrics == ["mean_pearson"]
     assert config.training.seed == 3
 
@@ -147,7 +147,7 @@ def test_build_config_defaults_to_uni2(tmp_path):
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "runs",
     )
-    assert config.encoder.name == hest.DEFAULT_ENCODER == "uni2"
+    assert config.features.encoder.name == hest.DEFAULT_ENCODER == "uni2"
 
 
 def test_build_config_pins_virchow2_cls_patch_mean_variant(tmp_path):
@@ -165,9 +165,9 @@ def test_build_config_pins_virchow2_cls_patch_mean_variant(tmp_path):
         output_root=tmp_path / "runs",
         seed=3,
     )
-    assert config.encoder.name == "virchow2"
+    assert config.features.encoder.name == "virchow2"
     # HEST's virchow2 is the 2560-d CLS+mean concat; the 1280-d CLS-only variant would not match.
-    assert config.encoder.output_variant == "cls_patch_mean"
+    assert config.features.encoder.output_variant == "cls_patch_mean"
     # Everything else stays the fixed HEST probe recipe (identical to the uni2 build).
     assert config.dataset_type == "tile"
     assert config.task.name == "regression"
@@ -187,8 +187,8 @@ def test_build_config_h_optimus_1_uses_slide2vec_default_variant(tmp_path):
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "runs",
     )
-    assert config.encoder.name == "h-optimus-1"
-    assert config.encoder.output_variant is None  # slide2vec default (CLS, 1536-d)
+    assert config.features.encoder.name == "h-optimus-1"
+    assert config.features.encoder.output_variant is None  # slide2vec default (CLS, 1536-d)
     assert config.dataset_type == "tile"
 
 
@@ -214,8 +214,8 @@ def test_build_config_pins_hest_tile_geometry(tmp_path):
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "runs",
     )
-    assert config.preprocessing.requested_tile_size_px == 224
-    assert config.preprocessing.requested_spacing_um == pytest.approx(0.5)
+    assert config.features.extraction.tiling.requested_tile_size_px == 224
+    assert config.features.extraction.tiling.requested_spacing_um == pytest.approx(0.5)
 
 
 @pytest.mark.parametrize("encoder", ["uni2", "virchow2", "h-optimus-1"])
@@ -234,9 +234,11 @@ def test_build_config_resolves_preprocessing_for_every_reproduction_encoder(enco
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "runs",
     )
-    resolved = resolve_preprocessing_config(config.encoder, config.preprocessing)
-    assert resolved.requested_spacing_um == pytest.approx(0.5)
-    assert resolved.requested_tile_size_px == 224
+    resolved = resolve_preprocessing_config(
+        config.features.extraction, encoder_name=config.features.encoder.name
+    )
+    assert resolved.tiling.requested_spacing_um == pytest.approx(0.5)
+    assert resolved.tiling.requested_tile_size_px == 224
 
 
 def test_build_config_applies_cache_overrides(tmp_path):
@@ -247,8 +249,8 @@ def test_build_config_applies_cache_overrides(tmp_path):
         output_root=tmp_path / "runs",
         overrides={"cache": {"enabled": True, "root_dir": str(tmp_path / "cache")}},
     )
-    assert config.cache.enabled is True
-    assert str(config.cache.root_dir) == str(tmp_path / "cache")
+    assert config.features.cache.enabled is True
+    assert str(config.features.cache.root_dir) == str(tmp_path / "cache")
 
 
 def test_build_config_rejects_unknown_encoder(tmp_path):

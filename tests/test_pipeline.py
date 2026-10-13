@@ -15,16 +15,18 @@ import pytest
 import yaml
 from rich.console import Console
 
+import slide2vec
+
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
-    EncoderConfig,
     EvalConfig,
+    FeaturesConfig,
     PipelineConfig,
-    PreprocessingConfig as _PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
+from tests.extraction_configs import annotation_masks, extraction
 from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 from soma.evaluation import Predictions
 from soma.data import CachedSetSource
@@ -45,15 +47,6 @@ from soma.pipeline.console import build_completed_run_panel
 D = 16
 NUM_SAMPLES = 8
 FIXED_RUN_ID = "2026-04-09_16-22-10__local"
-_TISSUE_METHOD_SENTINEL = object()
-
-
-def PreprocessingConfig(*args, tissue_method=_TISSUE_METHOD_SENTINEL, **kwargs):
-    if tissue_method is _TISSUE_METHOD_SENTINEL:
-        kwargs.setdefault("tissue_method", "hsv")
-    else:
-        kwargs["tissue_method"] = tissue_method
-    return _PreprocessingConfig(*args, **kwargs)
 
 
 def _expected_run_dir(config: PipelineConfig) -> Path:
@@ -227,19 +220,14 @@ class TestCompletedRunPanel:
 
 class TestPipeline:
     def test_pooled_mask_config_can_read_preextracted_features(self, tmp_path: Path):
-        from soma.config import MasksConfig
-
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         config = PipelineConfig(
             dataset_csv=dataset_csv,
             splits_csv=splits_csv,
             output_root=tmp_path / "output",
             dataset_type="slide",
-            preprocessing=PreprocessingConfig(
-                masks=MasksConfig(
-                    pixel_mapping={"tumor": 1},
-                    min_coverage={"tumor": 0.5},
-                )
+            features=FeaturesConfig(
+                extraction=extraction(None, None, masks=annotation_masks({"tumor": 1}, {"tumor": 0.5}))
             ),
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="binary_classification"),
@@ -609,12 +597,9 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             dataset_type="slide",
-            encoder=EncoderConfig(name="uni2"),
-            preprocessing=PreprocessingConfig(
-                requested_tile_size_px=224,
-                requested_spacing_um=0.5,
-                requested_region_size_px=448,
-                region_tile_multiple=2,
+            features=FeaturesConfig(
+                encoder="uni2",
+                extraction=extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
             ),
             aggregator=AggregatorConfig(
                 name="hipt",
@@ -644,8 +629,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=tmp_path / "output_resolve",
             dataset_type="slide",
-            encoder=EncoderConfig(name="uni2"),
-            preprocessing=PreprocessingConfig(requested_spacing_um=0.5),
+            features=FeaturesConfig(encoder="uni2", extraction=slide2vec.PreprocessingConfig()),
             aggregator=AggregatorConfig(name="hipt", params={"tile_multiple": 6}),
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
@@ -654,11 +638,9 @@ class TestPipeline:
 
         resolved = resolve_pipeline_preprocessing(config)
 
-        assert resolved.requested_tile_size_px == 224
-        assert resolved.read_tile_size_px == 224
+        assert resolved.tiling.requested_tile_size_px == 224
         assert resolved.region_tile_multiple == 6
         assert resolved.requested_region_size_px == 1344
-        assert resolved.read_region_size_px == 1344
 
     def test_run_auto_extracts_slide_features_without_feature_dir(self, tmp_path: Path):
         pytest.importorskip("soma.extraction")
@@ -680,7 +662,7 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=output_root,
             dataset_type="slide",
-            encoder=EncoderConfig(name="prism"),
+            features=FeaturesConfig(encoder="prism"),
             aggregator=None,
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
@@ -847,9 +829,11 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=tmp_path / "slide_run",
             dataset_type="slide",
-            preprocessing=PreprocessingConfig(),
-            cache=CacheConfig(root_dir=shared_cache),
-            encoder=EncoderConfig(name=test_slide),
+            features=FeaturesConfig(
+                encoder=test_slide,
+                extraction=extraction(None, None),
+                cache=CacheConfig(root_dir=shared_cache),
+            ),
             aggregator=None,
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),
@@ -859,9 +843,11 @@ class TestPipeline:
             splits_csv=splits_csv,
             output_root=tmp_path / "tile_run",
             dataset_type="slide",
-            preprocessing=PreprocessingConfig(),
-            cache=CacheConfig(root_dir=shared_cache),
-            encoder=EncoderConfig(name=test_tile),
+            features=FeaturesConfig(
+                encoder=test_tile,
+                extraction=extraction(None, None),
+                cache=CacheConfig(root_dir=shared_cache),
+            ),
             aggregator=AggregatorConfig(name="mean_pool"),
             task=TaskConfig(name="binary_classification"),
             training=TrainingConfig(epochs=2, patience=10, batch_size=2),

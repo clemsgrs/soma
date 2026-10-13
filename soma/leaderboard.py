@@ -47,13 +47,13 @@ _MISSING = object()
 # Friendly axis names -> dotted path into a run's canonical_spec. Any other axis name is
 # treated as a raw dotted path, so arbitrary config fields can be fixed/varied too.
 _AXIS_ALIASES: dict[str, str] = {
-    "encoder": "encoder.name",
+    "encoder": "features.encoder.name",
     "aggregator": "aggregator.name",
     "decoder": "decoder.name",
     "task": "task.name",
-    "spacing": "preprocessing.requested_spacing_um",
+    "spacing": "features.extraction.tiling.requested_spacing_um",
     "dataset_type": "dataset_type",
-    "feature_mode": "feature_mode",
+    "feature_mode": "features.kind",
 }
 
 # Summary keys that are provenance bookkeeping, not a rankable metric (mirror the run
@@ -77,8 +77,7 @@ def axis_value(spec: dict[str, Any], axis: str) -> Any:
     """Resolve ``axis`` against a run's ``canonical_spec`` (alias or raw dotted path).
 
     Returns :data:`_MISSING` when the path does not exist (e.g. a benchmark facet fixes a
-    non-config axis like ``matcher``, or the encoder is a composite so ``encoder.name`` is
-    absent). Callers treat :data:`_MISSING` as "cannot constrain / cannot vary here".
+    non-config axis like ``matcher``). Callers treat :data:`_MISSING` as "cannot constrain / cannot vary here".
     """
     path = _AXIS_ALIASES.get(axis, axis)
     cursor: Any = spec

@@ -9,11 +9,13 @@ import pytest
 import torch
 
 from soma import cache as cache_mod
-from soma.config import CacheConfig, EncoderConfig, PreprocessingConfig
+from soma.config import CacheConfig, EncoderLeaf
+from soma.encoders.validation import resolve_preprocessing_config
+from tests.extraction_configs import extraction
 from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import orchestration
 from soma.extraction.extractor import _PooledFeatureExtractor
-from soma.slide2vec_adapter import LoadedTiling, build_preprocessing_config
+from soma.slide2vec_adapter import LoadedTiling
 from tests.test_extraction import (
     _TEST_TILE,
     _artifact,
@@ -69,16 +71,13 @@ def population(tmp_path, request):
         ]
     ).to_csv(csv, index=False)
     dataset = legacy_samples_from_csv(csv)
-    preprocessing = PreprocessingConfig(
-        tissue_method="hsv",
-        requested_tile_size_px=224,
-        requested_spacing_um=0.5,
-        requested_region_size_px=448,
-        region_tile_multiple=2,
+    preprocessing = resolve_preprocessing_config(
+        extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
+        encoder_name=_TEST_TILE,
     )
     extractor = _PooledFeatureExtractor(
         dataset,
-        EncoderConfig(name=_TEST_TILE),
+        EncoderLeaf(name=_TEST_TILE),
         preprocessing,
         cache=CacheConfig(root_dir=tmp_path / "cache"),
         output_root=tmp_path / "out",
@@ -90,7 +89,7 @@ def population(tmp_path, request):
             dataset=dataset,
             tile_encoder_name=_TEST_TILE,
             preprocessing=preprocessing,
-            execution=EncoderConfig(name=_TEST_TILE),
+            execution=extractor._execution,
             output_variant="default",
             backend_provenance={
                 "requested_backend": "openslide",
@@ -111,7 +110,7 @@ def population(tmp_path, request):
             loaded_tilings=loaded,
             prepared_tilings=[item.tiling_result for item in loaded],
             tiling_dir=tmp_path / "tiling",
-            preprocessing=build_preprocessing_config(preprocessing),
+            preprocessing=preprocessing,
             encoder_name=_TEST_TILE,
             output_variant="default",
             num_gpus=4,

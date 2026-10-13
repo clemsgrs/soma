@@ -19,12 +19,13 @@ patch-aligned windows and blends the token grids.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import os
 from contextlib import contextmanager
 from pathlib import Path
 
-from slide2vec.api import DenseImageOptions, ImageSpec, Model
+from slide2vec import DenseImageOptions, DenseOptions, ExecutionOptions, ImageSpec, Model
 from slide2vec.encoders.registry import resolve_patch_size
 
 from soma.cache import (
@@ -36,7 +37,7 @@ from soma.cache import (
     resolve_dense_cache,
     resolve_cache_dtype,
 )
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
+from soma.config import CacheConfig, EncoderLeaf
 from soma.data._legacy import LegacySamples
 from soma.dense import (
     DENSE_IMAGE_PAYLOAD_SUBDIR,
@@ -45,7 +46,7 @@ from soma.dense import (
     normalize_hw,
 )
 from soma.dense.sliding import describe_dense_mode
-from soma.slide2vec_adapter import build_execution_options
+from soma.slide2vec_adapter import execution_options
 
 logger = logging.getLogger(__name__)
 
@@ -99,101 +100,39 @@ class _DenseImageExtractor:
         dataset: LegacySamples whose ``image_path`` fields point to tile images. One
             extraction run must contain either raster images or spacing-readable
             pyramidal images, not a mixture; split mixed manifests into separate runs.
-        encoder: Encoder configuration. For encoders that recommend
-            ``dynamic_img_size=False`` (H-optimus), set
-            ``allow_non_recommended_settings=True`` to opt into the variable input
-            size dense extraction needs.
-        target_size: The supervision tile/mask size (int or ``(h, w)``). Fixed per
-            run (v1).
-        pad_mode: How to pad up to the patch multiple — ``"reflect"`` (default, no
-            out-of-distribution constant region), ``"constant"``/``"zero"``, or
-            ``"replicate"``.
+        encoder: The encoder leaf. For encoders that recommend ``dynamic_img_size=False``
+            (H-optimus), set ``allow_non_recommended_settings`` in its params to opt into
+            the variable input size dense extraction needs.
+        dense: slide2vec's ``DenseOptions``: the read spacing, the supervision
+            ``target_size``, padding, window and feature kind. They are handed to
+            :meth:`slide2vec.Model.embed_images_dense` as its ``DenseImageOptions`` (the
+            same fields) and keyed field by field.
+        execution: slide2vec's ``ExecutionOptions`` (batch size, precision, GPUs).
     """
 
     def __init__(
         self,
         dataset: LegacySamples,
-        encoder: EncoderConfig,
+        encoder: EncoderLeaf,
         *,
-        target_size: int | tuple[int, int],
-        spacing_um: float,
-        backend: str = "auto",
-        tolerance: float = 0.05,
-        pad_mode: str = "reflect",
-        window_size: int | None = None,
-        overlap: float = 0.0,
-        execution: ExecutionConfig = ExecutionConfig(),
+        dense: DenseOptions,
+        execution: ExecutionOptions | None = None,
         cache: CacheConfig | None = None,
-        preprocessing: PreprocessingConfig | None = None,
     ) -> None:
-        if pad_mode not in _PAD_MODES:
-            raise ValueError(f"unsupported pad_mode {pad_mode!r}; expected one of {sorted(_PAD_MODES)}")
-        if window_size is not None and int(window_size) <= 0:
-            raise ValueError(f"window_size must be a positive int or None, got {window_size!r}")
-        if not (0.0 <= float(overlap) < 1.0):
-            raise ValueError(f"overlap must be in [0, 1), got {overlap!r}")
+        if dense.pad_mode not in _PAD_MODES:
+            raise ValueError(
+                f"unsupported pad_mode {dense.pad_mode!r}; expected one of {sorted(_PAD_MODES)}"
+            )
         self._dataset = dataset
         self._encoder = encoder
-        self._target_size = normalize_hw(target_size, name="target_size")
-        self._spacing_um = float(spacing_um)
-        self._backend = backend
-        self._tolerance = float(tolerance)
-        self._pad_mode = pad_mode
-        self._window_size = None if window_size is None else int(window_size)
-        self._overlap = float(overlap)
-        self._dense_input_mode = "whole" if window_size is None else "sliding_window"
-        self._execution = execution
+        self._options = image_options(dense)
+        self._target_size = normalize_hw(dense.target_size, name="target_size")
+        self._execution = execution if execution is not None else ExecutionOptions()
         self._cache = cache or CacheConfig(enabled=False)
-        # The run's preprocessing identity (spacing/tolerance/backend/tile size) is
-        # folded into the dense cache key — so grids read at different spacings can
-        # never alias to one cache entry (mirrors the pooled/bag tile path).
-        self._preprocessing = preprocessing
-        # feature_kind + attention knobs (design — attention-pixel segmentation §7).
-        # patch_features → the ViT patch grid; cls_attention → per-head prefix-token
-        # self-attention. slide2vec picks the per-window encode from this.
-        self._feature_kind = (
-            (preprocessing.feature_kind or "patch_features")
-            if preprocessing is not None
-            else "patch_features"
-        )
-        if preprocessing is not None and self._feature_kind == "cls_attention":
-            self._attention_blocks = tuple(preprocessing.attention.blocks)
-            self._attention_include_registers = bool(preprocessing.attention.include_registers)
-        else:
-            self._attention_blocks = (-1,)
-            self._attention_include_registers = False
-
-    def _image_pad_value(self) -> float | None:
-        # Only meaningful for constant/zero padding; None (N/A) for reflect/replicate.
-        return 0.0 if self._pad_mode in ("constant", "zero") else None
 
     def _dense_options(self) -> DenseImageOptions:
-        """The read + encode recipe handed to slide2vec.
-
-        ``target_size`` is passed as an ``int`` when square so the option object is
-        spelled the way a square run reads, and as ``(h, w)`` otherwise; slide2vec treats
-        it as a strict post-read declaration either way — it never resizes to fit.
-        """
-        height, width = self._target_size
-        return DenseImageOptions(
-            target_size=int(height) if height == width else (int(height), int(width)),
-            # soma always states a spacing (the pipeline requires one for a dense run), so
-            # slide2vec's ``None`` behaviour — resolve the encoder's registry default for a
-            # spacing-readable source — is unreachable from soma's config surface.
-            spacing_um=self._spacing_um,
-            tolerance=self._tolerance,
-            backend=self._backend,
-            pad_mode=self._pad_mode,
-            image_pad_value=self._image_pad_value(),
-            # window_size=None ⇒ one whole-image forward; a smaller window slides the
-            # encoder over patch-aligned windows of each padded image and blends the grids.
-            # Sliding is required for encoders that only accept their native input size.
-            window_size=self._window_size,
-            overlap=self._overlap,
-            feature_kind=self._feature_kind,
-            attention_blocks=self._attention_blocks,
-            attention_include_registers=self._attention_include_registers,
-        )
+        """The read + encode recipe handed to slide2vec (strict post-read ``target_size``)."""
+        return self._options
 
     def cache_dir(self, feature_dir: str | Path | None = None) -> Path | None:
         """The dense-image cache dir (``cache_root/dense_image/<key>``) this run uses.
@@ -208,33 +147,23 @@ class _DenseImageExtractor:
         ``build_dense_cache_key`` is the single source of truth for both, and the
         ``cache_root / "dense_image" / key`` layout mirrors ``_resolve_cache`` — so an offline
         re-scorer can address the *exact* grids this run trained on rather than guessing
-        among sibling cache-key dirs (an empty orphan from a since-changed key looks just
-        like the real one to a blind glob). ``feature_dir`` is consulted only when
-        ``cache.root_dir`` is unset (then the root is its parent ``feature_cache/``);
-        the pipeline always sets ``root_dir`` for dense runs, so it is usually moot.
+        among sibling cache-key dirs. ``feature_dir`` is consulted only when
+        ``cache.root_dir`` is unset (then the root is its parent ``feature_cache/``).
         """
         if not self._cache.enabled:
             return None
         patch_size = resolve_patch_size(self._encoder.name)
         dense_dtype = resolve_cache_dtype(
-            self._cache.dtype, self._encoder, encoder_name=self._encoder.name
+            self._cache.dtype, self._execution, encoder_name=self._encoder.name
         )
         cache_root = resolve_cache_root(
             self._cache, feature_dir=feature_dir if feature_dir is not None else Path.cwd()
         )
         key = build_dense_cache_key(
             tile_encoder_name=self._encoder.name,
-            target_size=self._target_size,
             patch_size=patch_size,
-            pad_mode=self._pad_mode,
-            execution=self._encoder,
-            preprocessing=self._preprocessing,
-            dense_input_mode=self._dense_input_mode,
-            window_size=self._window_size,
-            overlap=self._overlap,
-            feature_kind=self._feature_kind,
-            attention_blocks=self._attention_blocks,
-            attention_include_registers=self._attention_include_registers,
+            dense=self._options,
+            execution=self._execution,
             dtype=dense_dtype,
         )
         return cache_root / "dense_image" / key
@@ -254,15 +183,15 @@ class _DenseImageExtractor:
         # Announce the resolved dense-input mode before the cache check, so it shows on a
         # cache hit too (extraction only runs on a miss).
         logger.info(
-            "Dense extraction mode: %s", describe_dense_mode(self._window_size, self._overlap)
+            "Dense extraction mode: %s",
+            describe_dense_mode(self._options.window_size, self._options.overlap),
         )
 
         # Resolve the grid storage dtype from the shared cache.dtype umbrella (#164):
         # None ⇒ follow the compute precision; 'fp16'/'fp32' force it. Folded into the cache
-        # key (guarded so fp32 keys stay byte-stable) and handed to slide2vec as the write
-        # dtype, so storage matches the key.
+        # key and handed to slide2vec as the write dtype, so storage matches the key.
         dense_dtype = resolve_cache_dtype(
-            self._cache.dtype, self._encoder, encoder_name=self._encoder.name
+            self._cache.dtype, self._execution, encoder_name=self._encoder.name
         )
         logger.info("Dense grid storage dtype resolved to %s", dense_dtype)
 
@@ -275,24 +204,16 @@ class _DenseImageExtractor:
                 cache_root=cache_root,
                 dataset=self._dataset,
                 tile_encoder_name=self._encoder.name,
-                target_size=self._target_size,
                 patch_size=patch_size,
-                pad_mode=self._pad_mode,
-                execution=self._encoder,
-                preprocessing=self._preprocessing,
-                dense_input_mode=self._dense_input_mode,
-                window_size=self._window_size,
-                overlap=self._overlap,
-                feature_kind=self._feature_kind,
-                attention_blocks=self._attention_blocks,
-                attention_include_registers=self._attention_include_registers,
+                dense=self._options,
+                execution=self._execution,
                 dtype=dense_dtype,
                 validate_payloads=self._cache.validate_payloads,
                 cache_kind="dense_image",
                 extraction_geometry=dense_extraction_geometry(
                     encoder_name=self._encoder.name,
                     target_size_px=self._target_size,
-                    window_size=self._window_size,
+                    window_size=self._options.window_size,
                 ),
             )
             payload_dir = cache_resolution.features_dir
@@ -319,16 +240,11 @@ class _DenseImageExtractor:
             records = [record for record in records if record.sample_id in wanted]
 
         with _dense_extract_lock():
-            model = Model.from_preset(
-                self._encoder.name,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            )
-            execution = build_execution_options(
-                self._encoder,
-                execution=self._execution,
+            model = Model.from_preset(self._encoder.name, **self._encoder.params)
+            execution = execution_options(
+                self._execution,
                 encoder_name=self._encoder.name,
                 output_dir=out_root,
-                num_gpus=self._execution.num_gpus,
                 save_tile_embeddings=True,
                 # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved
                 # value, so the on-disk grid is cast to exactly the dtype folded into the
@@ -368,3 +284,11 @@ class _DenseImageExtractor:
                 validate_payloads=self._cache.validate_payloads,
             )
         return CachedGridSource(payload_dir)
+
+
+def image_options(dense: DenseOptions) -> DenseImageOptions:
+    """slide2vec's ``DenseImageOptions`` with every field of ``dense`` (the two share
+    their fields; the image route reads each image whole instead of at a region)."""
+    return DenseImageOptions(
+        **{field.name: getattr(dense, field.name) for field in dataclasses.fields(DenseOptions)}
+    )

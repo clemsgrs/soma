@@ -35,7 +35,7 @@ from soma.pipeline.layout import (
     test_identity_digest,
 )
 from soma.pipeline.representation import run_representation
-from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 __all__ = ["Pipeline", "PipelineResult"]
 
@@ -172,9 +172,14 @@ class Pipeline:
             run_dir=layout.run_dir,
         )
         preprocessing = resolve_pipeline_preprocessing(config)
+        dense = None
+        if extraction_shape(config.dataset_type) == "grid":
+            dense = config.features.dense
+            if dense is None and preprocessing.tiling is not None:
+                dense = resolve_pipeline_dense(config)
         Console().print(
             build_run_summary_panel(
-                encoder=config.encoder,
+                encoder=config.features.encoder,
                 preprocessing=preprocessing,
                 aggregator=config.aggregator,
                 task=config.task,
@@ -195,12 +200,13 @@ class Pipeline:
             run_dir=layout.run_dir,
             source_identity=source_identity(context.source),
             encoder_stage=context.encoder_stage,
+            dense=dense,
             roi_population_cache_root=(
                 resolve_cache_root(
-                    config.cache, feature_dir=layout.run_dir / "features", output_root=config.output_root
+                    config.features.cache, feature_dir=layout.run_dir / "features", output_root=config.output_root
                 )
                 / "segmentation_roi_population"
-                if config.cache.enabled
+                if config.features.cache.enabled
                 else layout.run_dir / "segmentation_roi_population"
             ),
         )
@@ -273,7 +279,7 @@ class Pipeline:
             feature_store=inputs.source,
             tiling_dir=run_dir / "tiling",
             heatmap_config=self._config.heatmaps,
-            seg_downsample=self._config.preprocessing.seg_downsample,
+            seg_downsample=self._config.features.extraction.segmentation.downsample,
         )
 
 

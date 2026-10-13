@@ -51,7 +51,6 @@ def test_hs2p_4_tiling_cache_loads_under_hs2p_5(tmp_path: Path):
         dataset=legacy_samples_from_csv(dataset_csv),
         tiling_dir=tiling_dir,
         requested_seg_downsample=64,
-        tissue_mask_tissue_value=1,
     )
 
     result = loaded.tiling_result

@@ -26,11 +26,13 @@ from pathlib import Path
 
 import pandas as pd
 
+from hs2p import TilingConfig
+from slide2vec import PreprocessingConfig
+
 from soma import (
-    EncoderConfig,
     AggregatorConfig,
+    FeaturesConfig,
     PipelineConfig,
-    PreprocessingConfig,
     TaskConfig,
     TrainingConfig,
 )
@@ -70,10 +72,17 @@ def identity(dataset_csv: Path, splits_csv: Path):
         splits_csv=str(splits_csv),
         output_root=dataset_csv.parent / "outputs",
         dataset_type="slide",
-        preprocessing=PreprocessingConfig(
-            requested_tile_size_px=224, requested_spacing_um=0.5
+        features=FeaturesConfig(
+            encoder="phikon",
+            extraction=PreprocessingConfig(
+                tiling=TilingConfig(
+                    requested_spacing_um=0.5,
+                    requested_tile_size_px=224,
+                    tolerance=0.05,
+                    overlap=0.0,
+                )
+            ),
         ),
-        encoder=EncoderConfig(name="phikon"),
         aggregator=AggregatorConfig(name="abmil"),
         task=TaskConfig(name="binary_classification"),
         training=TrainingConfig(epochs=5, seed=0),

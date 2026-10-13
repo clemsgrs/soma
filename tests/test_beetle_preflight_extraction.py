@@ -198,9 +198,13 @@ def test_representative_extraction_uses_exact_coarse_slides_and_first_eligible_o
         "fp32",
     ]
     assert all(
-        call["preprocessing"].tolerance == pytest.approx(0.1) for call in _FakeExtractor.calls
+        call["preprocessing"].tiling.tolerance == pytest.approx(0.1) for call in _FakeExtractor.calls
     )
-    assert all(call["preprocessing"].mask_backend == "openslide" for call in _FakeExtractor.calls)
+    assert all(
+        call["preprocessing"].tiling.mask_backend == "openslide" for call in _FakeExtractor.calls
+    )
+    assert all(call["spacing_policy"] == "native_if_coarser" for call in _FakeExtractor.calls)
+    assert all(call["dense"].window_size == 224 for call in _FakeExtractor.calls)
     assert _FakeExtractor.calls[0]["cache"].root_dir != _FakeExtractor.calls[1]["cache"].root_dir
     # Every representative ROI gets its mask crop, cut at its grid's recorded spacing.
     (crops,) = _MASK_CROP_CALLS

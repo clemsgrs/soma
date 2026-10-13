@@ -7,9 +7,11 @@ import json
 from pathlib import Path
 from typing import Callable, Literal
 
+from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
+
 from soma.data import require_coverage
 from soma._logging import ensure_default_logging
-from soma.config import CacheConfig, EncoderConfig, ExecutionConfig, PreprocessingConfig
+from soma.config import CacheConfig, EncoderLeaf, is_annotation_sampling
 from soma.data._legacy import LegacySamples, legacy_samples_from_csv
 from soma.extraction_contracts import (
     ExtractionArtifacts,
@@ -18,6 +20,7 @@ from soma.extraction_contracts import (
     FeatureProvenance,
 )
 from soma.encoders.validation import resolve_preprocessing_config
+from soma.preprocessing.resolution import reconcile_dense_tiling
 
 Shape = Literal["set", "grid"]
 Unit = Literal["slide", "tile"]
@@ -29,20 +32,25 @@ class FeatureExtractor:
     ``shape`` (``"set"``: one tensor per sample; ``"grid"``: a dense token grid) and
     ``unit`` (``"slide"``: whole slides tiled by soma or by supplied coordinates;
     ``"tile"``: caller-supplied images read whole) select the representation together
-    with the preprocessing configuration; annotation sampling (``preprocessing.masks``)
-    turns a slide-unit grid run into ROI extraction. Runtime arguments are intentionally
-    absent from :meth:`extract`: construction fixes both behavior and artifact layout.
+    with slide2vec's ``PreprocessingConfig``; an annotation vocabulary in its ``masks``
+    turns a slide-unit grid run into ROI extraction. ``dense`` (slide2vec's
+    ``DenseOptions``) is the grid recipe, by default slide2vec's dense defaults at the
+    resolved tiling; ``spacing_policy`` is how a grid run reads each slide (see
+    :class:`soma.config.FeaturesConfig`). Runtime arguments are intentionally absent from
+    :meth:`extract`: construction fixes both behavior and artifact layout.
     """
 
     def __init__(
         self,
         dataset: FeatureDataset,
-        encoder: EncoderConfig,
-        preprocessing: PreprocessingConfig = PreprocessingConfig(),
+        encoder: EncoderLeaf | str,
+        preprocessing: PreprocessingConfig | None = None,
         *,
         shape: Shape = "set",
         unit: Unit = "slide",
-        execution: ExecutionConfig = ExecutionConfig(),
+        dense: DenseOptions | None = None,
+        spacing_policy: str = "strict",
+        execution: ExecutionOptions | None = None,
         cache: CacheConfig = CacheConfig(),
         output_root: str | Path,
     ) -> None:
@@ -62,16 +70,19 @@ class FeatureExtractor:
         self._dataset = dataset
         self._shape = shape
         self._unit = unit
-        self._encoder = encoder
-        self._preprocessing = preprocessing
-        self._execution = execution
+        self._encoder = EncoderLeaf(name=encoder) if isinstance(encoder, str) else encoder
+        self._preprocessing = preprocessing if preprocessing is not None else PreprocessingConfig()
+        self._dense = dense
+        self._spacing_policy = spacing_policy
+        self._execution = execution if execution is not None else ExecutionOptions()
         self._cache = cache
         self._output_root = Path(output_root).resolve()
         self._extract_impl = self._resolve_extractor()
 
     def _resolve_extractor(self) -> Callable[[], FeatureExtractionResult]:
+        annotation_sampling = is_annotation_sampling(self._preprocessing.masks)
         if self._shape == "set":
-            if self._preprocessing.masks is not None and self._unit == "tile":
+            if annotation_sampling and self._unit == "tile":
                 raise TypeError(
                     "Unsupported dataset/config combination: annotation sampling needs whole "
                     "slides (unit='slide')."
@@ -84,25 +95,25 @@ class FeatureExtractor:
         if any(region_flags):
             # A persisted ROI manifest addresses regions of a parent slide; read as
             # pre-cropped images, each row would be the whole slide with its address lost.
-            if not all(region_flags) or self._preprocessing.masks is None or self._unit == "tile":
+            if not all(region_flags) or not annotation_sampling or self._unit == "tile":
                 raise TypeError(
                     "Unsupported dataset/config combination: explicit slide regions "
-                    "require region_x/region_y and slide_id on every sample, "
-                    "preprocessing.masks, and unit='slide'."
+                    "require region_x/region_y and slide_id on every sample, an "
+                    "annotation vocabulary in preprocessing.masks, and unit='slide'."
                 )
             return self._extract_dense_regions
         if self._unit == "tile":
-            if self._preprocessing.masks is not None:
+            if annotation_sampling:
                 raise TypeError(
                     "Unsupported dataset/config combination: annotation sampling needs whole "
                     "slides (unit='slide')."
                 )
             return self._extract_dense_images
-        if self._preprocessing.masks is None:
+        if not annotation_sampling:
             raise TypeError(
                 "Unsupported dataset/config combination: a grid over whole slides needs "
-                "preprocessing.masks (annotation sampling); pass unit='tile' for "
-                "pre-cropped images."
+                "an annotation vocabulary in preprocessing.masks (annotation sampling); "
+                "pass unit='tile' for pre-cropped images."
             )
         if any(record.label_mask_path is None for record in self._dataset.samples.values()):
             raise TypeError(
@@ -117,18 +128,27 @@ class FeatureExtractor:
         return self._extract_impl()
 
     def _dense_preprocessing(self) -> PreprocessingConfig:
-        """Resolve only missing dense geometry, preserving explicit cache identities."""
-        if (
-            self._preprocessing.requested_tile_size_px is not None
-            and self._preprocessing.requested_spacing_um is not None
-        ):
-            return self._preprocessing
+        """The preprocessing with its tiling reconciled with ``dense`` (ROIs are sampled at
+        the geometry the grid reads them at), and the tiling and filter the encoder decides
+        filled in."""
         from slide2vec.encoders.registry import encoder_registry
 
         return resolve_preprocessing_config(
-            self._encoder,
-            self._preprocessing,
+            reconcile_dense_tiling(self._preprocessing, self._dense),
+            encoder_name=self._encoder.name,
             model_metadata=encoder_registry.info(self._encoder.name),
+        )
+
+    def _dense_options(self, preprocessing: PreprocessingConfig) -> DenseOptions:
+        """``dense``, or slide2vec's dense defaults at the resolved tiling."""
+        if self._dense is not None:
+            return self._dense
+        tiling = preprocessing.tiling
+        return DenseOptions(
+            spacing_um=float(tiling.requested_spacing_um),
+            target_size=int(tiling.requested_tile_size_px),
+            tolerance=float(tiling.tolerance),
+            backend=tiling.backend,
         )
 
     def _extract_given_images(self) -> FeatureExtractionResult:
@@ -216,27 +236,13 @@ class FeatureExtractor:
         from soma.dense_extraction import _DenseImageExtractor
         from soma.extraction.orchestration import _release_parent_cuda_state
 
-        preprocessing = self._dense_preprocessing()
-        if preprocessing.requested_tile_size_px is None:
-            raise ValueError(
-                "Dense extraction requires preprocessing.requested_tile_size_px."
-            )
-        if preprocessing.requested_spacing_um is None:
-            raise ValueError(
-                "Dense extraction requires preprocessing.requested_spacing_um."
-            )
+        dense = self._dense if self._dense is not None else self._dense_options(self._dense_preprocessing())
         extractor = _DenseImageExtractor(
             self._dataset,
             self._encoder,
-            target_size=int(preprocessing.requested_tile_size_px),
-            spacing_um=float(preprocessing.requested_spacing_um),
-            backend=preprocessing.backend,
-            tolerance=float(preprocessing.tolerance),
-            window_size=preprocessing.dense_window_size,
-            overlap=float(preprocessing.dense_window_overlap),
+            dense=dense,
             execution=self._execution,
             cache=self._cache,
-            preprocessing=preprocessing,
         )
         try:
             store = extractor.run(self._output_root / "features")
@@ -265,7 +271,6 @@ class FeatureExtractor:
             resolve_roi_sampling_cache,
             write_roi_sampling_coords,
         )
-        from soma.config import SamplingConfig
         from soma.dense import DenseSourceProvenance
         from soma.dense_slide_extraction import (
             _SlideRegionExtractor,
@@ -277,8 +282,6 @@ class FeatureExtractor:
 
         preprocessing = self._dense_preprocessing()
         masks = preprocessing.masks
-        assert masks is not None
-        sampling = preprocessing.sampling or SamplingConfig()
         features_root = self._output_root / "features"
 
         if self._cache.enabled:
@@ -290,14 +293,14 @@ class FeatureExtractor:
                 ),
                 dataset=self._dataset,
                 preprocessing=preprocessing,
+                spacing_policy=self._spacing_policy,
             )
             fresh: dict[str, list[tuple[int, int]]] = {}
             if sampling_cache.miss_sample_ids:
                 fresh = sample_slide_rois(
                     self._dataset,
-                    masks=masks,
-                    sampling=sampling,
                     preprocessing=preprocessing,
+                    spacing_policy=self._spacing_policy,
                     sample_ids=sampling_cache.miss_sample_ids,
                 )
                 write_roi_sampling_coords(
@@ -314,9 +317,8 @@ class FeatureExtractor:
         else:
             merged = sample_slide_rois(
                 self._dataset,
-                masks=masks,
-                sampling=sampling,
                 preprocessing=preprocessing,
+                spacing_policy=self._spacing_policy,
             )
             crops_root = self._output_root / "segmentation_rois" / "masks"
             mask_crop_dirs = {
@@ -343,9 +345,9 @@ class FeatureExtractor:
         extractor = _SlideRegionExtractor(
             effective_dataset,
             self._encoder,
-            masks=masks,
-            sampling=sampling,
             preprocessing=preprocessing,
+            dense=self._dense_options(preprocessing),
+            spacing_policy=self._spacing_policy,
             execution=self._execution,
             cache=self._cache,
         )
@@ -368,7 +370,6 @@ class FeatureExtractor:
                 record.sample_id: store.spacing(record.sample_id)
                 for record in crop_records
             },
-            masks=masks,
             preprocessing=preprocessing,
         )
         store.provenance = DenseSourceProvenance(
@@ -393,20 +394,17 @@ class FeatureExtractor:
         )
 
     def _extract_dense_regions(self) -> FeatureExtractionResult:
-        from soma.config import SamplingConfig
         from soma.dense import DenseSourceProvenance
         from soma.dense_slide_extraction import _SlideRegionExtractor
         from soma.extraction.orchestration import _release_parent_cuda_state
 
         preprocessing = self._dense_preprocessing()
-        masks = preprocessing.masks
-        assert masks is not None
         extractor = _SlideRegionExtractor(
             self._dataset,
             self._encoder,
-            masks=masks,
-            sampling=preprocessing.sampling or SamplingConfig(),
             preprocessing=preprocessing,
+            dense=self._dense_options(preprocessing),
+            spacing_policy=self._spacing_policy,
             execution=self._execution,
             cache=self._cache,
         )

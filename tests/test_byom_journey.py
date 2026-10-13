@@ -25,7 +25,8 @@ def _assert_ordinary_name_identity(output_root: Path) -> None:
     experiment_specs = [
         json.loads(path.read_text()) for path in output_root.glob("**/experiment.json")
     ]
-    names = {spec["canonical_spec"]["encoder"]["name"] for spec in experiment_specs}
+    encoders = [spec["canonical_spec"]["features"]["encoder"] for spec in experiment_specs]
+    names = {encoder["name"] for encoder in encoders}
     assert names == {"private-lab-fixture", "dinov2-vitb14"}
     assert len({spec["experiment_id"] for spec in experiment_specs}) == 2
     assert all(
@@ -33,18 +34,11 @@ def _assert_ordinary_name_identity(output_root: Path) -> None:
         or spec["short_hash"] in spec["experiment_dirname"]
         for spec in experiment_specs
     )
+    # An installed encoder is identified by its name and params alone, like a built-in.
+    assert all(set(encoder) == {"name", "params"} for encoder in encoders)
     assert all(
-        set(spec["canonical_spec"]["encoder"])
-        == {
-            "name",
-            "precision",
-            "batch_size",
-            "adaptive_batching",
-            "output_variant",
-            "allow_non_recommended_settings",
-            "save_tile_features",
-        }
-        for spec in experiment_specs
+        not ({"provider", "distribution", "plugin", "checkpoint"} & set(encoder["params"]))
+        for encoder in encoders
     )
 
     metadata_paths = list(
