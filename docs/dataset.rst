@@ -20,7 +20,16 @@ Dataset format
 One CSV feeds three readers, each validating only its own columns:
 :class:`soma.data.Cohort` (identity, targets, folds), :class:`soma.data.ImageManifest`
 (what extraction reads) and :class:`soma.data.AnnotationManifest` (dense supervision
-files). Records carry no file paths.
+files). Records carry no file paths: ``soma.extract`` reads the image manifest (and,
+to sample ROIs from whole slides, the annotation manifest) and returns the features
+keyed by ``sample_id``.
+
+Splits are sample-level. A sample is usually a slide, but it can be a patient or any
+other unit; ``sample_id`` is the key. When extraction turns a sample into several
+children, such as the ROIs annotation sampling draws from a slide, the children
+inherit their sample's targets, patient and splits
+(:meth:`soma.data.Cohort.derived`). The ROIs themselves stay inside extraction: the
+grid source is keyed by ROI id, and its ``rois`` name each ROI's slide.
 
 Dense-supervision manifests (segmentation and detection heads)
 replace the scalar ``label`` with a per-sample supervision file:

@@ -127,20 +127,17 @@ Both classes must appear in each scored split for AUROC to be defined. See
 
 Choose how to turn tissue into tiles, then select a foundation model. Tiling
 and encoding are slide2vec's: soma takes slide2vec's ``PreprocessingConfig``,
-which composes hs2p's tiling, segmentation and mask settings. In this example,
-feature extraction runs once and returns a reusable feature store.
+which composes hs2p's tiling, segmentation and mask settings. Features enter
+soma through :func:`soma.extract`: it reads the image manifest (the slide paths
+of ``dataset.csv``), runs once, and returns a reusable feature source.
 
 .. code-block:: python
 
    from hs2p import MaskSamplingConfig, SegmentationConfig, TilingConfig
    from slide2vec import PreprocessingConfig
 
-   from soma import Cohort, FeatureExtractor, ImageManifest
-   from soma.data._legacy import LegacyFolds, records_for_pipeline
-
-   cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
-   dataset = records_for_pipeline(cohort, ImageManifest.from_csv("dataset.csv"))
-   splits = LegacyFolds.from_cohort(cohort)
+   import soma
+   from soma import CacheOptions, ImageManifest
 
    preprocessing = PreprocessingConfig(
        tiling=TilingConfig(
@@ -156,17 +153,19 @@ feature extraction runs once and returns a reusable feature store.
        ),
    )
 
-   features = FeatureExtractor(
-       dataset,
-       "phikon",
-       preprocessing=preprocessing,
-       output_root="output",
-   ).extract()
+   features = soma.extract(
+       ImageManifest.from_csv("dataset.csv"),
+       encoder="phikon",
+       extraction=preprocessing,
+       cache=CacheOptions(),
+       output_dir="output",
+   )
 
-The result contains ``source`` (the reusable feature reader), ``dataset`` (the
-exact samples indexed by that source), ``provenance``, and ``artifacts``. Without
-a ``tiling``, the tile size and spacing resolve from the encoder's native
-configuration; see :doc:`preprocessing` and :doc:`encoders` for every option.
+``features`` is the reusable feature source, keyed by ``sample_id``; the
+feature cache serves it again to the next extraction of the same slides.
+Without a ``tiling``, the tile size and spacing resolve from the encoder's
+native configuration; see :doc:`preprocessing` and :doc:`encoders` for every
+option.
 
 3. Train and evaluate
 ~~~~~~~~~~~~~~~~~~~~~
@@ -177,7 +176,7 @@ sections, each holding one public callable's keyword arguments: ``run``
 ``trainer`` and ``evaluation``. For slide classification the learner is ``mil``,
 whose model is an AB-MIL aggregator and a task head. Each component is a
 ``{name, params}`` leaf; a bare name keeps the component's default params. A
-:class:`~soma.Pipeline` given the extracted ``source`` trains on it directly:
+:class:`~soma.Pipeline` given the extracted source trains on it directly:
 
 .. code-block:: python
 
@@ -204,7 +203,7 @@ whose model is an AB-MIL aggregator and a task head. Each component is a
        trainer=TrainerConfig(max_epochs=5),
        evaluation=EvaluationConfig(metrics=["auroc", "balanced_accuracy"]),
    )
-   result = Pipeline(config, source=features.source).run()
+   result = Pipeline(config, source=features).run()
 
 Each fold saves its model as a bundle that :func:`soma.load` reopens (see
 :ref:`model-bundle`).
@@ -328,7 +327,7 @@ logger. The ``soma`` command prints soma's INFO messages to stderr; other
 libraries print warnings and errors only.
 
 In a Python script, soma checks the logging setup when you create a
-``Pipeline`` or a ``FeatureExtractor``:
+``Pipeline`` or call ``soma.extract``:
 
 - If you have not configured logging (no handler on the root logger or on the
   ``soma`` logger), soma adds one stderr handler to the ``soma`` logger and
