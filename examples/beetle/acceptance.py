@@ -68,7 +68,7 @@ ALLOWED_SPACING_DECISIONS = frozenset(
 )
 
 # Gated Virchow2 weight files and dense feature-cache payload directories must never
-# reach the archive. `soma.dense.store` writes `<sample>.pt` grids under one of these
+# reach the archive. `soma.extract.dense.store` writes `<sample>.pt` grids under one of these
 # directory names, and the resolved cache root is namespaced `virchow2_*_dense_*`.
 FORBIDDEN_FILENAME_PATTERNS = ("*.safetensors", "pytorch_model*.bin")
 FORBIDDEN_DIRECTORY_NAMES = frozenset(

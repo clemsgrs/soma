@@ -11,7 +11,7 @@ from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
 
 from soma.config import EncoderLeaf, ExperimentConfig, FeaturesConfig
-from soma.encoders import CompositeMember
+from soma.models.encoders import CompositeMember
 from soma.pipeline.layout import (
     ExperimentSpec,
     build_experiment_spec,

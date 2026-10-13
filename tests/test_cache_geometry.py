@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from soma.cache import (
+from soma.extract.cache import (
     CacheGeometryMismatch,
     GEOMETRY_METADATA_KEY,
     dense_extraction_geometry,

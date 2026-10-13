@@ -20,8 +20,8 @@ from soma.data import Cohort
 from soma.evaluation import Predictions
 from soma.evaluation.metrics import compute_survival_metrics, resolve_metrics
 from soma.pipeline import Pipeline, PipelineResult
-from soma.tasks.registry import task_registry
-from soma.tasks.survival import (
+from soma.models.heads.registry import task_registry
+from soma.models.heads.survival import (
     SurvivalHead,
     _risk_from_logits,
     survival_nll_loss,

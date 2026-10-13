@@ -13,14 +13,14 @@ import torch
 from torch.utils.data import DataLoader
 
 import soma
-from soma.aggregators import aggregator_registry
+from soma.models.aggregators import aggregator_registry
 from soma.data import Cohort, FoldSplit, SampleRecord, from_arrays
 from soma.evaluation import Baseline, Evaluation, Predictions, compare, evaluate, predict
-from soma.heatmaps import SaveAttention
-from soma.tasks.classification import BinaryClassificationHead
-from soma.training.bag_dataset import BagDataset
-from soma.training.collate import bag_collate_fn
-from soma.training.model import MILModel
+from soma.evaluation.heatmaps import SaveAttention
+from soma.models.heads.classification import BinaryClassificationHead
+from soma.learn.bag_dataset import BagDataset
+from soma.learn.collate import bag_collate_fn
+from soma.models.model import MILModel
 
 IDS = ["a", "b", "c", "d"]
 
@@ -275,7 +275,7 @@ def test_a_scalar_regression_baseline_ignores_value_like_metadata_columns():
 
 def test_a_multi_output_regression_baseline_keeps_to_the_heads_target_keys():
     from soma.data import Cohort
-    from soma.tasks.regression import RegressionHead
+    from soma.models.heads.regression import RegressionHead
 
     records = pd.DataFrame(
         {

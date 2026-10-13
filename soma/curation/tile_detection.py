@@ -1,6 +1,6 @@
 """Tile a large-ROI detection manifest into fixed-size tiles for the dense path.
 
-soma's dense **detection** path (:class:`soma.extraction.FeatureExtractor`,
+soma's dense **detection** path (:func:`soma.extract`,
 backed by slide2vec's ``embed_images_dense``) requires every sample to be one fixed
 ``target_size`` tile — dense image extraction never performs fit-to-size resizing, so an
 image whose extent differs from the declared ``target_size`` is refused outright. OCELOT
@@ -48,7 +48,7 @@ here is that the nominal point-frame value and run value remain equal.
 
 **Ignore masks.** An ROI row may carry ``ignore_mask_path``: a flat uint8 raster the size of
 the ROI image, 255 where nothing is annotated and 0 where it is (see
-:func:`soma.detection.io.read_ignore_mask`). The tiler pads it with 255 alongside the image
+:func:`soma.evaluation.detection.io.read_ignore_mask`). The tiler pads it with 255 alongside the image
 (padding is never annotated), crops it per tile to ``ignore_masks/<tile_id>.png`` (the tile
 row's ``ignore_mask_path``) and skips a tile with no valid pixel. Points on ignored pixels
 are not written to any tile; ``summary.json`` counts them as ``points_in_ignored_region``,
@@ -77,8 +77,8 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from soma.detection.encode import IGNORE_VALUE, points_on_valid
-from soma.detection.io import read_ignore_mask
+from soma.models.detection_targets import IGNORE_VALUE, points_on_valid
+from soma.evaluation.detection.io import read_ignore_mask
 
 _REQUIRED = ("sample_id", "image_path", "points_path")
 

@@ -59,7 +59,7 @@ ABMIL
 
 ``abmil`` returns tile-level attention scores for heatmap generation.
 
-.. autoclass:: soma.aggregators.mil.abmil.ABMIL
+.. autoclass:: soma.models.aggregators.mil.abmil.ABMIL
    :members:
 
 CLAM-SB
@@ -68,7 +68,7 @@ CLAM-SB
 ``clam_sb`` supports binary, multiclass, ordinal, and single-target regression
 tasks, and can mix bag-level and instance-level supervision.
 
-.. autoclass:: soma.aggregators.mil.clam.CLAM_SB
+.. autoclass:: soma.models.aggregators.mil.clam.CLAM_SB
    :members:
 
 CLAM-MB
@@ -76,7 +76,7 @@ CLAM-MB
 
 ``clam_mb`` requires ``multiclass_classification``.
 
-.. autoclass:: soma.aggregators.mil.clam.CLAM_MB
+.. autoclass:: soma.models.aggregators.mil.clam.CLAM_MB
    :members:
 
 DSMIL
@@ -84,7 +84,7 @@ DSMIL
 
 ``dsmil`` requires ``binary_classification``.
 
-.. autoclass:: soma.aggregators.mil.dsmil.DSMIL
+.. autoclass:: soma.models.aggregators.mil.dsmil.DSMIL
    :members:
 
 DTFDMIL
@@ -93,13 +93,13 @@ DTFDMIL
 ``instances_per_group`` (default 1) sets how many instances each pseudo-bag
 contributes; the partition is random during training and contiguous in eval mode.
 
-.. autoclass:: soma.aggregators.mil.dtfdmil.DTFDMIL
+.. autoclass:: soma.models.aggregators.mil.dtfdmil.DTFDMIL
    :members:
 
 TransMIL
 ~~~~~~~~
 
-.. autoclass:: soma.aggregators.mil.transmil.TransMIL
+.. autoclass:: soma.models.aggregators.mil.transmil.TransMIL
    :members:
 
 HIPT
@@ -109,19 +109,19 @@ HIPT
 ``features.extraction.region_tile_multiple``) controls how many tiles fit along
 each side of a region.
 
-.. autoclass:: soma.aggregators.mil.hipt.HIPT
+.. autoclass:: soma.models.aggregators.mil.hipt.HIPT
    :members:
 
 Aggregator interface
 --------------------
 
-The shared base classes are :class:`soma.aggregators.base.Aggregator` and
-:class:`soma.aggregators.base.AggregatorOutput`.
+The shared base classes are :class:`soma.models.aggregators.base.Aggregator` and
+:class:`soma.models.aggregators.base.AggregatorOutput`.
 
-.. autoclass:: soma.aggregators.base.Aggregator
+.. autoclass:: soma.models.aggregators.base.Aggregator
    :members:
 
-.. autoclass:: soma.aggregators.base.AggregatorOutput
+.. autoclass:: soma.models.aggregators.base.AggregatorOutput
    :members:
 
 ``soma.components("aggregators")`` lists the registered aggregators with their

@@ -7,7 +7,7 @@ import pytest
 from soma.config import Component, FeaturesConfig
 from soma.plan import check
 from tests.experiment_configs import experiment
-from soma.encoders import resolve_aggregator
+from soma.models.encoders import resolve_aggregator
 
 
 class _TileMetadataRegistry:
@@ -47,7 +47,7 @@ class _UnknownMetadataRegistry:
 
 
 def test_tile_encoder_returns_exact_recipe_without_loading_weights(monkeypatch):
-    monkeypatch.setattr("soma.encoders._slide2vec_encoders", _TileMetadataRegistry())
+    monkeypatch.setattr("soma.models.encoders._slide2vec_encoders", _TileMetadataRegistry())
     recipe = Component("abmil", {"hidden_dim": 128})
 
     resolved = resolve_aggregator("tile-encoder", recipe)
@@ -56,7 +56,7 @@ def test_tile_encoder_returns_exact_recipe_without_loading_weights(monkeypatch):
 
 
 def test_slide_encoder_omits_aggregator_in_valid_slide_pipeline(monkeypatch):
-    monkeypatch.setattr("soma.encoders._slide2vec_encoders", _SlideMetadataRegistry())
+    monkeypatch.setattr("soma.models.encoders._slide2vec_encoders", _SlideMetadataRegistry())
     recipe = Component("abmil", {"hidden_dim": 128})
 
     resolved = resolve_aggregator("prism", recipe)
@@ -67,7 +67,7 @@ def test_slide_encoder_omits_aggregator_in_valid_slide_pipeline(monkeypatch):
 
 
 def test_patient_encoder_rejected_for_slide_benchmark(monkeypatch):
-    monkeypatch.setattr("soma.encoders._slide2vec_encoders", _PatientMetadataRegistry())
+    monkeypatch.setattr("soma.models.encoders._slide2vec_encoders", _PatientMetadataRegistry())
     recipe = Component("abmil")
 
     with pytest.raises(ValueError) as error:
@@ -80,7 +80,7 @@ def test_patient_encoder_rejected_for_slide_benchmark(monkeypatch):
 
 
 def test_unknown_encoder_lists_available_names(monkeypatch):
-    monkeypatch.setattr("soma.encoders._slide2vec_encoders", _UnknownMetadataRegistry())
+    monkeypatch.setattr("soma.models.encoders._slide2vec_encoders", _UnknownMetadataRegistry())
     recipe = Component("abmil")
 
     with pytest.raises(ValueError) as error:

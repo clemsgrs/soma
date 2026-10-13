@@ -25,9 +25,14 @@ from soma.data import (
     covers,
     require_coverage,
 )
-from soma.dense import CachedGridSource, DenseSourceProvenance, dense_grid_metadata, write_dense_grid
-from soma.dense.geometry import GridGeometry, compute_dense_geometry
-from soma.dense.reader import write_mask_crop
+from soma.extract.dense import (
+    CachedGridSource,
+    DenseSourceProvenance,
+    dense_grid_metadata,
+    write_dense_grid,
+)
+from soma.data.geometry import GridGeometry, compute_dense_geometry
+from soma.extract.dense.reader import write_mask_crop
 from soma.testing import check_grid_source, check_set_source, check_target_source
 
 
@@ -198,7 +203,7 @@ def test_point_source_reads_points_and_ignore_masks(tmp_path: Path) -> None:
 def test_point_source_drops_ignored_points_before_checking_their_classes(tmp_path: Path) -> None:
     # A point on an ignored pixel is not supervision: its class id may be one the task
     # never declared, and neither class_remap nor the head's range check may refuse it.
-    from soma.tasks.detection import DetectionHead
+    from soma.models.heads.detection import DetectionHead
 
     pd.DataFrame({"x": [10, 20], "y": [5, 6], "class": [1, 9]}).to_csv(
         tmp_path / "a.csv", index=False

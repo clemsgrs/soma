@@ -7,7 +7,7 @@ true positive if it matches a ground-truth mitosis within the challenge toleranc
 negatives. Counts are pooled over **every** image (dataset-global) and reduced to
 precision / recall / F1 for the lone mitosis class.
 
-This is deliberately a thin **adapter** over :mod:`soma.detection.matching` with
+This is deliberately a thin **adapter** over :mod:`soma.evaluation.detection.matching` with
 ``num_classes=1``: it reuses the exact TP/FP/FN matcher and F1 reduction the OCELOT path
 uses, so the two datasets' metrics are one implementation, not two that can drift. All
 distances are in the point coordinate frame, the same units as ``delta`` — a run resolves
@@ -25,7 +25,7 @@ from typing import Sequence
 import numpy as np
 import torch
 
-from soma.detection.matching import detection_counts, reduce_f1
+from soma.evaluation.detection.matching import detection_counts, reduce_f1
 
 __all__ = ["MIDOG_MATCH_DISTANCE_UM", "MidogF1Score", "midog_f1"]
 

@@ -23,7 +23,7 @@ def _manifest(meta_by_sid):
 
 
 def _head():
-    from soma.dense import DenseSampleSpacing
+    from soma.extract.dense import DenseSampleSpacing
 
     spacing = DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.25)
     return SimpleNamespace(

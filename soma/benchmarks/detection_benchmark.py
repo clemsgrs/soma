@@ -58,7 +58,7 @@ from soma.benchmarks.registry import (
 from soma.config import ExperimentConfig
 from soma.curation.manifest import CuratedManifest
 from soma.benchmarks.froc import MNL_CLASS_NAME, patch_area_mm2, score_monkey_froc
-from soma.detection.matching import detection_counts, match_assignment, reduce_f1
+from soma.evaluation.detection.matching import detection_counts, match_assignment, reduce_f1
 from soma.benchmarks.midog_f1 import midog_f1
 
 __all__ = [
@@ -384,7 +384,7 @@ def _greedy_point_nms(
     xy: np.ndarray, scores: np.ndarray, classes: np.ndarray, min_distance: float
 ) -> np.ndarray:
     """Per-class greedy NMS over a point list — the same rule as the within-tile peak NMS
-    (:func:`soma.detection.peaks.extract_peaks`): keep the highest score first, drop any
+    (:func:`soma.evaluation.detection.peaks.extract_peaks`): keep the highest score first, drop any
     later same-class point within ``min_distance``. Returns the kept row indices (ascending).
 
     A uniform spatial hash (cell size ``min_distance``) keeps this O(n): a point can only
@@ -546,7 +546,7 @@ def _score_ocelot_points(samples: Sequence[SamplePrediction], spec: DatasetSpec)
     """OCELOT class-aware greedy mF1 over persisted points (the leaderboard-comparable metric).
 
     Reuses the exact TP/FP/FN matcher + F1 reduction the live OCELOT path uses
-    (:func:`~soma.detection.matching.detection_counts` / :func:`reduce_f1`), so the off-cache
+    (:func:`~soma.evaluation.detection.matching.detection_counts` / :func:`reduce_f1`), so the off-cache
     re-aggregation reproduces the live headline when fed the same thresholded points.
     """
     import torch

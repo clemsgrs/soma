@@ -218,7 +218,7 @@ and :func:`soma.evaluate` then score the trained model (see :doc:`evaluation`):
    predictions.to_parquet("predictions_test.parquet")
 
 ``predict`` takes callbacks for side artefacts:
-``soma.heatmaps.SaveAttention(dir)`` writes each bag's normalised tile attention
+``soma.evaluation.heatmaps.SaveAttention(dir)`` writes each bag's normalised tile attention
 to ``<dir>/<sample_id>.npz``.
 
 .. _grid-verbs:
@@ -231,7 +231,7 @@ The same verbs train a decoder over feature grids. The source is a
 :class:`~soma.data.TileImageSource` of pixels for a model that re-encodes them.
 ``loaders`` then needs ``targets=``: a :class:`~soma.data.LabelMapSource` for a
 segmentation head or a :class:`~soma.data.PointSource` for a detection head.
-The model is a :class:`soma.training.model.DenseModel`; with an ``encoder``
+The model is a :class:`soma.models.DenseModel`; with an ``encoder``
 stage it reads pixels, without one it reads cached grids. The example below
 re-encodes the tiles with a frozen encoder and augments the train split:
 
@@ -241,11 +241,11 @@ re-encodes the tiles with a frozen encoder and augments the train split:
    from soma.data import (
        AnnotationManifest, Cohort, ImageManifest, LabelMapSource, TileImageSource,
    )
-   from soma.decoders.registry import build_decoder_for_grid
+   from soma.models.decoders.registry import build_decoder_for_grid
    from soma.extract import live_encoder
    from soma.learn import SegmentationAugment, loaders
-   from soma.tasks.segmentation import SegmentationHead
-   from soma.training.model import DenseModel
+   from soma.models.heads.segmentation import SegmentationHead
+   from soma.models import DenseModel
 
    cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=[])
    stage = live_encoder("uni2", target_size=448, spacing_um=0.5, window=224)
@@ -316,7 +316,7 @@ float16 heatmaps, detection)::
 
 .. autoclass:: soma.learn.GridBatch
 
-.. autoclass:: soma.training.model.DenseModel
+.. autoclass:: soma.models.DenseModel
 
 .. autofunction:: soma.extract.live_encoder
 

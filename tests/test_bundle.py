@@ -18,7 +18,7 @@ from soma.data import Cohort, GridGeometry, from_arrays
 from soma.learn import loaders
 from soma.pipeline.build import build_grid_model, build_set_model
 from soma.testing import FakeEncoder
-from soma.training.model import DenseModel, MILModel
+from soma.models.model import DenseModel, MILModel
 
 D = 4
 BUNDLE_FILES = ["model.json", "preprocessing.json", "provenance.json", "weights.safetensors"]
@@ -57,7 +57,7 @@ def _set_model(adaptor=None):
 
 def _fitted(tmp_path: Path):
     cohort, source = _cohort_and_bags()
-    from soma.training.feature_adaptor import FeatureAdaptor
+    from soma.learn.feature_adaptor import FeatureAdaptor
 
     adaptor = FeatureAdaptor(method="zscore", num_features=D)
     adaptor.fit([source.load(sid) for sid in cohort.folds[0].train])
@@ -142,8 +142,8 @@ def test_a_bundle_from_another_minor_version_loads_with_a_warning(tmp_path: Path
 
 
 def test_a_hand_built_model_saves_but_cannot_be_rebuilt_from_its_bundle(tmp_path: Path):
-    from soma.aggregators import ABMIL
-    from soma.tasks.classification import BinaryClassificationHead
+    from soma.models.aggregators import ABMIL
+    from soma.models.heads.classification import BinaryClassificationHead
 
     cohort, source = _cohort_and_bags()
     aggregator = ABMIL(input_dim=D, hidden_dim=8)

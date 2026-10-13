@@ -10,12 +10,14 @@ machines. A failure here means existing caches would be re-extracted.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
+from types import FunctionType
 
 import numpy as np
 import slide2vec
 
-from soma.cache import resolve_image_cache, resolve_tile_cache, resolve_tiling_cache
+from soma.extract.cache import resolve_image_cache, resolve_tile_cache, resolve_tiling_cache
 from soma.config import CacheOptions, FeaturesConfig
 from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
@@ -41,7 +43,9 @@ PINNED_SLIDE_TILING = ("a7e9cf6d303b3c2a", {"slide_a": "339b417287a81924", "slid
 PINNED_SLIDE_FEATURES = ("457638037afe772f", {"slide_a": "335a26b0198c7bf6", "slide_b": "98abc0e3cf921aa2"})
 
 
-def test_a_synthetic_slide_keeps_its_tiling_and_feature_keys(tmp_path: Path):
+def _slide_keys(tmp_path: Path):
+    """The synthetic slide's (tiling key, stems) and (pooled feature key, stems)."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     csv = tmp_path / "slides.csv"
     csv.write_text(SLIDE_ROWS)
     preprocessing = extraction(0.5, 224)
@@ -62,9 +66,11 @@ def test_a_synthetic_slide_keeps_its_tiling_and_feature_keys(tmp_path: Path):
         feature_type="bag",
         dtype="fp32",
     )
+    return (tiling.key, tiling.cache_stem_by_id), (features.key, features.cache_stem_by_id)
 
-    assert (tiling.key, tiling.cache_stem_by_id) == PINNED_SLIDE_TILING
-    assert (features.key, features.cache_stem_by_id) == PINNED_SLIDE_FEATURES
+
+def test_a_synthetic_slide_keeps_its_tiling_and_feature_keys(tmp_path: Path):
+    assert _slide_keys(tmp_path) == (PINNED_SLIDE_TILING, PINNED_SLIDE_FEATURES)
 
 
 # --------------------------------------------------------------------------- #
@@ -76,7 +82,9 @@ BACH_TILE = "/data/pathology/projects/fmtf-benchmark/raw/eva/bach/ICIAR2018_BACH
 PINNED_TILE_FEATURES = ("a1040e43432f838f", {"bach_test_Benign_b042": "9323889883fd1fb1"})
 
 
-def test_a_synthetic_tile_keeps_the_eva_bach_image_key(tmp_path: Path):
+def _tile_keys(tmp_path: Path):
+    """The synthetic tile's (given-image feature key, stems)."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     csv = tmp_path / "tiles.csv"
     csv.write_text(f"sample_id,image_path\nbach_test_Benign_b042,{BACH_TILE}\n")
 
@@ -88,8 +96,11 @@ def test_a_synthetic_tile_keeps_the_eva_bach_image_key(tmp_path: Path):
         output_variant="default",
         dtype="fp16",
     )
+    return features.key, features.cache_stem_by_id
 
-    assert (features.key, features.cache_stem_by_id) == PINNED_TILE_FEATURES
+
+def test_a_synthetic_tile_keeps_the_eva_bach_image_key(tmp_path: Path):
+    assert _tile_keys(tmp_path) == PINNED_TILE_FEATURES
 
 
 # --------------------------------------------------------------------------- #
@@ -141,7 +152,7 @@ class _FakeDenseModel:
     def embed_regions_dense(self, regions, *, dense, execution):
         from slide2vec.artifacts import write_dense_region
 
-        from soma.dense.geometry import compute_dense_geometry
+        from soma.data.geometry import compute_dense_geometry
 
         geometry = compute_dense_geometry(target_size=int(dense.target_size), patch_size=(ROI_PATCH, ROI_PATCH))
         artifacts = []
@@ -183,8 +194,8 @@ class _FakeDenseModel:
 
 
 def _stub_roi_extraction(monkeypatch) -> None:
-    import soma.dense.reader as reader
-    import soma.dense_slide_extraction as dense_slide_extraction
+    import soma.extract.dense.reader as reader
+    import soma.extract.dense_slide_extraction as dense_slide_extraction
 
     def sample(*args, sample_ids=None, **kwargs):
         return {str(sid): [(0, 0), (ROI_TARGET, 0)] for sid in sample_ids}
@@ -197,7 +208,9 @@ def _stub_roi_extraction(monkeypatch) -> None:
     monkeypatch.setattr(reader, "read_mask_regions_within_slide", mask_regions)
 
 
-def test_a_synthetic_roi_keeps_its_sampling_and_grid_keys(tmp_path: Path, monkeypatch):
+def _roi_keys(tmp_path: Path, monkeypatch):
+    """The synthetic ROIs' (sampling key, per-slide stems) and (grid key, identity stems)."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     from soma.pipeline import Pipeline
 
     _stub_roi_extraction(monkeypatch)
@@ -230,5 +243,35 @@ def test_a_synthetic_roi_keeps_its_sampling_and_grid_keys(tmp_path: Path, monkey
     (grids,) = (cache_root / "dense").iterdir()
     signed = json.loads((grids / "cache_metadata.json").read_text())["sample_identity_signature_by_id"]
 
-    assert (sampling.name, stems) == PINNED_ROI_SAMPLING
-    assert (grids.name, signed) == PINNED_ROI_GRIDS
+    return (sampling.name, stems), (grids.name, signed)
+
+
+def test_a_synthetic_roi_keeps_its_sampling_and_grid_keys(tmp_path: Path, monkeypatch):
+    assert _roi_keys(tmp_path, monkeypatch) == (PINNED_ROI_SAMPLING, PINNED_ROI_GRIDS)
+
+
+# --------------------------------------------------------------------------- #
+# Module paths: a key names what was extracted, never where soma's code lives.
+# --------------------------------------------------------------------------- #
+
+
+def _relocate_soma(monkeypatch) -> None:
+    """Make every soma class and function report a module path under another package,
+    as if the whole of soma had moved: each module is importable under its new path too,
+    so whatever resolves a class through its module still finds it."""
+    for module_name, module in list(sys.modules.items()):
+        if module is None or not (module_name == "soma" or module_name.startswith("soma.")):
+            continue
+        relocated = f"relocated.{module_name}"
+        monkeypatch.setitem(sys.modules, relocated, module)
+        for value in list(vars(module).values()):
+            if isinstance(value, (type, FunctionType)) and value.__module__ == module_name:
+                monkeypatch.setattr(value, "__module__", relocated)
+
+
+def test_cache_keys_do_not_depend_on_module_paths(tmp_path: Path, monkeypatch):
+    _relocate_soma(monkeypatch)
+
+    assert _slide_keys(tmp_path / "slide") == (PINNED_SLIDE_TILING, PINNED_SLIDE_FEATURES)
+    assert _tile_keys(tmp_path / "tile") == PINNED_TILE_FEATURES
+    assert _roi_keys(tmp_path / "roi", monkeypatch) == (PINNED_ROI_SAMPLING, PINNED_ROI_GRIDS)

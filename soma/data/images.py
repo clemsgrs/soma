@@ -116,7 +116,7 @@ class TileImageSource:
         ``spacing_policy`` against its declared ``spacing_at_level_0``."""
         if self._spacing_um is None:
             return None
-        from soma.spacing import resolve_effective_spacing_um
+        from soma.extract.spacing import resolve_effective_spacing_um
 
         return resolve_effective_spacing_um(
             requested_spacing_um=self._spacing_um,
@@ -126,7 +126,7 @@ class TileImageSource:
         )
 
     def _flat(self, entry: ImageEntry) -> bool:
-        from soma.dense.reader import _is_flat
+        from soma.extract.dense.reader import _is_flat
 
         return _is_flat(entry.image_path, self._spacing_um)
 
@@ -166,7 +166,7 @@ class TileImageSource:
                 return declared, self._read_spacing(entry)
             level0 = entry.spacing_at_level_0 if entry.spacing_at_level_0 is not None else self._spacing_um
             return level0, level0
-        from soma.dense.reader import _served_spacing
+        from soma.extract.dense.reader import _served_spacing
 
         return _served_spacing(
             str(entry.image_path),
@@ -177,7 +177,7 @@ class TileImageSource:
         )
 
     def load(self, sample_id: str) -> Tensor:
-        from soma.dense.reader import read_image_at_spacing
+        from soma.extract.dense.reader import read_image_at_spacing
 
         entry = self._entry(sample_id)
         array = read_image_at_spacing(
@@ -289,7 +289,7 @@ class RegionImageSource(TileImageSource):
         return (float(x), float(y))
 
     def load(self, sample_id: str) -> Tensor:
-        from soma.dense.reader import read_image_region_at_spacing
+        from soma.extract.dense.reader import read_image_region_at_spacing
 
         entry = self._entry(sample_id)
         height, width = self._size

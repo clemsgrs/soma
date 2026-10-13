@@ -303,7 +303,7 @@ def test_camelyon16_small_rows_on_the_real_reference_table():
 def _stage(manifest, target_mpp: float, tmp_path: Path):
     from tests.extraction_configs import extraction
     from soma.data import ImageManifest
-    from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
+    from soma.extract.preprocessing.supplied_coordinates import stage_supplied_coordinates
 
     dataset = ImageManifest.from_csv(manifest.dataset_csv)
     preprocessing = extraction(target_mpp, 224)
@@ -343,7 +343,7 @@ def test_camelyon16_small_curator_writes_eva_tiles_and_a_slide_manifest(tmp_path
 def eva_slide_artifact(coordinates_path: str):
     from hs2p.artifacts import load_tiling_result
 
-    from soma.preprocessing.supplied_coordinates import coordinates_meta_path
+    from soma.extract.preprocessing.supplied_coordinates import coordinates_meta_path
 
     return load_tiling_result(Path(coordinates_path), coordinates_meta_path(Path(coordinates_path)))
 

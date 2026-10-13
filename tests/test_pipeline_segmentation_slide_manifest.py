@@ -105,7 +105,7 @@ class _FakeDenseModel:
     def embed_regions_dense(self, regions, *, dense, execution):
         from slide2vec.artifacts import write_dense_region
 
-        from soma.dense.geometry import compute_dense_geometry
+        from soma.data.geometry import compute_dense_geometry
 
         type(self).calls.append(
             {
@@ -188,7 +188,7 @@ def _dense_sidecar(dense, geometry, grid, *, source_spacing_um=None, x=0, y=0) -
 
 
 def _patch_dense_model(monkeypatch) -> type[_FakeDenseModel]:
-    import soma.dense_slide_extraction as dse
+    import soma.extract.dense_slide_extraction as dse
 
     _FakeDenseModel.calls = []
     monkeypatch.setattr(dse, "Model", _FakeDenseModel)
@@ -198,7 +198,7 @@ def _patch_dense_model(monkeypatch) -> type[_FakeDenseModel]:
 def _patch_mask_regions(monkeypatch, window, *, calls: list[dict] | None = None):
     """Stub the annotation-raster read at its seam: ``window(path, location=, spacing_um=,
     size=, **aligned_to)`` gives each ROI's labels; each slide opening is one ``calls`` entry."""
-    import soma.dense.reader as reader_mod
+    import soma.extract.dense.reader as reader_mod
 
     def _fake(path, *, regions, size, **kwargs):
         if calls is not None:
@@ -213,8 +213,8 @@ def _patch_mask_regions(monkeypatch, window, *, calls: list[dict] | None = None)
 
 def _patch_extraction(monkeypatch):
     """Stub hs2p sampling + slide2vec encode + the WSI mask/image region reads (offline)."""
-    import soma.dense_slide_extraction as dse
-    import soma.dense.reader as reader_mod
+    import soma.extract.dense_slide_extraction as dse
+    import soma.extract.dense.reader as reader_mod
 
     # hs2p sampling → known coords per slide.
     monkeypatch.setattr(
@@ -391,7 +391,7 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
 def test_slide_manifest_overlays_read_each_roi_window(tmp_path: Path, monkeypatch):
     """``save_segmentation_overlays`` (on by default) blends each ROI's prediction and
     supervision over its own window of the whole slide, read at the run spacing."""
-    import soma.dense.reader as reader_mod
+    import soma.extract.dense.reader as reader_mod
     from soma.pipeline import Pipeline
 
     _patch_extraction(monkeypatch)
@@ -502,7 +502,7 @@ def _slides(manifest: Path):
 
 
 def _stub_sampling(monkeypatch, coords_by_slide: dict[str, list[tuple[int, int]]]) -> None:
-    import soma.dense_slide_extraction as dse
+    import soma.extract.dense_slide_extraction as dse
 
     monkeypatch.setattr(
         dse,
@@ -542,7 +542,7 @@ def test_roi_dataset_rewrite_never_exposes_a_partial_file(tmp_path: Path, monkey
     import os
 
     from soma.data import AnnotationManifest, ImageManifest
-    from soma.extraction.rois import roi_entries, write_roi_table
+    from soma.extract.rois import roi_entries, write_roi_table
 
     manifest, _ = _write_slide_manifest(tmp_path, ["s0", "s1", "s2", "s3"])
     images = ImageManifest.from_csv(manifest)
@@ -620,7 +620,7 @@ def test_slide_manifest_dense_extraction_groups_sources_by_effective_spacing(
 
 def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypatch):
     from hs2p import SlideSpec
-    from soma.dense_slide_extraction import sample_slide_rois
+    from soma.extract.dense_slide_extraction import sample_slide_rois
 
     manifest = tmp_path / "slides.csv"
     manifest.write_text(
@@ -648,7 +648,7 @@ def test_slide_sampling_forwards_source_spacing_to_hs2p(tmp_path: Path, monkeypa
 
 
 def test_slide_sampling_uses_native_spacing_only_for_coarser_sources(tmp_path: Path, monkeypatch):
-    from soma.dense_slide_extraction import sample_slide_rois
+    from soma.extract.dense_slide_extraction import sample_slide_rois
 
     manifest = tmp_path / "slides.csv"
     manifest.write_text(
@@ -686,8 +686,8 @@ def test_slide_sampling_forwards_the_filter_the_roi_key_records(tmp_path: Path, 
     contour-area threshold (``a_t=0``), so every annotated component is sampled. Tissue
     tiling keeps hs2p's default threshold."""
     from hs2p import FilterConfig
-    from soma.dense_slide_extraction import sample_slide_rois
-    from soma.encoders.validation import resolve_preprocessing_config
+    from soma.extract.dense_slide_extraction import sample_slide_rois
+    from soma.models.encoders.validation import resolve_preprocessing_config
 
     manifest = tmp_path / "slides.csv"
     manifest.write_text(
@@ -733,7 +733,7 @@ def test_slide_sampling_forwards_the_filter_the_roi_key_records(tmp_path: Path, 
 
 
 def _roi_dense_key(signature) -> str:
-    from soma.cache.keys import build_dense_cache_key
+    from soma.extract.cache.keys import build_dense_cache_key
 
     return build_dense_cache_key(
         tile_encoder_name=ENCODER,
@@ -745,7 +745,7 @@ def _roi_dense_key(signature) -> str:
 
 
 def test_distinct_sampling_specs_yield_distinct_cache_keys():
-    from soma.cache import roi_sampling_signature
+    from soma.extract.cache import roi_sampling_signature
 
     sig_a = roi_sampling_signature(_roi_extraction(min_cov=0.1))
     sig_b = roi_sampling_signature(_roi_extraction(min_cov=0.5))
@@ -757,7 +757,7 @@ def test_distinct_sampling_specs_yield_distinct_cache_keys():
 
 
 def test_spacing_policy_changes_sampling_cache_key():
-    from soma.cache import roi_sampling_signature
+    from soma.extract.cache import roi_sampling_signature
 
     strict = roi_sampling_signature(_roi_extraction(min_cov=0.1), spacing_policy="strict")
     native = roi_sampling_signature(_roi_extraction(min_cov=0.1), spacing_policy="native_if_coarser")
@@ -864,7 +864,7 @@ class _CountingSampler:
 
 
 def _install_counting_sampler(monkeypatch, sampler: _CountingSampler) -> None:
-    import soma.dense_slide_extraction as dse
+    import soma.extract.dense_slide_extraction as dse
 
     _patch_extraction(monkeypatch)
     monkeypatch.setattr(dse, "sample_slide_rois", sampler)
@@ -1046,7 +1046,7 @@ def test_slide_manifest_cache_disabled_writes_crops_into_the_run(tmp_path: Path,
 
 def test_sample_slide_rois_filter_samples_only_requested_slides(tmp_path: Path, monkeypatch):
     """The sampler's slide-id filter tiles only the requested slides, in manifest order."""
-    from soma.dense_slide_extraction import sample_slide_rois
+    from soma.extract.dense_slide_extraction import sample_slide_rois
 
     manifest = tmp_path / "slides.csv"
     manifest.write_text(
@@ -1088,7 +1088,7 @@ def test_sample_slide_rois_filter_samples_only_requested_slides(tmp_path: Path, 
 def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch):
     """A resumed dense run re-encodes only the absent ROIs; a fully-cached slide is
     never opened, and already-materialized grids are left untouched."""
-    from soma.dense.store import DENSE_SIDECAR_SUFFIX
+    from soma.extract.dense.store import DENSE_SIDECAR_SUFFIX
 
     # Two slides, two ROIs each.
     manifest = tmp_path / "slides.csv"

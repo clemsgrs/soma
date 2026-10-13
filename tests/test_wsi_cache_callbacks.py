@@ -8,14 +8,14 @@ import pandas as pd
 import pytest
 import torch
 
-from soma import cache as cache_mod
+from soma.extract import cache as cache_mod
 from soma.config import CacheOptions, EncoderLeaf
-from soma.encoders.validation import resolve_preprocessing_config
+from soma.models.encoders.validation import resolve_preprocessing_config
 from tests.extraction_configs import extraction
 from soma.data import ImageManifest
-from soma.extraction import orchestration
-from soma.extraction.extractor import _PooledFeatureExtractor
-from soma.slide2vec_adapter import LoadedTiling
+from soma.extract import orchestration
+from soma.extract.extractor import _PooledFeatureExtractor
+from soma.extract.slide2vec_adapter import LoadedTiling
 from tests.test_extraction import (
     _TEST_TILE,
     _artifact,
@@ -131,7 +131,7 @@ def population(tmp_path, request):
         artifact=artifact,
         ids=ids,
         kind=kind,
-        target=f"soma.extraction.extractor._embed_{kind}_artifacts_with_coordinates",
+        target=f"soma.extract.extractor._embed_{kind}_artifacts_with_coordinates",
     )
 
 
@@ -251,7 +251,7 @@ def test_callback_signature_failure_propagates(population, monkeypatch):
 
     monkeypatch.setattr(population.target, embed)
     monkeypatch.setattr(
-        "soma.extraction.extractor.record_sample_identity_signatures",
+        "soma.extract.extractor.record_sample_identity_signatures",
         Mock(side_effect=OSError("signature write failed")),
     )
     with pytest.raises(OSError, match="signature write failed"):

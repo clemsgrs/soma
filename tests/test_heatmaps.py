@@ -1,4 +1,4 @@
-"""Tests for soma.heatmaps — attention extraction and heatmap rendering."""
+"""Tests for soma.evaluation.heatmaps — attention extraction and heatmap rendering."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import pytest
 import torch
 
 from soma.data import ImageEntry, ImageManifest
-from soma.heatmaps import (
+from soma.evaluation.heatmaps import (
     _build_coordinate_map,
     _prediction_files_for_fold,
     normalize_attention,
@@ -199,7 +199,7 @@ def test_build_coordinate_map_skips_missing_files(tmp_path):
 @pytest.fixture
 def fake_slide_patch():
     """Patch open_slide to return _FakeSlide instead of opening a real file."""
-    with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()) as p:
+    with patch("soma.evaluation.heatmaps.open_slide", return_value=_FakeSlide()) as p:
         yield p
 
 
@@ -300,7 +300,7 @@ def test_render_heatmaps_single_branch(tmp_path):
 
     dataset = ImageManifest([ImageEntry(sample_id="s1", image_path=tmp_path / "fake.svs")])
 
-    with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
+    with patch("soma.evaluation.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
             tmp_path, dataset, tiling_dir,
             seg_downsample=4,
@@ -334,7 +334,7 @@ def test_render_heatmaps_single_branch_nested_split_dir(tmp_path):
 
     dataset = ImageManifest([ImageEntry(sample_id="s1", image_path=tmp_path / "fake.svs")])
 
-    with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
+    with patch("soma.evaluation.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
             tmp_path, dataset, tiling_dir,
             seg_downsample=4,
@@ -367,7 +367,7 @@ def test_render_heatmaps_reads_nested_tiling_metadata(tmp_path):
 
     dataset = ImageManifest([ImageEntry(sample_id="s1", image_path=tmp_path / "fake.svs")])
 
-    with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
+    with patch("soma.evaluation.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
             tmp_path, dataset, tiling_dir,
             seg_downsample=4,
@@ -404,7 +404,7 @@ def test_render_heatmaps_clam_mb_multi_branch(tmp_path):
 
     dataset = ImageManifest([ImageEntry(sample_id="s2", image_path=tmp_path / "fake.svs")])
 
-    with patch("soma.heatmaps.open_slide", return_value=_FakeSlide()):
+    with patch("soma.evaluation.heatmaps.open_slide", return_value=_FakeSlide()):
         render_heatmaps(
             tmp_path, dataset, tiling_dir,
             seg_downsample=4,
@@ -469,7 +469,7 @@ def test_save_attention_skips_no_attention_aggregator(tmp_path, caplog):
 
     import logging
 
-    with caplog.at_level(logging.INFO, logger="soma.heatmaps"):
+    with caplog.at_level(logging.INFO, logger="soma.evaluation.heatmaps"):
         save_attention(tmp_path, feature_store)
     assert any("mean_pool produces no tile attention" in r.getMessage() for r in caplog.records)
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
@@ -522,7 +522,7 @@ def test_render_attention_heatmap_reads_level_metadata_inside_the_reader_context
     x = np.array([0, 256], dtype=np.int64)
     y = np.array([0, 0], dtype=np.int64)
     scores = np.array([0.2, 0.8], dtype=np.float32)
-    with patch("soma.heatmaps.open_slide", return_value=_ClosingFakeSlide()):
+    with patch("soma.evaluation.heatmaps.open_slide", return_value=_ClosingFakeSlide()):
         image = render_attention_heatmap(
             tmp_path / "fake.svs", x, y, scores, tile_size_lv0=256, seg_downsample=4
         )

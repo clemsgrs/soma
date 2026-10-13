@@ -20,10 +20,10 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from soma.decoders import HeavyConvDecoder, LightweightConvDecoder  # noqa: E402
-from soma.dense.composite import CompositeDenseFeatureStore  # noqa: E402
-from soma.dense.geometry import compute_dense_geometry  # noqa: E402
-from soma.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid  # noqa: E402
+from soma.models.decoders import HeavyConvDecoder, LightweightConvDecoder  # noqa: E402
+from soma.extract.dense.composite import CompositeDenseFeatureStore  # noqa: E402
+from soma.data.geometry import compute_dense_geometry  # noqa: E402
+from soma.extract.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid  # noqa: E402
 
 TARGET = 16
 SPACING = 0.2  # µm/px; source == effective spacing makes the point transform identity
@@ -141,7 +141,7 @@ def test_attention_map_detection_heatmap_end_to_end():
     covering a mitosis; the decoder-free rung must recover that detection at F1 = 1.
     """
     from soma.benchmarks.detection_attention import attention_to_detection_heatmap
-    from soma.tasks.detection import DetectionHead
+    from soma.models.heads.detection import DetectionHead
 
     patch = 4
     geom = compute_dense_geometry(target_size=32, patch_size=patch)  # 8x8 token grid
@@ -190,7 +190,7 @@ def test_attention_map_constant_grid_yields_no_peaks():
     # A flat attention map (nothing salient) normalises to all-zeros -> no detections, the
     # correct empty answer rather than a peak everywhere.
     from soma.benchmarks.detection_attention import attention_to_detection_heatmap
-    from soma.detection.peaks import extract_peaks
+    from soma.evaluation.detection.peaks import extract_peaks
 
     geom = compute_dense_geometry(target_size=16, patch_size=4)
     hm = attention_to_detection_heatmap(torch.full((4, *geom.grid_shape), 0.7), geometry=geom, num_classes=1)

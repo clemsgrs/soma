@@ -102,7 +102,7 @@ def _locate_run_config(run_dir: Path) -> Path:
 def resolve_dense_cache_dir(cfg: ExperimentConfig, images: ImageManifest) -> Path | None:
     """Prepare and return the exact dense-image cache directory described by ``cfg``."""
     from soma import extract
-    from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     features = cfg.features
     cache = features.cache
@@ -179,7 +179,7 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
     ``predictions_<test>.parquet`` (every peak above ``min_score``, level-0 pixels), then
     re-sweeps and re-scores with ``matching`` against the run's point annotations.
     """
-    from soma.class_scheme import resolve_classes
+    from soma._internal.class_scheme import resolve_classes
     from soma.data import AnnotationManifest, PointSource
     from soma.evaluation import PointPredictions
     from soma.evaluation.metrics import resolve_metrics

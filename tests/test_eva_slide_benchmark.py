@@ -15,10 +15,10 @@ import torch.nn.functional as F
 from soma.config import Component
 from soma.plan import sample_unit
 from tests.experiment_configs import callback
-from soma.aggregators.registry import aggregator_registry
+from soma.models.aggregators.registry import aggregator_registry
 from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva_slide as slide
-from soma.tasks.registry import task_family_of, task_registry
+from soma.models.heads.registry import task_family_of, task_registry
 from tests import eva_reference as eva
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,8 +50,8 @@ def test_private_components_are_registered_under_eva_names():
 def test_a_fresh_process_resolves_the_private_aggregator():
     """A saved benchmark config names ``eva_abmil``; loading it must not need an import."""
     code = (
-        "from soma.aggregators.registry import aggregator_registry\n"
-        "from soma.tasks.registry import task_registry\n"
+        "from soma.models.aggregators.registry import aggregator_registry\n"
+        "from soma.models.heads.registry import task_registry\n"
         "print(aggregator_registry.get('eva_abmil').__name__, "
         "task_registry.get('eva_mil_binary').__name__)\n"
     )

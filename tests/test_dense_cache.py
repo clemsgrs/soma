@@ -15,7 +15,7 @@ import pandas as pd
 import pytest
 import torch
 
-from soma.cache import (
+from soma.extract.cache import (
     build_dense_cache_key,
     build_tile_cache_key,
     record_feature_dim,
@@ -29,13 +29,9 @@ import slide2vec
 
 from tests.extraction_configs import extraction
 from soma.data import ImageManifest
-from soma.dense import (
-    CachedGridSource,
-    compute_dense_geometry,
-    dense_grid_metadata,
-    write_dense_grid,
-)
-from soma.dense.store import DENSE_SIDECAR_SUFFIX
+from soma.extract.dense import CachedGridSource, dense_grid_metadata, write_dense_grid
+from soma.data.geometry import compute_dense_geometry
+from soma.extract.dense.store import DENSE_SIDECAR_SUFFIX
 
 
 def _make_dataset(
@@ -359,7 +355,7 @@ def test_dense_cache_partial_message_counts_samples_without_identity(
 ):
     # A cancelled extraction records no identity for the samples it never reached;
     # the resume message must still count them against the requested scope.
-    import soma.cache.io as cache_io
+    import soma.extract.cache.io as cache_io
 
     dataset = _make_dataset(tmp_path)
     kw = _dense_kw(tmp_path, dataset)
@@ -403,7 +399,7 @@ def test_dense_cache_validator_reuses_valid_sidecars_without_loading_payloads(
     def _fail_load_array(_path):
         raise AssertionError("default dense cache validation must not deserialize tensors")
 
-    monkeypatch.setattr("soma.cache.features.load_array", _fail_load_array)
+    monkeypatch.setattr("soma.extract.cache.features.load_array", _fail_load_array)
 
     resumed = resolve_dense_cache(**kw)
 
@@ -451,7 +447,7 @@ def test_dense_cache_validator_gates_sidecar_content_validation(
     def _fail_load_array(_path):
         raise AssertionError("dense cache validation must not deserialize tensors here")
 
-    monkeypatch.setattr("soma.cache.features.load_array", _fail_load_array)
+    monkeypatch.setattr("soma.extract.cache.features.load_array", _fail_load_array)
 
     # Default path: sidecar existence only — no JSON read, no tensor load.
     assert resolve_dense_cache(**kw).complete is True
@@ -485,7 +481,7 @@ def test_dense_cache_validator_scans_directory_once(
     # The hot loop must answer every <id>.pt / <id>.meta.json existence question
     # from a single directory listing, never a per-id filesystem stat — that per-id
     # stat tax is what makes a resume on a slow/near-full mount take tens of minutes.
-    import soma.cache.features as features_mod
+    import soma.extract.cache.features as features_mod
 
     dataset = _make_dataset(tmp_path)
     kw = _dense_kw(tmp_path, dataset)
@@ -610,7 +606,7 @@ def test_dense_cache_identity_ignores_label_mask_path(tmp_path: Path):
     # Per-sample cache identity is (sample_id, image_path, mask_path, spacing): the tissue
     # mask shapes tiling, the segmentation supervision raster does not. Re-pointing
     # label_mask_path must not re-key the dense cache; re-pointing mask_path must.
-    from soma.cache import _sample_identity_payload
+    from soma.extract.cache import _sample_identity_payload
 
     def manifest(name: str, *, mask: str, label_mask: str) -> ImageManifest:
         csv_path = tmp_path / f"{name}.csv"
@@ -628,7 +624,7 @@ def test_dense_cache_identity_ignores_label_mask_path(tmp_path: Path):
 
 def _identities_without_roi_grid_contract(res, dataset, *, cache_kind: str = "dense") -> dict:
     """The per-ROI identities soma recorded before ROI grids had to carry their read spacing."""
-    from soma.cache.keys import _sample_stems_for_kind
+    from soma.extract.cache.keys import _sample_stems_for_kind
 
     return _sample_stems_for_kind(
         images=dataset,

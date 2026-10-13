@@ -25,8 +25,8 @@ from examples.beetle.external_runtime import (  # noqa: E402
     selected_checkpoints,
     validate_selected_run_recipe,
 )
-from soma.dense.geometry import compute_dense_geometry  # noqa: E402
-from soma.dense.predict import SlidingWindowSegmentationPredictor  # noqa: E402
+from soma.data.geometry import compute_dense_geometry  # noqa: E402
+from soma.evaluation.sliding_window import SlidingWindowSegmentationPredictor  # noqa: E402
 from tests.experiment_configs import experiment
 
 

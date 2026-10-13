@@ -1,4 +1,4 @@
-"""``check_task_head``: the conformance suite for a set-shape :class:`soma.tasks.TaskHead`."""
+"""``check_task_head``: the conformance suite for a set-shape :class:`soma.models.heads.TaskHead`."""
 
 from __future__ import annotations
 
@@ -170,7 +170,7 @@ def check_task_head(head, batch: Any, *, tolerance: float = 1e-6) -> None:
 
     Set heads: ``batch`` carries ``features`` (the head's input), ``targets`` (the
     encoded target tensors ``compute_metrics`` reads) and ``sample_ids`` — a
-    :class:`~soma.training.sample_dataset.SampleBatch` does. Asserts: ``to_columns``
+    :class:`~soma.learn.sample_dataset.SampleBatch` does. Asserts: ``to_columns``
     emits exactly ``prediction_columns``, one numeric value per sample; a
     :class:`~soma.evaluation.Baseline` fitted on the batch's targets and the head's
     ``target_keys`` (as the pipeline fits it) yields the same columns; and

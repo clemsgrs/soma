@@ -1,4 +1,4 @@
-"""Tests for soma.cache.compute_cache_key and the pooled key derivation (ADR 0019).
+"""Tests for soma.extract.cache.compute_cache_key and the pooled key derivation (ADR 0019).
 
 Every pooled key derives from the slide2vec / hs2p dataclasses soma holds: the fields of
 slide2vec's ``PreprocessingConfig`` and of hs2p's tiling, segmentation, filter and
@@ -18,8 +18,8 @@ import pytest
 import slide2vec
 from hs2p import FilterConfig, PreviewConfig, SegmentationConfig
 
-from soma.cache import compute_cache_key
-from soma.cache.keys import (
+from soma.extract.cache import compute_cache_key
+from soma.extract.cache.keys import (
     build_hierarchical_cache_key,
     build_patient_cache_key,
     build_slide_cache_key,
@@ -101,7 +101,7 @@ def test_compute_cache_key_slide_prism_matches_soma_resolver():
     soma's own slide-cache resolver builds for identical inputs."""
     from slide2vec.encoders.registry import encoder_registry, resolve_encoder_output
 
-    from soma.encoders.validation import resolve_preprocessing_config
+    from soma.models.encoders.validation import resolve_preprocessing_config
 
     preprocessing = extraction(0.5, 224, tiling_fields=_ASAP)
     helper_key = compute_cache_key(kind="slide", encoder_name="prism", preprocessing=preprocessing)

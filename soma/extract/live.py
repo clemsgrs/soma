@@ -113,8 +113,8 @@ def live_encoder(
     """
     from slide2vec import DenseImageOptions, ExecutionOptions, Model
 
-    from soma.dense.sliding import describe_dense_mode
-    from soma.encoders.validation import resolve_encoder_precision
+    from soma.extract.dense.sliding import describe_dense_mode
+    from soma.models.encoders.validation import resolve_encoder_precision
 
     if device is None:
         device = f"cuda:{torch.cuda.current_device()}" if torch.cuda.is_available() else "cpu"

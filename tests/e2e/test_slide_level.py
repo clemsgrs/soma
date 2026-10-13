@@ -13,7 +13,7 @@ from soma.cli import main as soma_main
 
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, sha256, trainer_section
 from soma.data import CachedSetSource
-from soma.preprocessing.supplied_coordinates import coordinates_meta_path
+from soma.extract.preprocessing.supplied_coordinates import coordinates_meta_path
 from tests.e2e.synthetic import (
     SPACING_UM,
     SlideCohort,

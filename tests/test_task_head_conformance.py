@@ -7,12 +7,12 @@ import pytest
 import torch
 
 import soma.benchmarks  # noqa: F401  (registers the benchmark-private heads)
-from soma.tasks.classification import BinaryClassificationHead
-from soma.tasks.registry import task_registry
-from soma.tasks.regression import RegressionHead
-from soma.tasks.survival import CoxSurvivalHead
+from soma.models.heads.classification import BinaryClassificationHead
+from soma.models.heads.registry import task_registry
+from soma.models.heads.regression import RegressionHead
+from soma.models.heads.survival import CoxSurvivalHead
 from soma.testing import ConformanceError, check_task_head
-from soma.training.sample_dataset import SampleBatch
+from soma.learn.sample_dataset import SampleBatch
 
 D = 8
 B = 12

@@ -465,7 +465,8 @@ def write_cached_grids(dataset_csv: Path, out_dir: Path, *, patch_size: int = 8)
     import tifffile
     import torch
 
-    from soma.dense import compute_dense_geometry, dense_grid_metadata, write_dense_grid
+    from soma.data.geometry import compute_dense_geometry
+    from soma.extract.dense import dense_grid_metadata, write_dense_grid
 
     frame = pd.read_csv(dataset_csv)
     for sample_id, image_path in zip(frame["sample_id"], frame["image_path"]):

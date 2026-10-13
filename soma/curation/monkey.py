@@ -28,7 +28,7 @@ offset (``crop_x`` / ``crop_y``).
 **Valid region.** The valid region of an ROI is its polygon dilated by
 ``valid_margin_um`` (5 µm) on the crop's pixel grid. It is written as an ignore mask
 (``ignore_masks/<sample_id>.png``: 255 outside, 0 inside; see
-:func:`soma.detection.io.read_ignore_mask`), so the detection path has no loss, no ground
+:func:`soma.evaluation.detection.io.read_ignore_mask`), so the detection path has no loss, no ground
 truth and no scored prediction outside it, and FROC divides false positives by its area.
 A point is kept when it lands on a valid pixel, i.e. within 5 µm of its polygon; the rest
 are dropped, and ``summary.json`` counts both. Lymphocytes become class ``0`` and
@@ -59,7 +59,7 @@ import numpy as np
 from PIL import Image
 
 from soma.curation.manifest import CuratedManifest, write_manifest
-from soma.detection.encode import IGNORE_VALUE, points_on_valid
+from soma.models.detection_targets import IGNORE_VALUE, points_on_valid
 
 # Level-0 µm/px of the MONKEY PAS-CPG WSIs (the challenge evaluator's SPACING_LEVEL0).
 MONKEY_SPACING_LEVEL0 = 0.24199951445730394
@@ -182,7 +182,7 @@ def _rasterize_valid_region(
     """``(inside, valid)`` rasters of the polygon and of its ``margin_px`` dilation.
 
     A pixel is inside when its centre is inside the polygon; pixel ``(r, c)`` is centred
-    on ``(x=c, y=r)``, the frame :func:`~soma.detection.encode.points_on_valid` reads
+    on ``(x=c, y=r)``, the frame :func:`~soma.models.detection_targets.points_on_valid` reads
     points in. A pixel is valid when its centre lies within ``margin_px`` of an inside
     pixel's centre.
     """

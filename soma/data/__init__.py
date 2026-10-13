@@ -69,11 +69,11 @@ __all__ = [
 
 
 def __getattr__(name: str):
-    # CachedGridSource lives in soma.dense (its cache sidecars and writers are there) and
+    # CachedGridSource lives in soma.extract.dense (its cache sidecars and writers are there) and
     # would import soma.data circularly; serve it lazily so the three cached sources share
     # one import path.
     if name == "CachedGridSource":
-        from soma.dense.store import CachedGridSource
+        from soma.extract.dense.store import CachedGridSource
 
         return CachedGridSource
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

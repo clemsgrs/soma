@@ -40,8 +40,8 @@ requirements.
    from dataclasses import replace
 
    import soma
-   from soma import CacheOptions, Cohort, ExperimentConfig, ImageManifest, Pipeline
-   from soma.config import CohortConfig, LearnerConfig, RunConfig, TrainerConfig
+   from soma import Cohort, ExperimentConfig, ImageManifest, Pipeline
+   from soma.config import CacheOptions, CohortConfig, LearnerConfig, RunConfig, TrainerConfig
 
    # The cohort holds identity, targets and folds; the image manifest holds the paths.
    cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
@@ -74,9 +74,9 @@ is attached, never re-extracted.
 without a source extracts through it too. It is also the namespace of
 :func:`soma.extract.live_encoder`.
 
-.. autofunction:: soma.extraction.extract
+.. autofunction:: soma.extract.extract
 
-.. autoclass:: soma.extraction.RoiSet
+.. autoclass:: soma.extract.RoiSet
    :members: children, label_maps, pixels, subset
 
 The source can be reused across experiments as long as the upstream dataset,
@@ -115,7 +115,8 @@ padding, window, feature kind); batch size and precision are slide2vec's
    from slide2vec import DenseOptions, ExecutionOptions
 
    import soma
-   from soma import CacheOptions, ImageManifest
+   from soma import ImageManifest
+   from soma.config import CacheOptions
 
    grids = soma.extract(
        ImageManifest.from_csv("segmentation.csv"),
@@ -145,7 +146,8 @@ derives the ROI cohort (each ROI inherits its slide's splits):
    from slide2vec import DenseOptions, PreprocessingConfig
 
    import soma
-   from soma import AnnotationManifest, CacheOptions, Cohort, ImageManifest
+   from soma import AnnotationManifest, Cohort, ImageManifest
+   from soma.config import CacheOptions
 
    grids = soma.extract(
        ImageManifest.from_csv("slides.csv"),
@@ -228,7 +230,7 @@ complete run; these are the parts:
    * - :func:`soma.extract.live_encoder`, :class:`soma.extract.FrozenEncoder`
      - A parameter-free frozen encoder stage that re-encodes pixels at every
        step
-   * - :class:`soma.training.model.DenseModel`
+   * - :class:`soma.models.DenseModel`
      - ``encoder`` (optional) → ``adaptor`` (optional) → decoder → head
    * - :class:`soma.learn.DenseLearner`, :class:`soma.learn.GridBatch`
      - The grid learner and its batch (cached ``features`` or live ``pixels``,
@@ -376,6 +378,6 @@ Runnable demonstrations live in ``examples/``
 * ``examples/fixed_step_training.py`` — fixed optimizer-step training budgets
   (``TrainerConfig(max_steps=N)``);
 * ``examples/aggregator_resolution.py`` — resolve one fixed MIL recipe for
-  tile- and slide-level encoders with ``soma.encoders.resolve_aggregator``;
+  tile- and slide-level encoders with ``soma.models.encoders.resolve_aggregator``;
 * ``examples/portable_identity.py`` — manifest identity is portable across
   storage roots.

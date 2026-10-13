@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from soma.cache import (
+from soma.extract.cache import (
     build_roi_sampling_cache_key,
     resolve_roi_sampling_cache,
     write_roi_sampling_coords,
@@ -24,7 +24,7 @@ import slide2vec
 
 from tests.extraction_configs import annotation_masks, extraction
 from soma.data import AnnotationManifest, ImageManifest
-from soma.dense.reader import write_mask_crop
+from soma.extract.dense.reader import write_mask_crop
 
 
 def _make_manifest(
@@ -252,7 +252,7 @@ def test_sampling_determining_knob_changes_the_directory_key(tmp_path: Path):
 
 
 def test_the_spacing_policy_changes_the_directory_key():
-    from soma.cache import roi_sampling_signature
+    from soma.extract.cache import roi_sampling_signature
 
     preprocessing = _preprocessing()
 
@@ -308,7 +308,7 @@ def test_key_payload_is_exactly_kind_plus_sampling_signature_no_schema_version(t
     """
     import hashlib
 
-    from soma.cache import preprocessing_signature
+    from soma.extract.cache import preprocessing_signature
 
     preprocessing = _preprocessing()
     payload = {

@@ -24,17 +24,17 @@ from soma.data import Cohort
 from soma.evaluation import Predictions
 from soma.evaluation.metrics import compute_survival_metrics
 from soma.pipeline import Pipeline, PipelineResult
-from soma.tasks.registry import task_registry
-from soma.tasks.survival import (
+from soma.models.heads.registry import task_registry
+from soma.models.heads.survival import (
     CoxSurvivalHead,
     SurvivalHead,
     cox_breslow_loss,
     resolve_survival_task,
     validate_survival_dataset,
 )
-from soma.training.model import EmbeddingModel
-from soma.training.sample_dataset import SampleBatch
-from soma.training.survival_sampler import EventBalancedBatchSampler
+from soma.models.model import EmbeddingModel
+from soma.learn.sample_dataset import SampleBatch
+from soma.learn.survival_sampler import EventBalancedBatchSampler
 from soma.learn import MILLearner
 
 D = 16

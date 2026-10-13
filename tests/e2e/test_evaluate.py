@@ -15,13 +15,13 @@ import pandas as pd
 import torch
 
 import soma
-from soma.aggregators import aggregator_registry
+from soma.models.aggregators import aggregator_registry
 from soma.cli import main as soma_main
 from soma.data import Cohort, from_arrays
 from soma.evaluation import Predictions
 from soma.learn import loaders
-from soma.tasks.classification import BinaryClassificationHead
-from soma.training.model import MILModel
+from soma.models.heads.classification import BinaryClassificationHead
+from soma.models.model import MILModel
 
 TRAIN = [f"s{i:02d}" for i in range(4)]
 TEST = [f"s{i:02d}" for i in range(4, 12)]

@@ -113,7 +113,7 @@ def test_feature_dir_attaches_a_cached_set_source(tmp_path: Path):
 
 
 def test_feature_dir_attaches_a_cached_grid_source_for_a_dense_task(tmp_path: Path):
-    from soma.dense import CachedGridSource
+    from soma.extract.dense import CachedGridSource
 
     config_path = tmp_path / "config.yaml"
     experiment(

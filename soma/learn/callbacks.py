@@ -26,9 +26,9 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-from soma.atomic_io import atomic_torch_save
+from soma._internal.atomic_io import atomic_torch_save
 from soma.learn.learner import uncovered_parameters
-from soma.params import check_choice, check_positive
+from soma._internal.params import check_choice, check_positive
 from soma.registry import Registry
 
 __all__ = [

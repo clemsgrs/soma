@@ -16,8 +16,8 @@ from __future__ import annotations
 import torch
 from torch.utils.data import DataLoader
 
-from soma.aggregators.mil.clam import CLAM_MB, CLAM_SB
-from soma.tasks.classification import (
+from soma.models.aggregators.mil.clam import CLAM_MB, CLAM_SB
+from soma.models.heads.classification import (
     BranchAwareClassificationHead,
     MulticlassClassificationHead,
 )
@@ -98,7 +98,7 @@ class TestCLAMNoItemSync:
 
     def test_clam_sb_regression_no_item_calls(self):
         torch.manual_seed(0)
-        from soma.tasks.regression import RegressionHead
+        from soma.models.heads.regression import RegressionHead
 
         model = CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4, k_sample=2, n_classes=2)
         model.configure_for_task(RegressionHead(input_dim=8))

@@ -41,8 +41,9 @@ from PIL import Image
 
 from slide2vec import ExecutionOptions
 
-from soma import CacheOptions, ExperimentConfig
+from soma import ExperimentConfig
 from soma.config import (
+    CacheOptions,
     CohortConfig,
     EvaluationConfig,
     FeaturesConfig,

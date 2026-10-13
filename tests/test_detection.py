@@ -10,12 +10,12 @@ import numpy as np
 import pytest
 import torch
 
-from soma.detection.encode import (
+from soma.models.detection_targets import (
     render_peak_heatmap,
     transform_points_to_level0,
     transform_points_to_target,
 )
-from soma.detection.matching import (
+from soma.evaluation.detection.matching import (
     ClassMatch,
     detection_counts,
     match_assignment,
@@ -23,7 +23,7 @@ from soma.detection.matching import (
     reduce_f1,
     sweep_score_thresholds,
 )
-from soma.detection.peaks import extract_peaks
+from soma.evaluation.detection.peaks import extract_peaks
 
 
 # --------------------------------------------------------------------------- #
@@ -444,7 +444,7 @@ def test_sweep_thresholds_suppresses_all_false_positive_class():
 
 def _make_head(*, scale: float = 1.0, **kwargs):
     from soma.data import GridGeometry
-    from soma.tasks.detection import DetectionHead
+    from soma.models.heads.detection import DetectionHead
 
     geometry = GridGeometry.from_sizes(target_size=32, patch_size=4, level0_px_per_token_px=scale)
     params = dict(num_classes=2, geometry=geometry, spacing_um=1.0, match_distance=3.0, sigma=1.5)
@@ -458,7 +458,7 @@ def _points(rows) -> torch.Tensor:
 
 
 def test_head_registered():
-    from soma.tasks.registry import task_registry
+    from soma.models.heads.registry import task_registry
 
     assert "detection" in task_registry.list()
 

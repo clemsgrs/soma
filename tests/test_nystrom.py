@@ -1,4 +1,4 @@
-"""Tests for soma.aggregators.mil.nystrom — Nystrom attention internals."""
+"""Tests for soma.models.aggregators.mil.nystrom — Nystrom attention internals."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import torch
 
 class TestNystromAttention:
     def test_output_shape(self):
-        from soma.aggregators.mil.nystrom import NystromAttention
+        from soma.models.aggregators.mil.nystrom import NystromAttention
 
         torch.manual_seed(0)
         attn = NystromAttention(dim=32, n_heads=4, n_landmarks=8)
@@ -17,7 +17,7 @@ class TestNystromAttention:
 
     def test_output_shape_non_divisible(self):
         """Seq len not divisible by n_landmarks should still work (padding)."""
-        from soma.aggregators.mil.nystrom import NystromAttention
+        from soma.models.aggregators.mil.nystrom import NystromAttention
 
         torch.manual_seed(0)
         attn = NystromAttention(dim=16, n_heads=2, n_landmarks=8)
@@ -26,7 +26,7 @@ class TestNystromAttention:
         assert out.shape == (2, 13, 16)
 
     def test_return_att(self):
-        from soma.aggregators.mil.nystrom import NystromAttention
+        from soma.models.aggregators.mil.nystrom import NystromAttention
 
         torch.manual_seed(0)
         attn = NystromAttention(dim=16, n_heads=2, n_landmarks=4)
@@ -36,7 +36,7 @@ class TestNystromAttention:
         assert att_weights.shape == (1, 2, 8, 8)
 
     def test_with_mask(self):
-        from soma.aggregators.mil.nystrom import NystromAttention
+        from soma.models.aggregators.mil.nystrom import NystromAttention
 
         torch.manual_seed(0)
         attn = NystromAttention(dim=16, n_heads=2, n_landmarks=4)
@@ -46,7 +46,7 @@ class TestNystromAttention:
         assert out.shape == (1, 8, 16)
 
     def test_gradient_flows(self):
-        from soma.aggregators.mil.nystrom import NystromAttention
+        from soma.models.aggregators.mil.nystrom import NystromAttention
 
         torch.manual_seed(0)
         attn = NystromAttention(dim=16, n_heads=2, n_landmarks=4)
@@ -59,7 +59,7 @@ class TestNystromAttention:
 
 class TestNystromTransformerLayer:
     def test_output_shape(self):
-        from soma.aggregators.mil.nystrom import NystromTransformerLayer
+        from soma.models.aggregators.mil.nystrom import NystromTransformerLayer
 
         torch.manual_seed(0)
         layer = NystromTransformerLayer(dim=32, n_heads=4, n_landmarks=8)
@@ -68,7 +68,7 @@ class TestNystromTransformerLayer:
         assert out.shape == (2, 10, 32)
 
     def test_with_mlp(self):
-        from soma.aggregators.mil.nystrom import NystromTransformerLayer
+        from soma.models.aggregators.mil.nystrom import NystromTransformerLayer
 
         torch.manual_seed(0)
         layer = NystromTransformerLayer(dim=16, n_heads=2, n_landmarks=4, use_mlp=True)
@@ -77,7 +77,7 @@ class TestNystromTransformerLayer:
         assert out.shape == (2, 8, 16)
 
     def test_return_att(self):
-        from soma.aggregators.mil.nystrom import NystromTransformerLayer
+        from soma.models.aggregators.mil.nystrom import NystromTransformerLayer
 
         torch.manual_seed(0)
         layer = NystromTransformerLayer(dim=16, n_heads=2, n_landmarks=4)
@@ -87,7 +87,7 @@ class TestNystromTransformerLayer:
         assert att.shape == (1, 2, 8, 8)
 
     def test_with_mask(self):
-        from soma.aggregators.mil.nystrom import NystromTransformerLayer
+        from soma.models.aggregators.mil.nystrom import NystromTransformerLayer
 
         torch.manual_seed(0)
         layer = NystromTransformerLayer(dim=16, n_heads=2, n_landmarks=4)
@@ -97,7 +97,7 @@ class TestNystromTransformerLayer:
         assert out.shape == (1, 8, 16)
 
     def test_gradient_flows(self):
-        from soma.aggregators.mil.nystrom import NystromTransformerLayer
+        from soma.models.aggregators.mil.nystrom import NystromTransformerLayer
 
         torch.manual_seed(0)
         layer = NystromTransformerLayer(dim=16, n_heads=2, n_landmarks=4)

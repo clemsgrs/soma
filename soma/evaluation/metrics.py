@@ -511,19 +511,19 @@ def _mean_pearson(predictions: pd.DataFrame, targets: pd.DataFrame) -> float:
 
 
 def _dice_iou(counts, num_classes: int, aggregation: str = "per_image_macro") -> dict[str, float]:
-    from soma.tasks.dense_metrics import reduce_dice_iou
+    from soma.models.heads.dense_metrics import reduce_dice_iou
 
     return reduce_dice_iou(counts, num_classes=num_classes, aggregation=aggregation)
 
 
 def _f1(counts, num_classes: int, aggregation: str = "dataset_global") -> dict[str, float]:
-    from soma.detection.matching import reduce_f1
+    from soma.evaluation.detection.matching import reduce_f1
 
     return reduce_f1(counts, num_classes=num_classes, aggregation=aggregation)
 
 
 def _foreground_dice(counts, *, num_classes: int) -> float:
-    from soma.tasks.dense_metrics import reduce_foreground_dice
+    from soma.models.heads.dense_metrics import reduce_foreground_dice
 
     return reduce_foreground_dice(counts, num_classes=num_classes)
 

@@ -160,9 +160,9 @@ def comparable(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _registries():
-    import soma.tasks  # noqa: F401 - registers the built-in heads
-    from soma.aggregators.registry import aggregator_registry
-    from soma.decoders.registry import decoder_registry
+    import soma.models.heads  # noqa: F401 - registers the built-in heads
+    from soma.models.aggregators.registry import aggregator_registry
+    from soma.models.decoders.registry import decoder_registry
     from soma.learn import (
         augment_registry,
         callback_registry,
@@ -171,7 +171,7 @@ def _registries():
         sampler_registry,
         scheduler_registry,
     )
-    from soma.tasks.registry import task_registry
+    from soma.models.heads.registry import task_registry
 
     return {
         "aggregator": aggregator_registry,
@@ -221,7 +221,7 @@ def head_family(config: ExperimentConfig) -> str | None:
     head = _head(config)
     if head is None:
         return None
-    from soma.tasks.registry import task_head_class
+    from soma.models.heads.registry import task_head_class
 
     return str(task_head_class(head.name).task_family)
 
@@ -258,7 +258,7 @@ def target_columns(config: ExperimentConfig) -> tuple[dict[str, str], dict[str, 
     head = _head(config)
     if head is None:
         return {"label": "label"}, {"label": object}
-    from soma.tasks.registry import task_head_class
+    from soma.models.heads.registry import task_head_class
 
     schema = task_head_class(head.name).resolve_target_schema(_head_params(head))
     renames = dict(head.params.get("targets") or {})
@@ -325,7 +325,7 @@ def _check(config: ExperimentConfig) -> None:
     _validate_leaf(registries["optimizer"], params.get("optimizer") or DEFAULT_OPTIMIZER, "optimizer")
     for leaf in params.get("scheduler") or ():
         _validate_leaf(registries["scheduler"], leaf, "scheduler")
-    from soma.tasks.registry import task_head_class
+    from soma.models.heads.registry import task_head_class
 
     head_cls = task_head_class(head.name)
     family = str(head_cls.task_family)
@@ -360,13 +360,13 @@ def _check(config: ExperimentConfig) -> None:
         annotation = is_annotation_sampling(masks)
         # A null field is unset, like an omitted one (``soma init`` spells them as null).
         if annotation or head_params.get("classes") is not None or head_params.get("ignore") is not None:
-            from soma.dense.reader import check_classes_declared, resolve_class_scheme
+            from soma.extract.dense.reader import check_classes_declared, resolve_class_scheme
 
             resolve_class_scheme(head_params, annotation_rasters=annotation)
             if annotation:
                 check_classes_declared(head_params, masks.pixel_mapping)
     elif family == "detection" and (head_params.get("classes") or head_params.get("drop")):
-        from soma.class_scheme import resolve_classes
+        from soma._internal.class_scheme import resolve_classes
 
         resolve_classes(head_params, excluded_key="drop", subject="detection")
     if is_annotation_sampling(masks):
@@ -385,7 +385,7 @@ def _check(config: ExperimentConfig) -> None:
     if features.is_composite and (shape != "grid" or features.kind != "cached"):
         raise ValueError("the composite encoder serves cached grid runs only (learner 'dense', features.kind 'cached').")
     normalization, projection = _adaptor_params(params)
-    from soma.training.feature_adaptor import validate_feature_adaptor_compatibility
+    from soma.learn.feature_adaptor import validate_feature_adaptor_compatibility
 
     validate_feature_adaptor_compatibility(
         normalization,
@@ -408,7 +408,7 @@ def _validate_leaf(registry: Any, leaf: Any, what: str) -> None:
 
 
 def _adaptor_params(params: Mapping[str, Any]):
-    from soma.training.feature_adaptor import NormalizationParams, ProjectionParams
+    from soma.learn.feature_adaptor import NormalizationParams, ProjectionParams
 
     def build(cls, value, key):
         if value is None:
@@ -483,8 +483,8 @@ def _check_loaders(config: ExperimentConfig, registries, *, family: str, shape: 
 
 
 def _check_survival(config: ExperimentConfig, head: Component, *, unit: str, aggregator) -> None:
-    from soma.tasks.survival import CoxSurvivalHead
-    from soma.tasks.registry import task_head_class
+    from soma.models.heads.survival import CoxSurvivalHead
+    from soma.models.heads.registry import task_head_class
 
     if unit == "tile":
         raise ValueError(
@@ -583,7 +583,7 @@ def _spelled_out(config: ExperimentConfig, cohort: Any, *, infer: bool) -> Exper
         learner = _resolve_learner(config, learner, cohort, registries, infer=infer)
     encoder = config.features.encoder
     if encoder is not None:
-        from soma.encoders import encoder_registry
+        from soma.models.encoders import encoder_registry
 
         encoder = replace(encoder, params=encoder_registry.canonical_params(encoder.name, encoder.params))
     loaders = config.loaders
@@ -643,7 +643,7 @@ def _resolve_learner(
 
 
 def _resolve_head(config: ExperimentConfig, head: Component, cohort: Any, registry: Any) -> Component:
-    from soma.tasks.registry import task_head_class
+    from soma.models.heads.registry import task_head_class
 
     head_cls = task_head_class(head.name)
     explicit = _head_params(head)
@@ -651,7 +651,7 @@ def _resolve_head(config: ExperimentConfig, head: Component, cohort: Any, regist
     # cohort decides it, so it neither contradicts nor shadows the inferred value.
     given = {key: value for key, value in explicit.items() if value is not None}
     if head_cls.task_family == "survival":
-        from soma.tasks.survival import resolve_survival_task, validate_survival_dataset
+        from soma.models.heads.survival import resolve_survival_task, validate_survival_dataset
 
         _, loss = resolve_survival_task(head.name)
         validate_survival_dataset(cohort.records, sample_unit(config), loss=loss, num_bins=given.get("num_bins"))

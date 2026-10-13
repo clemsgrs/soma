@@ -22,13 +22,13 @@ from soma.data import (
     PointSource,
     TileImageSource,
 )
-from soma.decoders.registry import build_decoder_for_grid
+from soma.models.decoders.registry import build_decoder_for_grid
 from soma.evaluation import LabelMapPredictions, PointPredictions, sweep_threshold
 from soma.learn import SegmentationAugment, loaders
-from soma.tasks.detection import DetectionHead
-from soma.tasks.segmentation import SegmentationHead
+from soma.models.heads.detection import DetectionHead
+from soma.models.heads.segmentation import SegmentationHead
 from soma.testing import FakeEncoder, check_encoder_stage, check_image_source
-from soma.training.model import DenseModel
+from soma.models.model import DenseModel
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset
 
 ROI_PX = 96

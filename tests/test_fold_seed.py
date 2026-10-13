@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 import torch
 
-from soma.training.seed import seed_everything
+from soma.learn.seed import seed_everything
 
 
 def _first_draws() -> tuple[float, float, float]:

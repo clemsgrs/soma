@@ -18,10 +18,10 @@ from typing import Sequence
 
 import torch
 
-from soma.decoders.registry import build_decoder_for_grid
-from soma.dense.geometry import compute_dense_geometry
-from soma.tasks.segmentation import SegmentationHead
-from soma.training.model import DenseModel
+from soma.models.decoders.registry import build_decoder_for_grid
+from soma.data.geometry import compute_dense_geometry
+from soma.models.heads.segmentation import SegmentationHead
+from soma.models.model import DenseModel
 
 from examples.beetle.launch import (
     ENCODER_LOCK_PATH,

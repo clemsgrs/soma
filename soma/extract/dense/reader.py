@@ -1,0 +1,492 @@
+"""Tile/mask reading for the dense (segmentation) path — flat or spacing-aware.
+
+Two input regimes, routed per file:
+
+* **Flat rasters** (``.png``/``.jpg``/``.jpeg``, or any input when no spacing is
+  set) are read with **classic PIL**. The user already rendered them at their chosen
+  resolution, so a requested spacing is **ignored** — there is no pyramid to resample
+  from and nothing to select.
+* **Pyramidal / spacing-bearing** inputs (e.g. multi-resolution TIFF) are read
+  **spacing-aware** via hs2p. Images (:meth:`hs2p.wsi.wsi.WSI.read_full_at_spacing`)
+  read the finest pyramid level ``<=`` the requested µm/px and downscale it with
+  ``area`` interpolation (never upsampling). Masks are :class:`hs2p.Mask` objects
+  aligned to their image's level-0 grid and read ``nearest`` onto the image's read
+  size, so a mask coarser than its image still registers; values stay integer and
+  must be declared by the mask's label vocabulary.
+
+At an exact-level match (e.g. a 0.5 µm/px ROI read at 0.5) hs2p does no resize, so
+the result is byte-identical to the plain PIL page-0 read — the parity the cached
+dense path is verified against.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+from PIL import Image
+from torch import Tensor
+
+from soma.data.targets import (  # noqa: F401 - re-exported for the dense readers' callers
+    CLASS_SCHEME_KEYS,
+    UNDECLARED_LABEL,
+    apply_label_remap,
+    build_label_remap,
+    resolve_class_scheme,
+)
+
+# Flat raster formats carry no pyramid/spacing — always read with PIL, spacing N/A.
+_FLAT_SUFFIXES = {".png", ".jpg", ".jpeg"}
+
+
+def accepted_mask_values(
+    *, num_classes: int, ignore_index: int, label_remap: np.ndarray | None
+) -> dict[str, int]:
+    """The label vocabulary a mask is read against when no ``pixel_mapping`` applies.
+
+    Pre-cropped tiles have no sampling vocabulary, so their masks declare exactly the raw
+    values the head accepts: those ``label_remap`` maps (the head's ``classes`` and
+    ``ignore``), or, without a class scheme, the class indices and ``ignore_index``. Only
+    single-byte values can occur in a mask raster.
+    """
+    if label_remap is not None:
+        values = np.flatnonzero(np.asarray(label_remap) != UNDECLARED_LABEL).tolist()
+    else:
+        values = [*range(int(num_classes)), int(ignore_index)]
+    return {f"value_{value}": int(value) for value in sorted(set(values)) if 0 <= value <= 255}
+
+
+def check_classes_declared(
+    task_params: Mapping[str, Any], pixel_mapping: Mapping[str, int | list[int]]
+) -> None:
+    """Fail unless every raw value in the head's ``classes`` / ``ignore`` is in ``pixel_mapping``.
+
+    hs2p reads an annotation raster against the closed ``features.extraction.masks.pixel_mapping``
+    vocabulary and rejects any other value, so a raw value the training scheme names but
+    the sampling vocabulary omits could never be read. This is the one coupling between the
+    two layers; call it after :func:`resolve_class_scheme` has validated the scheme.
+    """
+    declared = {
+        int(value)
+        for entry in pixel_mapping.values()
+        for value in (entry if isinstance(entry, (list, tuple)) else [entry])
+    }
+    classes = task_params.get("classes") or {}
+    owners = [(f"head class {name!r}", values) for name, values in classes.items()]
+    owners.append(("head param 'ignore'", task_params.get("ignore") or ()))
+    for owner, values in owners:
+        for value in values if isinstance(values, (list, tuple)) else [values]:
+            if int(value) not in declared:
+                raise ValueError(
+                    f"{owner} lists raw value {int(value)}, which "
+                    "features.extraction.masks.pixel_mapping does not declare. Annotation masks "
+                    "are read against that vocabulary, so add the value to pixel_mapping; "
+                    "left out of min_coverage, its label is read but never selects a ROI."
+                )
+
+
+def _is_flat(path: str | Path, spacing_um: float | None) -> bool:
+    """Read flat (PIL) when the format is flat or no spacing was requested."""
+    return spacing_um is None or Path(path).suffix.lower() in _FLAT_SUFFIXES
+
+
+def _load_flat_mask(path: str | Path) -> np.ndarray:
+    """Load a flat single-channel integer class-index mask as a 2-D ``np.ndarray``.
+
+    Fails loud on RGB/palette masks (a classic silent corruption — class indices
+    smeared across channels) and on non-integer dtypes.
+    """
+    with Image.open(path) as image:
+        return _flat_mask_array(image, path)
+
+
+def _flat_mask_array(image: Image.Image, path: str | Path) -> np.ndarray:
+    """:func:`_load_flat_mask` on an already opened image."""
+    # Palette ("P"/"PA") images load as a 2-D index array and would pass the
+    # rank/dtype checks below, but palette indices are NOT class ids.
+    if image.mode in ("P", "PA"):
+        raise ValueError(
+            f"mask '{path}' is a palette image (mode '{image.mode}'); palette indices "
+            "are not class ids. Save masks as single-channel integer (e.g. 'L'/'I') rasters."
+        )
+    array = np.array(image)
+    if array.ndim != 2:
+        raise ValueError(
+            f"mask '{path}' must be a 2-D single-channel class-index raster, got shape "
+            f"{array.shape}. RGB/palette masks are not supported."
+        )
+    if not np.issubdtype(array.dtype, np.integer):
+        raise ValueError(
+            f"mask '{path}' must have an integer dtype (class indices), got {array.dtype}."
+        )
+    return array
+
+
+def load_mask(path: str | Path, *, expected_size: tuple[int, int] | None = None) -> Tensor:
+    """Load a flat segmentation mask as a 2-D ``long`` tensor of class indices.
+
+    The flat (non-spacing) mask loader: PIL read + validation. v1 loads at native
+    resolution (no resize); when resizing arrives it must be nearest-neighbor only so
+    class indices and ``ignore_index`` survive.
+    """
+    array = _load_flat_mask(path)
+    tensor = torch.from_numpy(array.astype(np.int64))
+    if expected_size is not None and tuple(int(s) for s in tensor.shape) != tuple(expected_size):
+        raise ValueError(
+            f"mask '{path}' is {tuple(int(s) for s in tensor.shape)}, expected {tuple(expected_size)}."
+        )
+    return tensor
+
+
+def read_image_at_spacing(
+    path: str | Path,
+    *,
+    spacing_um: float | None,
+    backend: str = "auto",
+    tolerance: float = 0.05,
+    interpolation: str = "area",
+    spacing_at_level_0: float | None = None,
+) -> np.ndarray:
+    """Read an RGB tile as a ``(H, W, 3)`` uint8 array (flat PIL or spacing-aware hs2p).
+
+    ``spacing_at_level_0`` overrides the file's own level-0 µm/px (a manifest declaration).
+    """
+    if _is_flat(path, spacing_um):
+        with Image.open(path) as image:
+            return np.ascontiguousarray(np.array(image.convert("RGB")))
+    from hs2p.wsi.wsi import WSI
+
+    wsi = WSI(path=Path(path), backend=backend, spacing_at_level_0=spacing_at_level_0)
+    arr = wsi.read_full_at_spacing(
+        float(spacing_um), tolerance=float(tolerance), interpolation=interpolation
+    )
+    return np.ascontiguousarray(arr[..., :3])
+
+
+def read_image_region_at_spacing(
+    path: str | Path,
+    *,
+    location: tuple[int, int],
+    size: tuple[int, int],
+    spacing_um: float,
+    backend: str = "auto",
+    tolerance: float = 0.05,
+    interpolation: str = "area",
+    spacing_at_level_0: float | None = None,
+) -> np.ndarray:
+    """Read a ``size=(w, h)`` RGB region at ``(x, y)`` (level-0) and ``spacing_um``.
+
+    The region counterpart of :func:`read_image_at_spacing` for slide-manifest ROIs: the
+    image is a whole-slide raster, so each ROI reads only its window (never the whole
+    gigapixel slide) at the same spacing/size as its dense grid — mirroring the read the
+    slide-manifest extractor uses, so overlays register to the features and the supervision.
+    ``spacing_at_level_0`` overrides the file's own level-0 µm/px.
+    """
+    from hs2p.wsi.wsi import WSI
+
+    wsi = WSI(path=Path(path), backend=backend, spacing_at_level_0=spacing_at_level_0)
+    arr = wsi.read_region_at_spacing(
+        location=tuple(location),
+        requested_spacing_um=float(spacing_um),
+        size=tuple(size),
+        tolerance=float(tolerance),
+        interpolation=interpolation,
+    )
+    return np.ascontiguousarray(np.asarray(arr)[..., :3])
+
+
+@lru_cache(maxsize=1024)
+def _reference_geometry(
+    image_path: str, backend: str, spacing_at_level_0: float | None
+) -> tuple[float, tuple[int, int]]:
+    """``(level-0 spacing µm/px, level-0 (w, h))`` of the image a mask is aligned to.
+
+    Opened once per image per process: every ROI of a slide shares it. A declared
+    ``spacing_at_level_0`` overrides the file's own, as it does for the image reads.
+    """
+    from hs2p.wsi.reader import open_slide
+
+    with open_slide(
+        Path(image_path), backend, spacing_override=spacing_at_level_0
+    ) as slide:
+        width, height = slide.level_dimensions[0]
+        return float(slide.spacing), (int(width), int(height))
+
+
+@lru_cache(maxsize=1024)
+def _served_spacing(
+    image_path: str,
+    backend: str,
+    spacing_at_level_0: float | None,
+    spacing_um: float,
+    tolerance: float,
+) -> tuple[float, float]:
+    """``(level-0 µm/px, served µm/px)`` of a spacing-aware read of ``image_path``.
+
+    Runs hs2p's own level selection, so the served spacing is what
+    :func:`read_image_at_spacing` returns: a pyramid level within ``tolerance`` of
+    ``spacing_um`` is read unresized at its own spacing, anything else is resampled to
+    ``spacing_um``. Opened once per image per process; a declared ``spacing_at_level_0``
+    overrides the file's own, as it does for the reads.
+    """
+    from hs2p.wsi.geometry import select_level_for_spacing_read
+    from hs2p.wsi.reader import open_slide
+
+    with open_slide(
+        Path(image_path), backend, spacing_override=spacing_at_level_0
+    ) as slide:
+        level0 = float(slide.spacing)
+        downsamples = list(slide.level_downsamples)
+    selection = select_level_for_spacing_read(
+        requested_spacing_um=float(spacing_um),
+        level0_spacing_um=level0,
+        level_downsamples=downsamples,
+        tolerance=float(tolerance),
+        content_kind="image",
+    )
+    served = selection.read_spacing_um if selection.is_within_tolerance else spacing_um
+    return level0, float(served)
+
+
+@contextmanager
+def _aligned_mask(
+    path: str | Path,
+    *,
+    reference_path: str | Path,
+    reference_backend: str,
+    spacing_at_level_0: float | None,
+    pixel_mapping: Mapping[str, int | list[int]],
+    backend: str,
+):
+    """Open ``path`` as an hs2p annotation ``Mask`` aligned to its image's level-0 grid.
+
+    ``reference_backend`` reads the image, ``backend`` the mask.
+    """
+    from hs2p import AnnotationLabels, Mask
+
+    reference_spacing_um, reference_dimensions = _reference_geometry(
+        str(reference_path),
+        reference_backend,
+        None if spacing_at_level_0 is None else float(spacing_at_level_0),
+    )
+    with Mask(
+        path=Path(path),
+        labels=AnnotationLabels(pixel_mapping=dict(pixel_mapping)),
+        backend=backend,
+    ) as mask:
+        yield mask.align_to(
+            reference_spacing_um=reference_spacing_um,
+            reference_dimensions=reference_dimensions,
+        )
+
+
+def read_mask_at_spacing(
+    path: str | Path,
+    *,
+    spacing_um: float | None,
+    size: tuple[int, int],
+    reference_path: str | Path,
+    pixel_mapping: Mapping[str, int | list[int]],
+    reference_backend: str = "auto",
+    spacing_at_level_0: float | None = None,
+    backend: str = "auto",
+) -> np.ndarray:
+    """Read a label mask as a 2-D integer raster (flat PIL or spacing-aware hs2p).
+
+    A flat mask is read as is. Otherwise the mask is aligned to its image
+    (``reference_path``, read with ``reference_backend``; ``backend`` reads the mask) and
+    read as ``size=(w, h)`` labels at ``spacing_um``: the image's
+    own read size, so mask and image register whatever the mask's resolution. hs2p
+    rejects a mask that does not cover the image at one scale, and any value
+    ``pixel_mapping`` does not declare.
+    """
+    if _is_flat(path, spacing_um):
+        return _load_flat_mask(path)
+    with _aligned_mask(
+        path,
+        reference_path=reference_path,
+        reference_backend=reference_backend,
+        spacing_at_level_0=spacing_at_level_0,
+        pixel_mapping=pixel_mapping,
+        backend=backend,
+    ) as aligned:
+        return aligned.read_full(
+            target_spacing_um=float(spacing_um), target_dimensions=tuple(size)
+        ).labels
+
+
+def read_mask_region_within_slide(
+    path: str | Path,
+    *,
+    location: tuple[int, int],
+    size: tuple[int, int],
+    spacing_um: float,
+    reference_path: str | Path,
+    pixel_mapping: Mapping[str, int | list[int]],
+    reference_backend: str = "auto",
+    spacing_at_level_0: float | None = None,
+    backend: str = "auto",
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Read a slide-manifest ROI's ``size=(w, h)`` labels at ``(x, y)`` and ``spacing_um``.
+
+    The region counterpart of :func:`read_mask_at_spacing`: the mask is a whole-slide
+    annotation raster, so each ROI reads its window at the same spacing/size as its dense
+    grid (so the supervision registers to the features). ``location`` is in the slide's
+    (``reference_path``) level-0 pixels, not the mask's.
+
+    Tiling keeps a tile that starts inside the slide and extends past its right or bottom
+    edge when its in-slide part meets ``min_coverage``; hs2p never pads a mask read past
+    the canvas. The in-slide part, as hs2p measures it, is read at the same location and
+    spacing (output pixel ``i`` samples the same slide point as in a full read), and the
+    rest is reported as outside. Returns ``(labels, inside)``: ``inside`` is ``None`` when
+    the whole ROI lies on the slide, else a boolean array marking the pixels that do;
+    ``labels`` holds ``0`` outside, which carries no meaning.
+    """
+    (in_slide,) = read_mask_regions_within_slide(
+        path,
+        regions=[(location, spacing_um)],
+        size=size,
+        reference_path=reference_path,
+        pixel_mapping=pixel_mapping,
+        reference_backend=reference_backend,
+        spacing_at_level_0=spacing_at_level_0,
+        backend=backend,
+    )
+    return pad_in_slide_labels(in_slide, size=size)
+
+
+def read_mask_regions_within_slide(
+    path: str | Path,
+    *,
+    regions: Sequence[tuple[tuple[int, int], float]],
+    size: tuple[int, int],
+    reference_path: str | Path,
+    pixel_mapping: Mapping[str, int | list[int]],
+    reference_backend: str = "auto",
+    spacing_at_level_0: float | None = None,
+    backend: str = "auto",
+) -> Iterator[np.ndarray]:
+    """The in-slide labels of several ROIs of one slide, ``(location, spacing_um)`` each.
+
+    Opens and aligns the annotation raster once for all of them and yields one ROI at a
+    time, so a slide's crops are never all held in memory; the raster closes once the
+    iterator is exhausted. Each result is the top-left ``(inside_h, inside_w)`` rectangle
+    of the ROI's ``size=(w, h)`` window that lies on the slide — the whole window for an
+    interior ROI; see :func:`read_mask_region_within_slide` for the edge semantics and
+    :func:`pad_in_slide_labels` for the padding back to ``size``.
+    """
+    width, height = (int(v) for v in size)
+    with _aligned_mask(
+        path,
+        reference_path=reference_path,
+        reference_backend=reference_backend,
+        spacing_at_level_0=spacing_at_level_0,
+        pixel_mapping=pixel_mapping,
+        backend=backend,
+    ) as aligned:
+        for location, spacing_um in regions:
+            region = dict(location=tuple(location), target_spacing_um=float(spacing_um))
+            inside_width, inside_height = aligned.dimensions_within_canvas(
+                **region, target_dimensions=(width, height)
+            )
+            if inside_width <= 0 or inside_height <= 0:
+                yield np.zeros((max(inside_height, 0), max(inside_width, 0)), np.uint8)
+                continue
+            yield aligned.read_region(
+                **region, target_dimensions=(inside_width, inside_height)
+            ).labels
+
+
+def pad_in_slide_labels(
+    in_slide: np.ndarray, *, size: tuple[int, int]
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Pad a ROI's in-slide label rectangle back to its ``size=(w, h)`` window.
+
+    Returns ``(labels, inside)`` as :func:`read_mask_region_within_slide` does: ``inside``
+    is ``None`` for a full window, else marks the top-left rectangle the labels came from;
+    the padding is ``0``, which carries no meaning.
+    """
+    width, height = (int(v) for v in size)
+    inside_height, inside_width = in_slide.shape
+    if (inside_width, inside_height) == (width, height):
+        return in_slide, None
+    if inside_width > width or inside_height > height:
+        raise ValueError(
+            f"in-slide labels {in_slide.shape} exceed the ROI window {(height, width)}."
+        )
+    labels = np.zeros((height, width), dtype=in_slide.dtype)
+    inside = np.zeros((height, width), dtype=bool)
+    labels[:inside_height, :inside_width] = in_slide
+    inside[:inside_height, :inside_width] = True
+    return labels, inside
+
+
+# PNG text key of a crop with no in-slide pixel; its value is the empty rectangle's
+# ``<height>x<width>``.
+_EMPTY_CROP_SHAPE_KEY = "soma-empty-in-slide-shape"
+
+
+def write_mask_crop(path: str | Path, labels: np.ndarray) -> None:
+    """Persist a ROI's in-slide raw labels as a lossless PNG, atomically.
+
+    Raw values are kept as they are (no class remap): 8-bit when every value fits, else
+    16-bit. A value outside ``[0, 65535]`` cannot be stored. An empty rectangle (an edge
+    ROI whose overhang holds less than one target pixel on an axis, which tiling keeps
+    under a zero ``min_coverage``) cannot be a PNG, so it is stored as a 1x1 placeholder
+    whose text chunk records the empty shape; :func:`read_mask_crop` reads it back as an
+    all-outside window.
+    """
+    from io import BytesIO
+
+    from PIL.PngImagePlugin import PngInfo
+
+    from soma._internal.atomic_io import atomic_write_bytes
+
+    array = np.asarray(labels)
+    if array.ndim != 2:
+        raise ValueError(f"mask crop for '{path}' must be a 2-D array, got {array.shape}.")
+    if not np.issubdtype(array.dtype, np.integer):
+        raise ValueError(f"mask crop for '{path}' must hold integer labels, got {array.dtype}.")
+    pnginfo = None
+    if array.size == 0:
+        pnginfo = PngInfo()
+        pnginfo.add_text(_EMPTY_CROP_SHAPE_KEY, "x".join(str(int(v)) for v in array.shape))
+        array = np.zeros((1, 1), dtype=np.uint8)
+    low, high = int(array.min()), int(array.max())
+    if low < 0 or high > np.iinfo(np.uint16).max:
+        raise ValueError(
+            f"mask crop for '{path}' holds raw values in [{low}, {high}]; a PNG crop stores "
+            "values in [0, 65535] only."
+        )
+    dtype = np.uint8 if high <= np.iinfo(np.uint8).max else np.uint16
+    buffer = BytesIO()
+    Image.fromarray(np.ascontiguousarray(array.astype(dtype))).save(
+        buffer, format="PNG", pnginfo=pnginfo
+    )
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_bytes(Path(path), buffer.getvalue())
+
+
+def read_mask_crop(
+    path: str | Path, *, size: tuple[int, int]
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Load a stored ROI mask crop as ``(labels, inside)`` on its ``size=(w, h)`` window.
+
+    The crop's shape encodes ``inside``: a full-size crop is a ROI wholly on the slide
+    (``inside`` is ``None``), a smaller one is the in-slide part of an edge ROI, padded
+    back as :func:`read_mask_region_within_slide` returns it, and an empty one (see
+    :func:`write_mask_crop`) is a ROI with no pixel on the slide.
+    """
+    with Image.open(path) as image:
+        empty_shape = image.info.get(_EMPTY_CROP_SHAPE_KEY)
+        if empty_shape is None:
+            in_slide = _flat_mask_array(image, path)
+        else:
+            height, width = (int(v) for v in str(empty_shape).split("x"))
+            in_slide = np.zeros((height, width), dtype=np.uint8)
+    return pad_in_slide_labels(in_slide, size=size)

@@ -25,7 +25,7 @@ import numpy as np
 import slide2vec
 import yaml
 
-from soma.atomic_io import atomic_write_text
+from soma._internal.atomic_io import atomic_write_text
 
 __all__ = [
     "CRoMaOptions", "CacheOptions", "CohortConfig", "Component", "EncoderLeaf", "EvaluationConfig",
@@ -99,7 +99,7 @@ class EncoderLeaf(Component):
 
     ``params`` are slide2vec's ``Model.from_preset`` keywords (``output_variant``,
     ``allow_non_recommended_settings``), or the composite's members
-    (:class:`soma.encoders.CompositeParams`); the ``encoders`` registry validates them.
+    (:class:`soma.models.encoders.CompositeParams`); the ``encoders`` registry validates them.
     """
 
     @property
@@ -164,7 +164,7 @@ class FeaturesConfig(_Editable):
         _check_choice("features.spacing_policy", self.spacing_policy, ("strict", "native_if_coarser"))
         _check_types(self, "features.", ("extraction", "execution", "dense", "cache"))
         if self.encoder is not None:
-            from soma.encoders import encoder_registry
+            from soma.models.encoders import encoder_registry
 
             if self.encoder.name not in encoder_registry:
                 available = ", ".join(sorted(encoder_registry.list())) or "(none)"

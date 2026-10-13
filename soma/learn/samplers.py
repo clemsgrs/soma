@@ -9,9 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from soma.learn.roi_sampler import ClassConditionedRoiBatchSampler, UniformRoiBatchSampler
-from soma.params import check_positive
+from soma._internal.params import check_positive
 from soma.registry import Registry
-from soma.training.survival_sampler import EventBalancedBatchSampler
+from soma.learn.survival_sampler import EventBalancedBatchSampler
 
 __all__ = [
     "ClassConditionedRoiParams",
@@ -48,7 +48,7 @@ class ClassConditionedRoiParams:
 
 @dataclass
 class EventBalancedParams:
-    """:class:`~soma.training.survival_sampler.EventBalancedBatchSampler`'s params."""
+    """:class:`~soma.learn.survival_sampler.EventBalancedBatchSampler`'s params."""
 
     min_events_per_window: int = 1
 

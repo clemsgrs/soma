@@ -5,14 +5,14 @@ from __future__ import annotations
 import torch
 import pytest
 
-from soma.aggregators.base import AggregatorOutput
-from soma.aggregators.registry import aggregator_registry
+from soma.models.aggregators.base import AggregatorOutput
+from soma.models.aggregators.registry import aggregator_registry
 
 
 class TestVisionTransformer4K:
     def test_output_shape(self):
         """Tiny dims: verify output shape (M, embed_dim)."""
-        from soma.aggregators.mil.hipt import VisionTransformer4K
+        from soma.models.aggregators.mil.hipt import VisionTransformer4K
 
         vit = VisionTransformer4K(
             input_embed_dim=16,
@@ -29,7 +29,7 @@ class TestVisionTransformer4K:
 
     def test_positional_encoding_interpolation(self):
         """Create with one npatch, run with another — no errors."""
-        from soma.aggregators.mil.hipt import VisionTransformer4K
+        from soma.models.aggregators.mil.hipt import VisionTransformer4K
 
         vit = VisionTransformer4K(
             input_embed_dim=16,
@@ -46,7 +46,7 @@ class TestVisionTransformer4K:
 
 class TestHIPT:
     def _make_hipt(self, **kwargs):
-        from soma.aggregators.mil.hipt import HIPT
+        from soma.models.aggregators.mil.hipt import HIPT
 
         defaults = dict(
             input_dim=16,
@@ -122,27 +122,27 @@ class TestHIPT:
 
     def test_registered(self):
         """HIPT is registered in aggregator_registry."""
-        from soma.aggregators.mil.hipt import HIPT
+        from soma.models.aggregators.mil.hipt import HIPT
 
         assert aggregator_registry.get("hipt") is HIPT
 
     def test_invalid_region_size(self):
         """region_size < 2 * patch_size → ValueError."""
-        from soma.aggregators.mil.hipt import HIPT
+        from soma.models.aggregators.mil.hipt import HIPT
 
         with pytest.raises(ValueError, match="region_size.*patch_size"):
             HIPT(input_dim=16, region_size=4, patch_size=4, embed_dim_region=12, embed_dim_slide=12)
 
     def test_region_size_not_divisible(self):
         """region_size % patch_size != 0 → ValueError."""
-        from soma.aggregators.mil.hipt import HIPT
+        from soma.models.aggregators.mil.hipt import HIPT
 
         with pytest.raises(ValueError, match="divisible"):
             HIPT(input_dim=16, region_size=7, patch_size=4, embed_dim_region=12, embed_dim_slide=12)
 
     def test_pretrained_region_weights_is_not_supported(self):
         """HIPT no longer accepts pretrained_region_weights."""
-        from soma.aggregators.mil.hipt import HIPT
+        from soma.models.aggregators.mil.hipt import HIPT
 
         with pytest.raises(TypeError, match="unexpected keyword argument"):
             HIPT(

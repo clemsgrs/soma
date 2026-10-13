@@ -230,7 +230,7 @@ def test_build_config_resolves_preprocessing_for_every_reproduction_encoder(enco
     # the uni2-only vertical slice. With the geometry pinned, all three resolve to the SAME
     # 0.5 µm/px @ 224 px — and the pin is a no-op for the two that already worked, so numbers
     # recorded before it stay comparable.
-    from soma.encoders.validation import resolve_preprocessing_config
+    from soma.models.encoders.validation import resolve_preprocessing_config
 
     config = get_benchmark("hest/PAAD").build_config(
         encoder=encoder,

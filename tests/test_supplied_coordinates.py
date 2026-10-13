@@ -8,12 +8,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from soma.cache.keys import _sample_identity_payload, sample_identity_signature
+from soma.extract.cache.keys import _sample_identity_payload, sample_identity_signature
 import slide2vec
 
 from tests.extraction_configs import annotation_masks, extraction
 from soma.data import ImageManifest
-from soma.preprocessing.supplied_coordinates import stage_supplied_coordinates
+from soma.extract.preprocessing.supplied_coordinates import stage_supplied_coordinates
 from tests.e2e.synthetic import write_coordinates_artifact
 
 TILE_PX = 32
@@ -52,7 +52,7 @@ def _preprocessing(**overrides) -> slide2vec.PreprocessingConfig:
 
 
 def _resolve_tile_cache(cache_root: Path, dataset: Dataset):
-    from soma.cache import resolve_tile_cache
+    from soma.extract.cache import resolve_tile_cache
 
     return resolve_tile_cache(
         cache_root=cache_root,
@@ -67,7 +67,7 @@ def _commit(resolution, sample_id: str, tensor):
     """Write one sample's features the way extraction commits them."""
     import torch
 
-    from soma.cache import record_feature_dim, record_sample_identity_signatures
+    from soma.extract.cache import record_feature_dim, record_sample_identity_signatures
 
     payload_path = resolution.feature_path_for_id(sample_id)
     torch.save(tensor, payload_path)
@@ -308,7 +308,7 @@ def test_a_stale_empty_marker_does_not_hide_a_sample(tmp_path: Path, change: str
     """A slide recorded empty under one identity is extracted again under another."""
     import torch
 
-    from soma.cache import record_empty_sample_ids
+    from soma.extract.cache import record_empty_sample_ids
 
     frame = pd.read_csv(
         _manifest(tmp_path, {"a": _artifact(tmp_path / "coordinates", "a", tmp_path / "a.tif")})

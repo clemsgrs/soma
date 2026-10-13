@@ -1,4 +1,4 @@
-"""Tests for soma.tasks — TaskHead ABC and all task head implementations."""
+"""Tests for soma.models.heads — TaskHead ABC and all task head implementations."""
 
 from __future__ import annotations
 
@@ -9,15 +9,15 @@ import torch
 import pytest
 
 from soma.evaluation.metrics import DEFAULT_METRICS
-from soma.tasks.base import TaskHead
-from soma.tasks.classification import (
+from soma.models.heads.base import TaskHead
+from soma.models.heads.classification import (
     BinaryClassificationHead,
     BranchAwareClassificationHead,
     MulticlassClassificationHead,
 )
-from soma.tasks.ordinal_classification import OrdinalClassificationHead
-from soma.tasks.regression import RegressionHead
-from soma.tasks.registry import task_registry
+from soma.models.heads.ordinal_classification import OrdinalClassificationHead
+from soma.models.heads.regression import RegressionHead
+from soma.models.heads.registry import task_registry
 
 
 def _FakeCohort(num_classes):

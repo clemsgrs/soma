@@ -93,7 +93,7 @@ def _segmentation_manifest(root: Path, slide_path: Path, label_mask_path: Path):
 
 def test_sample_slide_rois_runs_real_hs2p_merged_mode(tmp_path: Path):
     """Real hs2p 4.1.1 merged-mode sampling: no AttributeError, non-empty ROI coords."""
-    from soma.dense_slide_extraction import sample_slide_rois
+    from soma.extract.dense_slide_extraction import sample_slide_rois
 
     slide_path, label_mask_path = _make_fixture(tmp_path)
     dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
@@ -111,7 +111,7 @@ def test_sample_slide_rois_runs_real_hs2p_merged_mode(tmp_path: Path):
 
 def _roi_labels(label_mask_path: Path, **kwargs) -> np.ndarray:
     """A ROI's labels through soma's reader, for a ROI wholly on the slide."""
-    from soma.dense.reader import read_mask_region_within_slide
+    from soma.extract.dense.reader import read_mask_region_within_slide
 
     labels, inside = read_mask_region_within_slide(label_mask_path, **kwargs)
     assert inside is None
@@ -120,7 +120,7 @@ def _roi_labels(label_mask_path: Path, **kwargs) -> np.ndarray:
 
 def test_mask_region_read_back_from_fixture(tmp_path: Path):
     """The same fixture's label mask reads back a non-empty window at a sampled ROI origin."""
-    from soma.dense_slide_extraction import sample_slide_rois
+    from soma.extract.dense_slide_extraction import sample_slide_rois
 
     slide_path, label_mask_path = _make_fixture(tmp_path)
     dataset = _segmentation_manifest(tmp_path, slide_path, label_mask_path)
@@ -200,7 +200,7 @@ def test_mask_region_location_is_in_slide_pixels_for_a_coarser_mask(tmp_path: Pa
 
 def test_full_mask_read_registers_a_coarser_mask_to_the_image_grid(tmp_path: Path):
     """A pre-cropped pyramidal mask coarser than its image is read on the image's grid."""
-    from soma.dense.reader import read_mask_at_spacing
+    from soma.extract.dense.reader import read_mask_at_spacing
 
     slide_path, label_mask_path = _make_half_resolution_mask_fixture(tmp_path)
     labels = read_mask_at_spacing(
@@ -233,7 +233,7 @@ def test_mask_read_rejects_a_value_outside_the_declared_vocabulary(tmp_path: Pat
 
 
 def test_mask_read_rejects_a_mask_that_does_not_cover_the_slide(tmp_path: Path):
-    from soma.dense.reader import read_mask_at_spacing
+    from soma.extract.dense.reader import read_mask_at_spacing
 
     slide_path, _ = _make_half_resolution_mask_fixture(tmp_path)
     narrow = tmp_path / "narrow_mask.tif"
@@ -297,7 +297,7 @@ def _make_split_tumor_fixture(root: Path) -> tuple[Path, Path]:
 
 
 def _sample_split_tumor(tmp_path: Path, masks: MaskSamplingConfig) -> list[tuple[int, int]]:
-    from soma.dense_slide_extraction import sample_slide_rois
+    from soma.extract.dense_slide_extraction import sample_slide_rois
 
     tmp_path.mkdir()
     slide_path, label_mask_path = _make_split_tumor_fixture(tmp_path)
@@ -348,7 +348,7 @@ def test_roi_mask_read_at_the_grids_spacing_is_the_native_crop(tmp_path: Path):
     """A 0.486 um/px slide is within tolerance of 0.5, so its ROI image is the native
     64x64 crop. Read at that recorded spacing the mask is the same crop; read at the
     requested 0.5 it covers ~66 px and drifts off the image."""
-    from soma.dense.reader import read_mask_region_within_slide
+    from soma.extract.dense.reader import read_mask_region_within_slide
 
     slide_path, label_mask_path, mask = _make_striped_fixture(tmp_path, spacing_um=0.4862)
 
@@ -372,7 +372,7 @@ def test_roi_mask_read_at_the_grids_spacing_is_the_native_crop(tmp_path: Path):
 def test_roi_mask_read_marks_the_part_beyond_the_slide(tmp_path: Path):
     """A 64 px ROI at x=224 on a 256 px slide overhangs by 32 px: hs2p never pads, so the
     reader returns the in-slide labels and marks the rest as outside."""
-    from soma.dense.reader import read_mask_region_within_slide
+    from soma.extract.dense.reader import read_mask_region_within_slide
 
     slide_path, label_mask_path, mask = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
 
@@ -407,9 +407,9 @@ def test_stored_roi_mask_crop_is_the_in_slide_part_of_the_window_read(
     from PIL import Image
 
     from soma.data import ImageEntry
-    from soma.extraction.rois import RoiEntry
-    from soma.dense.reader import read_mask_region_within_slide
-    from soma.dense_slide_extraction import write_roi_mask_crops
+    from soma.extract.rois import RoiEntry
+    from soma.extract.dense.reader import read_mask_region_within_slide
+    from soma.extract.dense_slide_extraction import write_roi_mask_crops
 
     slide_path, label_mask_path, _ = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
     crop_path = tmp_path / "masks" / "s0" / f"{location[0]}_{location[1]}.png"
@@ -451,9 +451,9 @@ def test_roi_with_no_in_slide_pixel_stores_an_all_outside_crop(tmp_path: Path):
     less than one target pixel on the slide: its crop is written, and reads back as the
     window read does (all outside, so the head's target is all ``ignore_index``)."""
     from soma.data import ImageEntry
-    from soma.extraction.rois import RoiEntry
-    from soma.dense.reader import read_mask_crop, read_mask_region_within_slide
-    from soma.dense_slide_extraction import write_roi_mask_crops
+    from soma.extract.rois import RoiEntry
+    from soma.extract.dense.reader import read_mask_crop, read_mask_region_within_slide
+    from soma.extract.dense_slide_extraction import write_roi_mask_crops
 
     slide_path, label_mask_path, _ = _make_striped_fixture(tmp_path, spacing_um=SPACING_UM)
     location, spacing_um = (255, 0), 2 * SPACING_UM

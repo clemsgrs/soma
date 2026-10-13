@@ -50,9 +50,9 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor, nn
 
-from soma.aggregators.base import Aggregator, AggregatorOutput
-from soma.aggregators.mil.attention_pool import AttentionPool
-from soma.aggregators.registry import aggregator_registry
+from soma.models.aggregators.base import Aggregator, AggregatorOutput
+from soma.models.aggregators.mil.attention_pool import AttentionPool
+from soma.models.aggregators.registry import aggregator_registry
 from soma.benchmarks.eva import (
     DEFAULT_ENCODER,
     ENCODERS,
@@ -92,8 +92,8 @@ from soma.curation.eva_slide import (
 )
 from soma.curation.manifest import CuratedManifest
 from soma.evaluation.metrics import compute_metrics, resolve_metrics
-from soma.tasks.base import TaskHead
-from soma.tasks.registry import task_registry
+from soma.models.heads.base import TaskHead
+from soma.models.heads.registry import task_registry
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

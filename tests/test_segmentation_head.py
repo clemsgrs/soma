@@ -10,9 +10,9 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-from soma.decoders import LinearDecoder
-from soma.tasks import task_registry
-from soma.tasks.dense_metrics import (
+from soma.models.decoders import LinearDecoder
+from soma.models.heads import task_registry
+from soma.models.heads.dense_metrics import (
     cross_entropy_dice_loss,
     dense_confusion_counts,
     dense_confusion_matrices,
@@ -22,9 +22,9 @@ from soma.tasks.dense_metrics import (
     segmentation_loss,
     soft_dice_loss,
 )
-from soma.tasks.segmentation import SegmentationHead, load_mask
-from soma.dense import compute_dense_geometry
-from soma.training.model import DenseModel, DenseModelOutput
+from soma.models.heads.segmentation import SegmentationHead, load_mask
+from soma.data.geometry import compute_dense_geometry
+from soma.models.model import DenseModel, DenseModelOutput
 
 
 def _tile(sample_id: str, image_path: Path, label_mask_path: Path):
@@ -42,7 +42,7 @@ def _targets(head, sample):
     stored, a tile from its raster, the head's class scheme folded in) and run the head's
     target check."""
     from soma.data import AnnotationManifest, ImageManifest, LabelMapSource
-    from soma.extraction.rois import RoiEntry, RoiSet
+    from soma.extract.rois import RoiEntry, RoiSet
 
     params = head.label_map_read_params
     if isinstance(sample, RoiEntry):
@@ -385,7 +385,7 @@ def test_extract_targets_rejects_out_of_range_label(tmp_path: Path):
 
 def _never_open_an_annotation_raster(monkeypatch):
     """Fail any spacing-aware mask open: ROI targets must come from the stored crop."""
-    import soma.dense.reader as reader_mod
+    import soma.extract.dense.reader as reader_mod
 
     def fail(*args, **kwargs):
         raise AssertionError("the annotation raster was opened")
@@ -396,7 +396,7 @@ def _never_open_an_annotation_raster(monkeypatch):
 def _roi_record(tmp_path: Path, crop: np.ndarray, *, sample_id: str = "roi0", region=(0, 0)):
     """A slide-manifest ROI whose stored mask crop is ``crop`` (a raw-value PNG)."""
     from soma.data import ImageEntry
-    from soma.extraction.rois import RoiEntry
+    from soma.extract.rois import RoiEntry
 
     crop_path = tmp_path / "masks" / "slide" / f"{region[0]}_{region[1]}.png"
     crop_path.parent.mkdir(parents=True, exist_ok=True)
@@ -412,7 +412,7 @@ def _roi_record(tmp_path: Path, crop: np.ndarray, *, sample_id: str = "roi0", re
 
 def _roi_head_reading(monkeypatch, tmp_path, raw, *, classes, ignore):
     """A remapping head and an ROI record whose stored mask crop holds ``raw``."""
-    from soma.dense.reader import build_label_remap
+    from soma.extract.dense.reader import build_label_remap
 
     _never_open_an_annotation_raster(monkeypatch)
     head = SegmentationHead(
@@ -459,7 +459,7 @@ def test_extract_targets_rejects_undeclared_raw_value(monkeypatch, tmp_path: Pat
 
 def _capture_mask_reads(monkeypatch, raw):
     """Stub the hs2p-backed tile mask reader; record each call's keyword arguments."""
-    import soma.dense.reader as segmod
+    import soma.extract.dense.reader as segmod
 
     calls = []
 
@@ -477,7 +477,7 @@ def test_extract_targets_ignores_the_part_of_a_roi_beyond_the_slide(
     """A ROI kept at the slide's right edge overhangs it: its stored crop is only the
     in-slide part, the rest of the window becomes ignore_index instead of failing the run,
     and the in-slide part is remapped as usual."""
-    from soma.dense.reader import build_label_remap
+    from soma.extract.dense.reader import build_label_remap
 
     _never_open_an_annotation_raster(monkeypatch)
     head = SegmentationHead(
@@ -499,7 +499,7 @@ def test_extract_targets_ignores_the_part_of_a_roi_beyond_the_slide(
 
 def test_extract_targets_needs_a_stored_crop_for_a_roi(monkeypatch):
     from soma.data import ImageEntry
-    from soma.extraction.rois import RoiEntry
+    from soma.extract.rois import RoiEntry
 
     _never_open_an_annotation_raster(monkeypatch)
     head = SegmentationHead(
@@ -523,7 +523,7 @@ def test_extract_targets_declares_the_class_scheme_values_for_a_pre_cropped_mask
 ):
     """Pre-cropped tiles have no sampling vocabulary: the mask declares exactly the raw
     values the head accepts (task.params.classes and ignore)."""
-    from soma.dense.reader import build_label_remap
+    from soma.extract.dense.reader import build_label_remap
 
     calls = _capture_mask_reads(monkeypatch, np.array([[3, 7], [7, 5]], dtype=np.uint8))
     head = SegmentationHead(
@@ -563,7 +563,7 @@ def test_extract_targets_declares_class_indices_and_ignore_index_without_a_class
 
 
 def test_extract_targets_names_the_sample_when_the_mask_read_fails(monkeypatch):
-    import soma.dense.reader as segmod
+    import soma.extract.dense.reader as segmod
 
     def fail(path, **kwargs):
         raise ValueError("Mask read produced invalid labels for path=/tile_mask.tif")

@@ -11,7 +11,7 @@ from typing import Any
 
 import yaml
 
-from soma._logging import configure_cli_logging
+from soma._internal.logging import configure_cli_logging
 from soma.config import ExperimentConfig
 from soma.discovery import components
 from soma.pipeline import Pipeline
@@ -40,7 +40,7 @@ from soma.benchmarks.run import (
 def _cached_source(config: ExperimentConfig, feature_dir: Path):
     """The cached source a ``--feature-dir`` holds: grids for the grid shape, else features."""
     from soma.data import CachedSetSource
-    from soma.dense import CachedGridSource, DenseSourceProvenance
+    from soma.extract.dense import CachedGridSource, DenseSourceProvenance
     from soma.plan import learner_shape
 
     if learner_shape(config) == "grid":
@@ -369,7 +369,7 @@ def _preflight_config_compatibility(
         )
 
     from soma.plan import learner_shape, sample_unit
-    from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     dense = resolve_pipeline_dense(config) if learner_shape(config) == "grid" else None
     feature_kind = None if dense is None else dense.feature_kind

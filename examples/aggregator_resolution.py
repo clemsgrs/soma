@@ -1,7 +1,7 @@
 """Resolve one fixed MIL recipe against tile- and slide-level encoders.
 
 A slide-level benchmark fixes one MIL recipe and varies the encoder axis.
-:func:`soma.encoders.resolve_aggregator` (soma 1.12.0) decides, from encoder
+:func:`soma.models.encoders.resolve_aggregator` (soma 1.12.0) decides, from encoder
 registry metadata alone, what that recipe means for each encoder:
 
 * a **tile** encoder produces bags of tile vectors → the fixed MIL recipe
@@ -25,16 +25,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from soma import Component, ExperimentConfig, Plan
+from soma import ExperimentConfig, Plan
 from soma.config import (
     CohortConfig,
+    Component,
     EvaluationConfig,
     FeaturesConfig,
     LearnerConfig,
     RunConfig,
     TrainerConfig,
 )
-from soma.encoders import resolve_aggregator
+from soma.models.encoders import resolve_aggregator
 from soma.pipeline.layout import build_experiment_spec
 from soma.plan import check
 

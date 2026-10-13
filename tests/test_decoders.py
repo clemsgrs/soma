@@ -7,7 +7,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from soma import components  # noqa: E402
-from soma.decoders import (  # noqa: E402
+from soma.models.decoders import (  # noqa: E402
     HeavyConvDecoder,
     LightweightConvDecoder,
     LinearDecoder,

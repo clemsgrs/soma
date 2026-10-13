@@ -1,11 +1,11 @@
-"""Tests for soma.training.model — EmbeddingModel (direct task head wrapper)."""
+"""Tests for soma.models.model — EmbeddingModel (direct task head wrapper)."""
 
 from __future__ import annotations
 
 import torch
 
-from soma.tasks.classification import BinaryClassificationHead, MulticlassClassificationHead
-from soma.training.model import EmbeddingModel, EmbeddingModelOutput
+from soma.models.heads.classification import BinaryClassificationHead, MulticlassClassificationHead
+from soma.models.model import EmbeddingModel, EmbeddingModelOutput
 
 
 class TestEmbeddingModel:

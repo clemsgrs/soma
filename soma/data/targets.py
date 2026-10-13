@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from torch import Tensor
 
-from soma.class_scheme import assign_raw_values, resolve_classes
+from soma._internal.class_scheme import assign_raw_values, resolve_classes
 from soma.data.manifests import AnnotationManifest, ImageManifest
 from soma.data.sources import Points
 
@@ -67,7 +67,7 @@ def build_label_remap(
     name to the raw value(s) that form it — several values merge into one class — and the
     class index is the declaration order. ``ignore`` lists the raw values excluded from
     loss and metrics (they map to ``ignore_index``). The rules are those of
-    :mod:`soma.class_scheme`, with raw values capped at a single byte.
+    :mod:`soma._internal.class_scheme`, with raw values capped at a single byte.
 
     Every value declared nowhere maps to :data:`UNDECLARED_LABEL`.
 
@@ -247,8 +247,8 @@ class LabelMapSource:
         return dict(self._entries)
 
     def load(self, sample_id: str) -> Tensor:
-        from soma.dense.reader import read_mask_at_spacing
-        from soma.spacing import resolve_effective_spacing_um
+        from soma.extract.dense.reader import read_mask_at_spacing
+        from soma.extract.spacing import resolve_effective_spacing_um
 
         entry = self._entries.get(sample_id)
         if entry is None:
@@ -326,7 +326,7 @@ class CachedLabelMapSource:
         return dict(self._crops)
 
     def load(self, sample_id: str) -> Tensor:
-        from soma.dense.reader import read_mask_crop
+        from soma.extract.dense.reader import read_mask_crop
 
         path = self._crops.get(sample_id)
         if path is None:
@@ -437,8 +437,8 @@ class PointSource:
         return dict(self._entries)
 
     def load(self, sample_id: str) -> Points:
-        from soma.detection.encode import IGNORE_VALUE, points_on_valid
-        from soma.detection.io import read_ignore_mask, read_points
+        from soma.models.detection_targets import IGNORE_VALUE, points_on_valid
+        from soma.evaluation.detection.io import read_ignore_mask, read_points
 
         entry = self._entries.get(sample_id)
         if entry is None:

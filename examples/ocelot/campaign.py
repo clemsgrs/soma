@@ -380,7 +380,7 @@ def dense_embeddings_dir(cell: Cell, data_root: Path) -> Path | None:
     """Resolve the exact current dense-grid directory for a campaign cell."""
     from soma.benchmarks.ocelot import OCELOT, resolve_dense_cache_dir
     from soma.data import ImageManifest
-    from soma.dense import DENSE_IMAGE_PAYLOAD_SUBDIR
+    from soma.extract.dense import DENSE_IMAGE_PAYLOAD_SUBDIR
 
     curated = data_root / "curated"
     cfg = OCELOT.build_config(

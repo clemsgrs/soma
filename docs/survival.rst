@@ -55,8 +55,8 @@ and hierarchical ``hipt`` features; other aggregators are rejected.
 Task heads
 ----------
 
-.. autoclass:: soma.tasks.survival.SurvivalHead
+.. autoclass:: soma.models.heads.survival.SurvivalHead
    :members:
 
-.. autoclass:: soma.tasks.survival.CoxSurvivalHead
+.. autoclass:: soma.models.heads.survival.CoxSurvivalHead
    :members:

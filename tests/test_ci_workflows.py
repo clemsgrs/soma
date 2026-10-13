@@ -210,11 +210,11 @@ def test_prism_regression_always_runs_outside_pull_requests(tmp_path, event):
     [
         ("pyproject.toml",),
         ("Dockerfile.ci",),
-        ("docs/index.md", "soma/extraction/extractor.py"),
-        ("soma/encoders/validation.py",),
-        ("soma/cache/keys.py",),
-        ("soma/preprocessing/supplied_coordinates.py",),
-        ("soma/slide2vec_adapter.py",),
+        ("docs/index.md", "soma/extract/extractor.py"),
+        ("soma/models/encoders/validation.py",),
+        ("soma/extract/cache/keys.py",),
+        ("soma/extract/preprocessing/supplied_coordinates.py",),
+        ("soma/extract/slide2vec_adapter.py",),
         ("tests/fixtures/regression/gt/test-wsi.pt",),
         ("tests/test_regression_fixtures.py",),
         (".github/workflows/pr-test.yaml",),
@@ -228,9 +228,9 @@ def test_prism_regression_runs_when_a_pr_touches_the_extraction_path(tmp_path, c
     "changed",
     [
         ("docs/index.md",),
-        ("soma/learn/trainer.py", "soma/aggregators/mil/abmil.py"),
-        ("soma/tasks/segmentation.py", "tests/test_pipeline.py"),
-        ("soma/dense_extraction.py", "soma/decoders/heavy_conv.py"),
+        ("soma/learn/trainer.py", "soma/models/aggregators/mil/abmil.py"),
+        ("soma/models/heads/segmentation.py", "tests/test_pipeline.py"),
+        ("soma/extract/dense_extraction.py", "soma/models/decoders/heavy_conv.py"),
         # Look-alike names must not match by prefix.
         ("soma/features_extra.py", "soma/configs/eva/bach.yaml", "pyproject.toml.bak"),
     ],
@@ -240,7 +240,7 @@ def test_prism_regression_skips_prs_off_the_extraction_path(tmp_path, changed):
 
 
 def test_prism_regression_skips_fork_prs_which_get_no_secrets(tmp_path):
-    changed = ("soma/extraction/extractor.py",)
+    changed = ("soma/extract/extractor.py",)
 
     assert _run_prism_scope(tmp_path, changed=changed, head_repo="someone/soma") == "false"
 

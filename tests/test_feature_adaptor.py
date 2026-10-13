@@ -1,4 +1,4 @@
-"""Tests for soma.training.feature_adaptor — the fitted feature adaptor.
+"""Tests for soma.learn.feature_adaptor — the fitted feature adaptor.
 
 The adaptor is the one genuinely new seam this work adds: a buffer-carrying front
 module inserted ahead of the aggregator/head. These tests assert its *external*
@@ -17,15 +17,15 @@ from pathlib import Path
 import pytest
 import torch
 
-from soma.aggregators.pooling import MeanPool
+from soma.models.aggregators.pooling import MeanPool
 from soma.config import Component, FeaturesConfig
 from soma.data import Cohort, ImageManifest
 from soma.data import CachedSetSource
-from soma.training.feature_adaptor import NormalizationParams, ProjectionParams
+from soma.learn.feature_adaptor import NormalizationParams, ProjectionParams
 from tests.experiment_configs import experiment
-from soma.tasks.classification import BinaryClassificationHead
-from soma.training.feature_adaptor import build_feature_adaptor
-from soma.training.model import EmbeddingModel, MILModel
+from soma.models.heads.classification import BinaryClassificationHead
+from soma.learn.feature_adaptor import build_feature_adaptor
+from soma.models.model import EmbeddingModel, MILModel
 
 
 #: The adaptor runs' optimizer: Adam at lr 1e-3 (weight decay 1e-5), cosine-annealed.
@@ -822,7 +822,7 @@ def test_attention_reconstructs_the_projected_model_from_the_bundle(tmp_path: Pa
     rewired aggregator width, or the strict load fails — the same class of breakage the
     normalize stage hit.
     """
-    from soma.heatmaps import save_attention
+    from soma.evaluation.heatmaps import save_attention
 
     _, _, store = _synthetic_fold(tmp_path / "data")
     run_dir, _ = _pipeline_run(
@@ -1134,9 +1134,9 @@ def _synthetic_dense_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
     import numpy as np
     from PIL import Image
 
-    from soma.dense import CachedGridSource
-    from soma.dense.geometry import compute_dense_geometry
-    from soma.dense.store import dense_grid_metadata, write_dense_grid
+    from soma.extract.dense import CachedGridSource
+    from soma.data.geometry import compute_dense_geometry
+    from soma.extract.dense.store import dense_grid_metadata, write_dense_grid
 
     tmp_path.mkdir(parents=True, exist_ok=True)
     dense_dir = tmp_path / "dense"
@@ -1287,9 +1287,9 @@ def test_dense_decoder_parameter_count_is_encoder_dim_independent_under_projecti
 def test_dense_adaptor_state_is_buffers_that_ride_in_the_checkpoint(tmp_path: Path):
     """Buffers, not parameters: the optimizer never sees them, yet they are saved so the
     final-checkpoint test pass re-applies exactly the transform training used."""
-    from soma.decoders.registry import decoder_registry
-    from soma.tasks.segmentation import SegmentationHead
-    from soma.training.model import DenseModel
+    from soma.models.decoders.registry import decoder_registry
+    from soma.models.heads.segmentation import SegmentationHead
+    from soma.models.model import DenseModel
 
     fold_dir, state_dict, store = _run_dense_fold(
         tmp_path,
@@ -1372,9 +1372,9 @@ _DETECTION_SPACING = 0.2  # µm/px; match_distance 0.6 µm -> 3 target-frame px
 
 def _synthetic_detection_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
     """The other single-encoder dense stream: same grids, point annotations."""
-    from soma.dense import CachedGridSource
-    from soma.dense.geometry import compute_dense_geometry
-    from soma.dense.store import dense_grid_metadata, write_dense_grid
+    from soma.extract.dense import CachedGridSource
+    from soma.data.geometry import compute_dense_geometry
+    from soma.extract.dense.store import dense_grid_metadata, write_dense_grid
 
     dense_dir = tmp_path / "dense"
     points_dir = tmp_path / "points"
@@ -1430,7 +1430,7 @@ def _run_detection_fold(
     data = tmp_path / "data"
     if not data.exists():
         _synthetic_detection_fold(data, feature_dim)
-    from soma.dense import CachedGridSource
+    from soma.extract.dense import CachedGridSource
 
     run_dir, state_dict = _pipeline_run(
         data,
@@ -1465,7 +1465,7 @@ def test_detection_dense_path_fits_the_adaptor_over_the_support_rois(tmp_path: P
 
 def test_detection_fold_refuses_adaptor_on_composite_dense_stream(tmp_path: Path):
     """Detection's standalone fold API shares the single-encoder adaptor contract."""
-    from soma.dense.composite import CompositeDenseFeatureStore
+    from soma.extract.dense.composite import CompositeDenseFeatureStore
 
     _, _, store = _synthetic_detection_fold(tmp_path / "data")
     composite = CompositeDenseFeatureStore(
@@ -1520,7 +1520,7 @@ def test_a_run_refuses_the_adaptor_on_a_composite_dense_stream(tmp_path: Path):
     """Composites keep their per-member `member_norm`; the top-level blocks are scoped to
     single-encoder streams, so asking for one over a composite must fail rather than
     silently normalize the concatenated grid as if it were one encoder."""
-    from soma.dense.composite import CompositeDenseFeatureStore
+    from soma.extract.dense.composite import CompositeDenseFeatureStore
 
     _, _, store = _synthetic_dense_fold(tmp_path / "grids")
     composite = CompositeDenseFeatureStore(
@@ -1533,7 +1533,7 @@ def test_a_run_refuses_the_adaptor_on_a_composite_dense_stream(tmp_path: Path):
 
 def test_composite_member_norm_is_unchanged_by_the_dense_adaptor(tmp_path: Path):
     """The composite's own per-member normalization keeps working exactly as before."""
-    from soma.dense.composite import CompositeDenseFeatureStore, apply_member_norm
+    from soma.extract.dense.composite import CompositeDenseFeatureStore, apply_member_norm
 
     _, _, store = _synthetic_dense_fold(tmp_path / "data")
     composite = CompositeDenseFeatureStore(
@@ -1561,7 +1561,7 @@ def test_sliding_window_prediction_reloads_a_cached_trained_projected_bundle(tmp
     reloaded model has the fitted buffers, the rewired decoder width, and produces logits
     behind the encoder stage it is given."""
     import soma
-    from soma.dense.predict import SlidingWindowSegmentationPredictor
+    from soma.evaluation.sliding_window import SlidingWindowSegmentationPredictor
     from soma.testing import FakeEncoder
 
     normalization = NormalizationParams(method="zscore")
@@ -1587,8 +1587,8 @@ def test_a_bundle_rebuilds_a_registered_user_head_with_the_run_task_params(
     """The bundle records the head by its registry name and its params, so a user head
     comes back as itself, with the run's ``task.params``."""
     import soma
-    from soma.tasks.registry import task_registry
-    from soma.tasks.segmentation import SegmentationHead
+    from soma.models.heads.registry import task_registry
+    from soma.models.heads.segmentation import SegmentationHead
 
     class SmoothedHead(SegmentationHead):
         def __init__(self, *, smoothing: float, **kwargs):
@@ -1650,7 +1650,7 @@ def test_dense_run_identity_always_names_the_adaptor(tmp_path: Path):
 
 def test_dense_adaptor_leaves_the_feature_extraction_cache_key_untouched(tmp_path: Path):
     """The adaptor consumes the dense cache; it must never orphan it."""
-    from soma.cache.keys import build_dense_cache_key
+    from soma.extract.cache.keys import build_dense_cache_key
 
     off = _dense_pipeline_config(tmp_path)
     on = _dense_pipeline_config(
@@ -1659,7 +1659,7 @@ def test_dense_adaptor_leaves_the_feature_extraction_cache_key_untouched(tmp_pat
         projection=ProjectionParams(method="random", target_dim=64),
     )
 
-    from soma.preprocessing.resolution import resolve_pipeline_dense
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
 
     def key(config):
         return build_dense_cache_key(

@@ -63,7 +63,7 @@ decoder learns a per-class peak heatmap; see the :doc:`detection reference
      - Walkthrough
    * - Neural decoder *(default)*
      - A lightweight conv decoder regresses a per-class peak heatmap; the
-       :class:`~soma.tasks.detection.DetectionHead` reads points back out and scores
+       :class:`~soma.models.heads.detection.DetectionHead` reads points back out and scores
        **F1@δ**.
      - :doc:`Detection <walkthrough-detection>`
    * - :doc:`Multi-encoder composite </encoders/composite>`
@@ -86,7 +86,7 @@ Assign a class to each pixel using frozen encoder outputs; see the
      - Walkthrough
    * - Neural decoder *(default)*
      - A lightweight conv decoder predicts a per-pixel class map; the
-       :class:`~soma.tasks.segmentation.SegmentationHead` trains it with cross-entropy +
+       :class:`~soma.models.heads.segmentation.SegmentationHead` trains it with cross-entropy +
        soft-Dice.
      - :doc:`Segmentation <walkthrough-segmentation>`
    * - :doc:`Multi-encoder composite </encoders/composite>`

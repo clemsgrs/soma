@@ -24,17 +24,17 @@ import yaml
 from torch import Tensor, nn
 
 import soma
-from soma.decoders.base import Decoder
-from soma.decoders.registry import decoder_registry
+from soma.models.decoders.base import Decoder
+from soma.models.decoders.registry import decoder_registry
 from soma.evaluation import Predictions
 from soma.learn import DenseLearner, MILLearner, PredictOutput, learner_registry
-from soma.tasks import ClassificationParams, SegmentationParams, infer_label_map
-from soma.tasks.classification import BinaryClassificationHead
-from soma.tasks.dense_metrics import soft_dice_loss
-from soma.tasks.registry import task_registry
-from soma.tasks.segmentation import SegmentationHead
+from soma.models.heads import ClassificationParams, SegmentationParams, infer_label_map
+from soma.models.heads.classification import BinaryClassificationHead
+from soma.models.heads.dense_metrics import soft_dice_loss
+from soma.models.heads.registry import task_registry
+from soma.models.heads.segmentation import SegmentationHead
 from soma.testing import check_task_head
-from soma.training.sample_dataset import SampleBatch
+from soma.learn.sample_dataset import SampleBatch
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_slide_cohort
 

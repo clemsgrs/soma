@@ -1,41 +1,36 @@
-"""soma — Modular experimentation framework for computational pathology."""
+"""soma — Modular experimentation framework for computational pathology.
 
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+The root exports the verbs, the nouns they take or return, and the namespaces. Everything
+else is reached through its namespace (``soma.models.ABMIL``, ``soma.learn.Trainer``,
+``soma.evaluation.Baseline``, ``soma.data.from_arrays``); config sub-dataclasses live in
+:mod:`soma.config`. The benchmark package is imported explicitly.
+"""
+
+from importlib.metadata import PackageNotFoundError as _PackageNotFoundError, version as _pkg_version
 
 try:
     __version__ = _pkg_version("soma-pathology")
-except PackageNotFoundError:  # not installed (e.g. running from a source checkout)
+except _PackageNotFoundError:  # not installed (e.g. running from a source checkout)
     __version__ = "0.0.0+unknown"
 
-from soma.config import CacheOptions, Component, EncoderLeaf, ExperimentConfig
+from soma.config import ExperimentConfig
 from soma.discovery import components, register
 from soma.plan import Plan, resolve
 from soma import presets
+from soma import data
 from soma.data import (
     AnnotationManifest,
-    CachedLabelMapSource,
-    CachedSetSource,
     Cohort,
     FoldSplit,
-    GridGeometry,
     GridSource,
     ImageManifest,
     ImageSource,
-    LabelMapSource,
-    PointSource,
-    Points,
     SampleRecord,
     SetSource,
     TargetSource,
-    TileImageSource,
-    covers,
-    from_arrays,
-    from_directory,
-    group_by,
-    require_coverage,
 )
+from soma import evaluation
 from soma.evaluation import (
-    Baseline,
     Evaluation,
     LabelMapPredictions,
     PointPredictions,
@@ -43,122 +38,53 @@ from soma.evaluation import (
     evaluate,
     predict,
 )
-from soma.dense import CachedGridSource, DenseSourceProvenance
 from soma import extract
-from soma.extraction import FeatureSource, PooledFeatureSource
-from soma.learn import (
-    Budget,
-    Checkpoint,
-    DenseLearner,
-    EarlyStopping,
-    FitResult,
-    History,
-    Learner,
-    MILLearner,
-    ModelBundle,
-    Progress,
-    SchedulerSpec,
-    StepOutput,
-    Trainer,
-    fit,
-    load,
-    save,
-)
-from soma.pipeline import FoldResult, Pipeline, PipelineResult
-from soma.pipeline.representation import evaluate_representation
-from soma.preprocessing import (
-    overlay_mask_on_slide,
-    save_overlay_preview,
-    write_coordinate_preview,
-)
-from soma.training.model import (
-    DenseModel,
-    DenseModelOutput,
-    EmbeddingModel,
-    EmbeddingModelOutput,
-)
-from soma.training.sample_dataset import SampleBatch, SampleDataset, sample_collate_fn
-from soma.training.seed import seed_everything
+from soma import models
+from soma import learn
+from soma.learn import FitResult, ModelBundle, fit, load, save
+from soma.learn.seed import seed_everything
+from soma import pipeline
+from soma.pipeline import Pipeline, PipelineResult
+from soma import testing
 
 __all__ = [
-    "__version__",
-    # Config
-    "CacheOptions",
-    "Component",
-    "EncoderLeaf",
-    "ExperimentConfig",
-    "Plan",
+    # verbs
+    "extract",
+    "fit",
+    "predict",
+    "evaluate",
+    "save",
+    "load",
+    "seed_everything",
+    "Pipeline",
     "resolve",
-    # Discovery
     "components",
     "register",
-    "presets",
-    # Data
-    "AnnotationManifest",
+    # nouns
     "Cohort",
-    "FoldSplit",
-    "GridGeometry",
-    "ImageManifest",
-    "ImageSource",
-    "LabelMapSource",
-    "CachedLabelMapSource",
-    "PointSource",
-    "Points",
     "SampleRecord",
+    "FoldSplit",
+    "ImageManifest",
+    "AnnotationManifest",
     "SetSource",
-    "TargetSource",
-    "TileImageSource",
-    "covers",
-    "from_arrays",
-    "from_directory",
-    "group_by",
-    "require_coverage",
-    # Features enter through soma.extract (ADR 0021)
-    "extract",
-    "FeatureSource",
-    "PooledFeatureSource",
-    "CachedSetSource",
     "GridSource",
-    "CachedGridSource",
-    "DenseSourceProvenance",
-    # Learning
-    "Budget",
-    "Checkpoint",
-    "DenseLearner",
-    "EarlyStopping",
+    "TargetSource",
+    "ImageSource",
     "FitResult",
-    "History",
-    "Learner",
-    "MILLearner",
     "ModelBundle",
-    "Progress",
-    "SchedulerSpec",
-    "StepOutput",
-    "Trainer",
-    "fit",
-    "load",
-    "save",
-    "seed_everything",
-    # Evaluation
-    "Baseline",
-    "Evaluation",
-    "LabelMapPredictions",
-    "PointPredictions",
     "Predictions",
-    "evaluate",
-    "predict",
-    "FoldResult",
-    "Pipeline",
+    "PointPredictions",
+    "LabelMapPredictions",
+    "Evaluation",
+    "ExperimentConfig",
+    "Plan",
     "PipelineResult",
-    "evaluate_representation",
-    "overlay_mask_on_slide",
-    "save_overlay_preview",
-    "write_coordinate_preview",
-    "EmbeddingModel",
-    "EmbeddingModelOutput",
-    "DenseModel",
-    "DenseModelOutput",
-    "SampleBatch",
-    "SampleDataset",
-    "sample_collate_fn",
+    # namespaces (``extract`` is the verb above)
+    "data",
+    "models",
+    "learn",
+    "evaluation",
+    "pipeline",
+    "presets",
+    "testing",
 ]

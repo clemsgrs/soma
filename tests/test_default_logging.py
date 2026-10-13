@@ -12,8 +12,9 @@ import pytest
 
 from soma.data import CachedSetSource
 import soma
-from soma import CacheOptions, ExperimentConfig, ImageManifest, Pipeline
+from soma import ExperimentConfig, ImageManifest, Pipeline
 from soma.cli import main
+from soma.config import CacheOptions
 from tests.experiment_configs import experiment
 from tests.test_pipeline import FIXED_RUN_ID, _setup_synthetic_data
 
@@ -93,7 +94,7 @@ def test_extract_turns_on_soma_info_output_without_logging_setup(tmp_path: Path,
                 cache=CacheOptions(enabled=False),
                 output_dir=tmp_path / "output",
             )
-        logging.getLogger("soma.extraction").info("feature cache resolved")
+        logging.getLogger("soma.extract.extractor").info("feature cache resolved")
 
     assert capsys.readouterr().err.count("feature cache resolved") == 1
 
@@ -167,11 +168,11 @@ def test_an_explicit_debug_level_on_the_soma_logger_reaches_the_default_handler(
     with no_logging_setup():
         logging.getLogger("soma").setLevel(logging.DEBUG)
         Pipeline(config, source=CachedSetSource(feature_dir))
-        logging.getLogger("soma.cache").debug("set before construction")
+        logging.getLogger("soma.extract.cache").debug("set before construction")
         logging.getLogger("soma").setLevel(logging.INFO)
-        logging.getLogger("soma.cache").debug("hidden at info")
+        logging.getLogger("soma.extract.cache").debug("hidden at info")
         logging.getLogger("soma").setLevel(logging.DEBUG)
-        logging.getLogger("soma.cache").debug("set after construction")
+        logging.getLogger("soma.extract.cache").debug("set after construction")
 
     err = capsys.readouterr().err
     assert err.count("set before construction") == 1

@@ -34,8 +34,8 @@ class CachedSetSource:
     """
 
     def __init__(self, feature_dir: Path | str) -> None:
-        from soma.cache import resolve_feature_payload_dir
-        from soma.cache._types import PACKED_FILENAME
+        from soma.extract.cache import resolve_feature_payload_dir
+        from soma.extract.cache._types import PACKED_FILENAME
 
         self._packed_filename = PACKED_FILENAME
         self._feature_dir = resolve_feature_payload_dir(feature_dir)

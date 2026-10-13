@@ -33,11 +33,11 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from soma.aggregators.registry import aggregator_registry
-from soma.cache import resolve_cache_root
+from soma.models.aggregators.registry import aggregator_registry
+from soma.extract.cache import resolve_cache_root
 from slide2vec import DenseOptions, PreprocessingConfig
 
-from soma.class_scheme import resolve_classes
+from soma._internal.class_scheme import resolve_classes
 from soma.config import (
     Component,
     EvaluationConfig,
@@ -60,13 +60,13 @@ from soma.data import (
 )
 from soma.data.cohort import targets_frame
 from soma.data.records import targets_equal
-from soma.decoders.registry import build_decoder_for_grid
-from soma.dense.composite import CompositeDenseFeatureStore
-from soma.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
+from soma.models.decoders.registry import build_decoder_for_grid
+from soma.extract.dense.composite import CompositeDenseFeatureStore
+from soma.extract.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
 from soma.evaluation import Baseline
 from soma.evaluation.metrics import resolve_metrics
-from soma.extraction import _release_parent_cuda_state
-from soma.extraction.rois import RoiSet, label_map_identity
+from soma.extract.extractor import _release_parent_cuda_state
+from soma.extract.rois import RoiSet, label_map_identity
 from soma.learn import (
     Learner,
     Progress,
@@ -77,12 +77,12 @@ from soma.learn import (
 )
 from soma.learn.grid import grid_loaders
 from soma.plan import LEARNER_OWN_EXCLUDED, Plan, load_cohort
-from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
-from soma.tasks.classification import BranchAwareClassificationHead, MulticlassClassificationHead
-from soma.tasks.registry import task_registry
-from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
-from soma.training.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
-from soma.training.feature_adaptor import (
+from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+from soma.models.heads.classification import BranchAwareClassificationHead, MulticlassClassificationHead
+from soma.models.heads.registry import task_registry
+from soma.learn.bag_dataset import BagDataset, HierarchicalBagDataset
+from soma.learn.collate import bag_collate_fn, cox_window_collate, hierarchical_bag_collate_fn
+from soma.learn.feature_adaptor import (
     FeatureAdaptor,
     NormalizationParams,
     ProjectionParams,
@@ -91,10 +91,10 @@ from soma.training.feature_adaptor import (
     validate_feature_adaptor_compatibility,
     write_feature_adapter_sidecar,
 )
-from soma.training.fold_planning import plan_dense_fold
-from soma.training.model import DenseModel, EmbeddingModel, MILModel
-from soma.training.patient_dataset import PatientDataset, patient_collate_fn
-from soma.training.sample_dataset import SampleDataset, sample_collate_fn
+from soma.pipeline.fold_planning import plan_dense_fold
+from soma.models.model import DenseModel, EmbeddingModel, MILModel
+from soma.learn.patient_dataset import PatientDataset, patient_collate_fn
+from soma.learn.sample_dataset import SampleDataset, sample_collate_fn
 
 __all__ = [
     "FoldLoaders",
@@ -668,7 +668,7 @@ def _event_balanced_train_loader(
     contain events. ``window_size`` is ``loaders.batch_size`` in padded mode and
     ``cox_window`` in accumulation mode; the matching ``collate_fn`` decides which.
     """
-    from soma.training.survival_sampler import EventBalancedBatchSampler
+    from soma.learn.survival_sampler import EventBalancedBatchSampler
 
     sampler = EventBalancedBatchSampler(
         events,
@@ -1496,10 +1496,10 @@ def _spacing_at_level_0(inputs: RunInputs, sample_id: str) -> float | None:
 
 def _require_configured_spacing(inputs: RunInputs, sample_ids: Sequence[str]) -> None:
     """Cached segmentation grids must be extracted at the spacing the config reads masks
-    at (per sample under ``native_if_coarser``); see :func:`soma.dense.require_declared_spacing`."""
-    from soma.dense import require_declared_spacing
+    at (per sample under ``native_if_coarser``); see :func:`soma.extract.dense.require_declared_spacing`."""
+    from soma.extract.dense import require_declared_spacing
 
-    from soma.spacing import resolve_effective_spacing_um
+    from soma.extract.spacing import resolve_effective_spacing_um
 
     dense = inputs.dense
     require_declared_spacing(
@@ -1656,7 +1656,7 @@ def extraction_options(plan: Plan, *, run_dir: Path) -> dict[str, Any]:
 def live_encoder_spec(plan: Plan) -> dict[str, Any]:
     """The :func:`soma.extract.live_encoder` arguments a ``features.kind='live'`` plan
     describes: what a live bundle records to rebuild its frozen encoder stage."""
-    from soma.encoders.validation import resolve_encoder_precision
+    from soma.models.encoders.validation import resolve_encoder_precision
 
     encoder = plan.features.encoder
     if encoder is None:
@@ -1686,7 +1686,7 @@ def live_encoder_for(plan: Plan):
 
     Built through :func:`soma.extract.live_encoder` from :func:`live_encoder_spec`, once
     per run and shared by every fold. Whole-image inference over a finished run loads
-    its bundles instead (:meth:`soma.dense.predict.SlidingWindowSegmentationPredictor.from_bundles`).
+    its bundles instead (:meth:`soma.evaluation.sliding_window.SlidingWindowSegmentationPredictor.from_bundles`).
     """
     from soma import extract
 
@@ -1721,10 +1721,10 @@ def build_composite_dense_store(plan: Plan | ExperimentConfig, images: ImageMani
     token grids are combined at load time by :class:`CompositeDenseFeatureStore` per
     ``concat_resolution`` / ``concat_grid_size``.
     """
-    from soma.encoders import CompositeParams
-    from soma.encoders.composite import member_norm_for
+    from soma.models.encoders import CompositeParams
+    from soma.models.encoders.composite import member_norm_for
     from soma.config import EncoderLeaf
-    from soma.extraction import extract
+    from soma.extract import extract
 
     features = plan.features
     if not features.is_composite:

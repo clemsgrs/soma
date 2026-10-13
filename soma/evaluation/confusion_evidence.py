@@ -16,7 +16,7 @@ from typing import Mapping, Sequence
 import numpy as np
 import torch
 
-from soma.tasks.dense_metrics import reduce_confusion_matrices_dice
+from soma.models.heads.dense_metrics import reduce_confusion_matrices_dice
 
 
 ConfusionMatrix = tuple[tuple[int, ...], ...]

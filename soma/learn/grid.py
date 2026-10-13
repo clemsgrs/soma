@@ -2,7 +2,7 @@
 
 A :class:`GridBatch` carries the model's input — cached feature grids from a
 :class:`~soma.data.GridSource`, or pixels from an :class:`~soma.data.ImageSource` that a
-frozen encoder stage inside :class:`~soma.training.model.DenseModel` re-encodes — plus
+frozen encoder stage inside :class:`~soma.models.model.DenseModel` re-encodes — plus
 the raw physical-unit supervision of each sample. Heads encode that supervision against
 their bound geometry at loss time, so one annotation serves any encoder stride.
 """
@@ -20,7 +20,7 @@ from torch import Tensor
 from torch.utils.data import DataLoader, Dataset
 
 from soma.data import Points, require_coverage
-from soma.detection.encode import points_on_valid
+from soma.models.detection_targets import points_on_valid
 
 __all__ = ["GridBatch", "GridDataset", "grid_collate", "grid_loaders", "ignore_to_frame"]
 

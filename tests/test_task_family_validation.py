@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from soma.data import CachedSetSource
-from soma.tasks.registry import task_family_of, task_registry
-from soma.tasks.segmentation import SegmentationHead
+from soma.models.heads.registry import task_family_of, task_registry
+from soma.models.heads.segmentation import SegmentationHead
 from tests.experiment_configs import experiment
 
 
@@ -32,7 +32,7 @@ def test_registered_subclass_inherits_family(monkeypatch):
 
 
 def test_survival_task_keeps_a_registered_subclass_and_infers_its_loss(monkeypatch):
-    from soma.tasks.survival import CoxSurvivalHead, SurvivalHead, resolve_survival_task
+    from soma.models.heads.survival import CoxSurvivalHead, SurvivalHead, resolve_survival_task
 
     class MyNll(SurvivalHead):
         pass
@@ -54,7 +54,7 @@ def test_registered_survival_subclass_still_validates_the_dataset(tmp_path, monk
     import torch
 
     from soma.pipeline import Pipeline
-    from soma.tasks.survival import SurvivalHead, SurvivalParams
+    from soma.models.heads.survival import SurvivalHead, SurvivalParams
 
     class MySurvival(SurvivalHead):
         pass
@@ -91,7 +91,7 @@ def test_registered_survival_subclass_still_validates_the_dataset(tmp_path, monk
 def test_registered_cox_head_rejects_wrong_window_batch_size(tmp_path, monkeypatch):
     """A Cox subclass inherits window constraints without a loss selector."""
     from soma.plan import check
-    from soma.tasks.survival import CoxSurvivalHead, CoxSurvivalParams
+    from soma.models.heads.survival import CoxSurvivalHead, CoxSurvivalParams
 
     class MyCox(CoxSurvivalHead):
         pass
@@ -109,7 +109,7 @@ def test_registered_cox_head_rejects_wrong_window_batch_size(tmp_path, monkeypat
 def test_clam_mb_keeps_a_registered_branch_aware_subclass():
     """A user subclass of the branch-aware head survives the clam_mb swap."""
     from soma.pipeline.build import _bag_head_class
-    from soma.tasks.classification import (
+    from soma.models.heads.classification import (
         BranchAwareClassificationHead,
         MulticlassClassificationHead,
     )
@@ -148,7 +148,7 @@ def test_clam_mb_rejects_custom_heads_without_branch_representations(tmp_path, m
     import torch
 
     from soma.pipeline import Pipeline
-    from soma.tasks.classification import ClassificationParams, MulticlassClassificationHead, infer_label_map
+    from soma.models.heads.classification import ClassificationParams, MulticlassClassificationHead, infer_label_map
 
     class SevenLossHead(MulticlassClassificationHead):
         def compute_loss(self, predictions, targets):

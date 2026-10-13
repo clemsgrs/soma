@@ -18,7 +18,7 @@ import pytest
 import slide2vec
 import torch
 
-from soma.cache import (
+from soma.extract.cache import (
     build_dense_cache_key,
     build_hierarchical_cache_key,
     build_patient_cache_key,
@@ -31,7 +31,8 @@ from soma.cache import (
     resolve_dense_cache,
 )
 from soma.data import ImageManifest
-from soma.dense import compute_dense_geometry, dense_grid_metadata, write_dense_grid
+from soma.data.geometry import compute_dense_geometry
+from soma.extract.dense import dense_grid_metadata, write_dense_grid
 from tests.extraction_configs import extraction
 
 
@@ -50,8 +51,8 @@ class _StubRegistry:
 
 
 def _stub_registry(monkeypatch: pytest.MonkeyPatch, input_size: int) -> None:
-    monkeypatch.setattr("soma.cache.keys.encoder_registry", _StubRegistry(input_size))
-    monkeypatch.setattr("soma.encoders.validation.encoder_registry", _StubRegistry(input_size))
+    monkeypatch.setattr("soma.extract.cache.keys.encoder_registry", _StubRegistry(input_size))
+    monkeypatch.setattr("soma.models.encoders.validation.encoder_registry", _StubRegistry(input_size))
 
 
 _FP16 = slide2vec.ExecutionOptions(precision="fp16")

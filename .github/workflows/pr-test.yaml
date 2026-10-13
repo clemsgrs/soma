@@ -143,23 +143,31 @@ jobs:
           # Bash globs: `*` also matches `/`, so `dir/*` covers the whole tree.
           # Every soma module whose code runs on the uncached WSI pooled path is
           # listed; modules soma/config.py only imports for unrelated validation
-          # (tasks, evaluation, aggregators, decoders, dense, pixel_classifiers)
-          # cannot move the embedding, and docker-test already catches import errors.
+          # (models/heads, evaluation, models/aggregators, models/decoders,
+          # extract/dense) cannot move the embedding, and docker-test already
+          # catches import errors.
           prism_paths=(
             'pyproject.toml'                     # dependency floors: slide2vec/hs2p/torch/transformers bumps move PRISM output
             'Dockerfile.ci'                      # CI image, incl. the torch constraints file it writes inline
-            'soma/extraction/*'                  # FeatureExtractor, pooled extractor, orchestration, slide aggregation
+            'soma/extract/__init__.py'           # the soma.extract verb
+            'soma/extract/extractor.py'          # pooled extractor
+            'soma/extract/facade.py'             # soma.extract: manifests in, a source out
+            'soma/extract/orchestration.py'      # slide2vec pipeline runs
+            'soma/extract/process_list.py'       # tiling process list the extraction reads
+            'soma/extract/reporters.py'          # extraction progress reporting
+            'soma/extract/rois.py'               # extraction-internal ROI entries
+            'soma/extract/slide_aggregation_spawn.py'  # slide aggregation workers
             'soma/features.py'                   # FeatureStore the extracted embedding is loaded from
-            'soma/slide2vec_adapter.py'          # maps soma configs and samples onto the slide2vec pipeline
-            'soma/extraction_contracts.py'       # FeatureSource/provenance types the result is built from
-            'soma/encoders/*'                    # encoder precision and preprocessing resolution
-            'soma/preprocessing/*'               # tiling inputs (supplied coordinates, preprocessing hierarchy)
-            'soma/cache/*'                       # cache keys/io/tile artifact metadata, used even with the cache off
-            'soma/atomic_io.py'                  # writes the config and cache metadata files on this path
-            'soma/_logging.py'                   # FeatureExtractor sets up default logging on every run
+            'soma/extract/slide2vec_adapter.py'  # maps soma configs and samples onto the slide2vec pipeline
+            'soma/extract/contracts.py'          # FeatureSource/provenance types the result is built from
+            'soma/models/encoders/*'             # encoder precision and preprocessing resolution
+            'soma/extract/preprocessing/*'       # tiling inputs (supplied coordinates, preprocessing hierarchy)
+            'soma/extract/cache/*'               # cache keys/io/tile artifact metadata, used even with the cache off
+            'soma/_internal/atomic_io.py'        # writes the config and cache metadata files on this path
+            'soma/_internal/logging.py'          # extraction sets up default logging on every run
             'soma/config.py'                     # EncoderLeaf/CacheOptions the test builds
             'soma/dataset.py'                    # Dataset/SampleRecord the slides are read through
-            'soma/spacing.py'                    # effective spacing resolution used by config
+            'soma/extract/spacing.py'            # effective spacing resolution used by config
             'tests/conftest.py'                  # shared pytest setup the regression runs under
             'tests/test_regression_fixtures.py'  # the regression test itself
             'tests/fixtures/regression/*'        # input WSI/mask and slide2vec ground-truth embedding

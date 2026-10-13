@@ -1,5 +1,5 @@
 """Conformance checks for soma's protocols: the :mod:`soma.data` sources, the live
-path's encoder stage, :class:`soma.learn.Learner` and :class:`soma.tasks.TaskHead`
+path's encoder stage, :class:`soma.learn.Learner` and :class:`soma.models.heads.TaskHead`
 implementations, plus :class:`FakeEncoder`, a parameter-free stand-in encoder stage.
 
 Plain functions usable from pytest or a notebook. soma runs them on its own
