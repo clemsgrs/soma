@@ -11,6 +11,10 @@ from typing import Any
 
 import yaml
 
+# The CLI imports the benchmark package at startup (ADR 0022): it registers the benchmarks
+# and their components, which `soma list`, `soma reproduce`, `soma leaderboard` and a
+# saved benchmark config need. `import soma` alone does not.
+import soma.benchmark  # noqa: F401
 from soma._internal.logging import configure_cli_logging
 from soma.config import ExperimentConfig
 from soma.discovery import components

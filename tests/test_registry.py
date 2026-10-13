@@ -1,6 +1,5 @@
 """Tests for soma.registry — generic component registry."""
 
-import sys
 import warnings
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -151,40 +150,3 @@ def test_info_unknown_raises():
 
     with pytest.raises(KeyError):
         reg.info("nonexistent")
-
-
-#: Handed to the bundled module written by ``test_bundled_module_loads_on_first_miss``.
-PENDING: list[Registry] = []
-
-
-def test_bundled_module_loads_on_first_miss(tmp_path, monkeypatch):
-    module = tmp_path / "soma_test_bundled_components.py"
-    module.write_text(
-        "from tests.test_registry import PENDING\n"
-        "PENDING[0].register('late', float)\n"
-        "assert 'late' in PENDING[0]  # no re-entrant import while registering\n"
-    )
-    monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.delitem(sys.modules, "soma_test_bundled_components", raising=False)
-    reg = Registry("test", bundled_module="soma_test_bundled_components")
-    PENDING[:] = [reg]
-    reg.register("early", int)
-    assert reg.get("early") is int
-    assert "soma_test_bundled_components" not in sys.modules  # nothing imported on a hit
-    assert "late" in reg
-    assert reg.get("late") is float
-    assert sorted(reg.list()) == ["early", "late"]
-    with pytest.raises(KeyError, match="not found"):
-        reg.get("missing")  # the bundled module is imported once only
-
-
-def test_listing_includes_the_bundled_module(tmp_path, monkeypatch):
-    module = tmp_path / "soma_test_bundled_listing.py"
-    module.write_text("from tests.test_registry import PENDING\nPENDING[0].register('late', float)\n")
-    monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.delitem(sys.modules, "soma_test_bundled_listing", raising=False)
-    reg = Registry("test", bundled_module="soma_test_bundled_listing")
-    PENDING[:] = [reg]
-    reg.register("early", int)
-
-    assert sorted(reg.list()) == ["early", "late"]
