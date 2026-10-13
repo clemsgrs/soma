@@ -97,7 +97,8 @@ a decoder belongs to the ``dense`` learner, or that a survival head is not given
 tile samples) without reading any file. :func:`soma.resolve` then expands the
 config against its cohort into a :class:`soma.Plan`: every component's params
 with their defaults, plus what the cohort decides, such as a classification
-head's label map. A value the config states wins; a contradiction raises.
+head's label map. A value the config states wins; a contradiction raises. A
+``null`` value counts as unset, so the cohort decides it.
 :class:`~soma.Pipeline` runs both at its start.
 
 The run directory keeps ``config.yaml`` (the config as given) and ``plan.yaml``

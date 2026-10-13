@@ -615,19 +615,22 @@ def _resolve_head(config: ExperimentConfig, head: Component, cohort: Any, regist
 
     head_cls = task_head_class(head.name)
     explicit = _head_params(head)
+    # A null param is unset, as the params defaults and the infer hooks read it: the
+    # cohort decides it, so it neither contradicts nor shadows the inferred value.
+    given = {key: value for key, value in explicit.items() if value is not None}
     if head_cls.task_family == "survival":
         from soma.tasks.survival import resolve_survival_task, validate_survival_dataset
 
         _, loss = resolve_survival_task(head.name)
-        validate_survival_dataset(cohort.records, sample_unit(config), loss=loss, num_bins=explicit.get("num_bins"))
-    inferred = plain(registry.infer(head.name, cohort, explicit))
-    contradictions = sorted(key for key in set(inferred) & set(explicit) if plain(explicit[key]) != inferred[key])
+        validate_survival_dataset(cohort.records, sample_unit(config), loss=loss, num_bins=given.get("num_bins"))
+    inferred = plain(registry.infer(head.name, cohort, given))
+    contradictions = sorted(key for key in set(inferred) & set(given) if plain(given[key]) != inferred[key])
     if contradictions:
         raise ValueError(
-            f"head '{head.name}': {', '.join(f'{key}={explicit[key]!r}' for key in contradictions)} "
+            f"head '{head.name}': {', '.join(f'{key}={given[key]!r}' for key in contradictions)} "
             f"contradicts what the cohort shows ({', '.join(f'{key}={inferred[key]!r}' for key in contradictions)})."
         )
-    params = registry.canonical_params(head.name, {**inferred, **explicit})
+    params = registry.canonical_params(head.name, {**explicit, **inferred, **given})
     targets, _ = target_columns(config)
     return replace(head, params={**params, "targets": targets})
 

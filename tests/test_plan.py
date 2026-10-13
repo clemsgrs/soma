@@ -110,6 +110,43 @@ def test_an_ordinal_head_keeps_an_explicit_num_classes_and_else_spans_its_label_
     }
 
 
+def test_a_null_head_param_resolves_like_the_omitted_one(tmp_path: Path):
+    # Null is unset, as the params defaults and the infer hooks read it: the cohort
+    # decides the field (null is no "keep the raw labels" request), in Python and
+    # through a saved config.yaml.
+    def plans(config: ExperimentConfig, name: str) -> list[Plan]:
+        path = tmp_path / f"{name}.yaml"
+        config.to_yaml(path)
+        return [_resolve(config), _resolve(ExperimentConfig.from_yaml(path))]
+
+    files = _cohort_files(tmp_path / "data")
+    for head in ("binary_classification", "ordinal_classification"):
+        omitted = _resolve(experiment(*files, aggregator="abmil", head=head))
+        for nulls in ({"label_map": None}, {"num_classes": None}, {"label_map": None, "num_classes": None}):
+            config = experiment(*files, aggregator="abmil", head=head, head_params=nulls)
+            assert plans(config, head) == [omitted, omitted]
+    survival = _cohort_files(tmp_path / "survival", time=[1.0, 2.0] * 4, event=[1, 0] * 4, bin=[0, 1, 2, 3] * 2)
+    omitted = _resolve(experiment(*survival, head="survival", aggregator="abmil"))
+    config = experiment(*survival, head="survival", aggregator="abmil", head_params={"num_bins": None})
+    assert plans(config, "survival") == [omitted, omitted]
+    assert omitted.learner.params["head"].params["num_bins"] == 4
+
+
+def test_an_ordinal_head_keeps_raw_grades_through_an_explicit_identity_map(tmp_path: Path):
+    files = _cohort_files(tmp_path / "data", label=[0, 2, 4, 0, 2, 4, 0, 2])
+    config = experiment(
+        *files,
+        aggregator="abmil",
+        head="ordinal_classification",
+        head_params={"label_map": {0: 0, 2: 2, 4: 4}, "num_classes": 5},
+    )
+    params = _resolve(config).learner.params["head"].params
+    assert (params["label_map"], params["num_classes"]) == ({0: 0, 2: 2, 4: 4}, 5)
+    # Left unset, the cohort's grades are ranked instead.
+    ranked = _resolve(experiment(*files, aggregator="abmil", head="ordinal_classification"))
+    assert ranked.learner.params["head"].params["label_map"] == {0: 0, 2: 1, 4: 2}
+
+
 def test_head_targets_map_keys_to_cohort_columns(tmp_path: Path):
     records, splits = _cohort_files(tmp_path, diagnosis=["x", "y"] * 4)
     config = experiment(records, splits, aggregator="abmil", head_params={"targets": {"label": "diagnosis"}})
