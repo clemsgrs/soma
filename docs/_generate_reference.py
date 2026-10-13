@@ -6,6 +6,8 @@ from pathlib import Path
 from textwrap import dedent, indent
 import sys
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
@@ -26,6 +28,7 @@ from soma.benchmarks import eva_slide as eva_slide_bench
 from soma.benchmarks import ocelot as ocelot_bench
 from soma.benchmarks.hest.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 from soma.config import CohortConfig, ExperimentConfig, FeaturesConfig, LearnerConfig
+from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS
 
 REFERENCE_YAML = ROOT / "examples" / "reference.yaml"
 _REFERENCE_HEADER = """\
@@ -35,6 +38,8 @@ _REFERENCE_HEADER = """\
 # A config names its own records, splits, encoder and learner; everything else may be
 # left out. Leaf params ({name, params}) are each component's own: `soma list KIND`
 # prints them with their defaults, and a run's plan.yaml records every value it used.
+# features.execution.num_gpus and num_preprocessing_workers are null here: slide2vec
+# resolves them for the machine a run starts on.
 # Run with: soma /path/to/config.yaml
 """
 
@@ -48,14 +53,24 @@ def reference_config() -> ExperimentConfig:
     )
 
 
+def _reference_config_yaml() -> str:
+    """The reference experiment as YAML, with the execution fields slide2vec resolves for
+    the generating machine (GPU and preprocessing-worker counts) left ``null``, so the
+    checked-in reference reads the same wherever it is generated."""
+    data = reference_config().to_dict()
+    for name in MACHINE_RESOLVED_EXECUTION_FIELDS:
+        data["features"]["execution"][name] = None
+    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+
+
 def build_reference_yaml() -> str:
     """``examples/reference.yaml``: the reference experiment as YAML, under a header."""
-    return _REFERENCE_HEADER + "\n" + reference_config().to_yaml()
+    return _REFERENCE_HEADER + "\n" + _reference_config_yaml()
 
 
 def _default_config_yaml_block() -> str:
     """The reference experiment's YAML as an indented RST code block body."""
-    return indent(reference_config().to_yaml().strip(), "   ")
+    return indent(_reference_config_yaml().strip(), "   ")
 
 
 def _benchmark_family(family: str) -> list:

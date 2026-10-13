@@ -188,8 +188,8 @@ in the rest and writes it to the run's ``plan.yaml``. Component params
        output_format: pt
        batch_size: 32
        num_workers_per_gpu: null
-       num_preprocessing_workers: 8
-       num_gpus: 1
+       num_preprocessing_workers: null
+       num_gpus: null
        precision: null
        output_dtype: null
        prefetch_factor: 4

@@ -4,6 +4,8 @@
 # A config names its own records, splits, encoder and learner; everything else may be
 # left out. Leaf params ({name, params}) are each component's own: `soma list KIND`
 # prints them with their defaults, and a run's plan.yaml records every value it used.
+# features.execution.num_gpus and num_preprocessing_workers are null here: slide2vec
+# resolves them for the machine a run starts on.
 # Run with: soma /path/to/config.yaml
 
 run:
@@ -80,8 +82,8 @@ features:
     output_format: pt
     batch_size: 32
     num_workers_per_gpu: null
-    num_preprocessing_workers: 8
-    num_gpus: 1
+    num_preprocessing_workers: null
+    num_gpus: null
     precision: null
     output_dtype: null
     prefetch_factor: 4
