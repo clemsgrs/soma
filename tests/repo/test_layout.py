@@ -1,4 +1,4 @@
-"""The package layout and the root surface (design §7).
+"""The package layout and the root surface (design §7), and the tests tree that mirrors it (§10).
 
 The root exports the verbs, the nouns they take or return, and the namespaces;
 everything else is reached through its namespace.
@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import tomllib
 from pathlib import Path
 from types import ModuleType
 
@@ -281,3 +282,44 @@ def test_a_star_import_brings_every_export():
 def test_a_name_off_the_root_is_reached_through_its_namespace(name, home):
     assert not hasattr(soma, name)
     assert hasattr(importlib.import_module(home), name)
+
+
+# The tests tree (design §10, ADR 0023): tests/ mirrors soma/'s namespaces, plus e2e/ for
+# the end-to-end scenarios and repo/ for packaging, workflow, docs and release checks.
+
+REPO = Path(__file__).resolve().parents[2]
+TESTS = REPO / "tests"
+#: Test directories that mirror no namespace.
+TEST_ONLY_DIRECTORIES = {"e2e", "repo"}
+
+
+def _packages(root: Path) -> set[str]:
+    return {path.name for path in root.iterdir() if (path / "__init__.py").is_file()}
+
+
+def test_the_tests_tree_mirrors_the_package_namespaces():
+    namespaces = {name for name in _packages(Path(soma.__file__).parent) if not name.startswith("_")}
+
+    assert _packages(TESTS) == namespaces | TEST_ONLY_DIRECTORIES
+
+
+def test_the_benchmark_tests_hold_one_directory_per_protocol():
+    assert _packages(TESTS / "benchmark") == set(PROTOCOLS)
+
+
+def test_every_test_directory_is_a_package():
+    # Packages give each test module a unique dotted name and let import-linter see it.
+    directories = {path.parent for path in TESTS.rglob("test_*.py") if "fixtures" not in path.relative_to(TESTS).parts}
+
+    assert [str(d.relative_to(REPO)) for d in sorted(directories) if not (d / "__init__.py").is_file()] == []
+
+
+def test_project_protocol_tests_run_beside_their_protocol_outside_the_suite():
+    # BEETLE tests a project protocol (ADR 0010): ``python -m pytest examples/beetle/tests``.
+    testpaths = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"][
+        "testpaths"
+    ]
+
+    assert testpaths == ["tests"]
+    assert list(TESTS.rglob("test_beetle*.py")) == []
+    assert sorted((REPO / "examples" / "beetle" / "tests").glob("test_*.py"))
