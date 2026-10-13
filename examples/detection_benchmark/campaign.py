@@ -71,7 +71,6 @@ from typing import Any, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from soma.benchmark.detection import (  # noqa: E402
-    DATASET_ORDER,
     DEFAULT_ROSTER,
     DEFAULT_SEEDS,
     Cell,
@@ -81,8 +80,12 @@ from soma.benchmark.detection import (  # noqa: E402
     build_ranking_report,
     dataset_spec,
     read_cell_predictions,
+    registered_datasets,
     replicate_plan,
 )
+
+# The detection datasets the protocols registered, in the harness's report order.
+DATASET_ORDER = registered_datasets()
 
 HERE = Path(__file__).resolve().parent
 SCRIPT = Path(__file__).resolve()
@@ -599,7 +602,7 @@ def _decode_split_points(predictions, targets, manifest, frame, *, threshold=Non
     import numpy as np
 
     from soma.benchmark.detection import SamplePrediction, stitch_tiles_to_rois
-    from soma.benchmark.monkey.froc import patch_area_mm2
+    from soma.benchmark.detection import patch_area_mm2
     from soma.models.detection_targets import points_on_valid
     from soma.evaluation.detection.matching import match_assignment
 
@@ -665,11 +668,11 @@ def _sweep_thresholds_on_rois(tune, targets, manifest, frame, *, tile_px: int) -
     ``checkpoint_selection_frame='tile_proxy'``; final operating-point selection is stitched
     per ROI.
     """
-    from soma.benchmark.detection import _per_image_arrays
+    from soma.benchmark.detection import per_image_arrays
     from soma.evaluation.detection.matching import sweep_score_thresholds
 
     roi_samples = _decode_split_points(tune, targets, manifest, frame, threshold=None, tile_px=tile_px)
-    pred_xy, pred_score, pred_class, gt_xy, gt_class, _area = _per_image_arrays(roi_samples)
+    pred_xy, pred_score, pred_class, gt_xy, gt_class, _area = per_image_arrays(roi_samples)
     scale = frame.spacing.effective_spacing_um / frame.spacing.source_spacing_um
     return sweep_score_thresholds(
         pred_xy, pred_class, pred_score, gt_xy, gt_class,

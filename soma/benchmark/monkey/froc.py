@@ -10,7 +10,7 @@ The Monkey challenge (kidney biopsies, PAS stain; lymphocytes / monocytes + the 
 "inflammatory-cells" / MNL class) scores each class with this curve and averages the
 per-class FROC for the ranking. Because the x-axis is *per mm²*, the scorer needs the
 physical area of the evaluated region — threaded in as ``area_mm2`` (derived from the run
-spacing, see :func:`patch_area_mm2`).
+spacing, see :func:`soma.benchmark.detection.patch_area_mm2`).
 
 Everything operates on plain numpy arrays per image so it unit-tests against hand-built
 point sets with known sensitivity / FP-per-mm². Matching reuses the greedy-by-confidence
@@ -43,7 +43,6 @@ __all__ = [
     "froc_score_at_thresholds",
     "compute_froc",
     "FrocResult",
-    "patch_area_mm2",
     "score_monkey_froc",
     "suppress_cross_class_duplicates",
     "MONKEY_CLASS_NAMES",
@@ -231,16 +230,6 @@ def compute_froc(
         score=score, fp_per_mm2=fp_per_mm2, sensitivity=sensitivity,
         num_targets=num_targets, area_mm2=area_mm2,
     )
-
-
-def patch_area_mm2(width_px: int, height_px: int, spacing_um: float) -> float:
-    """Physical area of a ``width_px × height_px`` region at ``spacing_um`` µm/px, in mm².
-
-    The FROC x-axis is per mm², so a caller evaluating flat patches (no ROI polygon)
-    derives each patch's area this way from the run spacing; ROI-based datasets pass the
-    annotated ROI area directly.
-    """
-    return (float(width_px) * float(spacing_um) / 1000.0) * (float(height_px) * float(spacing_um) / 1000.0)
 
 
 def suppress_cross_class_duplicates(

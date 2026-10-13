@@ -35,7 +35,9 @@ from soma.benchmark.registry import (
 )
 from soma.config import ExperimentConfig
 from soma.benchmark.curation import CuratedManifest
+from soma.benchmark.detection import DatasetSpec, SamplePrediction, per_image_arrays, register_dataset
 from soma.benchmark.ocelot.curate import curate_ocelot_detection
+from soma.evaluation.detection.matching import detection_counts, reduce_f1
 
 if TYPE_CHECKING:
     from soma.data import ImageManifest
@@ -336,3 +338,53 @@ class OcelotBenchmark:
 
 OCELOT = OcelotBenchmark()
 register_benchmark(OCELOT)
+
+
+# --- the detection harness's OCELOT dataset ------------------------------------------
+
+
+def score_detection_points(samples: Sequence[SamplePrediction], spec: DatasetSpec) -> dict[str, float]:
+    """OCELOT class-aware greedy mF1 over persisted points (the leaderboard-comparable metric).
+
+    Reuses the exact TP/FP/FN matcher + F1 reduction the live OCELOT path uses
+    (:func:`~soma.evaluation.detection.matching.detection_counts` / :func:`reduce_f1`), so the off-cache
+    re-aggregation reproduces the live headline when fed the same thresholded points.
+    """
+    import torch
+
+    pred_xy, pred_score, pred_class, gt_xy, gt_class, _ = per_image_arrays(samples)
+    delta = float(spec.match_um[0]) / float(spec.spacing_um)
+    rows = [
+        detection_counts(
+            pxy, pcls, ps, gxy, gcls,
+            num_classes=spec.num_classes, delta=delta, method=spec.match_method,
+        )
+        for pxy, ps, pcls, gxy, gcls in zip(
+            pred_xy, pred_score, pred_class, gt_xy, gt_class
+        )
+    ]
+    counts = torch.cat(rows, dim=0) if rows else torch.zeros((0, spec.num_classes, 3), dtype=torch.long)
+    metrics = reduce_f1(counts, num_classes=spec.num_classes, aggregation="dataset_global")
+    return {"mean_f1": float(metrics["mean_f1"])}
+
+
+def curate_detection(raw_root: str | Path, out_dir: str | Path, spec: DatasetSpec) -> CuratedManifest:
+    """Curate raw OCELOT into its detection Manifest (fixed patches; no tiling)."""
+    return curate_ocelot_detection(raw_root, out_dir)
+
+
+DETECTION_DATASET = DatasetSpec(
+    name="ocelot",
+    spacing_um=0.2,
+    metric_name="mean_f1",
+    num_classes=2,
+    match_um=(3.0,),
+    match_method="greedy",
+    tolerance=None,
+    test_source="local_holdout",
+    config=_CONFIG_DIR / "detection.yaml",
+    score=score_detection_points,
+    curate=curate_detection,
+)
+
+register_dataset(DETECTION_DATASET)

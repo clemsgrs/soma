@@ -16,6 +16,12 @@ objects, and this approximation is disclosed in each cell's metrics. There is **
 winner pick** — all encoders are ranked by their mean test metric, and the tune ranks are
 reported alongside as a stability signal.
 
+The harness names no dataset: each detection protocol (:mod:`soma.benchmark.ocelot`,
+:mod:`soma.benchmark.midog`, :mod:`soma.benchmark.monkey`) registers a :class:`DatasetSpec`
+at import (:func:`register_dataset`) carrying its recipe knobs, its committed config, its
+curator and its native ``score`` callable, and the per-dataset views it registers as
+benchmarks.
+
 Everything in this module is pure, GPU-free logic over records the driver produces, so the
 whole harness unit-tests cold on synthetic fixtures (no real data, no model downloads). The
 GPU orchestration — extract dense grids, train the decoder, run inference — lives in the
@@ -43,6 +49,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Sequence
@@ -53,13 +60,11 @@ from soma.benchmark.registry import (
     Facet,
     ReferenceRow,
     load_reference,
-    register_benchmark,
 )
 from soma.config import ExperimentConfig
 from soma.benchmark.curation import CuratedManifest
-from soma.benchmark.monkey.froc import MNL_CLASS_NAME, patch_area_mm2, score_monkey_froc
-from soma.evaluation.detection.matching import detection_counts, match_assignment, reduce_f1
-from soma.benchmark.midog.f1 import midog_f1
+from soma.benchmark.tiles import tile_detection_manifest
+from soma.evaluation.detection.matching import match_assignment
 
 __all__ = [
     "BENCHMARK_NAME",
@@ -67,7 +72,12 @@ __all__ = [
     "RosterEntry",
     "DEFAULT_ROSTER",
     "DatasetSpec",
-    "DATASETS",
+    "register_dataset",
+    "registered_datasets",
+    "dataset_spec",
+    "tile_roi_manifest",
+    "patch_area_mm2",
+    "per_image_arrays",
     "replicate_plan",
     "SamplePrediction",
     "CellPredictions",
@@ -87,7 +97,6 @@ __all__ = [
     "DetectionBenchmark",
     "DETECTION_BENCHMARK",
     "DetectionDatasetBenchmark",
-    "DETECTION_DATASET_BENCHMARKS",
 ]
 
 BENCHMARK_NAME = "detection-benchmark"
@@ -101,7 +110,6 @@ DEFAULT_SEEDS: tuple[int, ...] = (0, 1, 2)
 # same ``d -> D`` capacity, so the ranking compares encoders, not decoder width.
 DECODER = "lightweight_conv"
 
-_PACKAGE_DIR = Path(__file__).resolve().parent
 
 
 # --- roster --------------------------------------------------------------------------
@@ -160,6 +168,10 @@ class DatasetSpec:
     for those, ``tile_px`` / ``tile_overlap_px`` are the curate-time tiling geometry — the
     single source the curator uses, cross-checked against the committed config's
     ``requested_tile_size_px`` in ``build_config``.
+
+    The owning protocol supplies the rest: ``config`` is its committed per-dataset recipe,
+    ``score(samples, spec)`` its native metric over persisted :class:`SamplePrediction`
+    objects, and ``curate(raw_root, out_dir, spec)`` its run-ready detection Manifest.
     """
 
     name: str
@@ -170,68 +182,69 @@ class DatasetSpec:
     match_method: str
     tolerance: float | None
     test_source: str
-    config_file: str
+    config: Path
+    score: Callable[[Sequence["SamplePrediction"], "DatasetSpec"], dict[str, float]]
+    curate: Callable[[str | Path, str | Path, "DatasetSpec"], CuratedManifest]
     stitch_to_roi: bool = False
     tile_px: int | None = None
     tile_overlap_px: int | None = None
 
 
-DATASETS: dict[str, DatasetSpec] = {
-    "ocelot": DatasetSpec(
-        name="ocelot",
-        spacing_um=0.2,
-        metric_name="mean_f1",
-        num_classes=2,
-        match_um=(3.0,),
-        match_method="greedy",
-        tolerance=None,
-        test_source="local_holdout",
-        config_file="detection.yaml",
-    ),
-    "midog": DatasetSpec(
-        name="midog",
-        spacing_um=0.25,
-        metric_name="f1",
-        num_classes=1,
-        match_um=(7.5,),
-        match_method="hungarian",
-        tolerance=0.10,
-        test_source="local_holdout",
-        config_file="detection.yaml",
-        stitch_to_roi=True,
-        # OCELOT's proven fixed geometry (1024² supervision tiles); overlap >= one mitotic-
-        # figure diameter so every object is fully centred in at least one tile.
-        tile_px=1024,
-        tile_overlap_px=128,
-    ),
-    "monkey": DatasetSpec(
-        name="monkey",
-        spacing_um=0.24199951445730394,
-        metric_name="froc_inflammatory",
-        num_classes=2,
-        match_um=(4.0, 5.0),
-        match_method="greedy",
-        tolerance=None,
-        test_source="local_holdout",
-        config_file="detection.yaml",
-        stitch_to_roi=True,
-        # The same fixed geometry as MIDOG: the curator crops one sample per ROI polygon
-        # and these tile it.
-        tile_px=1024,
-        tile_overlap_px=128,
-    ),
-}
+#: The registered datasets, in registration order (the order reports list them in).
+_DATASETS: dict[str, DatasetSpec] = {}
 
-DATASET_ORDER: tuple[str, ...] = ("ocelot", "midog", "monkey")
+
+def register_dataset(spec: DatasetSpec) -> None:
+    """Register a detection dataset; each protocol calls this once, at import."""
+    if spec.name in _DATASETS:
+        raise ValueError(f"detection dataset {spec.name!r} is already registered")
+    _DATASETS[spec.name] = spec
+
+
+def registered_datasets() -> tuple[str, ...]:
+    """The registered detection datasets, in registration order."""
+    return tuple(_DATASETS)
 
 
 def dataset_spec(dataset: str) -> DatasetSpec:
     """Look up a :class:`DatasetSpec` by name (fail-fast with the known datasets)."""
     try:
-        return DATASETS[dataset]
+        return _DATASETS[dataset]
     except KeyError:
-        known = ", ".join(sorted(DATASETS))
+        known = ", ".join(sorted(_DATASETS))
         raise KeyError(f"unknown detection dataset {dataset!r}; known: {known}.") from None
+
+
+def patch_area_mm2(width_px: int, height_px: int, spacing_um: float) -> float:
+    """Physical area of a ``width_px × height_px`` region at ``spacing_um`` µm/px, in mm².
+
+    A per-mm² metric (FROC) needs the evaluated area: a caller scoring flat patches (no ROI
+    polygon) derives each patch's area this way from the run spacing; ROI-based datasets
+    pass the annotated ROI area directly.
+    """
+    return (float(width_px) * float(spacing_um) / 1000.0) * (float(height_px) * float(spacing_um) / 1000.0)
+
+
+def tile_roi_manifest(roi_manifest: CuratedManifest, out_dir: str | Path, spec: DatasetSpec) -> CuratedManifest:
+    """Tile a per-ROI detection Manifest into ``spec``'s fixed supervision tiles at ``out_dir``.
+
+    The stitched datasets (``stitch_to_roi``) curate one sample per large ROI and train on
+    fixed ``tile_px`` tiles with ``tile_overlap_px`` overlap at the native spacing; the
+    tiled Manifest at ``out_dir`` is the one the runs consume.
+    """
+    out = Path(out_dir)
+    tile_detection_manifest(
+        roi_manifest.dataset_csv.parent,
+        out,
+        tile_size=spec.tile_px,
+        overlap=spec.tile_overlap_px,
+        target_spacing=spec.spacing_um,
+    )
+    return CuratedManifest(
+        dataset_csv=out / "dataset.csv",
+        splits_csv=out / "splits.csv",
+        summary_json=out / "summary.json",
+    )
 
 
 # --- replicate abstraction -----------------------------------------------------------
@@ -364,7 +377,7 @@ def read_cell_predictions(path: str | Path) -> CellPredictions:
 # --- native-metric dispatch (point-level, off the persisted cache) -------------------
 
 
-def _per_image_arrays(
+def per_image_arrays(
     samples: Sequence[SamplePrediction],
 ) -> tuple[list, list, list, list, list, list]:
     """Explode a list of :class:`SamplePrediction` into the per-image array lists scorers want."""
@@ -542,67 +555,6 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], cohort, head) -> l
     return out
 
 
-def _score_ocelot_points(samples: Sequence[SamplePrediction], spec: DatasetSpec) -> dict[str, float]:
-    """OCELOT class-aware greedy mF1 over persisted points (the leaderboard-comparable metric).
-
-    Reuses the exact TP/FP/FN matcher + F1 reduction the live OCELOT path uses
-    (:func:`~soma.evaluation.detection.matching.detection_counts` / :func:`reduce_f1`), so the off-cache
-    re-aggregation reproduces the live headline when fed the same thresholded points.
-    """
-    import torch
-
-    pred_xy, pred_score, pred_class, gt_xy, gt_class, _ = _per_image_arrays(samples)
-    delta = float(spec.match_um[0]) / float(spec.spacing_um)
-    rows = [
-        detection_counts(
-            pxy, pcls, ps, gxy, gcls,
-            num_classes=spec.num_classes, delta=delta, method=spec.match_method,
-        )
-        for pxy, ps, pcls, gxy, gcls in zip(
-            pred_xy, pred_score, pred_class, gt_xy, gt_class
-        )
-    ]
-    counts = torch.cat(rows, dim=0) if rows else torch.zeros((0, spec.num_classes, 3), dtype=torch.long)
-    metrics = reduce_f1(counts, num_classes=spec.num_classes, aggregation="dataset_global")
-    return {"mean_f1": float(metrics["mean_f1"])}
-
-
-def _score_midog_points(samples: Sequence[SamplePrediction], spec: DatasetSpec) -> dict[str, float]:
-    """MIDOG-native single-class F1 over persisted points (Hungarian one-to-one within 7.5 µm)."""
-    pred_xy, pred_score, _pred_class, gt_xy, _gt_class, _ = _per_image_arrays(samples)
-    delta = float(spec.match_um[0]) / float(spec.spacing_um)
-    score = midog_f1(pred_xy, pred_score, gt_xy, delta=delta, method=spec.match_method)
-    return {"f1": float(score.f1)}
-
-
-def _score_monkey_points(samples: Sequence[SamplePrediction], spec: DatasetSpec) -> dict[str, float]:
-    """MONKEY-native FROCs over persisted points, one per final-leaderboard column.
-
-    ``froc_inflammatory`` is the merged lymphocyte + monocyte FROC (5 µm margin) the
-    challenge ranks by (Track 1); ``froc_lymphocytes`` / ``froc_monocytes`` are the per-class
-    columns (4 / 5 µm). ``mean_froc`` (their average, the Track-2 analogue) is kept for the
-    class-averaged reference row. All use the per-mm² FP sweep of :func:`score_monkey_froc`.
-    """
-    pred_xy, pred_score, pred_class, gt_xy, gt_class, area = _per_image_arrays(samples)
-    out = score_monkey_froc(
-        pred_xy, pred_class, pred_score, gt_xy, gt_class, area,
-        spacing_um=float(spec.spacing_um), match_um=spec.match_um,
-    )
-    return {
-        "froc_inflammatory": float(out[MNL_CLASS_NAME].score),
-        "froc_lymphocytes": float(out["lymphocytes"].score),
-        "froc_monocytes": float(out["monocytes"].score),
-        "mean_froc": float(out["mean_froc"]),
-    }
-
-
-_POINT_SCORERS = {
-    "ocelot": _score_ocelot_points,
-    "midog": _score_midog_points,
-    "monkey": _score_monkey_points,
-}
-
-
 def score_dataset_points(
     dataset: str, samples: Sequence[SamplePrediction], *, spec: DatasetSpec | None = None
 ) -> dict[str, float]:
@@ -610,10 +562,12 @@ def score_dataset_points(
 
     The single entry point the stability bootstrap and the deferred robustness
     stratification call: it re-scores any subset of ``samples`` (a bootstrap resample, a
-    domain stratum) with the dataset's own metric — pure, off the cache, no training.
+    domain stratum) with the dataset's own metric — pure, off the cache, no training. The
+    metric is the registered dataset's ``score`` callable; ``spec`` overrides the knobs it
+    reads.
     """
-    spec = spec or dataset_spec(dataset)
-    return _POINT_SCORERS[dataset](samples, spec)
+    registered = dataset_spec(dataset)
+    return registered.score(samples, spec or registered)
 
 
 # --- cell aggregation ----------------------------------------------------------------
@@ -756,7 +710,7 @@ def rank_consistency(
     """
     from scipy.stats import kendalltau, spearmanr
 
-    datasets = [d for d in DATASET_ORDER if d in per_dataset_ranks]
+    datasets = [d for d in registered_datasets() if d in per_dataset_ranks]
     datasets += [d for d in per_dataset_ranks if d not in datasets]
     pairs: dict[str, dict[str, float | None]] = {}
     spearmans: list[float] = []
@@ -921,7 +875,7 @@ def _reference_row_dict(row: ReferenceRow) -> dict[str, Any]:
 def reference_bands(datasets: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
     """The per-dataset reference rows (gate band + non-gating guidance anchors) for the report.
 
-    Each dataset's ``reference/<dataset>.csv`` ships the scaffold (a placeholder gate band +
+    Each dataset's ``<dataset>/reference.csv`` ships the scaffold (a placeholder gate band +
     the published-winner external anchor, "different test set"); the human fills the numbers
     at run time. Rendered alongside the ranking, never as a gate on it.
     """
@@ -1077,7 +1031,7 @@ def build_ranking_report(
     ``reference_bands`` · frozen ``selections``.
     """
     names = roster_names(roster)
-    datasets = [d for d in DATASET_ORDER if any(c.dataset == d for c in cells)]
+    datasets = [d for d in registered_datasets() if any(c.dataset == d for c in cells)]
     datasets += sorted({c.dataset for c in cells} - set(datasets))
 
     # --- per-dataset ranks (test + tune) --------------------------------------------
@@ -1134,7 +1088,7 @@ def build_ranking_report(
 
 def config_path_for(dataset: str) -> Path:
     """The committed base config for ``dataset`` (one per-dataset recipe, encoder varies)."""
-    return _PACKAGE_DIR / dataset / "configs" / dataset_spec(dataset).config_file
+    return dataset_spec(dataset).config
 
 
 # --- benchmark object ----------------------------------------------------------------
@@ -1168,7 +1122,11 @@ class DetectionBenchmark:
     primary_metric = "mean_f1"  # nominal; each dataset records its own native metric_name.
     reference_environment = REFERENCE_ENVIRONMENT
     roster = DEFAULT_ROSTER
-    datasets = DATASET_ORDER
+
+    @property
+    def datasets(self) -> tuple[str, ...]:
+        """The registered detection datasets, in registration order."""
+        return registered_datasets()
 
     def metric_for(self, dataset: str) -> str:
         """The unpooled native metric name for ``dataset``."""
@@ -1177,52 +1135,15 @@ class DetectionBenchmark:
     def curate(
         self, raw_root: str | Path, out_dir: str | Path, *, dataset: str
     ) -> CuratedManifest:
-        """Curate one raw dataset into the run-ready soma detection Manifest."""
-        if dataset == "ocelot":
-            from soma.benchmark.ocelot.curate import curate_ocelot_detection
-
-            return curate_ocelot_detection(raw_root, out_dir)
-        if dataset not in ("midog", "monkey"):
-            raise KeyError(f"unknown detection dataset {dataset!r}; known: {sorted(DATASETS)}.")
-        from soma.benchmark.tiles import tile_detection_manifest
-
-        # MIDOG and MONKEY curate one sample per large ROI under ``roi/`` and tile it into
-        # fixed tiles at ``out_dir``, the manifest the runs consume.
-        out = Path(out_dir)
+        """Curate one raw dataset into the run-ready soma detection Manifest (its spec's curator)."""
         spec = dataset_spec(dataset)
-        if dataset == "midog":
-            from soma.benchmark.midog.curate import curate_midog_detection
-
-            roi_manifest = curate_midog_detection(
-                raw_root,
-                out / "roi",
-                annotations_json=Path(raw_root) / "MIDOG2022_training_enriched.json",
-                force_spacing_at_level_0=spec.spacing_um,
-            )
-        else:
-            from soma.benchmark.monkey.curate import curate_monkey_detection
-
-            roi_manifest = curate_monkey_detection(
-                raw_root, out / "roi", spacing_at_level_0=spec.spacing_um
-            )
-        tile_detection_manifest(
-            roi_manifest.dataset_csv.parent,
-            out,
-            tile_size=spec.tile_px,
-            overlap=spec.tile_overlap_px,
-            target_spacing=spec.spacing_um,
-        )
-        return CuratedManifest(
-            dataset_csv=out / "dataset.csv",
-            splits_csv=out / "splits.csv",
-            summary_json=out / "summary.json",
-        )
+        return spec.curate(raw_root, out_dir, spec)
 
     def build_config(
         self,
         *,
         encoder: str = DEFAULT_ROSTER[0].name,
-        dataset: str = DATASET_ORDER[0],
+        dataset: str | None = None,
         dataset_csv: str | Path | None = None,
         splits_csv: str | Path | None = None,
         output_root: str | Path | None = None,
@@ -1231,13 +1152,15 @@ class DetectionBenchmark:
     ) -> ExperimentConfig:
         """Resolve a committed per-dataset config with ``encoder`` swapped in (roster-agnostic).
 
-        The recipe (native spacing, ``lightweight_conv`` decoder, native head params) is
-        fixed in the committed ``configs/detection/<dataset>.yaml``; only
+        ``dataset`` defaults to the first registered one. The recipe (native spacing,
+        ``lightweight_conv`` decoder, native head params) is fixed in the committed
+        ``<dataset>/configs/detection.yaml``; only
         ``features.encoder.name`` varies across the roster, so any roster size reuses one
         config per dataset. Data / output paths and seed are repointed exactly like the
         OCELOT benchmark; the ``overrides`` block (``{"cache": {...}}``) lands in
         ``features.cache``.
         """
+        dataset = dataset or registered_datasets()[0]
         config_path = config_path_for(dataset)
         merged: dict[str, Any] = {"features": {"encoder": {"name": encoder}}}
         cohort_over: dict[str, Any] = {}
@@ -1261,7 +1184,7 @@ class DetectionBenchmark:
         tile_px = cfg.features.dense.target_size if cfg.features.dense is not None else None
         if spec.tile_px is not None and tile_px is not None and int(tile_px) != spec.tile_px:
             raise ValueError(
-                f"{spec.config_file} declares a dense target_size of "
+                f"{spec.config.name} declares a dense target_size of "
                 f"{tile_px} but the {dataset} curator "
                 f"tiles at {spec.tile_px}; the supervision size must equal the tile size."
             )
@@ -1271,7 +1194,7 @@ class DetectionBenchmark:
         """Reference rows for one dataset's scaffold matching ``axes`` (banner matches any).
 
         This benchmark keeps a reference scaffold *per dataset*, so ``dataset`` selects which
-        ``reference/<dataset>.csv`` to read; a generic no-``dataset`` call (e.g. a leaderboard
+        ``<dataset>/reference.csv`` to read; a generic no-``dataset`` call (e.g. a leaderboard
         probing for a broad banner) returns ``[]`` rather than raising, since there is no
         single cross-dataset band.
         """
@@ -1311,7 +1234,8 @@ class DetectionDatasetBenchmark:
     ``curate(raw_root, out_dir)`` / ``build_config(encoder=...)`` / ``expected(**axes)`` /
     ``score(run_dir)`` surface delegates to :class:`DetectionBenchmark` with the dataset
     bound. ``primary_metric`` is the dataset's native metric (MIDOG ``f1``, MONKEY
-    ``froc_inflammatory``); OCELOT keeps its own standalone ``ocelot`` benchmark.
+    ``froc_inflammatory``). The MIDOG and MONKEY protocols register their view at import;
+    OCELOT keeps its own standalone ``ocelot`` benchmark.
     """
 
     canonical_seeds = DEFAULT_SEEDS
@@ -1359,7 +1283,7 @@ class DetectionDatasetBenchmark:
         )
 
     def expected(self, **axes: Any) -> list[ReferenceRow]:
-        """Reference rows from ``reference/<dataset>.csv`` matching ``axes``."""
+        """Reference rows from ``<dataset>/reference.csv`` matching ``axes``."""
         merged = {k: v for k, v in axes.items() if v is not None}
         merged.pop("dataset", None)
         return self._harness.expected(dataset=self.dataset, **merged)
@@ -1367,12 +1291,3 @@ class DetectionDatasetBenchmark:
     def score(self, run_dir: str | Path) -> dict[str, float]:
         """Native re-aggregation off the run's persisted per-sample predictions (delegates)."""
         return self._harness.score(run_dir)
-
-
-# Register one conformant sub-benchmark per dataset the harness owns; OCELOT is served by
-# the standalone ``ocelot`` benchmark, so it is not duplicated here.
-DETECTION_DATASET_BENCHMARKS: dict[str, DetectionDatasetBenchmark] = {}
-for _dataset in ("midog", "monkey"):
-    _bench = DetectionDatasetBenchmark(_dataset)
-    DETECTION_DATASET_BENCHMARKS[_bench.name] = _bench
-    register_benchmark(_bench)

@@ -25,13 +25,14 @@ from soma import Plan
 from soma.config import ExperimentConfig
 from soma.benchmark import get_benchmark
 from soma.benchmark.registry import Benchmark
+from soma.benchmark import detection
 from soma.benchmark.detection import (
     DETECTION_BENCHMARK,
     DetectionDatasetBenchmark,
-    DATASET_ORDER,
     DEFAULT_ROSTER,
     Cell,
     CellPredictions,
+    DatasetSpec,
     DetectionBenchmark,
     RosterEntry,
     SamplePrediction,
@@ -43,6 +44,8 @@ from soma.benchmark.detection import (
     rank_consistency,
     rank_encoders,
     read_cell_predictions,
+    register_dataset,
+    registered_datasets,
     replicate_plan,
     resolve_stratify_maps,
     score_dataset_points,
@@ -81,6 +84,66 @@ def test_registered_per_dataset_not_as_the_harness():
         assert bench.facet.fixed["decoder"] == "lightweight_conv"
     assert isinstance(DETECTION_BENCHMARK, DetectionBenchmark)
     assert DETECTION_BENCHMARK.datasets == ("ocelot", "midog", "monkey")
+
+
+def test_the_harness_names_no_dataset_and_imports_no_scorer():
+    # Each detection protocol registers its own DatasetSpec; the harness keeps no table of
+    # datasets and imports none of the protocol packages (their scorers and curators).
+    import ast
+
+    tree = ast.parse(Path(detection.__file__).read_text(encoding="utf-8"))
+    imported = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    imported |= {alias.name for node in ast.walk(tree) if isinstance(node, ast.Import) for alias in node.names}
+    protocols = ("eva", "hest", "ocelot", "midog", "monkey", "croma")
+    assert not {m for m in imported if m and m.startswith(tuple(f"soma.benchmark.{p}" for p in protocols))}
+    assert not hasattr(detection, "DATASETS")
+    assert not hasattr(detection, "DATASET_ORDER")
+
+
+def test_each_detection_protocol_registers_its_dataset_with_its_own_scorer():
+    assert registered_datasets() == ("ocelot", "midog", "monkey")
+    for dataset in registered_datasets():
+        spec = dataset_spec(dataset)
+        assert spec.name == dataset
+        assert spec.score.__module__.startswith(f"soma.benchmark.{dataset}")
+        assert spec.curate.__module__.startswith(f"soma.benchmark.{dataset}")
+        assert spec.config.is_file()
+        assert spec.config.is_relative_to(Path(detection.__file__).parent / dataset)
+
+
+def _toy_spec(**changes) -> DatasetSpec:
+    fields = dict(
+        name="toy",
+        spacing_um=0.5,
+        metric_name="toy_score",
+        num_classes=1,
+        match_um=(4.0,),
+        match_method="greedy",
+        tolerance=None,
+        test_source="local_holdout",
+        config=Path("toy.yaml"),
+        score=lambda samples, spec: {"toy_score": float(len(samples)) * spec.spacing_um},
+        curate=lambda raw_root, out_dir, spec: ("curated", str(raw_root), str(out_dir), spec.name),
+    )
+    return DatasetSpec(**{**fields, **changes})
+
+
+def test_a_registered_dataset_is_scored_and_curated_by_its_spec(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(detection, "_DATASETS", dict(detection._DATASETS))
+    register_dataset(_toy_spec())
+
+    assert registered_datasets()[-1] == "toy"
+    samples = [SamplePrediction("s0", [], [], [], [], []), SamplePrediction("s1", [], [], [], [], [])]
+    assert score_dataset_points("toy", samples) == {"toy_score": 1.0}
+    assert DETECTION_BENCHMARK.curate("raw", tmp_path, dataset="toy") == ("curated", "raw", str(tmp_path), "toy")
+    assert DETECTION_BENCHMARK.metric_for("toy") == "toy_score"
+
+
+def test_a_dataset_registers_once(monkeypatch):
+    monkeypatch.setattr(detection, "_DATASETS", dict(detection._DATASETS))
+
+    with pytest.raises(ValueError, match="already registered"):
+        register_dataset(_toy_spec(name="midog"))
 
 
 def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
