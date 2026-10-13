@@ -19,7 +19,7 @@ from torch import Tensor, nn
 
 from soma.decoders.base import Decoder
 from soma.decoders.registry import decoder_registry
-from soma.params import NoParams, check_non_negative, check_positive, check_probability
+from soma.params import NoParams, check_non_negative, check_positive, check_probability, run_decided
 
 
 def _group_norm(channels: int, num_groups: int) -> nn.GroupNorm:
@@ -120,17 +120,18 @@ class LightweightConvDecoder(Decoder):
 @dataclass
 class LightweightConvParams:
     """:class:`LightweightConvDecoder`'s params (``input_dim`` and ``num_classes`` come
-    from the run). A run derives ``num_upsample_blocks`` from the grid geometry unless it is set."""
+    from the run). ``num_upsample_blocks`` left ``None`` is derived from the grid geometry."""
 
     hidden_dim: int = 256
-    num_upsample_blocks: int = 2
+    num_upsample_blocks: int | None = run_decided()
     num_groups: int = 32
     dropout: float = 0.0
 
     def __post_init__(self) -> None:
         check_positive("hidden_dim", self.hidden_dim, integer=True)
         check_positive("num_groups", self.num_groups, integer=True)
-        check_non_negative("num_upsample_blocks", self.num_upsample_blocks, integer=True)
+        if self.num_upsample_blocks is not None:
+            check_non_negative("num_upsample_blocks", self.num_upsample_blocks, integer=True)
         check_probability("dropout", self.dropout, below_one=True)
 
 

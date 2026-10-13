@@ -27,7 +27,7 @@ from soma.cache import MissingFeatureIdentity, resolve_cache_dtype
 from soma.cache.keys import build_tile_cache_key
 from slide2vec import ExecutionOptions
 
-from soma.config import CacheConfig, EncoderLeaf
+from soma.config import CacheOptions, EncoderLeaf
 from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
 from soma.tile_extraction import _TileFeatureExtractor
@@ -238,7 +238,7 @@ def _extract_images_uncached(dataset, root: Path):
         dataset,
         STUB_ENCODER,
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=2),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=root / "run",
         unit="tile",
     ).extract()
@@ -463,13 +463,13 @@ def test_null_output_variant_shares_the_cache_of_the_explicit_default(
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         execution=ExecutionOptions(num_workers_per_gpu=0),
-        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
+        cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache"),
     ).run(feature_dir=tmp_path / "f1")
     explicit = _TileFeatureExtractor(
         dataset,
         EncoderLeaf(name=_TEST_TILE, params={"output_variant": "default"}),
         execution=ExecutionOptions(num_workers_per_gpu=0),
-        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
+        cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache"),
     ).run(feature_dir=tmp_path / "f2")
 
     assert implicit.feature_dir == explicit.feature_dir
@@ -520,7 +520,7 @@ def test_features_written_without_a_feature_identity_are_not_committed(
         _make_tile_dataset(tmp_path, ("s0", "s1")),
         EncoderLeaf(name=_TEST_TILE),
         execution=ExecutionOptions(num_workers_per_gpu=0),
-        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache"),
+        cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache"),
     )
 
     with pytest.raises(MissingFeatureIdentity, match="no feature identity"):

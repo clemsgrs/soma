@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 
 from soma._logging import configure_cli_logging
-from soma.config import load_config
+from soma.config import ExperimentConfig
 from soma.discovery import components
 from soma.pipeline import Pipeline
 
@@ -38,11 +38,11 @@ from soma.benchmarks.run import (
 def _parse_set_overrides(pairs: list[str]) -> dict[str, Any]:
     """Turn ``--set a.b.c=value`` strings into a nested override dict.
 
-    Keys are dotted paths into the config layout (``data.dataset_csv``,
-    ``run.output_root``, ``training.epochs`` …). Values are parsed as YAML scalars so
-    types come through naturally (``epochs=2`` → int, ``pin_memory=false`` → bool, paths
-    stay strings). Lets a committed config be repointed at a new machine without editing
-    it on disk.
+    Keys are dotted paths into the config sections (``cohort.records``,
+    ``run.output_dir``, ``trainer.max_epochs`` …). Values are parsed as YAML scalars so
+    types come through naturally (``max_epochs=2`` → int, ``pin_memory=false`` → bool,
+    paths stay strings). Lets a committed config be repointed at a new machine without
+    editing it on disk.
     """
     overrides: dict[str, Any] = {}
     for pair in pairs:
@@ -67,17 +67,17 @@ def _parse_set_overrides(pairs: list[str]) -> dict[str, Any]:
     return overrides
 
 
-def _cached_source(config, feature_dir: Path):
-    """The cached source a ``--feature-dir`` holds: grids for a dense task, else features."""
+def _cached_source(config: ExperimentConfig, feature_dir: Path):
+    """The cached source a ``--feature-dir`` holds: grids for the grid shape, else features."""
     from soma.data import CachedSetSource
     from soma.dense import CachedGridSource, DenseSourceProvenance
-    from soma.pipeline.build import extraction_shape
+    from soma.plan import learner_shape
 
-    if extraction_shape(config.dataset_type) == "grid":
+    if learner_shape(config) == "grid":
         return CachedGridSource(
             feature_dir,
             provenance=DenseSourceProvenance(
-                kind="dense_cache", feature_dir=feature_dir, dataset_csv=config.dataset_csv
+                kind="dense_cache", feature_dir=feature_dir, dataset_csv=config.cohort.records
             ),
         )
     return CachedSetSource(feature_dir)
@@ -91,7 +91,7 @@ def _run_config_path(
         sys.exit(1)
 
     try:
-        config = load_config(config_path, overrides=overrides)
+        config = ExperimentConfig.from_yaml(config_path, overrides=overrides)
     except Exception as exc:
         print(f"Error: failed to load config from {config_path}: {exc}", file=sys.stderr)
         sys.exit(1)
@@ -232,10 +232,10 @@ def _preflight_config_compatibility(
             f"{capabilities.name!r}."
         )
 
-    from soma.pipeline.build import extraction_shape
+    from soma.plan import learner_shape, sample_unit
     from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
-    dense = resolve_pipeline_dense(config) if extraction_shape(config.dataset_type) == "grid" else None
+    dense = resolve_pipeline_dense(config) if learner_shape(config) == "grid" else None
     feature_kind = None if dense is None else dense.feature_kind
     if feature_kind == "patch_features" and not capabilities.dense:
         return (
@@ -263,10 +263,7 @@ def _preflight_config_compatibility(
             "or change the Encoder plugin implementation."
         )
 
-    declared_geometry = feature_kind is not None or config.dataset_type in {
-        "slide",
-        "patient",
-    }
+    declared_geometry = feature_kind is not None or sample_unit(config) in {"slide", "patient"}
     resolve_encoder_output(
         encoder,
         requested_output_variant=encoder_leaf.output_variant,

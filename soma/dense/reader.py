@@ -50,7 +50,7 @@ def accepted_mask_values(
     """The label vocabulary a mask is read against when no ``pixel_mapping`` applies.
 
     Pre-cropped tiles have no sampling vocabulary, so their masks declare exactly the raw
-    values the head accepts: those ``label_remap`` maps (``task.params.classes`` and
+    values the head accepts: those ``label_remap`` maps (the head's ``classes`` and
     ``ignore``), or, without a class scheme, the class indices and ``ignore_index``. Only
     single-byte values can occur in a mask raster.
     """
@@ -64,9 +64,9 @@ def accepted_mask_values(
 def check_classes_declared(
     task_params: Mapping[str, Any], pixel_mapping: Mapping[str, int | list[int]]
 ) -> None:
-    """Fail unless every raw value in ``task.params.classes`` / ``ignore`` is in ``pixel_mapping``.
+    """Fail unless every raw value in the head's ``classes`` / ``ignore`` is in ``pixel_mapping``.
 
-    hs2p reads an annotation raster against the closed ``preprocessing.masks.pixel_mapping``
+    hs2p reads an annotation raster against the closed ``features.extraction.masks.pixel_mapping``
     vocabulary and rejects any other value, so a raw value the training scheme names but
     the sampling vocabulary omits could never be read. This is the one coupling between the
     two layers; call it after :func:`resolve_class_scheme` has validated the scheme.
@@ -77,14 +77,14 @@ def check_classes_declared(
         for value in (entry if isinstance(entry, (list, tuple)) else [entry])
     }
     classes = task_params.get("classes") or {}
-    owners = [(f"task.params.classes {name!r}", values) for name, values in classes.items()]
-    owners.append(("task.params.ignore", task_params.get("ignore") or ()))
+    owners = [(f"head class {name!r}", values) for name, values in classes.items()]
+    owners.append(("head param 'ignore'", task_params.get("ignore") or ()))
     for owner, values in owners:
         for value in values if isinstance(values, (list, tuple)) else [values]:
             if int(value) not in declared:
                 raise ValueError(
                     f"{owner} lists raw value {int(value)}, which "
-                    "preprocessing.masks.pixel_mapping does not declare. Annotation masks "
+                    "features.extraction.masks.pixel_mapping does not declare. Annotation masks "
                     "are read against that vocabulary, so add the value to pixel_mapping; "
                     "left out of min_coverage, its label is read but never selects a ROI."
                 )

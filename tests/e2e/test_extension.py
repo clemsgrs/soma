@@ -13,12 +13,14 @@ head passes the ``soma.testing.check_task_head`` conformance suite, and a learne
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
+import yaml
 from torch import Tensor, nn
 
 import soma
@@ -33,7 +35,7 @@ from soma.tasks.registry import task_registry
 from soma.tasks.segmentation import SegmentationHead
 from soma.testing import check_task_head
 from soma.training.sample_dataset import SampleBatch
-from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma
+from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_slide_cohort
 
 CUSTOM_HEAD = "e2e_dice_only_segmentation"
@@ -47,8 +49,8 @@ CALLS = {"loss": 0, "decoder": 0, "entropy": 0, "smoothing": 0, "predict": 0, "s
 class AttentionEntropyLearner(MILLearner):
     """``MILLearner`` plus an attention-entropy regulariser: one ``training_step`` override.
 
-    Referenced from the config by dotted path (``training.learner``), so nothing is
-    registered; ``weight`` arrives through the leaf's ``params``.
+    Referenced from the config by dotted path (``learner.name``), so nothing is
+    registered; ``weight`` arrives through the learner's ``params``.
     """
 
     def __init__(self, model, *, weight: float, **kwargs) -> None:
@@ -172,31 +174,34 @@ def test_custom_head_and_decoder_train_through_cli(
     roi_px = 96
     dataset_csv, splits_csv = make_dense_dataset(tmp_path / "data", "segmentation", size=roi_px)
     config = {
-        "run": {"output_root": str(tmp_path / "runs"), "seed": 0},
-        "data": {
-            "dataset_csv": str(dataset_csv),
-            "splits_csv": str(splits_csv),
-            "dataset_type": "segmentation",
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
+        "cohort": {"records": str(dataset_csv), "splits": str(splits_csv)},
+        "features": {
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": roi_px,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
+            },
+            "execution": {**CPU_EXECUTION, "precision": "fp32", "batch_size": 8},
+            "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
         },
-        "preprocessing": {
-            "backend": "openslide",
-            "requested_tile_size_px": roi_px,
-            "requested_spacing_um": SPACING_UM,
-        },
-        "execution": CPU_EXECUTION,
-        "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
-        "encoder": {"name": encoder_name, "precision": "fp32", "batch_size": 8},
-        "decoder": {"name": CUSTOM_DECODER, "params": {"hidden_dim": 16}},
-        "task": {"name": CUSTOM_HEAD, "params": {"num_classes": 3}},
+        "loaders": {"batch_size": 4, **CPU_LOADER},
+        "learner": learner_section(
+            "dense",
+            {
+                "decoder": {"name": CUSTOM_DECODER, "params": {"hidden_dim": 16}},
+                "head": {"name": CUSTOM_HEAD, "params": {"num_classes": 3}},
+            },
+            learning_rate=3e-3,
+            normalization={"method": "zscore"},
+        ),
+        "trainer": trainer_section(20),
         "evaluation": {"metrics": ["mean_dice", "mean_iou"]},
-        "normalization": {"method": "zscore"},
-        "training": {
-            "epochs": 20,
-            "learning_rate": 3e-3,
-            "batch_size": 4,
-            "patience": 20,
-            **CPU_LOADER,
-        },
     }
     run = run_soma(config, tmp_path / "config.yaml")
 
@@ -212,51 +217,56 @@ def test_custom_head_and_decoder_train_through_cli(
 def test_custom_learner_by_dotted_path_trains_through_cli(
     tmp_path, encoder_name, new_artifact, registered_extensions
 ):
-    """A ``MILLearner`` subclass adding an intermediate loss trains through the CLI via
-    the ``training.learner`` leaf, named by dotted import path and given its params; its
-    ``predict_step`` adds a column to the predictions. The registered custom head it
-    trains passes ``check_task_head``."""
+    """A ``MILLearner`` subclass adding an intermediate loss trains through the CLI as
+    the ``learner``, named by dotted import path and given its params; its
+    ``predict_step`` adds a column to the predictions. ``plan.yaml`` records the dotted
+    path with its params verbatim, and every bundle's ``provenance.json`` names the
+    package it imports from. The registered custom head it trains passes
+    ``check_task_head``."""
     CALLS["entropy"] = CALLS["smoothing"] = CALLS["predict"] = 0
     artifact = new_artifact("extension_custom_learner")
     cohort = make_slide_cohort(tmp_path / "cohort")
     epochs = 25
+    learner = "tests.e2e.test_extension.AttentionEntropyLearner"
     config = {
-        "run": {"output_root": str(tmp_path / "runs"), "seed": 0},
-        "data": {
-            "dataset_csv": str(cohort.manifest("binary_classification")),
-            "splits_csv": str(cohort.splits_csv),
-            "dataset_type": "slide",
-        },
-        "preprocessing": {
-            "backend": "openslide",
-            "requested_tile_size_px": 32,
-            "requested_spacing_um": SPACING_UM,
-            "tissue_method": "otsu",
-            "seg_downsample": 16,
-            "a_t": 1,
-            "min_coverage": {"tissue": 0.5},
-        },
-        "execution": CPU_EXECUTION,
-        "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
-        "encoder": {"name": encoder_name, "precision": "fp32", "batch_size": 256},
-        "aggregation": {"name": "abmil"},
-        "task": {"name": CUSTOM_SET_HEAD},
-        "evaluation": {"metrics": ["auroc", "balanced_accuracy"]},
-        "normalization": {"method": "zscore"},
-        "training": {
-            "epochs": epochs,
-            "learning_rate": 5e-3,
-            "batch_size": 1,
-            "patience": epochs,
-            "learner": {
-                "name": "tests.e2e.test_extension.AttentionEntropyLearner",
-                "params": {"weight": 0.01},
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
+        "cohort": {"records": str(cohort.manifest("binary_classification")), "splits": str(cohort.splits_csv)},
+        "features": {
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": 32,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
+                "segmentation": {"method": "otsu", "downsample": 16},
+                "filter": {"ref_tile_size": 32, "a_t": 1},
+                "masks": {"pixel_mapping": {"background": 0, "tissue": 1}, "min_coverage": {"tissue": 0.5}},
             },
-            **CPU_LOADER,
+            "execution": {**CPU_EXECUTION, "precision": "fp32", "batch_size": 256},
+            "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
         },
+        "loaders": {"batch_size": 1, **CPU_LOADER},
+        "learner": learner_section(
+            learner,
+            {"aggregator": {"name": "abmil"}, "head": {"name": CUSTOM_SET_HEAD}},
+            learning_rate=5e-3,
+            normalization={"method": "zscore"},
+            weight=0.01,
+        ),
+        "trainer": trainer_section(epochs),
+        "evaluation": {"metrics": ["auroc", "balanced_accuracy"]},
     }
     with pytest.warns(UserWarning, match=r"learners 'tests\.e2e\.test_extension\.AttentionEntropyLearner' is not registered"):
         run = run_soma(config, tmp_path / "config.yaml")
+
+    plan = yaml.safe_load((run.run_dir / "plan.yaml").read_text())
+    artifact.check_equal("plan/learner_name", plan["learner"]["name"], learner)
+    artifact.check_equal("plan/learner_params_verbatim", plan["learner"]["params"]["weight"], 0.01)
+    provenance = json.loads((run.run_dir / "bundle" / "provenance.json").read_text())
+    artifact.check_equal("provenance/dotted_package", "tests_version" in provenance, True)
 
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)
@@ -291,42 +301,42 @@ def test_custom_grid_learner_by_dotted_path_trains_through_cli(
     tmp_path, encoder_name, new_artifact, registered_extensions
 ):
     """A ``DenseLearner`` subclass adding a regulariser trains a cached segmentation run
-    through the CLI via the ``training.learner`` leaf."""
+    through the CLI as the ``learner``, named by dotted import path."""
     CALLS["smooth_grid"] = 0
     artifact = new_artifact("extension_custom_grid_learner")
     roi_px = 96
     dataset_csv, splits_csv = make_dense_dataset(tmp_path / "data", "segmentation", size=roi_px)
     epochs = 20
     config = {
-        "run": {"output_root": str(tmp_path / "runs"), "seed": 0},
-        "data": {
-            "dataset_csv": str(dataset_csv),
-            "splits_csv": str(splits_csv),
-            "dataset_type": "segmentation",
-        },
-        "preprocessing": {
-            "backend": "openslide",
-            "requested_tile_size_px": roi_px,
-            "requested_spacing_um": SPACING_UM,
-        },
-        "execution": CPU_EXECUTION,
-        "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
-        "encoder": {"name": encoder_name, "precision": "fp32", "batch_size": 8},
-        "decoder": {"name": "lightweight_conv"},
-        "task": {"name": "segmentation", "params": {"num_classes": 3}},
-        "evaluation": {"metrics": ["mean_dice", "mean_iou"]},
-        "normalization": {"method": "zscore"},
-        "training": {
-            "epochs": epochs,
-            "learning_rate": 3e-3,
-            "batch_size": 4,
-            "patience": epochs,
-            "learner": {
-                "name": "tests.e2e.test_extension.SmoothGridLearner",
-                "params": {"weight": 0.1},
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
+        "cohort": {"records": str(dataset_csv), "splits": str(splits_csv)},
+        "features": {
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": roi_px,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
             },
-            **CPU_LOADER,
+            "execution": {**CPU_EXECUTION, "precision": "fp32", "batch_size": 8},
+            "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
         },
+        "loaders": {"batch_size": 4, **CPU_LOADER},
+        "learner": learner_section(
+            "tests.e2e.test_extension.SmoothGridLearner",
+            {
+                "decoder": {"name": "lightweight_conv"},
+                "head": {"name": "segmentation", "params": {"num_classes": 3}},
+            },
+            learning_rate=3e-3,
+            normalization={"method": "zscore"},
+            weight=0.1,
+        ),
+        "trainer": trainer_section(epochs),
+        "evaluation": {"metrics": ["mean_dice", "mean_iou"]},
     }
     run = run_soma(config, tmp_path / "config.yaml")
 

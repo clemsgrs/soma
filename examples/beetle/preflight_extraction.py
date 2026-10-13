@@ -15,7 +15,7 @@ import torch.nn.functional as F
 from hs2p import MaskSamplingConfig, TilingConfig
 from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
 
-from soma.config import CacheConfig, EncoderLeaf
+from soma.config import CacheOptions, EncoderLeaf
 from soma import FeatureExtractor
 from soma.data._legacy import LegacySamples, legacy_samples_from_csv
 from soma.dense.reader import build_label_remap
@@ -218,7 +218,7 @@ def _run_precision(
             precision=precision,
             batch_size=8,
         ),
-        cache=CacheConfig(
+        cache=CacheOptions(
             enabled=True,
             root_dir=output_dir / f"cache_{precision}",
             reuse_policy="strict",

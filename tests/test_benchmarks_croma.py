@@ -21,7 +21,8 @@ from soma.benchmarks import (
 )
 from soma.benchmarks import registry as registry_mod
 from soma.benchmarks import reproduction as reproduction_mod
-from soma.config import RepresentationConfig
+from soma.config import CRoMaOptions
+from soma.plan import check, sample_unit
 from soma.benchmarks.croma import CROMA_0_3_ENCODER_PANEL
 from soma.curation.manifest import CuratedManifest
 
@@ -59,17 +60,17 @@ def test_croma_config_materializes_the_fixed_protocol(tmp_path, monkeypatch):
         output_root=tmp_path / "runs",
     )
 
-    assert config.dataset_type == "tile"
-    assert config.task is None
-    assert config.representation == RepresentationConfig(
-        kind="croma",
+    assert sample_unit(config) == "tile"
+    assert config.learner is None
+    assert config.evaluation.representation == CRoMaOptions(
         confounder_column="medical_center",
         split="test",
         evaluation_design="all",
         m=5,
         alpha=0.10,
     )
-    assert config.training.seed == 0
+    assert config.run.seed == 0
+    check(config)
     assert config.features.encoder.name == "uni2"
     assert config.features.encoder.output_variant == "default"
 
@@ -79,8 +80,6 @@ def test_croma_facet_materializes_the_fixed_protocol():
 
     assert facet.fixed == {
         "dataset": "camelyon",
-        "dataset_type": "tile",
-        "representation.kind": "croma",
         "representation.confounder_column": "medical_center",
         "representation.split": "test",
         "representation.evaluation_design": "all",

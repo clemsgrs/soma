@@ -18,7 +18,7 @@ import soma.cache as cache_mod
 import soma.extraction.orchestration as orchestration_mod
 from soma.data import require_coverage
 from soma.cache import record_empty_sample_ids, record_feature_dim, record_sample_identity_signatures
-from soma.config import CacheConfig, EncoderLeaf
+from soma.config import CacheOptions, EncoderLeaf
 from soma.data._legacy import legacy_samples_from_csv
 from soma.data import CachedSetSource
 from slide2vec.encoders.registry import encoder_registry
@@ -570,7 +570,7 @@ def test_preprocess_skips_live_tiling_on_complete_tiling_cache_hit(tmp_path: Pat
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True),
+        cache=CacheOptions(enabled=True),
         output_root=tmp_path / "outputs",
     )
     cache_dir = tmp_path / "tiling_cache" / "abc123"
@@ -611,7 +611,7 @@ def test_preprocess_rewrites_stale_local_process_list_when_cache_hit(tmp_path: P
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True),
+        cache=CacheOptions(enabled=True),
         output_root=tmp_path / "outputs",
     )
     tiling_dir = tmp_path / "tiling"
@@ -655,7 +655,7 @@ def test_preprocess_uses_output_root_for_tiling_cache_when_cache_root_omitted(tm
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True),
+        cache=CacheOptions(enabled=True),
         output_root=tmp_path / "outputs",
     )
 
@@ -674,7 +674,7 @@ def test_extract_uses_output_root_for_feature_cache_when_cache_root_omitted(tmp_
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True),
+        cache=CacheOptions(enabled=True),
         output_root=tmp_path / "outputs",
     )
     loaded = [
@@ -952,7 +952,7 @@ def test_extract_tile_features_returns_store(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -1070,7 +1070,7 @@ def test_internal_tile_engine_embeds_given_images_via_slide2vec(tmp_path: Path, 
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, batch_size=2),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
     ).run(feature_dir=tmp_path / "features")
 
     assert store.sample_ids == ["s0", "s1"]
@@ -1104,7 +1104,7 @@ def test_internal_tile_engine_hands_resolved_dtype_to_slide2vec(
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         execution=ExecutionOptions(num_workers_per_gpu=0, precision="fp32"),
-        cache=CacheConfig(enabled=True, root_dir=tmp_path / "cache", dtype=dtype),
+        cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache", dtype=dtype),
     ).run(feature_dir=tmp_path / "features")
 
     (call,) = recording_model.calls
@@ -1118,7 +1118,7 @@ def test_internal_tile_engine_reuses_complete_cache_without_loading_the_encoder(
     tmp_path: Path, recording_model
 ):
     dataset = _make_tile_dataset(tmp_path, ("s0", "s1"))
-    cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
+    cache = CacheOptions(enabled=True, root_dir=tmp_path / "cache")
 
     first = _TileFeatureExtractor(
         dataset, EncoderLeaf(name=_TEST_TILE), cache=cache
@@ -1139,7 +1139,7 @@ def test_internal_tile_engine_only_hands_slide2vec_samples_soma_reports_missing(
 ):
     """Signed, complete samples are soma's to reuse; slide2vec sees only the others."""
     dataset = _make_tile_dataset(tmp_path, ("s0", "s1"))
-    cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
+    cache = CacheOptions(enabled=True, root_dir=tmp_path / "cache")
 
     store = _TileFeatureExtractor(
         dataset, EncoderLeaf(name=_TEST_TILE), cache=cache
@@ -1165,7 +1165,7 @@ def test_internal_tile_engine_reencodes_a_sample_whose_identity_changed(
     from PIL import Image
 
     dataset = _make_tile_dataset(tmp_path, ("s0",))
-    cache = CacheConfig(enabled=True, root_dir=tmp_path / "cache")
+    cache = CacheOptions(enabled=True, root_dir=tmp_path / "cache")
     _TileFeatureExtractor(dataset, EncoderLeaf(name=_TEST_TILE), cache=cache).run(
         feature_dir=tmp_path / "features"
     )
@@ -1209,7 +1209,7 @@ def test_extract_defaults_tiling_dir_to_visible_run_local_path(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -1258,7 +1258,7 @@ def test_run_defaults_tiling_dir_to_sibling_run_local_path(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -1307,7 +1307,7 @@ def test_extract_returns_manifest_aware_store(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -1362,7 +1362,7 @@ def test_write_cached_process_list_marks_empty_samples(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True),
+        cache=CacheOptions(enabled=True),
         output_root=tmp_path / "outputs",
     )
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
@@ -1406,7 +1406,7 @@ def test_materialize_feature_dir_from_cache_leaves_pointer_only_run_dir(tmp_path
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True),
+        cache=CacheOptions(enabled=True),
         output_root=tmp_path / "outputs",
     )
     cache_dir = tmp_path / "feature_cache" / "tile" / "abc123"
@@ -1448,7 +1448,7 @@ def test_tile_cache_hit_preserves_shared_manifest_and_uses_run_manifest(tmp_path
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path / "outputs",
     )
     loaded = [
@@ -1531,7 +1531,7 @@ def test_write_feature_manifest_uses_manifest_metadata_without_loading_tensor(tm
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True),
+        cache=CacheOptions(enabled=True),
         output_root=tmp_path / "outputs",
     )
     feature_dir = tmp_path / "features"
@@ -1579,7 +1579,7 @@ def test_write_feature_manifest_preserves_cache_backed_paths(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True),
+        cache=CacheOptions(enabled=True),
         output_root=tmp_path / "outputs",
     )
     cache_payload_dir = tmp_path / "shared-cache" / "slide" / "abc123" / "slide_embeddings"
@@ -1635,7 +1635,7 @@ def test_extract_defaults_to_all_visible_gpus_for_multi_gpu_embedding(tmp_path: 
             EncoderLeaf(name=_TEST_TILE),
             extraction(0.5, 224),
             execution=ExecutionOptions(),
-            cache=CacheConfig(enabled=False),
+            cache=CacheOptions(enabled=False),
             output_root=tmp_path,
         )
 
@@ -1851,7 +1851,7 @@ def test_extract_slide_features_preserves_requested_tile_artifact_regime(
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
         execution=ExecutionOptions(save_tile_embeddings=save_tile_features),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -1923,7 +1923,7 @@ def test_slide_encoder_runtime_does_not_forward_output_variant_override(tmp_path
         dataset,
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -1994,7 +1994,7 @@ def test_slide_cache_population_writes_tile_cache_directly(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2063,7 +2063,7 @@ def test_slide_cache_population_records_all_empty_without_embedding(tmp_path: Pa
         dataset,
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2109,7 +2109,7 @@ def test_tile_cache_population_uses_cache_dir_as_live_output_target(tmp_path: Pa
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2183,7 +2183,7 @@ def test_tile_cache_population_records_all_empty_without_embedding(tmp_path: Pat
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2234,7 +2234,7 @@ def test_patient_cache_population_uses_cache_dir_as_live_output_target(tmp_path:
         dataset,
         EncoderLeaf(name=_TEST_PATIENT),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2335,7 +2335,7 @@ def test_patient_cache_population_skips_empty_tile_cache_samples(tmp_path: Path)
         dataset,
         EncoderLeaf(name=_TEST_PATIENT),
         resolved_preprocessing,
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2439,7 +2439,7 @@ def test_patient_cache_population_records_fully_empty_patients(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_PATIENT),
         resolved_preprocessing,
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2523,7 +2523,7 @@ def test_patient_encoder_requires_every_sample_to_have_patient_id(tmp_path: Path
         dataset,
         EncoderLeaf(name=_TEST_PATIENT),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+        cache=CacheOptions(root_dir=tmp_path / "shared-cache"),
         output_root=tmp_path / "outputs",
     )
 
@@ -2539,7 +2539,7 @@ def test_hierarchical_cache_population_uses_cache_dir_as_live_output_target(tmp_
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         preprocessing,
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path / "outputs",
     )
     loaded = [
@@ -2620,7 +2620,7 @@ def test_hierarchical_cache_population_skips_empty_slides(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         preprocessing,
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path / "outputs",
     )
     empty_tiling = SimpleNamespace(
@@ -2709,7 +2709,7 @@ def test_hierarchical_cache_population_records_all_empty_without_embedding(tmp_p
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         preprocessing,
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path / "outputs",
     )
     loaded = [
@@ -2759,7 +2759,7 @@ def test_tile_cache_metadata_records_resolved_execution_fields(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2802,7 +2802,7 @@ def test_slide_cache_miss_reuses_cached_tiles_without_reembedding(tmp_path: Path
         dataset,
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2900,7 +2900,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -2924,7 +2924,7 @@ def test_slide_cache_miss_multigpu_shards_slide_aggregation(tmp_path: Path):
         legacy_samples_from_csv(csv_path),
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
 
@@ -3062,7 +3062,7 @@ def test_multi_gpu_uncached_tile_extraction_uses_coordinate_helper(tmp_path: Pat
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -3121,7 +3121,7 @@ def test_multi_gpu_slide_cache_population_does_not_forward_output_variant_overri
         legacy_samples_from_csv(csv_path),
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -3201,7 +3201,7 @@ def test_multi_gpu_slide_cache_refresh_keeps_resolved_output_variant_stable(tmp_
         dataset,
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     loaded = [
@@ -3268,7 +3268,7 @@ def test_slide_extraction_computes_requested_non_default_output_variant(tmp_path
         dataset,
         EncoderLeaf(name=_TEST_SLIDE_VARIANTS, params={"output_variant": "wide"}),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+        cache=CacheOptions(root_dir=tmp_path / "shared-cache"),
         output_root=tmp_path,
     )
     loaded = [
@@ -3325,7 +3325,7 @@ def test_single_variant_slide_encoder_passes_runtime_validation(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_SLIDE),
         extraction(0.5, 224),
-        cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+        cache=CacheOptions(root_dir=tmp_path / "shared-cache"),
         output_root=tmp_path,
     )
     loaded = [
@@ -3376,7 +3376,7 @@ def test_hierarchical_tile_extraction_writes_native_embeddings(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -3435,7 +3435,7 @@ def test_hierarchical_multi_gpu_uses_coordinate_helper(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
     loaded = [
@@ -3503,7 +3503,7 @@ def test_hierarchical_cache_population_uses_native_cache(tmp_path: Path):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
-        cache=CacheConfig(root_dir=cache_root),
+        cache=CacheOptions(root_dir=cache_root),
         output_root=tmp_path,
     )
     feature_dir = tmp_path / "features"
@@ -3580,7 +3580,7 @@ def test_hierarchical_cache_extraction_accepts_allow_non_recommended_settings(tm
         dataset,
         EncoderLeaf(name=_TEST_TILE, params={"allow_non_recommended_settings": True}),
         extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
-        cache=CacheConfig(root_dir=tmp_path / "shared-cache"),
+        cache=CacheOptions(root_dir=tmp_path / "shared-cache"),
         output_root=tmp_path,
     )
     loaded = [
@@ -3676,7 +3676,7 @@ def test_cached_runs_keep_their_manifest_after_neighbor_publishes(
         preprocessing = extraction(0.5, 224, **({"region_tile_multiple": 2} if kind == "hierarchical" else {}))
         extractors[run] = _PooledFeatureExtractor(
             legacy_samples_from_csv(root / "dataset.csv"), EncoderLeaf(name=encoder), preprocessing,
-            cache=CacheConfig(root_dir=tmp_path / "shared-cache"), output_root=root,
+            cache=CacheOptions(root_dir=tmp_path / "shared-cache"), output_root=root,
         )
 
     def resolve(**kwargs):
@@ -3743,7 +3743,7 @@ def test_fallback_feature_manifest_publishes_only_in_run_directory(tmp_path: Pat
     extractor = _PooledFeatureExtractor(
         _make_dataset(tmp_path), EncoderLeaf(name=_TEST_TILE),
         extraction(0.5, 224),
-        cache=CacheConfig(enabled=True), output_root=tmp_path,
+        cache=CacheOptions(enabled=True), output_root=tmp_path,
     )
     payload_dir = tmp_path / "shared-cache" / "tile_embeddings"
     payload_dir.mkdir(parents=True)

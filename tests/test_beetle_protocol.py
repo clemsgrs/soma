@@ -17,7 +17,8 @@ from examples.beetle.launch import resolve_arm_configs
 from examples.beetle.protocol import ARM_NAMES, BATCH_SIZE_CANDIDATES, PIXEL_MAPPING
 from examples.beetle.select_arm import main as select_main, select_development_arm
 from examples.beetle.smoke import run_offline_smoke
-from soma.config import load_config
+from soma.config import Component, ExperimentConfig
+from soma.plan import check
 
 REPOSITORY = "paige-ai/Virchow2"
 REVISION = "3158645804b69e3f3bc4439d4116edddf0840a72"
@@ -134,7 +135,8 @@ def test_resolved_arms_encode_the_locked_virchow2_recipe(
 
     assert tuple(paths) == EXPECTED_ARMS
     for arm, path in paths.items():
-        config = load_config(path)
+        config = ExperimentConfig.from_yaml(path)
+        check(config)
         features = config.features
         assert features.encoder is not None
         assert features.encoder.name == "virchow2"
@@ -152,28 +154,25 @@ def test_resolved_arms_encode_the_locked_virchow2_recipe(
         assert features.extraction.masks.pixel_mapping == {
             label: (value,) for label, value in PIXEL_MAPPING.items()
         }
-        assert config.decoder is not None
-        assert config.decoder.name == "lightweight_conv"
-        assert config.decoder.params == {
-            "hidden_dim": 256,
-            "num_upsample_blocks": 2,
-            "num_groups": 32,
-        }
-        assert config.augmentation is None
-        assert config.training.batch_size == 8
-        assert config.training.epochs == 30
-        assert config.training.learning_rate == 1e-4
-        assert config.training.weight_decay == 1e-5
-        assert config.training.optimizer == "adam"
-        assert config.training.scheduler == "cosine"
-        assert config.training.checkpoint_selection == "best"
-        assert config.training.monitor == "dataset_global_mean_dice"
-        assert config.training.monitor_mode == "max"
-        assert config.training.patience == 8
-        assert config.training.gradient_accumulation == 1
-        assert config.training.seed == 0
+        params = config.learner.params
+        assert params["decoder"] == Component(
+            "lightweight_conv", {"hidden_dim": 256, "num_upsample_blocks": 2, "num_groups": 32}
+        )
+        assert config.loaders.augment is None
+        assert config.loaders.batch_size == 8
+        assert config.trainer.max_epochs == 30
+        assert params["optimizer"] == Component("adam", {"lr": 1e-4, "weight_decay": 1e-5})
+        assert params["scheduler"] == [Component("cosine")]
+        monitor = {"monitor": "dataset_global_mean_dice", "mode": "max"}
+        assert [(leaf.name, leaf.params) for leaf in config.trainer.callbacks] == [
+            ("checkpoint", monitor),
+            ("early_stopping", {**monitor, "patience": 8}),
+        ]
+        assert config.trainer.accumulate_grad_batches == 1
+        assert config.run.seed == 0
         assert "dataset_global_mean_dice" in config.evaluation.metrics
-        assert arm in config.tags
+        assert config.loaders.sampler.name == arm
+        assert arm in str(config.run.output_dir)
 
 
 def test_arm_overlays_contain_only_sampling_and_output_identity() -> None:
@@ -183,26 +182,20 @@ def test_arm_overlays_contain_only_sampling_and_output_identity() -> None:
         (config_dir / "uniform.yaml").read_text(encoding="utf-8")
     ) == {
         "run": {
-            "output_root": "data/beetle/runs/uniform",
+            "output_dir": "data/beetle/runs/uniform",
             "mirror_root": "data/beetle/recovery/uniform",
-            "tags": ["beetle", "project_protocol", "virchow2", "uniform"],
         },
-        "training": {
-            "roi_batch_sampling": "uniform",
-            "class_request_ratios": None,
-        },
+        "loaders": {"sampler": {"name": "uniform"}},
     }
     assert yaml.safe_load(
         (config_dir / "class_conditioned.yaml").read_text(encoding="utf-8")
     ) == {
         "run": {
-            "output_root": "data/beetle/runs/class_conditioned",
+            "output_dir": "data/beetle/runs/class_conditioned",
             "mirror_root": "data/beetle/recovery/class_conditioned",
-            "tags": ["beetle", "project_protocol", "virchow2", "class_conditioned"],
         },
-        "training": {
-            "roi_batch_sampling": "class_conditioned",
-            "class_request_ratios": [1, 1, 1, 1],
+        "loaders": {
+            "sampler": {"name": "class_conditioned", "params": {"class_request_ratios": [1, 1, 1, 1]}}
         },
     }
 
@@ -256,7 +249,7 @@ def test_resolution_accepts_configurable_descending_decoder_batch_candidates(
     )
 
     assert {
-        arm: load_config(path).training.batch_size for arm, path in paths.items()
+        arm: ExperimentConfig.from_yaml(path).loaders.batch_size for arm, path in paths.items()
     } == {"uniform": 64, "class_conditioned": 64}
 
 

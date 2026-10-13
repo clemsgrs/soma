@@ -1,6 +1,6 @@
 # detection-benchmark rung 4 (#235) — multi-FM ensemble (top3: genbio-pathfm + h-optimus-1 + virchow2) on MIDOG.
 #
-# The MIDOG base recipe with the single encoder replaced by a `composite:` block:
+# The MIDOG base recipe with the single encoder replaced by the `composite` encoder:
 # each member is extracted into its own standard dense cache (pure cache hits after the
 # ranking sweep — uniform 448 px window / 0.25 overlap), then channel-concatenated at
 # load time on the finest member token grid (`concat_resolution: grid`), with per-member
@@ -15,78 +15,82 @@
 #   python examples/detection_benchmark/campaign.py rank --data-root data \
 #       --config examples/detection_benchmark/ensemble_top3_midog.yaml \
 #       --datasets midog --out-root output/detection_benchmark/ensemble \
-#       --set cache.root_dir=output/detection_benchmark/midog/feature_cache
+#       --set features.cache.root_dir=output/detection_benchmark/midog/feature_cache
 
 run:
-  output_root: output/detection_benchmark/ensemble/midog_top3
+  output_dir: output/detection_benchmark/ensemble/midog_top3
   seed: 0
-  tags: [detection-benchmark, midog, detection, lightweight_conv, ensemble, top3]
 
-preprocessing:
-  requested_tile_size_px: 1024      # tile/supervision size (OCELOT geometry; tiled ROIs)
-  requested_spacing_um: 0.25
-  # MIDOG mixes scanners/resolutions; a 0.10 tolerance admits each region at the task
-  # spacing (design: preprocessing.tolerance = 0.10 for MIDOG).
-  tolerance: 0.10
-  dense_window_size: 448            # encoder sliding window within each 1024 tile
-  dense_window_overlap: 0.25
+cohort:
+  records: /data/pathology/projects/clement/code/soma/data/midog/curated/dataset.csv
+  splits: /data/pathology/projects/clement/code/soma/data/midog/curated/splits.csv
 
-data:
-  dataset_csv: /data/pathology/projects/clement/code/soma/data/midog/curated/dataset.csv
-  splits_csv: /data/pathology/projects/clement/code/soma/data/midog/curated/splits.csv
-  dataset_type: detection
+features:
+  encoder:
+    name: composite
+    params:
+      # feature_kind cross-defaults to patch_features for the trained-decoder path;
+      # the common grid defaults to the finest member grid (concat_grid_size unset).
+      concat_resolution: grid
+      members:
+        - name: genbio-pathfm
+          params: {allow_non_recommended_settings: true}
+          execution: {batch_size: 8}
+          member_norm: l2
+        - name: h-optimus-1
+          params: {allow_non_recommended_settings: true}
+          execution: {batch_size: 8}
+          member_norm: l2
+        - name: virchow2
+          params: {allow_non_recommended_settings: true}
+          execution: {batch_size: 8}
+          member_norm: l2
+  dense:
+    spacing_um: 0.25
+    target_size: 1024
+    # MIDOG mixes scanners/resolutions; a 0.10 tolerance admits each region at the
+    # task spacing.
+    tolerance: 0.10
+    window_size: 448
+    overlap: 0.25
+  cache:
+    # fp16 dense grids halve on-disk size (~128 MB -> ~64 MB per 1024 tile at 768-dim).
+    # MIDOG's 16,992 tiles make the fp32 default (~2.2 TB for a single encoder) infeasible;
+    # fp16 (~1.1 TB) fits and is numerically ~identical for frozen features. The driver
+    # sets cache.root_dir; the fp16 key differs from any fp32 cache.
+    dtype: fp16
 
-cache:
-  # fp16 dense grids halve on-disk size (~128 MB -> ~64 MB per 1024 tile at 768-dim).
-  # MIDOG's 16,992 tiles make the fp32 default (~2.2 TB for a single encoder) infeasible;
-  # fp16 (~1.1 TB) fits and is numerically ~identical for frozen features. The driver sets
-  # cache.root_dir; the fp16 key differs from any fp32 cache so this forces a fresh extract.
-  dtype: fp16
+loaders:
+  batch_size: 1
+  num_workers: 4
+  pin_memory: true
 
-composite:
-  # feature_kind cross-defaults to patch_features for the trained-decoder path;
-  # the common grid defaults to the finest member grid (concat_grid_size unset).
-  concat_resolution: grid
-  encoders:
-    - name: genbio-pathfm
-      member_norm: l2
-      batch_size: 8
-      allow_non_recommended_settings: true
-    - name: h-optimus-1
-      member_norm: l2
-      batch_size: 8
-      allow_non_recommended_settings: true
-    - name: virchow2
-      member_norm: l2
-      batch_size: 8
-      allow_non_recommended_settings: true
-
-decoder:
-  name: lightweight_conv
-
-task:
-  name: detection
+learner:
+  name: dense
   params:
-    num_classes: 1            # single mitotic-figure class
-    match_distance: 7.5       # δ in µm (MIDOG-native, ~one nucleus)
-    sigma: 2.5                # target Gaussian σ in µm (≈ δ/3)
-    matching: hungarian       # MIDOG-native one-to-one matching
-    foreground_weight: 10.0
+    decoder:
+      name: lightweight_conv
+    head:
+      name: detection
+      params:
+        num_classes: 1            # single mitotic-figure class
+        match_distance: 7.5       # δ in µm (MIDOG-native, ~one nucleus)
+        sigma: 2.5                # target Gaussian σ in µm (≈ δ/3)
+        matching: hungarian       # MIDOG-native one-to-one matching
+        foreground_weight: 10.0
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
+
+trainer:
+  max_epochs: 50
+  accumulate_grad_batches: 8
+  callbacks:
+    - name: checkpoint
+      params: {monitor: mean_f1, mode: max}
+    - name: early_stopping
+      params: {monitor: mean_f1, mode: max, patience: 10}
 
 evaluation:
   metrics: [mean_f1, f1_per_class, precision, recall]
-
-training:
-  epochs: 50
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  optimizer: adam
-  scheduler: cosine
-  patience: 10
-  monitor: mean_f1
-  monitor_mode: max
-  batch_size: 1
-  gradient_accumulation: 8
-  num_workers: 4
-  pin_memory: true
-  persistent_workers: false

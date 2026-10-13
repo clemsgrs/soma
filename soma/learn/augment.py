@@ -16,6 +16,7 @@ import torch
 from torch import Tensor
 
 from soma.data import Points
+from soma.params import run_decided
 from soma.registry import Registry
 
 __all__ = ["SegmentationAugment", "SegmentationAugmentParams", "augment_registry"]
@@ -76,7 +77,7 @@ class SegmentationAugmentParams:
     contrast: float = 0.0
     saturation: float = 0.0
     hue: float = 0.0
-    ignore_index: int = 255
+    ignore_index: int | None = run_decided()
     target_size: int | tuple[int, int] | None = None
 
     def __post_init__(self) -> None:

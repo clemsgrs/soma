@@ -18,6 +18,7 @@ import soma.cli as cli
 from soma.cli import main
 from soma.benchmarks import registry as registry_mod
 from soma.benchmarks.registry import Facet, ReferenceRow, register_benchmark
+from tests.experiment_configs import experiment
 
 
 def _run_cli(argv: list[str]) -> int:
@@ -569,28 +570,17 @@ class _PanelBenchmark:
         seed=None,
         overrides=None,
     ):
-        from soma.config import (
-            CacheConfig,
-            EvalConfig,
-            FeaturesConfig,
-            PipelineConfig,
-            TaskConfig,
-            TrainingConfig,
-        )
+        from soma.config import CacheOptions, FeaturesConfig
 
         self.events.append(("build", encoder))
-        return PipelineConfig(
-            dataset_csv=str(dataset_csv or "dataset.csv"),
-            splits_csv=str(splits_csv or "splits.csv"),
-            output_root=Path(output_root or "output/panel"),
-            dataset_type="tile",
-            features=FeaturesConfig(
-                encoder=encoder, cache=CacheConfig(**(overrides or {}).get("cache", {}))
-            ),
-            task=TaskConfig(name="binary_classification"),
-            evaluation=EvalConfig(metrics=["accuracy"]),
-            training=TrainingConfig(seed=0 if seed is None else int(seed)),
-            tags=["panel", encoder],
+        return experiment(
+            str(dataset_csv or 'dataset.csv'),
+            str(splits_csv or 'splits.csv'),
+            output_dir=Path(output_root or 'output/panel'),
+            features=FeaturesConfig(encoder=encoder, cache=CacheOptions(**(overrides or {}).get('cache', {}))),
+            seed=0 if seed is None else int(seed),
+            evaluation={"metrics": ['accuracy']},
+            scheduler='cosine',
         )
 
     def expected(self, **axes):
@@ -678,14 +668,18 @@ def _write_completed_panel_run(config, metric: str, score: float) -> None:
         write_run_metadata,
     )
 
-    config.output_root.mkdir(parents=True, exist_ok=True)
-    (config.output_root / "summary.json").write_text(json.dumps({metric: score}))
-    run_id = f"{config.features.encoder.name}-seed-{config.training.seed}"
-    layout = resolve_managed_output_paths(config, run_id=run_id)
+    from soma import Plan
+
+    output_dir = Path(config.run.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "summary.json").write_text(json.dumps({metric: score}))
+    run_id = f"{config.features.encoder.name}-seed-{config.run.seed}"
+    plan = Plan(config)
+    layout = resolve_managed_output_paths(plan, run_id=run_id)
     layout.run_dir.mkdir(parents=True, exist_ok=True)
     write_experiment_metadata(layout.experiment_dir, layout.experiment)
     metadata = create_run_metadata(
-        config=config,
+        plan=plan,
         experiment=layout.experiment,
         run_dir=layout.run_dir,
         run_id=run_id,
@@ -913,7 +907,7 @@ def test_reproduce_family_continues_ordered_cells_and_writes_isolated_leaderboar
 
         def run(self):
             config = self.config
-            relative = config.output_root.relative_to(output_root)
+            relative = Path(config.run.output_dir).relative_to(output_root)
             member = relative.parts[0]
             encoder = config.features.encoder.name
             audit.append(
@@ -921,7 +915,7 @@ def test_reproduce_family_continues_ordered_cells_and_writes_isolated_leaderboar
                     "run",
                     member,
                     encoder,
-                    config.training.seed,
+                    config.run.seed,
                     str(config.features.cache.root_dir),
                 )
             )
@@ -1028,11 +1022,11 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
             run_events.append(
                 (
                     config.features.encoder.name,
-                    config.training.seed,
-                    str(config.dataset_csv),
-                    str(config.splits_csv),
+                    config.run.seed,
+                    str(config.cohort.records),
+                    str(config.cohort.splits),
                     str(config.features.cache.root_dir),
-                    str(config.output_root),
+                    str(Path(config.run.output_dir)),
                 )
             )
             _write_completed_panel_run(
@@ -1111,9 +1105,9 @@ def test_reproduce_plural_preserves_successful_runs_and_writes_partial_leaderboa
             attempts.append(
                 (
                     encoder,
-                    config.training.seed,
+                    config.run.seed,
                     str(config.features.cache.root_dir),
-                    str(config.output_root),
+                    str(Path(config.run.output_dir)),
                 )
             )
             if encoder == "uni2":
@@ -1302,14 +1296,14 @@ def test_reproduce_plural_projects_a_run_completed_before_its_cell_failed(
         def run(self):
             config = self.config
             encoder = config.features.encoder.name
-            if encoder == private_name and config.training.seed == 0:
+            if encoder == private_name and config.run.seed == 0:
                 _write_completed_panel_run(
                     config=config,
                     metric=benchmark.primary_metric,
                     score=0.61,
                 )
                 return
-            raise RuntimeError(f"{encoder} seed {config.training.seed} failed")
+            raise RuntimeError(f"{encoder} seed {config.run.seed} failed")
 
     monkeypatch.setattr(cli, "Pipeline", PartiallyFailingPipeline)
     output_root = tmp_path / "runs"
@@ -1397,10 +1391,10 @@ def test_reproduce_plural_curated_manifest_skips_curation_for_every_encoder(
         def run(self):
             config = self.config
             seen.append(
-                (config.features.encoder.name, str(config.dataset_csv), str(config.splits_csv))
+                (config.features.encoder.name, str(config.cohort.records), str(config.cohort.splits))
             )
-            config.output_root.mkdir(parents=True, exist_ok=True)
-            (config.output_root / "summary.json").write_text(
+            Path(config.run.output_dir).mkdir(parents=True, exist_ok=True)
+            (Path(config.run.output_dir) / "summary.json").write_text(
                 json.dumps({benchmark.primary_metric: 0.70})
             )
 

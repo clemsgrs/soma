@@ -159,7 +159,7 @@ class TaskHead(ABC, nn.Module):
 
     @classmethod
     def resolve_target_schema(cls, params: "Mapping[str, Any] | None" = None) -> dict[str, type]:
-        """The ``target_schema`` of a head built from ``params`` (a config's ``task.params``).
+        """The ``target_schema`` of a head built from ``params`` (its leaf's params).
 
         What cohort loading validates before any head exists. The class's own
         ``target_schema`` by default; a head whose target keys depend on its params (a

@@ -17,11 +17,11 @@ from slide2vec.artifacts import TileEmbeddingArtifact
 
 from soma.atomic_io import atomic_write_json
 from soma.cache._types import CACHE_METADATA_NAME, MANIFEST_NAME
-from soma.config import CacheConfig
+from soma.config import CacheOptions
 
 
 def resolve_cache_root(
-    cache_config: CacheConfig,
+    cache_config: CacheOptions,
     *,
     feature_dir: Path | str,
     output_root: Path | str | None = None,
@@ -34,7 +34,7 @@ def resolve_cache_root(
 
 
 def resolve_tiling_cache_root(
-    cache_config: CacheConfig,
+    cache_config: CacheOptions,
     *,
     tiling_dir: Path | str,
     output_root: Path | str | None = None,

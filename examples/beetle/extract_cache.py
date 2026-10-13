@@ -11,9 +11,10 @@ from typing import Sequence
 
 from soma.data import require_coverage
 from soma import FeatureExtractor
-from soma.config import load_config
+from soma.config import ExperimentConfig
 from soma.data._legacy import legacy_samples_from_csv
-from soma.pipeline.build import extraction_shape, extraction_unit
+from soma.pipeline.build import extraction_unit
+from soma.plan import check, learner_shape
 from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 
@@ -35,19 +36,20 @@ def extract_verified_cache(
     work_dir.mkdir(parents=True, exist_ok=True)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    config = load_config(config_path)
-    dataset = legacy_samples_from_csv(config.dataset_csv)
+    config = ExperimentConfig.from_yaml(config_path)
+    check(config)
+    dataset = legacy_samples_from_csv(config.cohort.records)
     features = config.features
     if features.encoder is None:
         raise ValueError("BEETLE extraction requires a single encoder configuration.")
     cache = features.cache
     if cache.root_dir is None:
-        cache = replace(cache, root_dir=Path(config.output_root) / "feature_cache")
+        cache = replace(cache, root_dir=Path(config.run.output_dir) / "feature_cache")
     extraction = FeatureExtractor(
         dataset,
         features.encoder,
         resolve_pipeline_preprocessing(config),
-        shape=extraction_shape(config.dataset_type),
+        shape=learner_shape(config),
         unit=extraction_unit(config),
         dense=resolve_pipeline_dense(config),
         spacing_policy=features.spacing_policy,

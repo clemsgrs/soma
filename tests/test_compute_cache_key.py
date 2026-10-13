@@ -28,14 +28,8 @@ from soma.cache.keys import (
     execution_signature,
     preprocessing_signature,
 )
-from soma.config import (
-    AggregatorConfig,
-    FeaturesConfig,
-    NormalizationConfig,
-    PipelineConfig,
-    ProjectionConfig,
-    TaskConfig,
-)
+from soma.config import ExperimentConfig, FeaturesConfig
+from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction, tiling
 
 _ASAP = {"backend": "asap"}
@@ -283,20 +277,17 @@ def test_patient_annotation_bag_differs_from_tissue_bag():
 # --- The feature adaptor consumes the cache, it does not define it ---------------------
 
 
-def _slide_config(**overrides) -> PipelineConfig:
-    return PipelineConfig(
-        dataset_csv="d.csv",
-        splits_csv="s.csv",
-        output_root="runs",
-        dataset_type="slide",
+def _slide_config(**learner_params) -> ExperimentConfig:
+    return experiment(
+        "d.csv",
+        "s.csv",
         features=FeaturesConfig(encoder="virchow", extraction=extraction(0.5, 224, tiling_fields=_ASAP)),
-        aggregator=AggregatorConfig(name="mean_pool"),
-        task=TaskConfig(name="binary_classification"),
-        **overrides,
+        aggregator="mean_pool",
+        **learner_params,
     )
 
 
-def _config_key(config: PipelineConfig) -> str:
+def _config_key(config: ExperimentConfig) -> str:
     return compute_cache_key(
         kind="tile",
         encoder_name=config.features.encoder.name,
@@ -309,21 +300,21 @@ def _config_key(config: PipelineConfig) -> str:
 def test_normalization_leaves_feature_cache_key_untouched(method):
     """Issue #283: turning normalization on must never orphan an extracted feature cache."""
     off = _slide_config()
-    on = replace(off, normalization=NormalizationConfig(method=method))
+    on = _slide_config(normalization={"method": method})
     assert _config_key(on) == _config_key(off) == "7c61518e6c647449"
 
 
 @pytest.mark.parametrize(
     "projection",
     [
-        ProjectionConfig(method="pca", target_dim=256),
-        ProjectionConfig(method="random", target_dim=256, seed=3),
+        {"method": "pca", "target_dim": 256},
+        {"method": "random", "target_dim": 256, "seed": 3},
     ],
 )
 def test_projection_leaves_feature_cache_key_untouched(projection):
     """Issue #284: the dim-matched ablation re-uses one shared extraction."""
     off = _slide_config()
-    on = replace(off, projection=projection)
+    on = _slide_config(projection=projection)
     assert _config_key(on) == _config_key(off) == "7c61518e6c647449"
 
 

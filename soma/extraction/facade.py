@@ -11,7 +11,7 @@ from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
 
 from soma.data import require_coverage
 from soma._logging import ensure_default_logging
-from soma.config import CacheConfig, EncoderLeaf, is_annotation_sampling
+from soma.config import CacheOptions, EncoderLeaf, is_annotation_sampling
 from soma.data._legacy import LegacySamples, legacy_samples_from_csv
 from soma.extraction_contracts import (
     ExtractionArtifacts,
@@ -51,7 +51,7 @@ class FeatureExtractor:
         dense: DenseOptions | None = None,
         spacing_policy: str = "strict",
         execution: ExecutionOptions | None = None,
-        cache: CacheConfig = CacheConfig(),
+        cache: CacheOptions = CacheOptions(),
         output_root: str | Path,
     ) -> None:
         ensure_default_logging()

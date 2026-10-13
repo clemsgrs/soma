@@ -1,8 +1,9 @@
 """Train with a fixed optimizer-step budget instead of an epoch budget.
 
-``TrainingConfig(max_steps=N, epochs=None)`` (soma 1.12.0) stops training after
-exactly N optimizer updates, even when N does not divide the number of updates
-per epoch — the final epoch is then partial, and its tune evaluation still runs.
+``TrainerConfig(max_steps=N)`` (the :class:`~soma.learn.Trainer`'s ``max_steps``)
+stops training after exactly N optimizer updates, even when N does not divide the
+number of updates per epoch — the final epoch is then partial, and its tune
+evaluation still runs.
 
 Self-contained: fabricates random precomputed feature bags (no encoder, no
 download) and trains an attention-MIL head on CPU. The metric values are
@@ -31,15 +32,15 @@ logging.getLogger().setLevel(logging.ERROR)
 import pandas as pd
 import torch
 
-from soma import (
-    AggregatorConfig,
-    CachedSetSource,
-    EvalConfig,
-    TaskConfig,
-    TrainingConfig,
-    train,
+from soma import CachedSetSource, ExperimentConfig, Pipeline
+from soma.config import (
+    CohortConfig,
+    EvaluationConfig,
+    LearnerConfig,
+    LoadersConfig,
+    RunConfig,
+    TrainerConfig,
 )
-from soma.data._legacy import legacy_folds_from_csv, legacy_samples_from_csv
 
 # --- Scaffolding (not soma API): random precomputed feature bags ------------------
 # A CachedSetSource reads a directory of .pt files, one bag of tile vectors per
@@ -68,8 +69,6 @@ pd.DataFrame(
 ).to_csv(dataset_csv, index=False)
 pd.DataFrame({"sample_id": sample_ids, "split": split}).to_csv(splits_csv, index=False)
 
-dataset = legacy_samples_from_csv(dataset_csv)
-splits = legacy_folds_from_csv(splits_csv, dataset)
 store = CachedSetSource(FEATURES)
 
 # --- The step budget --------------------------------------------------------------
@@ -91,24 +90,26 @@ print(
     f"of {updates_per_epoch} updates)"
 )
 
-result = train(
-    feature_store=store,
-    dataset=dataset,
-    splits=splits,
-    aggregator=AggregatorConfig(name="abmil"),
-    task=TaskConfig(name="binary_classification"),
-    training=TrainingConfig(
-        max_steps=MAX_STEPS,
-        epochs=None,  # exactly one training budget may be set
-        batch_size=BATCH_SIZE,
-        learning_rate=1e-3,
-        seed=0,
-        pin_memory=False,
-        persistent_workers=False,
+config = ExperimentConfig(
+    run=RunConfig(output_dir=WORK / "runs", seed=0),
+    cohort=CohortConfig(records=dataset_csv, splits=splits_csv),
+    loaders=LoadersConfig(batch_size=BATCH_SIZE),
+    learner=LearnerConfig(
+        "mil",
+        {
+            "aggregator": "abmil",
+            "head": "binary_classification",
+            "optimizer": {"name": "adam", "params": {"lr": 1e-3}},
+        },
     ),
-    evaluation=EvalConfig(metrics=["balanced_accuracy"]),
-    run_dir=WORK / "run",
+    # A step budget replaces the epoch budget: max_epochs is then derived from it.
+    trainer=TrainerConfig(
+        max_steps=MAX_STEPS,
+        callbacks=[{"name": "checkpoint", "params": {"monitor": "balanced_accuracy", "mode": "max"}}],
+    ),
+    evaluation=EvaluationConfig(metrics=["balanced_accuracy"]),
 )
+result = Pipeline(config, source=store).run()
 
 # --- The exact optimizer-update count ---------------------------------------------
 train_result = result.fold_results[0].train_result

@@ -33,6 +33,33 @@ CPU_EXECUTION = {
 CPU_LOADER = {"num_workers": 0, "pin_memory": False, "persistent_workers": False}
 
 
+def learner_section(name: str, model: dict[str, Any], *, learning_rate: float, **params: Any) -> dict[str, Any]:
+    """A YAML ``learner`` section: the ``model`` leaves, Adam at ``learning_rate`` (weight
+    decay 1e-5) with cosine annealing, and any further ``params``."""
+    return {
+        "name": name,
+        "params": {
+            **model,
+            "optimizer": {"name": "adam", "params": {"lr": learning_rate, "weight_decay": 1e-5}},
+            "scheduler": "cosine",
+            **params,
+        },
+    }
+
+
+def trainer_section(epochs: int, *, patience: int | None = None, monitor: dict | None = None) -> dict[str, Any]:
+    """A YAML ``trainer`` section: ``epochs`` with checkpoint selection and early stopping
+    (patience defaults to the whole budget), on ``monitor`` (``{monitor, mode}``)."""
+    monitor = dict(monitor or {})
+    return {
+        "max_epochs": epochs,
+        "callbacks": [
+            {"name": "checkpoint", "params": monitor},
+            {"name": "early_stopping", "params": {**monitor, "patience": patience or epochs}},
+        ],
+    }
+
+
 @dataclass
 class Run:
     run_dir: Path
@@ -60,7 +87,7 @@ class Run:
 def run_soma(config: dict[str, Any], config_path: Path, *cli_args: str) -> Run:
     """Write ``config`` as YAML and run it through the real CLI entry point, with any
     extra CLI arguments (``--feature-dir DIR``)."""
-    output_root = Path(config["run"]["output_root"])
+    output_root = Path(config["run"]["output_dir"])
     before = set(output_root.glob("experiments/*/runs/*"))
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     soma_main([str(config_path), *cli_args])

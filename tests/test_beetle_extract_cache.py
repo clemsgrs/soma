@@ -48,18 +48,21 @@ def test_extract_cache_prepares_features_without_starting_training(
     config_path = tmp_path / "uniform.yaml"
     config_path.write_text("fixture: true\n", encoding="utf-8")
     config = SimpleNamespace(
-        dataset_csv=tmp_path / "dataset.csv",
-        dataset_type="segmentation",
+        cohort=SimpleNamespace(records=tmp_path / "dataset.csv"),
         features=SimpleNamespace(
             encoder=object(),
             execution=object(),
             cache=SimpleNamespace(root_dir=tmp_path / "cache"),
             spacing_policy="native_if_coarser",
         ),
-        output_root=tmp_path / "output",
+        run=SimpleNamespace(output_dir=tmp_path / "output"),
     )
     parent_dataset = SimpleNamespace(sample_ids=["slide-a", "slide-b", "slide-c"])
-    monkeypatch.setattr(extract_cache, "load_config", lambda _path: config)
+    monkeypatch.setattr(
+        extract_cache, "ExperimentConfig", SimpleNamespace(from_yaml=lambda _path: config)
+    )
+    monkeypatch.setattr(extract_cache, "check", lambda _config: None)
+    monkeypatch.setattr(extract_cache, "learner_shape", lambda _config: "grid")
     monkeypatch.setattr(extract_cache, "legacy_samples_from_csv", lambda _path: parent_dataset)
     monkeypatch.setattr(extract_cache, "resolve_pipeline_preprocessing", lambda _config: object())
     monkeypatch.setattr(extract_cache, "resolve_pipeline_dense", lambda _config: object())

@@ -84,17 +84,18 @@ def resolve_class_scheme(
 ) -> tuple[int, tuple[str, ...], np.ndarray | None]:
     """Resolve ``(num_classes, class names, raw-pixel → class-index LUT)`` for a run.
 
-    ``task.params.classes`` and ``task.params.ignore`` define the training targets (see
+    The head's ``classes`` and ``ignore`` params define the training targets (see
     :func:`build_label_remap`). They are independent of
-    ``preprocessing.masks.pixel_mapping``, which only governs ROI sampling. Without
+    ``features.extraction.masks.pixel_mapping``, which only governs ROI sampling. Without
     ``classes`` the masks must already hold contiguous class indices (LUT ``None``) — only
     possible for pre-cropped tiles, since ``annotation_rasters`` carry the dataset's own
     values.
     """
     if annotation_rasters and task_params.get("classes") is None:
         raise ValueError(
-            "segmentation from annotation rasters (preprocessing.masks) requires "
-            "task.params.classes: name each class and the raw mask value(s) that form "
+            "segmentation from annotation rasters (an annotation vocabulary in "
+            "features.extraction.masks) requires its 'classes' param: name each class and "
+            "the raw mask value(s) that form "
             "it, e.g. classes: {tumor: [1, 2], stroma: [3]} with ignore: [0] for the "
             "values to exclude from loss and metrics."
         )

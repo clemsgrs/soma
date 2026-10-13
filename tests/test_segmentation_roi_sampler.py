@@ -6,7 +6,20 @@ from collections import Counter
 
 import pytest
 
-from soma.config import TrainingConfig
+from soma.plan import check
+from tests.experiment_configs import experiment
+
+
+def _segmentation_loaders(**loaders):
+    """A cached segmentation experiment with the given ``loaders`` section, checked."""
+    config = experiment(
+        decoder="lightweight_conv",
+        head="segmentation",
+        head_params={"num_classes": 3},
+        loaders=loaders,
+    )
+    check(config)
+    return config.loaders
 from soma.learn.roi_sampler import SegmentationRoiBatchSampler
 
 
@@ -91,10 +104,8 @@ def test_class_conditioned_sampling_supports_arbitrary_k_and_batch_size() -> Non
 
 def test_roi_draw_budget_must_be_whole_batches() -> None:
     with pytest.raises(ValueError, match="whole batches"):
-        TrainingConfig(
-            batch_size=4,
-            roi_batch_sampling="uniform",
-            roi_draws_per_epoch=6,
+        _segmentation_loaders(
+            batch_size=4, sampler={"name": "uniform", "params": {"draws_per_epoch": 6}}
         )
 
 
@@ -115,34 +126,31 @@ def test_explicit_draw_budget_keeps_precedence_under_gradient_accumulation() -> 
     assert sampler.audit()["resolved_draws_per_epoch"] == 32
 
 
-def test_training_config_accepts_class_request_ratios() -> None:
-    config = TrainingConfig(
+def test_loaders_accept_class_request_ratios() -> None:
+    loaders = _segmentation_loaders(
         batch_size=5,
-        roi_batch_sampling="class_conditioned",
-        class_request_ratios=[1, 2, 0.5],
+        sampler={"name": "class_conditioned", "params": {"class_request_ratios": [1, 2, 0.5]}},
     )
 
-    assert config.class_request_ratios == [1, 2, 0.5]
+    assert loaders.sampler.params["class_request_ratios"] == [1, 2, 0.5]
 
 
 @pytest.mark.parametrize(
     "ratios", [[-1, 1], [float("nan"), 1], [True, 1], [None, 1], [0, 0]]
 )
-def test_training_config_rejects_invalid_class_request_ratios(
+def test_loaders_reject_invalid_class_request_ratios(
     ratios: list[object],
 ) -> None:
     with pytest.raises(ValueError, match="class_request_ratios"):
-        TrainingConfig(
-            roi_batch_sampling="class_conditioned",
-            class_request_ratios=ratios,
+        _segmentation_loaders(
+            sampler={"name": "class_conditioned", "params": {"class_request_ratios": ratios}}
         )
 
 
-def test_class_request_ratios_require_conditioned_sampling() -> None:
-    with pytest.raises(ValueError, match="requires.*class_conditioned"):
-        TrainingConfig(
-            roi_batch_sampling="uniform",
-            class_request_ratios=[1, 1],
+def test_class_request_ratios_belong_to_the_conditioned_sampler() -> None:
+    with pytest.raises(ValueError, match="class_request_ratios"):
+        _segmentation_loaders(
+            sampler={"name": "uniform", "params": {"class_request_ratios": [1, 1]}}
         )
 
 

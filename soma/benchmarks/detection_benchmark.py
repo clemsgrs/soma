@@ -55,7 +55,7 @@ from soma.benchmarks.registry import (
     load_reference,
     register_benchmark,
 )
-from soma.config import PipelineConfig, load_config
+from soma.config import ExperimentConfig
 from soma.curation.manifest import CuratedManifest
 from soma.benchmarks.froc import MNL_CLASS_NAME, patch_area_mm2, score_monkey_froc
 from soma.detection.matching import detection_counts, match_assignment, reduce_f1
@@ -1225,39 +1225,40 @@ class DetectionBenchmark:
         output_root: str | Path | None = None,
         seed: int | None = None,
         overrides: dict[str, Any] | None = None,
-    ) -> PipelineConfig:
+    ) -> ExperimentConfig:
         """Resolve a committed per-dataset config with ``encoder`` swapped in (roster-agnostic).
 
-        The recipe (native spacing, ``lightweight_conv`` decoder, native task params) is
-        fixed in the committed ``configs/detection/<dataset>.yaml``; only ``encoder.name``
-        varies across the roster, so any roster size reuses one config per dataset. Data /
-        output paths and seed are repointed exactly like the OCELOT benchmark.
+        The recipe (native spacing, ``lightweight_conv`` decoder, native head params) is
+        fixed in the committed ``configs/detection/<dataset>.yaml``; only
+        ``features.encoder.name`` varies across the roster, so any roster size reuses one
+        config per dataset. Data / output paths and seed are repointed exactly like the
+        OCELOT benchmark; the ``overrides`` block (``{"cache": {...}}``) lands in
+        ``features.cache``.
         """
         config_path = config_path_for(dataset)
-        merged: dict[str, Any] = {"encoder": {"name": encoder}}
-        data_over: dict[str, Any] = {}
+        merged: dict[str, Any] = {"features": {"encoder": {"name": encoder}}}
+        cohort_over: dict[str, Any] = {}
         if dataset_csv is not None:
-            data_over["dataset_csv"] = str(dataset_csv)
+            cohort_over["records"] = str(dataset_csv)
         if splits_csv is not None:
-            data_over["splits_csv"] = str(splits_csv)
-        if data_over:
-            merged["data"] = data_over
+            cohort_over["splits"] = str(splits_csv)
+        if cohort_over:
+            merged["cohort"] = cohort_over
         run_over: dict[str, Any] = {}
         if output_root is not None:
-            run_over["output_root"] = str(output_root)
+            run_over["output_dir"] = str(output_root)
         if seed is not None:
             run_over["seed"] = int(seed)
         if run_over:
             merged["run"] = run_over
-        if overrides:
-            for section, values in overrides.items():
-                merged.setdefault(section, {}).update(values)
-        cfg = load_config(config_path, overrides=merged)
+        if overrides and overrides.get("cache"):
+            merged["features"]["cache"] = dict(overrides["cache"])
+        cfg = ExperimentConfig.from_yaml(config_path, overrides=merged)
         spec = dataset_spec(dataset)
         tile_px = cfg.features.dense.target_size if cfg.features.dense is not None else None
         if spec.tile_px is not None and tile_px is not None and int(tile_px) != spec.tile_px:
             raise ValueError(
-                f"{spec.config_file} declares requested_tile_size_px "
+                f"{spec.config_file} declares a dense target_size of "
                 f"{tile_px} but the {dataset} curator "
                 f"tiles at {spec.tile_px}; the supervision size must equal the tile size."
             )
@@ -1342,7 +1343,7 @@ class DetectionDatasetBenchmark:
         output_root: str | Path | None = None,
         seed: int | None = None,
         overrides: dict[str, Any] | None = None,
-    ) -> PipelineConfig:
+    ) -> ExperimentConfig:
         """The committed per-dataset recipe with ``encoder`` swapped in (delegates)."""
         return self._harness.build_config(
             encoder=encoder,

@@ -3,94 +3,101 @@
 run:
   seed: 0
 
-data:
-  dataset_csv: data/beetle/curated_slide_manifest/dataset.csv
-  splits_csv: data/beetle/curated_slide_manifest/splits.csv
-  dataset_type: segmentation
-  feature_mode: cached
+cohort:
+  records: data/beetle/curated_slide_manifest/dataset.csv
+  splits: data/beetle/curated_slide_manifest/splits.csv
 
-preprocessing:
-  backend: auto
-  # BEETLE masks are sparse pyramidal TIFFs. CuCIM can silently decode their
-  # intermediate sparse levels as background, so mask reads are pinned separately.
-  mask_backend: openslide
-  requested_tile_size_px: 512
-  requested_spacing_um: 0.5
+features:
+  kind: cached
+  encoder:
+    name: virchow2
+    params:
+      output_variant: cls
+  # Relative band: accepts the observed ~0.525 µm/px cohort; only the three declared
+  # 0.657476464 µm/px TCGA slides require native-spacing fallback.
   spacing_policy: native_if_coarser
-  # Relative band: accepts the observed ~0.525 µm/px cohort; only the three
-  # declared 0.657476464 µm/px TCGA slides require native-spacing fallback.
-  tolerance: 0.1
-  dense_window_size: 224
-  dense_window_overlap: 0.5
-  masks:
-    pixel_mapping:
-      background: 0
-      other: 1
-      non_invasive_epithelium: 2
-      invasive_epithelium: 3
-      necrosis: 4
-    min_coverage:
-      other: 0.05
-      non_invasive_epithelium: 0.05
-      invasive_epithelium: 0.05
-      necrosis: 0.05
-  sampling:
-    strategy: joint
-    output_mode: merged
+  extraction:
+    tiling:
+      requested_spacing_um: 0.5
+      requested_tile_size_px: 512
+      tolerance: 0.1
+      overlap: 0.0
+      backend: auto
+      # BEETLE masks are sparse pyramidal TIFFs. CuCIM can silently decode their
+      # intermediate sparse levels as background, so mask reads are pinned separately.
+      mask_backend: openslide
+    segmentation:
+      method: hsv
+    masks:
+      pixel_mapping:
+        background: 0
+        other: 1
+        non_invasive_epithelium: 2
+        invasive_epithelium: 3
+        necrosis: 4
+      min_coverage:
+        other: 0.05
+        non_invasive_epithelium: 0.05
+        invasive_epithelium: 0.05
+        necrosis: 0.05
+      strategy: joint
+      output_mode: merged
+    adaptive_batching: true
+  execution:
+    precision: fp16
+    batch_size: 8
+  dense:
+    spacing_um: 0.5
+    target_size: 512
+    tolerance: 0.1
+    window_size: 224
+    overlap: 0.5
+  cache:
+    enabled: true
+    root_dir: "${BEETLE_ENCODER_CACHE_ID}"
+    reuse_policy: strict
+    validate_payloads: true
+    dtype: fp16
 
-execution:
-  precision: fp16
+loaders:
+  batch_size: "${BEETLE_CAMPAIGN_BATCH_SIZE}"
+  num_workers: 4
+  pin_memory: true
+  persistent_workers: true
 
-cache:
-  enabled: true
-  root_dir: "${BEETLE_ENCODER_CACHE_ID}"
-  reuse_policy: strict
-  validate_payloads: true
-  dtype: fp16
-
-encoder:
-  name: virchow2
-  precision: fp16
-  batch_size: 8
-  adaptive_batching: true
-  output_variant: cls
-
-decoder:
-  name: lightweight_conv
+learner:
+  name: dense
   params:
-    hidden_dim: 256
-    num_upsample_blocks: 2
-    num_groups: 32
+    decoder:
+      name: lightweight_conv
+      params:
+        hidden_dim: 256
+        num_upsample_blocks: 2
+        num_groups: 32
+    head:
+      name: segmentation
+      params:
+        classes:
+          other: [1]
+          non_invasive_epithelium: [2]
+          invasive_epithelium: [3]
+          necrosis: [4]
+        ignore: [0]            # unannotated
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
 
-task:
-  name: segmentation
-  params:
-    classes:
-      other: [1]
-      non_invasive_epithelium: [2]
-      invasive_epithelium: [3]
-      necrosis: [4]
-    ignore: [0]            # unannotated
+trainer:
+  max_epochs: 30
+  callbacks:
+    - name: checkpoint
+      params: {monitor: dataset_global_mean_dice, mode: max}
+    - name: early_stopping
+      params: {monitor: dataset_global_mean_dice, mode: max, patience: 8}
 
 evaluation:
   metrics: [mean_dice, dataset_global_mean_dice, mean_iou, dice_per_class]
-  save_segmentation_overlays: false
-  save_segmentation_probabilities: false
+  save_overlays: false
+  save_probabilities: false
   holdout_test: true
-
-training:
-  epochs: 30
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  optimizer: adam
-  scheduler: cosine
-  checkpoint_selection: best
-  patience: 8
-  monitor: dataset_global_mean_dice
-  monitor_mode: max
-  batch_size: "${BEETLE_CAMPAIGN_BATCH_SIZE}"
-  roi_draws_per_epoch: null
-  gradient_accumulation: 1
-  num_workers: 4
-
-augmentation: null

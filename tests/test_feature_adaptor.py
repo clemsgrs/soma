@@ -18,32 +18,41 @@ import pytest
 import torch
 
 from soma.aggregators.pooling import MeanPool
-from soma.config import AggregatorConfig, TaskConfig, TrainingConfig
+from soma.config import Component, FeaturesConfig
 from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 from soma.data import CachedSetSource
-from soma.config import NormalizationConfig, ProjectionConfig
+from soma.training.feature_adaptor import NormalizationParams, ProjectionParams
+from tests.experiment_configs import experiment
 from soma.tasks.classification import BinaryClassificationHead
 from soma.training.feature_adaptor import build_feature_adaptor
 from soma.training.model import EmbeddingModel, MILModel
 
 
-def _pipeline_run(data_dir: Path, source, **sections):
+#: The adaptor runs' optimizer: Adam at lr 1e-3 (weight decay 1e-5), cosine-annealed.
+_ADAM = {"optimizer": {"name": "adam", "params": {"lr": 1e-3, "weight_decay": 1e-5}}, "scheduler": "cosine"}
+
+
+def _adaptor(normalization=None, projection=None) -> dict:
+    """The learner's ``normalization`` / ``projection`` params for the given stages."""
+    import dataclasses
+
+    return {
+        "normalization": dataclasses.asdict(normalization or NormalizationParams()),
+        "projection": dataclasses.asdict(projection or ProjectionParams()),
+    }
+
+
+def _pipeline_run(data_dir: Path, source, **experiment_fields):
     """One single-fold ``Pipeline`` run over ``source`` and the cohort in ``data_dir``;
     returns the run dir (the fold dir) and the fold bundle's weights."""
     from safetensors.torch import load_file
 
-    from soma.config import PipelineConfig
     from soma.pipeline import Pipeline
 
     dataset_csv = data_dir / "dataset.csv"
     if not dataset_csv.exists():
         dataset_csv = data_dir / "manifest.csv"
-    config = PipelineConfig(
-        dataset_csv=dataset_csv,
-        splits_csv=data_dir / "splits.csv",
-        output_root=data_dir / "out",
-        **sections,
-    )
+    config = experiment(dataset_csv, data_dir / "splits.csv", output_dir=data_dir / "out", **experiment_fields)
     run_dir = Pipeline(config, source=source).run().run_dir
     return run_dir, load_file(run_dir / "bundle" / "weights.safetensors")
 
@@ -58,7 +67,7 @@ def _train_features() -> torch.Tensor:
 def test_zscore_standardizes_the_features_it_was_fit_on():
     features = _train_features()
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=3
+        NormalizationParams(method="zscore"), num_features=3
     )
     adaptor.fit([features])
 
@@ -70,7 +79,7 @@ def test_zscore_standardizes_the_features_it_was_fit_on():
 
 def test_no_adaptor_is_built_when_normalization_is_off():
     """"Omitted section = absent module" — the byte-parity anchor for legacy runs."""
-    assert build_feature_adaptor(NormalizationConfig(), num_features=3) is None
+    assert build_feature_adaptor(NormalizationParams(), num_features=3) is None
     assert build_feature_adaptor(None, num_features=3) is None
 
 
@@ -78,7 +87,7 @@ def test_fitted_state_is_buffers_not_parameters():
     """The optimizer must never see the fitted statistics — they are an estimate of the
     Support distribution, not weights to learn."""
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=3
+        NormalizationParams(method="zscore"), num_features=3
     )
     adaptor.fit([_train_features()])
 
@@ -99,7 +108,7 @@ def test_zscore_floors_constant_channels_at_eps():
         dim=1,
     )
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore", eps=1e-3), num_features=3
+        NormalizationParams(method="zscore", eps=1e-3), num_features=3
     )
     adaptor.fit([features])
 
@@ -112,7 +121,7 @@ def test_zscore_floors_constant_channels_at_eps():
 
 def test_zscore_refuses_to_transform_before_it_is_fit():
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=3
+        NormalizationParams(method="zscore"), num_features=3
     )
 
     with pytest.raises(RuntimeError, match="before it was fit"):
@@ -121,7 +130,7 @@ def test_zscore_refuses_to_transform_before_it_is_fit():
 
 def test_l2_normalizes_each_feature_vector_without_fitting():
     features = _train_features()
-    adaptor = build_feature_adaptor(NormalizationConfig(method="l2"), num_features=3)
+    adaptor = build_feature_adaptor(NormalizationParams(method="l2"), num_features=3)
 
     out = adaptor(features)
 
@@ -132,7 +141,7 @@ def test_l2_normalizes_each_feature_vector_without_fitting():
 def test_layernorm_standardizes_across_the_feature_axis_without_fitting():
     features = _train_features()
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="layernorm"), num_features=3
+        NormalizationParams(method="layernorm"), num_features=3
     )
 
     out = adaptor(features)
@@ -145,7 +154,7 @@ def test_pca_projects_to_the_target_width():
     """The tracer: a fitted PCA maps D-dim features onto `target_dim` columns."""
     features = _train_features()
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="pca", target_dim=2), num_features=3
+        None, ProjectionParams(method="pca", target_dim=2), num_features=3
     )
     adaptor.fit([features])
 
@@ -160,7 +169,7 @@ def test_pca_keeps_the_highest_variance_directions_first():
     projected columns are decorrelated."""
     features = _train_features()
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="pca", target_dim=3), num_features=3
+        None, ProjectionParams(method="pca", target_dim=3), num_features=3
     ).fit([features])
 
     out = adaptor(features).to(torch.float64)
@@ -179,7 +188,7 @@ def test_pca_centers_on_its_own_fitted_mean():
     no normalization stage in front of it."""
     features = _train_features()
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="pca", target_dim=2), num_features=3
+        None, ProjectionParams(method="pca", target_dim=2), num_features=3
     ).fit([features])
 
     out = adaptor(features)
@@ -191,7 +200,7 @@ def test_repeated_pca_fits_are_byte_identical():
     """The pinned sign convention: an eigenvector is only defined up to sign, so two fits
     on identical data must not differ by a flip, or the run is not reproducible."""
     features = _train_features()
-    projection = ProjectionConfig(method="pca", target_dim=2)
+    projection = ProjectionParams(method="pca", target_dim=2)
 
     first = build_feature_adaptor(None, projection, num_features=3).fit([features])
     second = build_feature_adaptor(None, projection, num_features=3).fit([features])
@@ -205,7 +214,7 @@ def test_pca_sign_convention_pins_the_largest_entry_positive():
     """The convention itself, stated as behavior: whatever LAPACK hands back, every
     component leaves this module with its largest-magnitude entry positive."""
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="pca", target_dim=3), num_features=3
+        None, ProjectionParams(method="pca", target_dim=3), num_features=3
     ).fit([_train_features()])
 
     components = adaptor.projection_matrix
@@ -218,7 +227,7 @@ def test_pca_is_fit_only_on_the_rows_it_is_given():
     nothing else."""
     support = _train_features()
     held_out = support * 50.0 + 1000.0
-    projection = ProjectionConfig(method="pca", target_dim=2)
+    projection = ProjectionParams(method="pca", target_dim=2)
 
     support_only = build_feature_adaptor(None, projection, num_features=3).fit([support])
     leaked = build_feature_adaptor(None, projection, num_features=3).fit(
@@ -234,7 +243,7 @@ def test_pca_is_fit_only_on_the_rows_it_is_given():
 def test_random_projection_is_reproducible_from_the_seed():
     """Same seed + same encoder + same dims ⇒ the same matrix, drawn without ever
     consulting the global RNG, so it is constant across training trajectories."""
-    projection = ProjectionConfig(method="random", target_dim=2, seed=11)
+    projection = ProjectionParams(method="random", target_dim=2, seed=11)
 
     torch.manual_seed(1234)
     first = build_feature_adaptor(
@@ -255,19 +264,19 @@ def test_random_projection_differs_by_seed_and_by_encoder():
     never share a matrix."""
     base = build_feature_adaptor(
         None,
-        ProjectionConfig(method="random", target_dim=2, seed=11),
+        ProjectionParams(method="random", target_dim=2, seed=11),
         num_features=3,
         encoder_identity="uni2",
     )
     reseeded = build_feature_adaptor(
         None,
-        ProjectionConfig(method="random", target_dim=2, seed=12),
+        ProjectionParams(method="random", target_dim=2, seed=12),
         num_features=3,
         encoder_identity="uni2",
     )
     other_encoder = build_feature_adaptor(
         None,
-        ProjectionConfig(method="random", target_dim=2, seed=11),
+        ProjectionParams(method="random", target_dim=2, seed=11),
         num_features=3,
         encoder_identity="virchow2",
     )
@@ -283,7 +292,7 @@ def test_random_projection_approximately_preserves_inner_products():
     features = torch.nn.functional.normalize(torch.randn(64, 256), dim=-1)
     adaptor = build_feature_adaptor(
         None,
-        ProjectionConfig(method="random", target_dim=512, seed=3),
+        ProjectionParams(method="random", target_dim=512, seed=3),
         num_features=256,
         encoder_identity="uni2",
     )
@@ -302,7 +311,7 @@ def test_random_projection_approximately_preserves_inner_products():
 def test_random_projection_needs_no_fitting():
     """It is label-free *and* data-free: it never touches the Support set."""
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="random", target_dim=8), num_features=3
+        None, ProjectionParams(method="random", target_dim=8), num_features=3
     )
 
     assert adaptor.requires_fit is False
@@ -312,7 +321,7 @@ def test_random_projection_needs_no_fitting():
 def test_random_projection_may_expand_beyond_the_native_dim():
     """Unlike PCA, random is unconstrained in target_dim."""
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="random", target_dim=64), num_features=3
+        None, ProjectionParams(method="random", target_dim=64), num_features=3
     )
 
     assert adaptor.output_dim == 64
@@ -322,14 +331,14 @@ def test_random_projection_may_expand_beyond_the_native_dim():
 def test_pca_preflight_rejects_target_dim_above_the_feature_dim():
     with pytest.raises(ValueError, match="exceeds the encoder's feature dimension"):
         build_feature_adaptor(
-            None, ProjectionConfig(method="pca", target_dim=8), num_features=3
+            None, ProjectionParams(method="pca", target_dim=8), num_features=3
         )
 
 
 def test_pca_preflight_rejects_too_few_fit_samples():
     """`n_fit_samples >= target_dim`, with the shortfall named."""
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="pca", target_dim=3), num_features=3
+        None, ProjectionParams(method="pca", target_dim=3), num_features=3
     )
 
     with pytest.raises(ValueError, match="only 2 feature row"):
@@ -338,7 +347,7 @@ def test_pca_preflight_rejects_too_few_fit_samples():
 
 def test_pca_refuses_to_transform_before_it_is_fit():
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="pca", target_dim=2), num_features=3
+        None, ProjectionParams(method="pca", target_dim=2), num_features=3
     )
 
     with pytest.raises(RuntimeError, match="before it was fit"):
@@ -349,8 +358,8 @@ def test_projection_is_applied_after_normalization():
     """Order is normalize → project: the composed adaptor equals projecting a
     separately-normalized copy of the same features."""
     features = _train_features()
-    normalization = NormalizationConfig(method="zscore")
-    projection = ProjectionConfig(method="pca", target_dim=2)
+    normalization = NormalizationParams(method="zscore")
+    projection = ProjectionParams(method="pca", target_dim=2)
 
     composed = build_feature_adaptor(
         normalization, projection, num_features=3
@@ -374,8 +383,8 @@ def test_fit_rejects_a_one_shot_stream_when_both_stages_need_fitting():
     """Fitting normalize+project takes two passes; a generator would arrive at the second
     exhausted and the PCA preflight would then blame the Support size. Name the real cause."""
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"),
-        ProjectionConfig(method="pca", target_dim=2),
+        NormalizationParams(method="zscore"),
+        ProjectionParams(method="pca", target_dim=2),
         num_features=3,
     )
 
@@ -383,7 +392,7 @@ def test_fit_rejects_a_one_shot_stream_when_both_stages_need_fitting():
         adaptor.fit(iter([_train_features()]))
 
     # A single-pass fit is unaffected — one stage, one pass.
-    build_feature_adaptor(NormalizationConfig(method="zscore"), num_features=3).fit(
+    build_feature_adaptor(NormalizationParams(method="zscore"), num_features=3).fit(
         iter([_train_features()])
     )
 
@@ -392,7 +401,7 @@ def test_projection_buffers_are_frozen_state_not_parameters():
     """The projection must not be a learned layer: learning it would relocate the very
     capacity confound the ablation exists to remove."""
     adaptor = build_feature_adaptor(
-        None, ProjectionConfig(method="pca", target_dim=2), num_features=3
+        None, ProjectionParams(method="pca", target_dim=2), num_features=3
     ).fit([_train_features()])
 
     assert list(adaptor.parameters()) == []
@@ -403,7 +412,7 @@ def test_projection_buffers_are_frozen_state_not_parameters():
 def test_adaptor_preserves_shape_on_batched_bags():
     """The same module serves (N, D) tiles and (B, N, D) MIL bags."""
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=3
+        NormalizationParams(method="zscore"), num_features=3
     )
     adaptor.fit([_train_features()])
 
@@ -448,7 +457,7 @@ def test_adaptor_transforms_features_before_the_aggregator():
     """The adaptor is a *front* module: the model's output equals running the head on
     pre-transformed features."""
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=3
+        NormalizationParams(method="zscore"), num_features=3
     ).fit([_train_features()])
     model = _mil_model(adaptor=adaptor)
     bare = _mil_model(adaptor=None)
@@ -462,7 +471,7 @@ def test_adaptor_state_is_not_among_the_models_parameters():
     """The optimizer builds from model.parameters(); the fitted statistics must not be
     there, or they would be trained rather than estimated."""
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=3
+        NormalizationParams(method="zscore"), num_features=3
     ).fit([_train_features()])
     model = _mil_model(adaptor=adaptor)
 
@@ -477,7 +486,7 @@ def test_adaptor_state_round_trips_through_the_checkpoint(tmp_path: Path):
     """The final-checkpoint test pass re-applies the exact fitted transform, so the
     buffers have to ride in the saved state_dict."""
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=3
+        NormalizationParams(method="zscore"), num_features=3
     ).fit([_train_features()])
     trained = _mil_model(adaptor=adaptor)
     checkpoint_path = tmp_path / "model.pt"
@@ -485,7 +494,7 @@ def test_adaptor_state_round_trips_through_the_checkpoint(tmp_path: Path):
 
     restored = _mil_model(
         adaptor=build_feature_adaptor(
-            NormalizationConfig(method="zscore"), num_features=3
+            NormalizationParams(method="zscore"), num_features=3
         )
     )
     restored.load_state_dict(
@@ -539,8 +548,8 @@ def _synthetic_fold(
 
 def _run_fold(
     tmp_path: Path,
-    normalization: NormalizationConfig | None,
-    projection: ProjectionConfig | None = None,
+    normalization: NormalizationParams | None,
+    projection: ProjectionParams | None = None,
     *,
     feature_dim: int = _TILE_DIM,
     aggregator: str = "mean_pool",
@@ -549,12 +558,11 @@ def _run_fold(
     run_dir, state_dict = _pipeline_run(
         tmp_path,
         store,
-        dataset_type="slide",
-        aggregator=AggregatorConfig(name=aggregator),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=2, learning_rate=1e-3, batch_size=1, pin_memory=False),
-        normalization=normalization or NormalizationConfig(),
-        projection=projection or ProjectionConfig(),
+        aggregator=aggregator,
+        loaders={"batch_size": 1},
+        trainer={"max_epochs": 2},
+        **_ADAM,
+        **_adaptor(normalization, projection),
     )
     return run_dir, state_dict, store
 
@@ -562,7 +570,7 @@ def _run_fold(
 def test_zscore_is_fit_from_the_support_split_only(tmp_path: Path):
     """K means K: the statistics come from the train samples' tiles and nothing else."""
     fold_dir, state_dict, store = _run_fold(
-        tmp_path, NormalizationConfig(method="zscore")
+        tmp_path, NormalizationParams(method="zscore")
     )
 
     support = torch.cat([store.load("s0"), store.load("s1")], dim=0).to(torch.float64)
@@ -589,19 +597,19 @@ def test_evaluating_held_out_rows_never_moves_the_fitted_buffers(tmp_path: Path)
     be exactly the ones it fit — the transform is frozen, not running."""
     dataset, splits, store = _synthetic_fold(tmp_path)
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=_TILE_DIM
+        NormalizationParams(method="zscore"), num_features=_TILE_DIM
     ).fit([store.load("s0"), store.load("s1")])
     expected_center = adaptor.center.clone()
     expected_scale = adaptor.scale.clone()
 
-    _, state_dict, _ = _run_fold(tmp_path, NormalizationConfig(method="zscore"))
+    _, state_dict, _ = _run_fold(tmp_path, NormalizationParams(method="zscore"))
 
     assert torch.equal(state_dict["feature_adaptor.center"], expected_center)
     assert torch.equal(state_dict["feature_adaptor.scale"], expected_scale)
 
 
 def test_fold_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
-    fold_dir, _, _ = _run_fold(tmp_path, NormalizationConfig(method="zscore", eps=1e-4))
+    fold_dir, _, _ = _run_fold(tmp_path, NormalizationParams(method="zscore", eps=1e-4))
 
     sidecar = json.loads(
         (fold_dir / "feature_adapter.json").read_text(encoding="utf-8")
@@ -616,7 +624,7 @@ def test_fold_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
 
 @pytest.mark.parametrize("method", ["l2", "layernorm"])
 def test_stateless_normalization_reports_zero_fit_rows(tmp_path: Path, method: str):
-    fold_dir, _, _ = _run_fold(tmp_path, NormalizationConfig(method=method))
+    fold_dir, _, _ = _run_fold(tmp_path, NormalizationParams(method=method))
 
     sidecar = json.loads(
         (fold_dir / "feature_adapter.json").read_text(encoding="utf-8")
@@ -642,10 +650,10 @@ def test_unsupported_path_refuses_normalization_rather_than_ignoring_it(tmp_path
         _pipeline_run(
             tmp_path,
             store,
-            dataset_type="tile",
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=1, batch_size=1),
-            normalization=NormalizationConfig(method="zscore"),
+            features=FeaturesConfig(encoder="phikon"),  # a tile encoder, no aggregator: tile unit
+            loaders={"batch_size": 1},
+            trainer={"max_epochs": 1},
+            **_adaptor(NormalizationParams(method="zscore")),
         )
 
 
@@ -653,7 +661,7 @@ def test_projection_rewires_the_aggregator_to_the_target_width(tmp_path: Path):
     """The dim rewire, stated as the thing it exists to guarantee: with a projection
     active the downstream trainable parameter count is *independent of the encoder's
     native dim*, so a capacity difference can no longer masquerade as a ranking."""
-    projection = ProjectionConfig(method="pca", target_dim=3)
+    projection = ProjectionParams(method="pca", target_dim=3)
 
     _, narrow_state, _ = _run_fold(
         tmp_path / "narrow", None, projection, feature_dim=4, aggregator="abmil"
@@ -693,12 +701,12 @@ def test_without_projection_the_aggregator_still_tracks_the_native_dim(tmp_path:
 def test_projection_state_rides_in_the_fold_checkpoint(tmp_path: Path):
     """The fitted map must be re-applied verbatim by the final-checkpoint test pass."""
     fold_dir, state_dict, store = _run_fold(
-        tmp_path, None, ProjectionConfig(method="pca", target_dim=3)
+        tmp_path, None, ProjectionParams(method="pca", target_dim=3)
     )
 
     support = torch.cat([store.load("s0"), store.load("s1")], dim=0)
     expected = build_feature_adaptor(
-        None, ProjectionConfig(method="pca", target_dim=3), num_features=_TILE_DIM
+        None, ProjectionParams(method="pca", target_dim=3), num_features=_TILE_DIM
     ).fit([store.load("s0"), store.load("s1")])
 
     assert torch.equal(
@@ -720,7 +728,7 @@ def test_projection_state_rides_in_the_fold_checkpoint(tmp_path: Path):
 def test_projection_without_normalization_needs_no_normalization_section(tmp_path: Path):
     """`normalization` and `projection` are independently configurable."""
     _, state_dict, _ = _run_fold(
-        tmp_path, None, ProjectionConfig(method="random", target_dim=5)
+        tmp_path, None, ProjectionParams(method="random", target_dim=5)
     )
 
     assert "feature_adaptor.projection_matrix" in state_dict
@@ -734,8 +742,8 @@ def test_projection_without_normalization_needs_no_normalization_section(tmp_pat
 def test_normalization_and_projection_compose_in_one_fold(tmp_path: Path):
     _, state_dict, store = _run_fold(
         tmp_path,
-        NormalizationConfig(method="zscore"),
-        ProjectionConfig(method="pca", target_dim=3),
+        NormalizationParams(method="zscore"),
+        ProjectionParams(method="pca", target_dim=3),
     )
 
     support = torch.cat([store.load("s0"), store.load("s1")], dim=0).to(torch.float64)
@@ -748,8 +756,8 @@ def test_normalization_and_projection_compose_in_one_fold(tmp_path: Path):
 def test_fold_sidecar_reports_the_projection(tmp_path: Path):
     fold_dir, _, _ = _run_fold(
         tmp_path,
-        NormalizationConfig(method="zscore"),
-        ProjectionConfig(method="pca", target_dim=3),
+        NormalizationParams(method="zscore"),
+        ProjectionParams(method="pca", target_dim=3),
     )
 
     sidecar = json.loads(
@@ -773,7 +781,7 @@ def test_fold_sidecar_reports_the_projection(tmp_path: Path):
 
 def test_sidecar_omits_explained_variance_for_random_projection(tmp_path: Path):
     fold_dir, _, _ = _run_fold(
-        tmp_path, None, ProjectionConfig(method="random", target_dim=3)
+        tmp_path, None, ProjectionParams(method="random", target_dim=3)
     )
 
     sidecar = json.loads(
@@ -789,7 +797,7 @@ def test_sidecar_omits_explained_variance_for_random_projection(tmp_path: Path):
 
 
 def test_projection_off_leaves_no_adaptor_in_the_run(tmp_path: Path):
-    fold_dir, state_dict, _ = _run_fold(tmp_path, None, ProjectionConfig())
+    fold_dir, state_dict, _ = _run_fold(tmp_path, None, ProjectionParams())
 
     assert not any(key.startswith("feature_adaptor") for key in state_dict)
     assert not (fold_dir / "feature_adapter.json").exists()
@@ -802,7 +810,7 @@ def test_pca_preflight_fires_inside_a_fold(tmp_path: Path):
         _run_fold(
             tmp_path,
             None,
-            ProjectionConfig(method="pca", target_dim=13),
+            ProjectionParams(method="pca", target_dim=13),
             feature_dim=32,  # wide enough that the target_dim <= D half passes
         )
 
@@ -820,11 +828,11 @@ def test_attention_reconstructs_the_projected_model_from_the_bundle(tmp_path: Pa
     run_dir, _ = _pipeline_run(
         tmp_path / "data",
         store,
-        dataset_type="slide",
-        aggregator=AggregatorConfig(name="abmil"),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=1, pin_memory=False),
-        projection=ProjectionConfig(method="pca", target_dim=3),
+        aggregator="abmil",
+        loaders={"batch_size": 1},
+        trainer={"max_epochs": 1},
+        **_ADAM,
+        **_adaptor(projection=ProjectionParams(method="pca", target_dim=3)),
     )
 
     save_attention(run_dir, store)
@@ -877,8 +885,8 @@ def _synthetic_embedding_fold(
 
 def _run_embedding_fold(
     tmp_path: Path,
-    normalization: NormalizationConfig | None,
-    projection: ProjectionConfig | None = None,
+    normalization: NormalizationParams | None,
+    projection: ProjectionParams | None = None,
     *,
     feature_dim: int = _EMBEDDING_DIM,
 ):
@@ -886,11 +894,10 @@ def _run_embedding_fold(
     run_dir, state_dict = _pipeline_run(
         tmp_path,
         store,
-        dataset_type="slide",
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=2, learning_rate=1e-3, batch_size=1, pin_memory=False),
-        normalization=normalization or NormalizationConfig(),
-        projection=projection or ProjectionConfig(),
+        loaders={"batch_size": 1},
+        trainer={"max_epochs": 2},
+        **_ADAM,
+        **_adaptor(normalization, projection),
     )
     return run_dir, state_dict, store
 
@@ -900,7 +907,7 @@ def test_embedding_path_fits_zscore_on_the_support_embeddings_only(tmp_path: Pat
     per slide — and nothing else.
     """
     _, state_dict, store = _run_embedding_fold(
-        tmp_path, NormalizationConfig(method="zscore")
+        tmp_path, NormalizationParams(method="zscore")
     )
 
     support = torch.stack([store.load("s0"), store.load("s1")]).to(torch.float64)
@@ -927,13 +934,13 @@ def test_embedding_path_evaluation_never_moves_the_fitted_buffers(tmp_path: Path
     exactly the ones it fit — the transform is frozen, not running."""
     dataset, splits, store = _synthetic_embedding_fold(tmp_path)
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=_EMBEDDING_DIM
+        NormalizationParams(method="zscore"), num_features=_EMBEDDING_DIM
     ).fit([store.load("s0"), store.load("s1")])
     expected_center = adaptor.center.clone()
     expected_scale = adaptor.scale.clone()
 
     _, state_dict, _ = _run_embedding_fold(
-        tmp_path, NormalizationConfig(method="zscore")
+        tmp_path, NormalizationParams(method="zscore")
     )
 
     assert torch.equal(state_dict["feature_adaptor.center"], expected_center)
@@ -950,7 +957,7 @@ def test_embedding_path_pca_preflight_fires_when_k_is_smaller_than_target_dim(
         _run_embedding_fold(
             tmp_path,
             None,
-            ProjectionConfig(method="pca", target_dim=3),
+            ProjectionParams(method="pca", target_dim=3),
             feature_dim=8,  # wide enough that the target_dim <= D half passes
         )
 
@@ -959,7 +966,7 @@ def test_embedding_path_projection_rewires_the_head_to_the_target_width(tmp_path
     """The dim rewire on this path: with a projection active the *head* — the only
     trainable thing here — is built against `target_dim`, so its parameter count is
     independent of the encoder's native dim."""
-    projection = ProjectionConfig(method="random", target_dim=6)
+    projection = ProjectionParams(method="random", target_dim=6)
 
     _, narrow_state, _ = _run_embedding_fold(
         tmp_path / "narrow", None, projection, feature_dim=4
@@ -999,8 +1006,8 @@ def test_embedding_path_checkpoint_reconstructs_and_scores(tmp_path: Path):
     and then score. Under a projection that rebuild has to agree on *both* the extra
     adaptor buffers and the rewired head width — the width mismatch is invisible until
     something actually runs, so this reconstructs and runs."""
-    normalization = NormalizationConfig(method="zscore")
-    projection = ProjectionConfig(method="pca", target_dim=2)
+    normalization = NormalizationParams(method="zscore")
+    projection = ProjectionParams(method="pca", target_dim=2)
     _, state_dict, store = _run_embedding_fold(tmp_path, normalization, projection)
 
     rebuilt_adaptor = build_feature_adaptor(
@@ -1030,7 +1037,7 @@ def test_embedding_path_adaptor_state_is_not_among_the_models_parameters(tmp_pat
     """The optimizer builds from model.parameters(); the fitted statistics must not be
     there, or they would be trained rather than estimated."""
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=_EMBEDDING_DIM
+        NormalizationParams(method="zscore"), num_features=_EMBEDDING_DIM
     ).fit([torch.randn(8, _EMBEDDING_DIM)])
     head_kwargs = {"input_dim": _EMBEDDING_DIM, "num_classes": 2}
     model = EmbeddingModel(
@@ -1069,8 +1076,8 @@ def test_embedding_model_without_adaptor_is_structurally_identical_to_today():
 def test_embedding_path_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
     fold_dir, _, _ = _run_embedding_fold(
         tmp_path,
-        NormalizationConfig(method="zscore", eps=1e-4),
-        ProjectionConfig(method="pca", target_dim=2),
+        NormalizationParams(method="zscore", eps=1e-4),
+        ProjectionParams(method="pca", target_dim=2),
     )
 
     sidecar = json.loads((fold_dir / "feature_adapter.json").read_text(encoding="utf-8"))
@@ -1087,7 +1094,7 @@ def test_embedding_path_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
 
 
 def test_embedding_path_with_both_blocks_off_leaves_no_adaptor_in_the_run(tmp_path: Path):
-    fold_dir, state_dict, _ = _run_embedding_fold(tmp_path, None, ProjectionConfig())
+    fold_dir, state_dict, _ = _run_embedding_fold(tmp_path, None, ProjectionParams())
 
     assert not any(key.startswith("feature_adaptor") for key in state_dict)
     assert not (fold_dir / "feature_adapter.json").exists()
@@ -1100,10 +1107,10 @@ def test_unsupported_path_refuses_projection_rather_than_ignoring_it(tmp_path: P
         _pipeline_run(
             tmp_path,
             store,
-            dataset_type="tile",
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=1, batch_size=1),
-            projection=ProjectionConfig(method="pca", target_dim=2),
+            features=FeaturesConfig(encoder="phikon"),  # a tile encoder, no aggregator: tile unit
+            loaders={"batch_size": 1},
+            trainer={"max_epochs": 1},
+            **_adaptor(projection=ProjectionParams(method="pca", target_dim=2)),
         )
 
 
@@ -1174,26 +1181,24 @@ def _synthetic_dense_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
 
 def _run_dense_fold(
     tmp_path: Path,
-    normalization: NormalizationConfig | None,
-    projection: ProjectionConfig | None = None,
+    normalization: NormalizationParams | None,
+    projection: ProjectionParams | None = None,
     *,
     feature_dim: int = _DENSE_DIM,
     decoder: str = "lightweight_conv",
     source=None,
-    task: TaskConfig | None = None,
+    head: Component | None = None,
 ):
-    from soma.config import DecoderConfig
-
     _, _, store = _synthetic_dense_fold(tmp_path / "data", feature_dim)
     run_dir, state_dict = _pipeline_run(
         tmp_path / "data",
         source if source is not None else store,
-        dataset_type="segmentation",
-        task=task or TaskConfig(name="segmentation", params={"num_classes": _DENSE_CLASSES}),
-        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=2, pin_memory=False),
-        decoder=DecoderConfig(name=decoder),
-        normalization=normalization or NormalizationConfig(),
-        projection=projection or ProjectionConfig(),
+        head=head or Component("segmentation", {"num_classes": _DENSE_CLASSES}),
+        decoder=decoder,
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1},
+        **_ADAM,
+        **_adaptor(normalization, projection),
     )
     return run_dir, state_dict, store
 
@@ -1210,7 +1215,7 @@ def test_dense_path_fits_zscore_over_all_support_roi_positions(tmp_path: Path):
     """The tracer: the fit population is every position of every Support ROI, and the
     statistics are channel-axis (one per feature channel of the ``(B, d, h, w)`` grid)."""
     _, state_dict, store = _run_dense_fold(
-        tmp_path, NormalizationConfig(method="zscore")
+        tmp_path, NormalizationParams(method="zscore")
     )
 
     support = _support_positions(store)
@@ -1229,11 +1234,11 @@ def test_dense_path_fit_is_leak_free(tmp_path: Path):
     exactly the Support-only ones — the held-out ROIs' positions never move them."""
     manifest, splits, store = _synthetic_dense_fold(tmp_path / "reference")
     reference = build_feature_adaptor(
-        NormalizationConfig(method="zscore"), num_features=_DENSE_DIM
+        NormalizationParams(method="zscore"), num_features=_DENSE_DIM
     ).fit(_support_positions(store).float().unsqueeze(0))
 
     _, state_dict, run_store = _run_dense_fold(
-        tmp_path, NormalizationConfig(method="zscore")
+        tmp_path, NormalizationParams(method="zscore")
     )
 
     assert torch.equal(state_dict["adaptor.center"], reference.center)
@@ -1253,7 +1258,7 @@ def test_dense_projection_composes_ahead_of_the_decoders_own_projection(tmp_path
     projection conv, so the decoder is simply *built* against ``target_dim``: its body is
     unchanged and its first conv reads ``target_dim`` channels, not the encoder's ``d``."""
     _, state_dict, _ = _run_dense_fold(
-        tmp_path, None, ProjectionConfig(method="pca", target_dim=2)
+        tmp_path, None, ProjectionParams(method="pca", target_dim=2)
     )
 
     assert state_dict["adaptor.projection_matrix"].shape == (2, _DENSE_DIM)
@@ -1266,7 +1271,7 @@ def test_dense_decoder_parameter_count_is_encoder_dim_independent_under_projecti
 ):
     """The dim-matched ablation on this path: two encoders of different native width,
     projected to one ``target_dim``, train decoders of identical capacity."""
-    projection = ProjectionConfig(method="random", target_dim=3)
+    projection = ProjectionParams(method="random", target_dim=3)
     _, narrow, _ = _run_dense_fold(tmp_path / "narrow", None, projection, feature_dim=4)
     _, wide, _ = _run_dense_fold(tmp_path / "wide", None, projection, feature_dim=16)
 
@@ -1283,15 +1288,14 @@ def test_dense_decoder_parameter_count_is_encoder_dim_independent_under_projecti
 def test_dense_adaptor_state_is_buffers_that_ride_in_the_checkpoint(tmp_path: Path):
     """Buffers, not parameters: the optimizer never sees them, yet they are saved so the
     final-checkpoint test pass re-applies exactly the transform training used."""
-    from soma.config import DecoderConfig
     from soma.decoders.registry import decoder_registry
     from soma.tasks.segmentation import SegmentationHead
     from soma.training.model import DenseModel
 
     fold_dir, state_dict, store = _run_dense_fold(
         tmp_path,
-        NormalizationConfig(method="zscore"),
-        ProjectionConfig(method="pca", target_dim=2),
+        NormalizationParams(method="zscore"),
+        ProjectionParams(method="pca", target_dim=2),
     )
 
     saved = {k for k in state_dict if k.startswith("adaptor.")}
@@ -1304,8 +1308,8 @@ def test_dense_adaptor_state_is_buffers_that_ride_in_the_checkpoint(tmp_path: Pa
 
     # Rebuilding the same model shows those keys are buffers, not parameters.
     adaptor = build_feature_adaptor(
-        NormalizationConfig(method="zscore"),
-        ProjectionConfig(method="pca", target_dim=2),
+        NormalizationParams(method="zscore"),
+        ProjectionParams(method="pca", target_dim=2),
         num_features=_DENSE_DIM,
     )
     model = DenseModel(
@@ -1334,30 +1338,32 @@ def test_dense_pca_preflight_fires_when_the_support_rois_have_too_few_positions(
     a 32-wide target basis is not defined and must be refused by name."""
     with pytest.raises(ValueError, match="PCA needs at least target_dim rows"):
         _run_dense_fold(
-            tmp_path, None, ProjectionConfig(method="pca", target_dim=32), feature_dim=64
+            tmp_path, None, ProjectionParams(method="pca", target_dim=32), feature_dim=64
         )
 
 
 def test_config_rejects_the_adaptor_together_with_live_features(tmp_path: Path):
     """The same refusal at config-validation time, so the run never starts."""
-    from soma.config import DecoderConfig, FeaturesConfig, PipelineConfig
+    from soma.plan import check
 
     def _config(**adaptor):
-        return PipelineConfig(
-            dataset_csv=tmp_path / "dataset.csv",
-            splits_csv=tmp_path / "splits.csv",
-            output_root=tmp_path / "out",
-            dataset_type="segmentation",
-            features=FeaturesConfig(kind="live"),
-            decoder=DecoderConfig(name="lightweight_conv"),
-            task=TaskConfig(name="segmentation", params={"num_classes": 2}),
-            **adaptor,
+        config = experiment(
+            tmp_path / "dataset.csv",
+            tmp_path / "splits.csv",
+            output_dir=tmp_path / "out",
+            features=FeaturesConfig(kind="live", encoder="phikon"),
+            decoder="lightweight_conv",
+            head="segmentation",
+            head_params={"num_classes": 2},
+            **_adaptor(**adaptor),
         )
+        check(config)
+        return config
 
-    with pytest.raises(ValueError, match="requires feature_mode='cached'"):
-        _config(normalization=NormalizationConfig(method="zscore"))
-    with pytest.raises(ValueError, match="requires feature_mode='cached'"):
-        _config(projection=ProjectionConfig(method="random", target_dim=2))
+    with pytest.raises(ValueError, match="requires features.kind='cached'"):
+        _config(normalization=NormalizationParams(method="zscore"))
+    with pytest.raises(ValueError, match="requires features.kind='cached'"):
+        _config(projection=ProjectionParams(method="random", target_dim=2))
     # ...and the default (both off) is untouched by the guard.
     assert _config().features.kind == "live"
 
@@ -1410,26 +1416,18 @@ def _synthetic_detection_fold(tmp_path: Path, feature_dim: int = _DENSE_DIM):
     return manifest, legacy_folds_from_csv(splits_csv, manifest), CachedGridSource(dense_dir)
 
 
-_DETECTION_TASK = TaskConfig(
-    name="detection",
-    params={
-        "num_classes": 2,
-        "match_distance": 0.6,
-    },
-)
+_DETECTION_HEAD = Component("detection", {"num_classes": 2, "match_distance": 0.6})
 
 
 def _run_detection_fold(
     tmp_path: Path,
-    normalization: NormalizationConfig | None,
-    projection: ProjectionConfig | None = None,
+    normalization: NormalizationParams | None,
+    projection: ProjectionParams | None = None,
     *,
     feature_dim: int = _DENSE_DIM,
     source=None,
 ):
     from slide2vec import DenseOptions
-
-    from soma.config import DecoderConfig, FeaturesConfig
 
     data = tmp_path / "data"
     if not data.exists():
@@ -1439,13 +1437,13 @@ def _run_detection_fold(
     run_dir, state_dict = _pipeline_run(
         data,
         source if source is not None else CachedGridSource(data / "dense"),
-        dataset_type="detection",
-        task=_DETECTION_TASK,
-        training=TrainingConfig(epochs=1, learning_rate=1e-3, batch_size=2, pin_memory=False),
-        decoder=DecoderConfig(name="lightweight_conv"),
+        head=_DETECTION_HEAD,
+        decoder="lightweight_conv",
         features=FeaturesConfig(dense=DenseOptions(spacing_um=_DETECTION_SPACING, target_size=16)),
-        normalization=normalization or NormalizationConfig(),
-        projection=projection or ProjectionConfig(),
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1},
+        **_ADAM,
+        **_adaptor(normalization, projection),
     )
     return run_dir, state_dict, CachedGridSource(data / "dense")
 
@@ -1455,8 +1453,8 @@ def test_detection_dense_path_fits_the_adaptor_over_the_support_rois(tmp_path: P
     channel axis — including the dim rewire."""
     _, state_dict, store = _run_detection_fold(
         tmp_path,
-        NormalizationConfig(method="zscore"),
-        ProjectionConfig(method="pca", target_dim=2),
+        NormalizationParams(method="zscore"),
+        ProjectionParams(method="pca", target_dim=2),
     )
 
     support = _support_positions(store)
@@ -1477,7 +1475,7 @@ def test_detection_fold_refuses_adaptor_on_composite_dense_stream(tmp_path: Path
     )
 
     with pytest.raises(ValueError, match="not yet supported.*composite"):
-        _run_detection_fold(tmp_path, NormalizationConfig(method="zscore"), source=composite)
+        _run_detection_fold(tmp_path, NormalizationParams(method="zscore"), source=composite)
 
 
 def test_detection_dense_path_with_both_blocks_off_leaves_no_adaptor(tmp_path: Path):
@@ -1490,8 +1488,8 @@ def test_detection_dense_path_with_both_blocks_off_leaves_no_adaptor(tmp_path: P
 def test_dense_fold_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
     fold_dir, _, _ = _run_dense_fold(
         tmp_path,
-        NormalizationConfig(method="zscore", eps=1e-4),
-        ProjectionConfig(method="pca", target_dim=2),
+        NormalizationParams(method="zscore", eps=1e-4),
+        ProjectionParams(method="pca", target_dim=2),
     )
 
     sidecar = json.loads((fold_dir / "feature_adapter.json").read_text(encoding="utf-8"))
@@ -1511,7 +1509,7 @@ def test_dense_fold_writes_a_feature_adapter_qc_sidecar(tmp_path: Path):
 def test_dense_path_with_both_blocks_off_is_byte_identical_to_a_legacy_run(tmp_path: Path):
     """"Omitted section = absent module" on this path: the checkpoint of a defaults run is
     exactly the checkpoint of a run that predates the adaptor."""
-    fold_dir, state_dict, _ = _run_dense_fold(tmp_path / "off", None, ProjectionConfig())
+    fold_dir, state_dict, _ = _run_dense_fold(tmp_path / "off", None, ProjectionParams())
 
     assert not any(key.startswith("feature_adaptor") for key in state_dict)
     assert not (fold_dir / "feature_adapter.json").exists()
@@ -1532,7 +1530,7 @@ def test_a_run_refuses_the_adaptor_on_a_composite_dense_stream(tmp_path: Path):
     )
 
     with pytest.raises(ValueError, match="not yet supported.*composite"):
-        _run_dense_fold(tmp_path, None, ProjectionConfig(method="random", target_dim=2), source=composite)
+        _run_dense_fold(tmp_path, None, ProjectionParams(method="random", target_dim=2), source=composite)
 
 
 def test_composite_member_norm_is_unchanged_by_the_dense_adaptor(tmp_path: Path):
@@ -1568,8 +1566,8 @@ def test_sliding_window_prediction_reloads_a_cached_trained_projected_bundle(tmp
     from soma.dense.predict import SlidingWindowSegmentationPredictor
     from soma.testing import FakeEncoder
 
-    normalization = NormalizationConfig(method="zscore")
-    projection = ProjectionConfig(method="random", target_dim=3)
+    normalization = NormalizationParams(method="zscore")
+    projection = ProjectionParams(method="random", target_dim=3)
     run_dir, state_dict, _ = _run_dense_fold(tmp_path, normalization, projection, feature_dim=3)
     stage = FakeEncoder(target_size=_DENSE_TARGET, patch_size=_DENSE_PATCH)
 
@@ -1602,10 +1600,8 @@ def test_a_bundle_rebuilds_a_registered_user_head_with_the_run_task_params(
     monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
     task_registry.register("_test_smoothed_segmentation", SmoothedHead)
 
-    task = TaskConfig(
-        name="_test_smoothed_segmentation", params={"num_classes": _DENSE_CLASSES, "smoothing": 0.25}
-    )
-    run_dir, _, _ = _run_dense_fold(tmp_path, NormalizationConfig(method="zscore"), task=task)
+    head = Component("_test_smoothed_segmentation", {"num_classes": _DENSE_CLASSES, "smoothing": 0.25})
+    run_dir, _, _ = _run_dense_fold(tmp_path, NormalizationParams(method="zscore"), head=head)
 
     head = soma.load(run_dir / "bundle").model.head
     assert isinstance(head, SmoothedHead) and head.smoothing == 0.25
@@ -1615,49 +1611,54 @@ def test_a_bundle_rebuilds_a_registered_user_head_with_the_run_task_params(
 
 
 def _dense_pipeline_config(tmp_path: Path, **adaptor):
-    from soma.config import DecoderConfig, FeaturesConfig, PipelineConfig
     from tests.extraction_configs import extraction
 
-    return PipelineConfig(
-        dataset_csv=tmp_path / "manifest.csv",
-        splits_csv=tmp_path / "splits.csv",
-        output_root=tmp_path / "out",
-        dataset_type="segmentation",
+    return experiment(
+        tmp_path / "manifest.csv",
+        tmp_path / "splits.csv",
+        output_dir=tmp_path / "out",
         features=FeaturesConfig(
             encoder="phikon", extraction=extraction(0.5, 224, tiling_fields={"backend": "asap"})
         ),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
-        **adaptor,
+        decoder="lightweight_conv",
+        head="segmentation",
+        head_params={"num_classes": 2},
+        **({} if not adaptor else _adaptor(**adaptor)),
     )
+
+
+def _dense_plan(tmp_path: Path, **adaptor):
+    from soma.plan import load_cohort, resolve
+
+    _synthetic_dense_fold(tmp_path)
+    config = _dense_pipeline_config(tmp_path, **adaptor)
+    return resolve(config, load_cohort(config))
 
 
 def test_dense_run_identity_always_names_the_adaptor(tmp_path: Path):
     from soma.pipeline.layout import canonical_experiment_payload
 
-    default = canonical_experiment_payload(_dense_pipeline_config(tmp_path))
-    assert default["normalization"]["method"] == "none"
-    assert default["projection"]["method"] == "none"
+    default = canonical_experiment_payload(_dense_plan(tmp_path / "default"))
+    assert default["learner"]["params"]["normalization"]["method"] == "none"
+    assert default["learner"]["params"]["projection"]["method"] == "none"
 
-    for section in (
-        {"normalization": NormalizationConfig(method="zscore")},
-        {"projection": ProjectionConfig(method="pca", target_dim=64)},
+    for name, section in (
+        ("zscore", {"normalization": NormalizationParams(method="zscore")}),
+        ("pca", {"projection": ProjectionParams(method="pca", target_dim=64)}),
     ):
-        payload = canonical_experiment_payload(_dense_pipeline_config(tmp_path, **section))
-        assert payload != default
+        payload = canonical_experiment_payload(_dense_plan(tmp_path / name, **section))
+        assert payload["learner"] != default["learner"]
 
 
 def test_dense_adaptor_leaves_the_feature_extraction_cache_key_untouched(tmp_path: Path):
     """The adaptor consumes the dense cache; it must never orphan it."""
-    from dataclasses import replace as dataclass_replace
-
     from soma.cache.keys import build_dense_cache_key
 
     off = _dense_pipeline_config(tmp_path)
-    on = dataclass_replace(
-        off,
-        normalization=NormalizationConfig(method="zscore"),
-        projection=ProjectionConfig(method="random", target_dim=64),
+    on = _dense_pipeline_config(
+        tmp_path,
+        normalization=NormalizationParams(method="zscore"),
+        projection=ProjectionParams(method="random", target_dim=64),
     )
 
     from soma.preprocessing.resolution import resolve_pipeline_dense
@@ -1674,15 +1675,13 @@ def test_dense_adaptor_leaves_the_feature_extraction_cache_key_untouched(tmp_pat
 
 
 def test_dense_run_config_always_serializes_both_adaptor_blocks(tmp_path: Path):
-    """Guard the hash, not the record: a saved dense run config says what transform ran,
-    even when that is 'none'."""
+    """Guard the hash, not the record: a dense run's plan says what transform ran, even
+    when that is 'none'."""
     import yaml
 
-    from soma.config import save_config
+    path = tmp_path / "plan.yaml"
+    _dense_plan(tmp_path / "data").to_yaml(path)
 
-    path = tmp_path / "config.yaml"
-    save_config(_dense_pipeline_config(tmp_path), path)
-
-    saved = yaml.safe_load(path.read_text(encoding="utf-8"))
+    saved = yaml.safe_load(path.read_text(encoding="utf-8"))["learner"]["params"]
     assert saved["normalization"] == {"method": "none", "eps": 1e-6}
     assert saved["projection"]["method"] == "none"

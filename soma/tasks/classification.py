@@ -35,8 +35,8 @@ class ClassificationParams:
     """The params of the categorical heads (binary, multiclass, branch-aware, ordinal).
 
     ``num_classes`` and ``label_map`` left unset are inferred from the cohort's labels
-    (:func:`infer_label_map`); ``input_dim`` comes from the model and ``metrics`` from
-    the evaluation section.
+    (:func:`infer_label_map`, :func:`infer_ordinal_label_map` for the ordinal head);
+    ``input_dim`` comes from the model and ``metrics`` from the evaluation section.
     """
 
     num_classes: int | None = None
@@ -49,9 +49,33 @@ class ClassificationParams:
 
 
 def infer_label_map(cohort: "Cohort", params: "Mapping[str, Any]") -> dict[str, Any]:
-    """``num_classes`` and the sorted raw-label -> index ``label_map`` of the cohort."""
+    """``num_classes`` and the sorted raw-label -> index ``label_map`` of the cohort.
+
+    An explicit ``label_map`` decides the classes and their count (its width, which the
+    head demands), so only ``num_classes`` is inferred beside it. An explicit
+    ``num_classes`` other than that count is a contradiction :func:`soma.resolve` refuses.
+    """
+    label_map = params.get("label_map")
+    if label_map is not None:
+        return {"num_classes": len(label_map)}
     label_map = categorical_label_map(cohort.records)
     return {"num_classes": len(label_map), "label_map": label_map}
+
+
+def infer_ordinal_label_map(cohort: "Cohort", params: "Mapping[str, Any]") -> dict[str, Any]:
+    """The ordinal head's ``label_map`` (the cohort's sorted labels) and ``num_classes``.
+
+    ``num_classes`` only bounds the rounded prediction, so an explicit one wins even when
+    it is wider than the label map or the grades the cohort shows; left unset, it reaches
+    the label map's top index.
+    """
+    label_map = params.get("label_map")
+    inferred: dict[str, Any] = {}
+    if label_map is None:
+        label_map = inferred["label_map"] = categorical_label_map(cohort.records)
+    if params.get("num_classes") is None:
+        inferred["num_classes"] = max(label_map.values(), default=-1) + 1
+    return inferred
 
 
 def _check_label_map_width(num_classes: int, label_map: dict[str | int, int] | None) -> None:
@@ -64,7 +88,7 @@ def _check_label_map_width(num_classes: int, label_map: dict[str | int, int] | N
         raise ValueError(
             f"num_classes={num_classes} but the label map names {len(label_map)} class(es) "
             f"({sorted(label_map, key=label_map.__getitem__)}). Each probability column "
-            "needs a label: set task.params.label_map to a {label: index} map naming every "
+            "needs a label: set the head's label_map param to a {label: index} map naming every "
             "class, or drop num_classes to infer it from the cohort's labels."
         )
 

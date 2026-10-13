@@ -39,9 +39,9 @@ def test_every_cell_uses_the_one_native_manifest(tmp_path: Path):
     m = _load_campaign()
     expected = [
         "--set",
-        f"data.dataset_csv={tmp_path / 'curated' / 'dataset.csv'}",
+        f"cohort.records={tmp_path / 'curated' / 'dataset.csv'}",
         "--set",
-        f"data.splits_csv={tmp_path / 'curated' / 'splits.csv'}",
+        f"cohort.splits={tmp_path / 'curated' / 'splits.csv'}",
     ]
 
     assert [m._data_overrides(cell, tmp_path) for cell in m.CELLS] == [

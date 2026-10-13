@@ -11,7 +11,7 @@ import pytest
 
 from soma.cli import main as soma_main
 
-from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma, sha256
+from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, sha256, trainer_section
 from soma.data import CachedSetSource
 from soma.preprocessing.supplied_coordinates import coordinates_meta_path
 from tests.e2e.synthetic import (
@@ -22,6 +22,8 @@ from tests.e2e.synthetic import (
 )
 
 TILE_PX = 32
+#: The tiling and pooled feature cache keys of the flagship scenario (pinned in slice 6c).
+PINNED_SLIDE_CACHE_KEYS = ["tile/c697067066e03831"]
 
 
 @pytest.fixture(scope="module")
@@ -34,7 +36,7 @@ def _config(
     workdir: Path,
     encoder_name: str,
     *,
-    task: dict,
+    head: dict,
     metrics: list[str],
     cache_root: Path,
     aggregator: str = "abmil",
@@ -42,36 +44,39 @@ def _config(
     epochs: int = 25,
     learning_rate: float = 5e-3,
 ) -> dict:
+    manifest_task = "survival" if head["name"] == "cox_survival" else head["name"]
     return {
-        "run": {"output_root": str(workdir / "runs"), "seed": 0},
-        "data": {
-            "dataset_csv": str(cohort.manifest(task["name"])),
-            "splits_csv": str(splits_csv or cohort.splits_csv),
-            "dataset_type": "slide",
+        "run": {"output_dir": str(workdir / "runs"), "seed": 0},
+        "cohort": {
+            "records": str(cohort.manifest(manifest_task)),
+            "splits": str(splits_csv or cohort.splits_csv),
         },
-        "preprocessing": {
-            "backend": "openslide",
-            "requested_tile_size_px": TILE_PX,
-            "requested_spacing_um": SPACING_UM,
-            "tissue_method": "otsu",
-            "seg_downsample": 16,
-            "a_t": 1,
-            "min_coverage": {"tissue": 0.5},
+        "features": {
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": TILE_PX,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
+                "segmentation": {"method": "otsu", "downsample": 16},
+                "filter": {"ref_tile_size": TILE_PX, "a_t": 1},
+                "masks": {"pixel_mapping": {"background": 0, "tissue": 1}, "min_coverage": {"tissue": 0.5}},
+            },
+            "execution": {**CPU_EXECUTION, "precision": "fp32", "batch_size": 256},
+            "cache": {"enabled": True, "root_dir": str(cache_root)},
         },
-        "execution": CPU_EXECUTION,
-        "cache": {"enabled": True, "root_dir": str(cache_root)},
-        "encoder": {"name": encoder_name, "precision": "fp32", "batch_size": 256},
-        "aggregation": {"name": aggregator},
-        "task": task,
+        "loaders": {"batch_size": 1, **CPU_LOADER},
+        "learner": learner_section(
+            "mil",
+            {"aggregator": {"name": aggregator}, "head": head},
+            learning_rate=learning_rate,
+            normalization={"method": "zscore"},
+        ),
+        "trainer": trainer_section(epochs),
         "evaluation": {"metrics": metrics},
-        "normalization": {"method": "zscore"},
-        "training": {
-            "epochs": epochs,
-            "learning_rate": learning_rate,
-            "batch_size": 1,
-            "patience": epochs,
-            **CPU_LOADER,
-        },
     }
 
 
@@ -89,7 +94,7 @@ def test_slide_classification_is_learned_cached_and_repeatable(
         cohort,
         tmp_path,
         encoder_name,
-        task={"name": "binary_classification"},
+        head={"name": "binary_classification"},
         metrics=["auroc", "balanced_accuracy"],
         cache_root=tmp_path / "cache",
     )
@@ -103,6 +108,9 @@ def test_slide_classification_is_learned_cached_and_repeatable(
     artifact.check_training_reduced_loss("cold", cold)
     artifact.facts["tiles_encoded_cold"] = tiles_encoded_cold
     artifact.facts["cache_keys"] = sorted(p.name for p in (tmp_path / "cache").glob("*/*"))
+    # Cache keys derive from the features config alone; a config-layout change must not move them.
+    cache_keys = sorted(p.relative_to(tmp_path / "cache").as_posix() for p in (tmp_path / "cache").glob("*/*"))
+    artifact.check_equal("cold/cache_keys", cache_keys, PINNED_SLIDE_CACHE_KEYS)
     artifact.check_at_least("cold/test/auroc", cold.summary["test/auroc"], 0.95)
     artifact.check_at_least(
         "cold/test/balanced_accuracy", cold.summary["test/balanced_accuracy"], 0.8
@@ -116,7 +124,7 @@ def test_slide_classification_is_learned_cached_and_repeatable(
         {k: sha256(p) for k, p in warm.predictions().items()},
     )
     artifact.check_equal("warm/metrics_identical", warm.summary, cold.summary)
-    for name in ("config.yaml", "bundle/weights.safetensors", "bundle/model.json", "predictions_test.parquet"):
+    for name in ("config.yaml", "plan.yaml", "bundle/weights.safetensors", "bundle/model.json", "predictions_test.parquet"):
         artifact.check_equal(f"cold/files/{name}", (cold.run_dir / name).is_file(), True)
     artifact.check_equal("cold/files/no_best_model_pt", (cold.run_dir / "best_model.pt").exists(), False)
     artifact.check_equal("cold/bundle/no_html_report", (cold.run_dir / "report.html").exists(), False)
@@ -129,7 +137,7 @@ def shared_cache(tmp_path_factory) -> Path:
 
 
 @pytest.mark.parametrize(
-    ("scenario", "task", "metric", "threshold", "extra"),
+    ("scenario", "head", "metric", "threshold", "extra"),
     [
         (
             "multiclass_classification",
@@ -155,7 +163,7 @@ def shared_cache(tmp_path_factory) -> Path:
         ("survival_nll", {"name": "survival", "params": {"num_bins": 4}}, "c_index", 0.75, {}),
         (
             "survival_cox",
-            {"name": "survival", "params": {"loss": "cox", "cox_window": 6}},
+            {"name": "cox_survival", "params": {"cox_window": 6}},
             "c_index",
             0.75,
             {"learning_rate": 5e-3, "epochs": 20},
@@ -164,7 +172,7 @@ def shared_cache(tmp_path_factory) -> Path:
 )
 def test_slide_task_heads_learn_from_the_same_features(
     scenario,
-    task,
+    head,
     metric,
     threshold,
     extra,
@@ -180,7 +188,7 @@ def test_slide_task_heads_learn_from_the_same_features(
         cohort,
         tmp_path,
         encoder_name,
-        task=task,
+        head=head,
         metrics=[metric, "mae"] if scenario == "regression" else [metric],
         cache_root=shared_cache,
         **extra,
@@ -207,7 +215,7 @@ def test_cross_validated_aggregators_are_ranked_on_a_leaderboard(
             cohort,
             tmp_path,
             encoder_name,
-            task={"name": "binary_classification"},
+            head={"name": "binary_classification"},
             metrics=["auroc"],
             cache_root=shared_cache,
             aggregator=aggregator,
@@ -253,12 +261,12 @@ def test_flat_png_slides_render_their_previews(cohort, tmp_path, encoder_name, n
         cohort,
         tmp_path,
         encoder_name,
-        task={"name": "binary_classification"},
+        head={"name": "binary_classification"},
         metrics=["auroc"],
         cache_root=tmp_path / "cache",
     )
-    config["data"]["dataset_csv"] = str(cohort.flat_manifest("binary_classification"))
-    config["preprocessing"]["backend"] = "auto"
+    config["cohort"]["records"] = str(cohort.flat_manifest("binary_classification"))
+    config["features"]["extraction"]["tiling"]["backend"] = "auto"
     run = run_soma(config, tmp_path / "config.yaml")
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)
@@ -325,11 +333,11 @@ def test_user_supplied_coordinates_replace_tiling(
         cohort,
         tmp_path,
         encoder_name,
-        task={"name": "binary_classification"},
+        head={"name": "binary_classification"},
         metrics=["auroc"],
         cache_root=tmp_path / "cache",
     )
-    config["data"]["dataset_csv"] = str(manifest)
+    config["cohort"]["records"] = str(manifest)
 
     cold = run_soma(config, tmp_path / "config.yaml")
     artifact.record_run("cold", cold)

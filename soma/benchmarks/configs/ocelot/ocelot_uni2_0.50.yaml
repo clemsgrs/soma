@@ -11,55 +11,59 @@
 #   (or, preferred, drive the registered benchmark: soma reproduce ocelot)
 
 run:
-  output_root: output/ocelot_uni2_0p50_lightconv
+  output_dir: output/ocelot_uni2_0p50_lightconv
   seed: 0
-  tags: [ocelot, detection, uni2, lightweight_conv, spacing_0p50]
 
-data:
-  dataset_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated/dataset.csv
-  splits_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated/splits.csv
-  dataset_type: detection
+cohort:
+  records: /data/pathology/projects/clement/code/soma/data/ocelot/curated/dataset.csv
+  splits: /data/pathology/projects/clement/code/soma/data/ocelot/curated/splits.csv
 
-preprocessing:
+features:
+  encoder:
+    name: uni2
+    # 0.5 µm/px is UNI2's recommended (20x) spacing, so no flag needed.
+  execution:
+    batch_size: 8
   # Native JPEGs declare 0.2 µm/px; slide2vec area-downsamples them to this request.
   # The 448 window + 0.25 overlap blends window seams / border artifacts.
-  requested_tile_size_px: 410   # round(1024 × 0.2/0.5); v1 needs target_size == read size
-  requested_spacing_um: 0.5
-  dense_window_size: 448
-  dense_window_overlap: 0.25
+  dense:
+    spacing_um: 0.5
+    target_size: 410   # round(1024 × 0.2/0.5); v1 needs target_size == read size
+    window_size: 448
+    overlap: 0.25
 
-encoder:
-  name: uni2
-  batch_size: 8
-  # 0.5 µm/px is UNI2's recommended (20x) spacing, so no flag needed.
+# The decoder upsamples the grid to a full-tile heatmap; batch 1 on a 12 GB card.
+loaders:
+  batch_size: 1
+  num_workers: 4
+  pin_memory: true
 
-decoder:
-  name: lightweight_conv
-
-task:
-  name: detection
+learner:
+  name: dense
   params:
-    num_classes: 2            # 0 = BC (background cell), 1 = TC (tumor cell)
-    match_distance: 3.0       # δ in µm (OCELOT-official)
-    sigma: 1.0                # target Gaussian σ in µm (≈ δ/3)
-    matching: hungarian       # headline; greedy is OCELOT's official scorer
-    foreground_weight: 10.0
+    decoder:
+      name: lightweight_conv
+    head:
+      name: detection
+      params:
+        num_classes: 2            # 0 = BC (background cell), 1 = TC (tumor cell)
+        match_distance: 3.0       # δ in µm (OCELOT-official)
+        sigma: 1.0                # target Gaussian σ in µm (≈ δ/3)
+        matching: hungarian       # headline; greedy is OCELOT's official scorer
+        foreground_weight: 10.0
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
+
+trainer:
+  max_epochs: 50
+  accumulate_grad_batches: 8
+  callbacks:
+    - name: checkpoint
+      params: {monitor: mean_f1, mode: max}
+    - name: early_stopping
+      params: {monitor: mean_f1, mode: max, patience: 10}
 
 evaluation:
   metrics: [mean_f1, f1_per_class, precision, recall, mean_f1_per_image]
-
-training:
-  epochs: 50
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  optimizer: adam
-  scheduler: cosine
-  patience: 10
-  monitor: mean_f1
-  monitor_mode: max
-  # Decoder upsamples the grid to a 1024x1024x2 heatmap; batch 1 on a 12 GB card
-  batch_size: 1
-  gradient_accumulation: 8
-  num_workers: 4
-  pin_memory: true
-  persistent_workers: true

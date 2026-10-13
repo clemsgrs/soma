@@ -9,58 +9,64 @@
 # Then run:  python -m soma examples/ocelot/ocelot.yaml
 
 run:
-  output_root: output/ocelot_conch_lightconv
+  output_dir: output/ocelot_conch_lightconv
   seed: 0
-  tags: [ocelot, detection, conch, lightweight_conv, baseline]
 
-data:
-  dataset_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated/dataset.csv
-  splits_csv: /data/pathology/projects/clement/code/soma/data/ocelot/curated/splits.csv
-  dataset_type: detection
+cohort:
+  records: /data/pathology/projects/clement/code/soma/data/ocelot/curated/dataset.csv
+  splits: /data/pathology/projects/clement/code/soma/data/ocelot/curated/splits.csv
 
-preprocessing:
+features:
+  encoder:
+    name: conch
+    params:
+      allow_non_recommended_settings: true  # reading at 0.2 µm/px vs CONCH's 0.5 native
+  execution:
+    batch_size: 8
   # OCELOT cell patches are flat 1024x1024 JPEGs declared at 0.2 µm/px; this exact-spacing
   # request preserves their native pixels and pins the physical coordinate transforms.
   # CONCH's timm ViT-B/16 trunk is built (by open_clip) without dynamic_img_size, so dense
   # extraction uses the native 448 window; 0.25 overlap covers the non-even tiling of 1024
   # and blends window seams / border artifacts.
-  requested_tile_size_px: 1024
-  requested_spacing_um: 0.2
-  dense_window_size: 448
-  dense_window_overlap: 0.25
+  dense:
+    spacing_um: 0.2
+    target_size: 1024
+    window_size: 448
+    overlap: 0.25
 
-encoder:
-  name: conch
-  batch_size: 8
-  allow_non_recommended_settings: true   # reading at 0.2 µm/px vs CONCH's 0.5 native
-
-decoder:
-  name: lightweight_conv
-
-task:
-  name: detection
-  params:
-    num_classes: 2            # 0 = BC (background cell), 1 = TC (tumor cell)
-    match_distance: 3.0       # δ in µm -> 15 px at 0.2 µm/px (OCELOT-official)
-    sigma: 1.0                # target Gaussian σ in µm -> 5 px (≈ δ/3)
-    matching: hungarian       # headline; greedy is OCELOT's official scorer
-    foreground_weight: 10.0
-
-evaluation:
-  metrics: [mean_f1, f1_per_class, precision, recall, mean_f1_per_image]
-
-training:
-  epochs: 50
-  learning_rate: 1.0e-4
-  weight_decay: 1.0e-5
-  optimizer: adam
-  scheduler: cosine
-  patience: 10
-  monitor: mean_f1
-  monitor_mode: max
-  # Decoder upsamples the grid to a 1024x1024x2 heatmap; batch 1 on a 12 GB card
+# The decoder upsamples the grid to a 1024x1024x2 heatmap; batch 1 on a 12 GB card.
+loaders:
   batch_size: 1
-  gradient_accumulation: 8
   num_workers: 4
   pin_memory: true
   persistent_workers: true
+
+learner:
+  name: dense
+  params:
+    decoder:
+      name: lightweight_conv
+    head:
+      name: detection
+      params:
+        num_classes: 2            # 0 = BC (background cell), 1 = TC (tumor cell)
+        match_distance: 3.0       # δ in µm -> 15 px at 0.2 µm/px (OCELOT-official)
+        sigma: 1.0                # target Gaussian σ in µm -> 5 px (≈ δ/3)
+        matching: hungarian       # headline; greedy is OCELOT's official scorer
+        foreground_weight: 10.0
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
+
+trainer:
+  max_epochs: 50
+  accumulate_grad_batches: 8
+  callbacks:
+    - name: checkpoint
+      params: {monitor: mean_f1, mode: max}
+    - name: early_stopping
+      params: {monitor: mean_f1, mode: max, patience: 10}
+
+evaluation:
+  metrics: [mean_f1, f1_per_class, precision, recall, mean_f1_per_image]

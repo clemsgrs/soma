@@ -112,7 +112,7 @@ def _write_tiling_stub_marker(*, tiling_dir: Path, cache_dir: Path) -> None:
         (
             "This directory is a cache-backed tiling location placeholder.\n"
             f"Actual tiling payloads are stored under: {cache_dir.resolve()}\n"
-            "Configure CacheConfig.root_dir to control the shared cache location.\n"
+            "Set features.cache.root_dir to control the shared cache location.\n"
         ),
         encoding="utf-8",
     )

@@ -25,7 +25,7 @@ import torch
 
 from soma import components
 
-from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma
+from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, trainer_section, run_soma
 from tests.e2e.synthetic import SPACING_UM, MarkerCohort, make_marker_cohort
 
 #: Aggregators whose output depends on tile order by design, with the reason.
@@ -74,38 +74,40 @@ def _auroc(aggregator: str) -> str:
 
 
 def _config(cohort, workdir, encoder_name, cache_root, aggregator, *, control=False) -> dict:
-    aggregation = {"name": aggregator, "params": AGGREGATOR_PARAMS.get(aggregator, {})}
     training = {"epochs": 30, "learning_rate": 5e-3, **TRAINING.get(aggregator, {})}
     return {
-        "run": {"output_root": str(workdir / "runs"), "seed": 0},
-        "data": {
-            "dataset_csv": str(cohort.manifest(control=control)),
-            "splits_csv": str(cohort.splits_csv),
-            "dataset_type": "slide",
+        "run": {"output_dir": str(workdir / "runs"), "seed": 0},
+        "cohort": {"records": str(cohort.manifest(control=control)), "splits": str(cohort.splits_csv)},
+        "features": {
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": 32,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
+                "segmentation": {"method": "otsu", "downsample": 16},
+                "filter": {"ref_tile_size": 32, "a_t": 1},
+                "masks": {"pixel_mapping": {"background": 0, "tissue": 1}, "min_coverage": {"tissue": 0.5}},
+            },
+            "execution": {**CPU_EXECUTION, "precision": "fp32", "batch_size": 256},
+            "cache": {"enabled": True, "root_dir": str(cache_root)},
         },
-        "preprocessing": {
-            "backend": "openslide",
-            "requested_tile_size_px": 32,
-            "requested_spacing_um": SPACING_UM,
-            "tissue_method": "otsu",
-            "seg_downsample": 16,
-            "a_t": 1,
-            "min_coverage": {"tissue": 0.5},
-        },
-        "execution": CPU_EXECUTION,
-        "cache": {"enabled": True, "root_dir": str(cache_root)},
-        "encoder": {"name": encoder_name, "precision": "fp32", "batch_size": 256},
-        "aggregation": aggregation,
-        "task": {"name": TASK.get(aggregator, "binary_classification")},
+        # Several bags per batch, so bags are padded and the mask is exercised.
+        "loaders": {"batch_size": 4, **CPU_LOADER},
+        "learner": learner_section(
+            "mil",
+            {
+                "aggregator": {"name": aggregator, "params": AGGREGATOR_PARAMS.get(aggregator, {})},
+                "head": {"name": TASK.get(aggregator, "binary_classification")},
+            },
+            learning_rate=training["learning_rate"],
+            normalization={"method": NORMALIZATION.get(aggregator, "zscore")},
+        ),
+        "trainer": trainer_section(training["epochs"]),
         "evaluation": {"metrics": ["accuracy", _auroc(aggregator)]},
-        "normalization": {"method": NORMALIZATION.get(aggregator, "zscore")},
-        "training": {
-            **training,
-            # Several bags per batch, so bags are padded and the mask is exercised.
-            "batch_size": 4,
-            "patience": training["epochs"],
-            **CPU_LOADER,
-        },
     }
 
 

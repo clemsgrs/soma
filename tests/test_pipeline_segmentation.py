@@ -18,16 +18,12 @@ import pytest
 import torch
 from PIL import Image
 
-from soma.config import (
-    DecoderConfig,
-    EvalConfig,
-    TaskConfig,
-    TrainingConfig,
-)
+from soma.config import CacheOptions, FeaturesConfig
 from soma.data._legacy import LegacySamples, legacy_samples_from_csv, legacy_folds_from_csv
 from soma.dense import CachedGridSource
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import dense_grid_metadata, write_dense_grid
+from tests.experiment_configs import experiment
 
 NUM_CLASSES = 2
 TARGET = 8
@@ -109,30 +105,41 @@ def _build_dense_run(
     return manifest, splits, store
 
 
+def _sampler(name: str | None, **params) -> dict | None:
+    """A ``loaders.sampler`` leaf (``None`` for the default shuffled loader)."""
+    return None if name is None else {"name": name, "params": params}
+
+
 def _run_pipeline(
     root: Path,
     *,
-    task: TaskConfig,
-    training: TrainingConfig,
-    evaluation: EvalConfig | None = None,
+    head_params: dict | None,
+    loaders: dict,
+    trainer: dict | None = None,
+    evaluation: dict | None = None,
     splits_csv: Path | None = None,
     dense=None,
+    seed: int = 0,
+    cohort: dict | None = None,
 ):
-    """One ``Pipeline`` run over the cached grids ``_build_dense_run`` wrote in ``root``
-    (the feature cache off, so run-level artefacts live in the run dir)."""
-    from soma.config import CacheConfig, FeaturesConfig, PipelineConfig
+    """One one-epoch ``Pipeline`` run over the cached grids ``_build_dense_run`` wrote in
+    ``root`` (the feature cache off, so run-level artefacts live in the run dir)."""
     from soma.pipeline import Pipeline
 
-    config = PipelineConfig(
-        dataset_csv=root / "manifest.csv",
-        splits_csv=splits_csv or root / "splits.csv",
-        output_root=root / "out",
-        dataset_type="segmentation",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=task,
-        training=replace(training, pin_memory=False),
-        evaluation=evaluation or EvalConfig(metrics=["mean_dice"]),
-        features=FeaturesConfig(dense=dense, cache=CacheConfig(enabled=False)),
+    config = experiment(
+        root / "manifest.csv",
+        splits_csv or root / "splits.csv",
+        output_dir=root / "out",
+        seed=seed,
+        decoder="lightweight_conv",
+        head="segmentation",
+        head_params=head_params,
+        loaders=loaders,
+        trainer={"max_epochs": 1, **(trainer or {})},
+        evaluation=evaluation or {"metrics": ["mean_dice"]},
+        cohort=cohort,
+        features=FeaturesConfig(dense=dense, cache=CacheOptions(enabled=False)),
+        scheduler="cosine",
     )
     return Pipeline(config, source=CachedGridSource(root / "dense")).run()
 
@@ -167,14 +174,9 @@ def test_cached_segmentation_fold_writes_exact_roi_batch_sampling_audit(
     )
     fold_dir = _run_pipeline(
         tmp_path,
-        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
-        training=TrainingConfig(
-            epochs=1,
-            batch_size=4,
-            roi_batch_sampling=strategy,
-            roi_draws_per_epoch=8,
-            seed=11,
-        ),
+        head_params={"num_classes": 4},
+        loaders={"batch_size": 4, "sampler": _sampler(strategy, draws_per_epoch=8)},
+        seed=11,
     ).run_dir
 
     audit = json.loads((fold_dir / "roi_batch_sampling.json").read_text())
@@ -220,13 +222,9 @@ def test_cached_segmentation_default_roi_budget_reaches_sampler_audit(
     )
     fold_dir = _run_pipeline(
         tmp_path,
-        task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
-        training=TrainingConfig(
-            epochs=1,
-            batch_size=2,
-            gradient_accumulation=4,
-            roi_batch_sampling="uniform",
-        ),
+        head_params={"num_classes": NUM_CLASSES},
+        loaders={"batch_size": 2, "sampler": _sampler("uniform")},
+        trainer={"accumulate_grad_batches": 4},
     ).run_dir
 
     audit = json.loads((fold_dir / "roi_batch_sampling.json").read_text())
@@ -258,15 +256,12 @@ def test_cached_sampler_counts_arbitrary_classes_and_forwards_request_ratios(
     )
     fold_dir = _run_pipeline(
         tmp_path,
-        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
-        training=TrainingConfig(
-            epochs=1,
-            batch_size=4,
-            roi_batch_sampling="class_conditioned",
-            class_request_ratios=[1, 2, 1],
-            roi_draws_per_epoch=4,
-            seed=11,
-        ),
+        head_params={"num_classes": 3},
+        loaders={
+            "batch_size": 4,
+            "sampler": _sampler("class_conditioned", class_request_ratios=[1, 2, 1], draws_per_epoch=4),
+        },
+        seed=11,
     ).run_dir
 
     audit = json.loads((fold_dir / "roi_batch_sampling.json").read_text())
@@ -311,14 +306,12 @@ def _run_confusion_evidence_cv(
     result = _run_pipeline(
         tmp_path,
         splits_csv=splits_path,
-        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
-        training=TrainingConfig(
-            epochs=1,
-            batch_size=2,
-            roi_batch_sampling=roi_batch_sampling,
-            roi_draws_per_epoch=2 if roi_batch_sampling is not None else None,
-        ),
-        evaluation=EvalConfig(metrics=["mean_dice"], holdout_test=holdout_test),
+        head_params={"num_classes": 3},
+        loaders={
+            "batch_size": 2,
+            "sampler": None if roi_batch_sampling is None else _sampler(roi_batch_sampling, draws_per_epoch=2),
+        },
+        evaluation={"metrics": ["mean_dice"], "holdout_test": holdout_test},
     )
     return result, result.run_dir
 
@@ -392,14 +385,9 @@ def test_tune_is_test_multifold_reuses_one_unique_roi_population(tmp_path: Path)
     run_dir = _run_pipeline(
         tmp_path,
         splits_csv=splits_path,
-        task=TaskConfig(name="segmentation", params={"num_classes": 3}),
-        training=TrainingConfig(
-            epochs=1,
-            batch_size=2,
-            tune_is_test=True,
-            roi_batch_sampling="class_conditioned",
-            roi_draws_per_epoch=2,
-        ),
+        head_params={"num_classes": 3},
+        loaders={"batch_size": 2, "sampler": _sampler("class_conditioned", draws_per_epoch=2)},
+        cohort={"tune_is_test": True},
     ).run_dir
 
     populations = [
@@ -419,8 +407,8 @@ def test_segmentation_run_requires_num_classes(tmp_path: Path):
     with pytest.raises(ValueError, match="num_classes"):
         _run_pipeline(
             tmp_path,
-            task=TaskConfig(name="segmentation"),  # no num_classes
-            training=TrainingConfig(epochs=1, batch_size=2),
+            head_params=None,  # no num_classes
+            loaders={"batch_size": 2},
         )
 
 
@@ -433,25 +421,31 @@ def test_segmentation_run_rejects_mask_grid_spacing_mismatch(tmp_path: Path):
     with pytest.raises(ValueError, match="does not match"):
         _run_pipeline(
             tmp_path,
-            task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
-            training=TrainingConfig(epochs=1, batch_size=2),
+            head_params={"num_classes": NUM_CLASSES},
+            loaders={"batch_size": 2},
             dense=DenseOptions(spacing_um=1.0, target_size=TARGET),
         )
 
 
-def _seg_pipeline_config(tmp_path: Path):
-    from soma.config import PipelineConfig
-
-    return PipelineConfig(
-        dataset_csv=tmp_path / "manifest.csv",
-        splits_csv=tmp_path / "splits.csv",
-        output_root=tmp_path / "out",
-        dataset_type="segmentation",
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(name="segmentation", params={"num_classes": NUM_CLASSES}),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
+def _seg_pipeline_config(
+    tmp_path: Path, *, decoder: str = "lightweight_conv", head_params: dict | None = None, **fields
+):
+    return experiment(
+        tmp_path / 'manifest.csv',
+        tmp_path / 'splits.csv',
+        output_dir=tmp_path / 'out',
+        decoder=decoder,
+        head='segmentation',
+        head_params=head_params or {'num_classes': NUM_CLASSES},
+        trainer={"max_epochs": 1},
+        evaluation={"metrics": ['mean_dice', 'mean_iou']},
+        scheduler='cosine',
+        **{"loaders": {"batch_size": 2}, **fields},
     )
+
+
+def _with_run(config, **run):
+    return replace(config, run=replace(config.run, **run))
 
 
 def _recoverable_seg_pipeline_config(tmp_path: Path, *, run_id: str | None = None):
@@ -461,17 +455,11 @@ def _recoverable_seg_pipeline_config(tmp_path: Path, *, run_id: str | None = Non
         num_classes=4,
         train_count=4,
     )
-    return replace(
-        _seg_pipeline_config(tmp_path),
-        mirror_root=tmp_path / "shared",
-        run_id=run_id,
-        task=TaskConfig(name="segmentation", params={"num_classes": 4}),
-        training=TrainingConfig(
-            epochs=1,
-            batch_size=4,
-            roi_batch_sampling="class_conditioned",
-            roi_draws_per_epoch=4,
-        ),
+    return _seg_pipeline_config(
+        tmp_path,
+        head_params={"num_classes": 4},
+        run={"mirror_root": tmp_path / "shared", "run_id": run_id},
+        loaders={"batch_size": 4, "sampler": _sampler("class_conditioned", draws_per_epoch=4)},
     )
 
 
@@ -507,7 +495,7 @@ def test_pipeline_mirrors_only_a_verified_completed_fold(tmp_path: Path) -> None
 
     result = Pipeline(config, source=CachedGridSource(tmp_path / "dense")).run()
 
-    mirrored_run = config.mirror_root / result.run_dir.relative_to(config.output_root)
+    mirrored_run = Path(config.run.mirror_root) / result.run_dir.relative_to(config.run.output_dir)
     fold_bundle = mirrored_run / "recovery" / "folds" / "fold_0"
     manifest = json.loads((fold_bundle / "manifest.json").read_text())
     assert manifest["kind"] == "fold"
@@ -535,7 +523,7 @@ def test_unpinned_resume_restores_completed_fold_after_local_node_loss(
 
     monkeypatch.setattr("soma.learn.trainer.Trainer.fit", forbid_retraining)
     resumed = Pipeline(
-        replace(config, run_id=None, resume=True), source=CachedGridSource(tmp_path / "dense")
+        _with_run(config, run_id=None, resume=True), source=CachedGridSource(tmp_path / "dense")
     ).run()
 
     assert resumed.run_dir == lost_run_dir
@@ -552,7 +540,7 @@ def test_restore_rejects_a_completed_fold_with_a_bad_checksum(tmp_path: Path) ->
 
     config = _recoverable_seg_pipeline_config(tmp_path, run_id="corrupt-fold")
     original = Pipeline(config, source=CachedGridSource(tmp_path / "dense")).run()
-    mirrored_run = config.mirror_root / original.run_dir.relative_to(config.output_root)
+    mirrored_run = Path(config.run.mirror_root) / original.run_dir.relative_to(config.run.output_dir)
     (mirrored_run / "recovery" / "folds" / "fold_0" / "bundle" / "weights.safetensors").write_bytes(
         b"corrupt"
     )
@@ -560,7 +548,7 @@ def test_restore_rejects_a_completed_fold_with_a_bad_checksum(tmp_path: Path) ->
 
     with pytest.raises(OSError, match="no local run is available"):
         Pipeline(
-            replace(config, run_id=None, resume=True),
+            _with_run(config, run_id=None, resume=True),
             source=CachedGridSource(tmp_path / "dense"),
         ).run()
 
@@ -571,7 +559,7 @@ def test_resume_without_local_or_mirrored_run_fails_clearly(
 ):
     from soma.pipeline import Pipeline
 
-    config = replace(
+    config = _with_run(
         _recoverable_seg_pipeline_config(tmp_path, run_id="placeholder"),
         run_id=run_id,
         resume=True,
@@ -588,13 +576,13 @@ def test_unpinned_resume_refuses_multiple_compatible_mirrored_runs(tmp_path: Pat
 
     config = _recoverable_seg_pipeline_config(tmp_path, run_id="first-compatible-run")
     original = Pipeline(config, source=CachedGridSource(tmp_path / "dense")).run()
-    mirrored_run = config.mirror_root / original.run_dir.relative_to(config.output_root)
+    mirrored_run = Path(config.run.mirror_root) / original.run_dir.relative_to(config.run.output_dir)
     shutil.copytree(mirrored_run, mirrored_run.with_name("second-compatible-run"))
     shutil.rmtree(original.run_dir)
 
     with pytest.raises(ValueError, match="multiple compatible mirrored runs"):
         Pipeline(
-            replace(config, run_id=None, resume=True),
+            _with_run(config, run_id=None, resume=True),
             source=CachedGridSource(tmp_path / "dense"),
         ).run()
 
@@ -626,9 +614,7 @@ def test_pipeline_runs_an_image_prior_decoder_on_cached_grids(tmp_path: Path):
     sample_ids = ["s0", "s1", "s2", "s3"]
     _build_dense_run(tmp_path, sample_ids)
     _materialise_tile_images(tmp_path, sample_ids)
-    config = replace(
-        _seg_pipeline_config(tmp_path), decoder=DecoderConfig(name="eva_conv_with_image")
-    )
+    config = _seg_pipeline_config(tmp_path, decoder="eva_conv_with_image")
 
     result = Pipeline(config, source=CachedGridSource(tmp_path / "dense")).run()
 
@@ -643,9 +629,7 @@ def test_pipeline_rejects_an_image_prior_decoder_whose_image_misses_the_mask_siz
     sample_ids = ["s0", "s1", "s2", "s3"]
     _build_dense_run(tmp_path, sample_ids)
     _materialise_tile_images(tmp_path, sample_ids, size=TARGET + 1)
-    config = replace(
-        _seg_pipeline_config(tmp_path), decoder=DecoderConfig(name="eva_conv_with_image")
-    )
+    config = _seg_pipeline_config(tmp_path, decoder="eva_conv_with_image")
 
     with pytest.raises(ValueError, match="image-prior decoder needs them aligned"):
         Pipeline(config, source=CachedGridSource(tmp_path / "dense")).run()

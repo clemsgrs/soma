@@ -37,7 +37,7 @@ from soma.cache import (
     resolve_dense_cache,
     resolve_cache_dtype,
 )
-from soma.config import CacheConfig, EncoderLeaf
+from soma.config import CacheOptions, EncoderLeaf
 from soma.data._legacy import LegacySamples
 from soma.dense import (
     DENSE_IMAGE_PAYLOAD_SUBDIR,
@@ -94,7 +94,7 @@ def _dense_extract_lock():
 
 
 class _DenseImageExtractor:
-    """Encode tile images into dense ``(d, h, w)`` grids (``dataset_type="segmentation"``).
+    """Encode tile images into dense ``(d, h, w)`` grids (the grid shape over pre-cropped tiles).
 
     Args:
         dataset: LegacySamples whose ``image_path`` fields point to tile images. One
@@ -117,7 +117,7 @@ class _DenseImageExtractor:
         *,
         dense: DenseOptions,
         execution: ExecutionOptions | None = None,
-        cache: CacheConfig | None = None,
+        cache: CacheOptions | None = None,
     ) -> None:
         if dense.pad_mode not in _PAD_MODES:
             raise ValueError(
@@ -128,7 +128,7 @@ class _DenseImageExtractor:
         self._options = image_options(dense)
         self._target_size = normalize_hw(dense.target_size, name="target_size")
         self._execution = execution if execution is not None else ExecutionOptions()
-        self._cache = cache or CacheConfig(enabled=False)
+        self._cache = cache or CacheOptions(enabled=False)
 
     def _dense_options(self) -> DenseImageOptions:
         """The read + encode recipe handed to slide2vec (strict post-read ``target_size``)."""

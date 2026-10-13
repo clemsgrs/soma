@@ -23,6 +23,7 @@ from soma.dense.predict import SlidingWindowSegmentationPredictor, _hann2d
 from soma.tasks.segmentation import SegmentationHead
 from soma.testing import FakeEncoder
 from soma.training.model import DenseModel
+from tests.experiment_configs import experiment
 
 PATCH = 16
 TILE = 64
@@ -313,7 +314,7 @@ def test_live_encoder_pads_as_the_configured_dense_options(monkeypatch):
     carries ``DenseOptions``' padding and the stage hands it to slide2vec."""
     import slide2vec
 
-    from soma.config import DecoderConfig, FeaturesConfig, PipelineConfig, TaskConfig
+    from soma.config import FeaturesConfig
     from soma.extract import live_encoder
     from soma.pipeline.build import live_encoder_spec
 
@@ -326,18 +327,15 @@ def test_live_encoder_pads_as_the_configured_dense_options(monkeypatch):
             prepared["dense"] = dense
             return _Kit()
 
-    config = PipelineConfig(
-        dataset_csv="data.csv",
-        splits_csv="splits.csv",
-        output_root="out",
-        dataset_type="segmentation",
-        features=FeaturesConfig(
-            kind="live",
-            encoder="virchow2",
-            dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=8, pad_mode="constant", image_pad_value=0.0),
-        ),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+    config = experiment(
+        'data.csv',
+        'splits.csv',
+        output_dir='out',
+        features=FeaturesConfig(kind='live', encoder='virchow2', dense=slide2vec.DenseOptions(spacing_um=0.5, target_size=8, pad_mode='constant', image_pad_value=0.0)),
+        decoder='lightweight_conv',
+        head='segmentation',
+        head_params={'num_classes': 2},
+        scheduler='cosine',
     )
     monkeypatch.setattr(slide2vec.Model, "from_preset", lambda *a, **k: _Model())
     live_encoder(**live_encoder_spec(config))

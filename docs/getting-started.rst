@@ -65,9 +65,7 @@ feature extraction runs once and returns a reusable feature store.
 
 .. code-block:: python
 
-   from dataclasses import replace
-
-   from hs2p import DEFAULT_MASK_SAMPLING, SegmentationConfig, TilingConfig
+   from hs2p import MaskSamplingConfig, SegmentationConfig, TilingConfig
    from slide2vec import PreprocessingConfig
 
    from soma import Cohort, FeatureExtractor, ImageManifest
@@ -85,7 +83,10 @@ feature extraction runs once and returns a reusable feature store.
            overlap=0.0,
        ),
        segmentation=SegmentationConfig(method="hsv"),
-       masks=replace(DEFAULT_MASK_SAMPLING, min_coverage={"tissue": 0.2}),
+       masks=MaskSamplingConfig(
+           pixel_mapping={"background": 0, "tissue": 1},
+           min_coverage={"tissue": 0.2},
+       ),
    )
 
    features = FeatureExtractor(
@@ -103,30 +104,38 @@ configuration; see :doc:`preprocessing` and :doc:`encoders` for every option.
 3. Train and evaluate
 ~~~~~~~~~~~~~~~~~~~~~
 
-For slide classification, the downstream model pairs an AB-MIL aggregator with a
-task head. ``EvalConfig`` selects how its predictions are scored. A
+An :class:`~soma.ExperimentConfig` describes the rest of the experiment in seven
+sections, each holding one public callable's keyword arguments: ``run``
+(:class:`~soma.Pipeline`), ``cohort``, ``features``, ``loaders``, ``learner``,
+``trainer`` and ``evaluation``. For slide classification the learner is ``mil``,
+whose model is an AB-MIL aggregator and a task head. Each component is a
+``{name, params}`` leaf; a bare name keeps the component's default params. A
 :class:`~soma.Pipeline` given the extracted ``source`` trains on it directly:
 
 .. code-block:: python
 
-   from soma import (
-       AggregatorConfig,
-       EvalConfig,
-       Pipeline,
-       PipelineConfig,
-       TaskConfig,
-       TrainingConfig,
+   from soma import ExperimentConfig, Pipeline
+   from soma.config import (
+       CohortConfig,
+       EvaluationConfig,
+       LearnerConfig,
+       RunConfig,
+       TrainerConfig,
    )
 
-   config = PipelineConfig(
-       dataset_csv="dataset.csv",
-       splits_csv="splits.csv",
-       output_root="output",
-       dataset_type="slide",
-       aggregator=AggregatorConfig(name="abmil"),
-       task=TaskConfig(name="binary_classification"),
-       training=TrainingConfig(epochs=5, learning_rate=1e-4, seed=0),
-       evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
+   config = ExperimentConfig(
+       run=RunConfig(output_dir="output", seed=0),
+       cohort=CohortConfig(records="dataset.csv", splits="splits.csv"),
+       learner=LearnerConfig(
+           "mil",
+           {
+               "aggregator": "abmil",
+               "head": "binary_classification",
+               "optimizer": {"name": "adam", "params": {"lr": 1e-4}},
+           },
+       ),
+       trainer=TrainerConfig(max_epochs=5),
+       evaluation=EvaluationConfig(metrics=["auroc", "balanced_accuracy"]),
    )
    result = Pipeline(config, source=features.source).run()
 
@@ -139,26 +148,28 @@ See :doc:`aggregators`, :doc:`classification`, :doc:`training`, and
 Pipeline and CLI
 ----------------
 
-:class:`~soma.config.PipelineConfig` runs preprocessing, feature extraction,
-training, and evaluation with one call:
+With a ``features`` section naming the encoder and the extraction, the same
+:class:`~soma.Pipeline` runs preprocessing, feature extraction, training, and
+evaluation with one call:
 
 .. code-block:: python
 
-   from dataclasses import replace
-
-   from hs2p import DEFAULT_MASK_SAMPLING, SegmentationConfig, TilingConfig
+   from hs2p import MaskSamplingConfig, SegmentationConfig, TilingConfig
    from slide2vec import PreprocessingConfig
 
-   from soma import (
-       AggregatorConfig, EvalConfig, FeaturesConfig, Pipeline, PipelineConfig,
-       TaskConfig, TrainingConfig,
+   from soma import ExperimentConfig, Pipeline
+   from soma.config import (
+       CohortConfig,
+       EvaluationConfig,
+       FeaturesConfig,
+       LearnerConfig,
+       RunConfig,
+       TrainerConfig,
    )
 
-   config = PipelineConfig(
-       dataset_csv="dataset.csv",
-       splits_csv="splits.csv",
-       output_root="output",
-       dataset_type="slide",
+   config = ExperimentConfig(
+       run=RunConfig(output_dir="output", seed=0),
+       cohort=CohortConfig(records="dataset.csv", splits="splits.csv"),
        features=FeaturesConfig(
            encoder="phikon",
            extraction=PreprocessingConfig(
@@ -167,43 +178,63 @@ training, and evaluation with one call:
                    tolerance=0.05, overlap=0.0,
                ),
                segmentation=SegmentationConfig(method="hsv"),
-               masks=replace(DEFAULT_MASK_SAMPLING, min_coverage={"tissue": 0.2}),
+               masks=MaskSamplingConfig(
+                   pixel_mapping={"background": 0, "tissue": 1},
+                   min_coverage={"tissue": 0.2},
+               ),
            ),
        ),
-       aggregator=AggregatorConfig(name="abmil"),
-       task=TaskConfig(name="binary_classification"),
-       training=TrainingConfig(epochs=5, learning_rate=1e-4, seed=0),
-       evaluation=EvalConfig(metrics=["auroc", "balanced_accuracy"]),
+       learner=LearnerConfig(
+           "mil",
+           {
+               "aggregator": "abmil",
+               "head": "binary_classification",
+               "optimizer": {"name": "adam", "params": {"lr": 1e-4}},
+           },
+       ),
+       trainer=TrainerConfig(max_epochs=5),
+       evaluation=EvaluationConfig(metrics=["auroc", "balanced_accuracy"]),
    )
    result = Pipeline(config).run()
 
 ``result`` exposes ``run_dir``, ``summary``, and ``fold_results`` (see
-:doc:`outputs`). The same experiment as ``config.yaml``:
+:doc:`outputs`). The same experiment as ``config.yaml`` spells every field the
+way the Python call does:
 
 .. code-block:: yaml
 
    run:
-     output_root: output
+     output_dir: output
      seed: 0
-   data:
-     dataset_csv: dataset.csv
-     splits_csv: splits.csv
-     dataset_type: slide
-   preprocessing:
-     tissue_method: hsv
-     min_coverage: {tissue: 0.2}
-     overlap: 0.0
-     requested_spacing_um: 0.5
-     requested_tile_size_px: 224
-   encoder:
-     name: phikon
-   aggregation:
-     name: abmil
-   task:
-     name: binary_classification
-   training:
-     epochs: 5
-     learning_rate: 1.0e-4
+   cohort:
+     records: dataset.csv
+     splits: splits.csv
+   features:
+     encoder:
+       name: phikon
+     extraction:
+       tiling:
+         requested_spacing_um: 0.5
+         requested_tile_size_px: 224
+         tolerance: 0.05
+         overlap: 0.0
+       segmentation:
+         method: hsv
+       masks:
+         pixel_mapping: {background: 0, tissue: 1}
+         min_coverage: {tissue: 0.2}
+   learner:
+     name: mil
+     params:
+       aggregator:
+         name: abmil
+       head:
+         name: binary_classification
+       optimizer:
+         name: adam
+         params: {lr: 1.0e-4}
+   trainer:
+     max_epochs: 5
    evaluation:
      metrics: [auroc, balanced_accuracy]
 
@@ -213,9 +244,13 @@ Then run:
 
    soma config.yaml
 
-soma merges the file with bundled defaults and validates it before running.
-YAML uses ``aggregation`` where the Python constructor uses ``aggregator``.
-See :doc:`cli` for defaults and command-line overrides.
+A field left out keeps its default. soma validates the file, then resolves it
+against the cohort into a *plan*: the config with every default spelled out and
+what the cohort decides (for example the label map) filled in.
+:func:`soma.resolve` does the same in Python. The run directory keeps your
+``config.yaml`` next to the resolved ``plan.yaml``. See :doc:`configuration` for
+the sections and components, and :doc:`cli` for the full reference and
+command-line overrides.
 
 .. _log-output:
 

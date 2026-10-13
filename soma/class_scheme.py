@@ -1,6 +1,6 @@
 """The class scheme of a dense task: which annotated raw values form which class.
 
-``task.params.classes`` maps each class name to the raw annotated value(s) that form it —
+A dense head's ``classes`` param maps each class name to the raw annotated value(s) that form it —
 several values merge into one class — and the class index is the declaration order. A
 second list names the raw values to exclude: ``ignore`` for segmentation (mask pixels left
 out of loss and metrics), ``drop`` for detection (points removed from the supervised set).
@@ -78,27 +78,27 @@ def resolve_classes(
 ) -> tuple[int, tuple[str, ...], dict[int, int] | None, tuple[int, ...]]:
     """Resolve ``(num_classes, class names, {raw value: class index}, excluded values)``.
 
-    ``num_classes`` is derived from ``task.params.classes``; giving both is an error unless
+    ``num_classes`` is derived from the head's ``classes``; giving both is an error unless
     they agree. Without ``classes`` the annotations must already hold contiguous class
     indices: ``num_classes`` is required, the mapping is ``None`` and nothing is excluded.
-    ``subject`` is the ``dataset_type`` named in error messages.
+    ``subject`` is the head family named in error messages.
     """
     classes = task_params.get("classes")
     excluded = task_params.get(excluded_key)
     num_classes = task_params.get("num_classes")
     if classes is None:
         if excluded is not None:
-            raise ValueError(f"task.params.{excluded_key} needs task.params.classes.")
+            raise ValueError(f"the {subject} head's '{excluded_key}' param needs its 'classes'.")
         if num_classes is None:
             raise ValueError(
-                f"dataset_type='{subject}' requires task.params.classes (or "
-                "task.params.num_classes when the annotations already hold class indices)."
+                f"the {subject} head requires its 'classes' param (or 'num_classes' when "
+                "the annotations already hold class indices)."
             )
         num_classes = int(num_classes)
         return num_classes, tuple(f"class_{index}" for index in range(num_classes)), None, ()
 
     if not isinstance(classes, Mapping):
-        raise ValueError("task.params.classes must map class name → raw annotated value(s).")
+        raise ValueError(f"the {subject} head's 'classes' must map class name → raw annotated value(s).")
     class_of, excluded_values = assign_raw_values(
         classes,
         excluded=() if excluded is None else excluded,
@@ -107,7 +107,7 @@ def resolve_classes(
     )
     if num_classes is not None and int(num_classes) != len(classes):
         raise ValueError(
-            f"task.params.num_classes={num_classes} disagrees with the {len(classes)} "
-            "classes in task.params.classes; drop num_classes (it is derived)."
+            f"the {subject} head's num_classes={num_classes} disagrees with the {len(classes)} "
+            "classes in its 'classes'; drop num_classes (it is derived)."
         )
     return len(classes), tuple(str(name) for name in classes), class_of, tuple(excluded_values)

@@ -18,6 +18,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from soma.plan import sample_unit
+from tests.experiment_configs import callback
 from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva
 from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
@@ -72,8 +74,8 @@ def test_build_config_uses_fixed_step_budget(tmp_path):
         splits_csv=tmp_path / "splits.csv",
         output_root=tmp_path / "runs",
     )
-    assert config.training.max_steps == eva.MAX_STEPS == 12500
-    assert config.training.epochs is None
+    assert config.trainer.max_steps == eva.MAX_STEPS == 12500
+    assert config.trainer.max_epochs is None
 
 
 def test_budget_does_not_read_splits_csv(tmp_path):
@@ -83,7 +85,7 @@ def test_budget_does_not_read_splits_csv(tmp_path):
         splits_csv=tmp_path / "does_not_exist.csv",
         output_root=tmp_path / "runs",
     )
-    assert config.training.max_steps == 12500
+    assert config.trainer.max_steps == 12500
 
 
 def test_train_size_epoch_mapping_is_gone():
@@ -103,25 +105,25 @@ def test_build_config_encodes_eva_protocol(tmp_path):
         output_root=tmp_path / "runs",
         seed=3,
     )
-    assert config.dataset_type == "tile"
+    assert sample_unit(config) == "tile"
     assert config.features.encoder.name == "uni2"
     assert config.features.encoder.output_variant is None  # uni2 uses the slide2vec default (1536-d CLS)
-    assert config.task.name == "multiclass_classification"
+    assert config.learner.params["head"].name == "multiclass_classification"
+    assert "aggregator" not in config.learner.params
     assert "balanced_accuracy" in config.evaluation.metrics
 
-    training = config.training
-    assert training.learning_rate == eva.LEARNING_RATE  # 3e-4
-    assert training.weight_decay == eva.WEIGHT_DECAY  # 0.01, not 0.0
-    assert training.optimizer == "adamw"
-    assert training.scheduler == "none"
-    assert training.batch_size == eva.HEAD_BATCH_SIZE  # 256
-    assert training.monitor == "balanced_accuracy"
-    assert training.monitor_mode == "max"
-    assert training.seed == 3
-    assert training.tune_is_test is True  # bach reports on the validation split
-    assert training.max_steps == 12500  # eva's fixed optimizer-step budget
-    assert training.epochs is None  # step-budget run, not an epoch-count run
-    assert training.patience == 1250  # eva's per-dataset value
+    optimizer = config.learner.params["optimizer"]
+    assert optimizer.name == "adamw"
+    assert optimizer.params == {"lr": eva.LEARNING_RATE, "weight_decay": eva.WEIGHT_DECAY}  # 0.01, not 0.0
+    assert "scheduler" not in config.learner.params
+    assert config.loaders.batch_size == eva.HEAD_BATCH_SIZE  # 256
+    monitor = {"monitor": "balanced_accuracy", "mode": "max"}
+    assert callback(config, "checkpoint") == monitor
+    assert callback(config, "early_stopping") == {**monitor, "patience": 1250}  # eva's per-dataset value
+    assert config.run.seed == 3
+    assert config.cohort.tune_is_test is True  # bach reports on the validation split
+    assert config.trainer.max_steps == 12500  # eva's fixed optimizer-step budget
+    assert config.trainer.max_epochs is None  # step-budget run, not an epoch-count run
 
 
 def test_build_config_pins_virchow2_cls_variant(tmp_path):
@@ -134,7 +136,7 @@ def test_build_config_pins_virchow2_cls_variant(tmp_path):
     )
     # eva's paige_virchow2 is CLS-only (1280-d); the 2560-d default would not match.
     assert config.features.encoder.output_variant == "cls"
-    assert config.training.tune_is_test is False  # pcam has a real val + test split
+    assert config.cohort.tune_is_test is False  # pcam has a real val + test split
 
 
 def test_build_config_defaults_to_default_encoder(tmp_path):
@@ -158,8 +160,8 @@ def test_build_config_honours_smoke_overrides(tmp_path):
         patience=1,
         encoder_batch_size=8,
     )
-    assert config.training.max_steps == 1
-    assert config.training.patience == 1
+    assert config.trainer.max_steps == 1
+    assert callback(config, "early_stopping")["patience"] == 1
     assert config.features.execution.batch_size == 8
 
 
@@ -298,8 +300,8 @@ def test_gleason_arvaniti_curation_is_compatible_with_its_tune_is_test_config(tm
         splits_csv=manifest.splits_csv,
         output_root=tmp_path / "runs",
     )
-    assert config.training.tune_is_test is True
+    assert config.cohort.tune_is_test is True
 
     dataset = legacy_samples_from_csv(manifest.dataset_csv)
     # Must not raise: single held-out split (EVA val ZT76) under tune_is_test.
-    legacy_folds_from_csv(manifest.splits_csv, dataset, tune_is_test=config.training.tune_is_test)
+    legacy_folds_from_csv(manifest.splits_csv, dataset, tune_is_test=config.cohort.tune_is_test)

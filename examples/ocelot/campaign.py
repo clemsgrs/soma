@@ -211,11 +211,11 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 
 def output_root_for(cell: Cell) -> Path:
-    """The run output_root a cell lands in (read from its committed config)."""
-    from soma.config import load_config
+    """The run output dir a cell lands in (read from its committed config)."""
+    from soma.config import ExperimentConfig
 
-    cfg = load_config(str(cell.config_path))
-    root = Path(cfg.output_root)
+    cfg = ExperimentConfig.from_yaml(cell.config_path)
+    root = Path(cfg.run.output_dir)
     return root if root.is_absolute() else REPO_ROOT / root
 
 
@@ -245,8 +245,8 @@ def find_seed_runs(output_root: Path) -> dict[int, Path]:
 def _data_overrides(cell: Cell, data_root: Path) -> list[str]:
     curated = data_root / "curated"
     return [
-        "--set", f"data.dataset_csv={curated / 'dataset.csv'}",
-        "--set", f"data.splits_csv={curated / 'splits.csv'}",
+        "--set", f"cohort.records={curated / 'dataset.csv'}",
+        "--set", f"cohort.splits={curated / 'splits.csv'}",
     ]
 
 
@@ -382,7 +382,7 @@ def dense_embeddings_dir(cell: Cell, data_root: Path) -> Path | None:
         splits_csv=curated / "splits.csv",
         output_root=output_root_for(cell),
     )
-    cache_dir = resolve_dense_cache_dir(cfg, legacy_samples_from_csv(cfg.dataset_csv))
+    cache_dir = resolve_dense_cache_dir(cfg, legacy_samples_from_csv(cfg.cohort.records))
     return None if cache_dir is None else cache_dir / DENSE_IMAGE_PAYLOAD_SUBDIR
 
 
@@ -411,7 +411,7 @@ def backfill_test_grids(cell: Cell, data_root: Path) -> None:
     seed-independent cache; its throwaway decoder (BACKFILL_SEED) is never scored.
     """
     train_cell_seed(
-        cell, BACKFILL_SEED, data_root, holdout_test=False, extra=["--set", "training.epochs=1"]
+        cell, BACKFILL_SEED, data_root, holdout_test=False, extra=["--set", "trainer.max_epochs=1"]
     )
 
 

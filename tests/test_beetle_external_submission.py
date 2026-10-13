@@ -21,9 +21,13 @@ from examples.beetle.external_submission import (  # noqa: E402
     encoder_runtime_environment,
     main as external_main,
 )
-from examples.beetle.external_runtime import validate_selected_run_recipe  # noqa: E402
+from examples.beetle.external_runtime import (  # noqa: E402
+    selected_checkpoints,
+    validate_selected_run_recipe,
+)
 from soma.dense.geometry import compute_dense_geometry  # noqa: E402
 from soma.dense.predict import SlidingWindowSegmentationPredictor  # noqa: E402
+from tests.experiment_configs import experiment
 
 
 class _ConstantFoldModel:
@@ -87,39 +91,24 @@ def _write_selected_recipe(
     import slide2vec
 
     from examples.beetle.protocol import CLASSES, IGNORE, PIXEL_MAPPING
-    from soma.config import (
-        DecoderConfig,
-        EncoderLeaf,
-        FeaturesConfig,
-        PipelineConfig,
-        TaskConfig,
-        save_config,
-    )
+    from soma.config import EncoderLeaf, FeaturesConfig
     from tests.extraction_configs import annotation_masks, extraction
 
-    config = PipelineConfig(
-        dataset_csv="development.csv",
-        splits_csv="development_splits.csv",
-        output_root="runs/uniform",
-        dataset_type="segmentation",
-        features=FeaturesConfig(
-            encoder=EncoderLeaf(name="virchow2", params={"output_variant": "cls"}),
-            extraction=extraction(
-                0.5, 8, masks=annotation_masks(pixel_mapping or PIXEL_MAPPING, {"other": 0.05})
-            ),
-            execution=slide2vec.ExecutionOptions(precision="fp32"),
-        ),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(
-            name="segmentation", params={"classes": classes or CLASSES, "ignore": IGNORE}
-        ),
-        tags=["beetle", "project_protocol", "uniform"],
+    config = experiment(
+        'development.csv',
+        'development_splits.csv',
+        output_dir='runs/uniform',
+        features=FeaturesConfig(encoder=EncoderLeaf(name='virchow2', params={'output_variant': 'cls'}), extraction=extraction(0.5, 8, masks=annotation_masks(pixel_mapping or PIXEL_MAPPING, {'other': 0.05})), execution=slide2vec.ExecutionOptions(precision='fp32')),
+        decoder='lightweight_conv',
+        head='segmentation',
+        head_params={'classes': classes or CLASSES, 'ignore': IGNORE},
+        scheduler='cosine',
     )
     resolved = tmp_path / "resolved_uniform.yaml"
-    save_config(config, resolved)
+    config.to_yaml(resolved)
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    save_config(config, run_dir / "config.yaml")
+    config.to_yaml(run_dir / "config.yaml")
     resolution = tmp_path / "protocol_resolution.json"
     resolution.write_text(
         json.dumps(
@@ -193,12 +182,19 @@ def test_encoder_runtime_environment_revalidates_and_binds_locked_snapshot(
 
 
 def test_selected_run_recipe_must_equal_protocol_resolved_arm(tmp_path: Path) -> None:
-    from soma.config import save_config
 
     config, resolved, run_dir, resolution = _write_selected_recipe(tmp_path)
 
     binding = validate_selected_run_recipe(resolution, "uniform", run_dir)
     assert binding["resolved_arm_config"] == str(resolved.resolve())
+
+    # ``run-arm --set run.run_id=... / run.resume=true`` lands in the run's config.yaml:
+    # launch-only fields are not part of the recipe.
+    relaunched = replace(
+        config, run=replace(config.run, run_id="2026-10-13_09-00-00__local", resume=True)
+    )
+    relaunched.to_yaml(run_dir / "config.yaml")
+    validate_selected_run_recipe(resolution, "uniform", run_dir)
 
     extraction = config.features.extraction
     drifted = replace(
@@ -210,9 +206,43 @@ def test_selected_run_recipe_must_equal_protocol_resolved_arm(tmp_path: Path) ->
             ),
         ),
     )
-    save_config(drifted, run_dir / "config.yaml")
+    drifted.to_yaml(run_dir / "config.yaml")
     with pytest.raises(ValueError, match="disagrees with the protocol-resolved"):
         validate_selected_run_recipe(resolution, "uniform", run_dir)
+
+
+def _write_fold_bundles(run_dir: Path) -> None:
+    for fold in range(5):
+        (run_dir / f"fold_{fold}" / "bundle").mkdir(parents=True)
+
+
+@pytest.mark.parametrize("arm", ["uniform", "class_conditioned"])
+def test_selected_checkpoints_bind_the_run_to_the_selected_sampler_arm(
+    tmp_path: Path, arm: str
+) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "config.yaml").write_text(
+        f"loaders:\n  sampler:\n    name: {arm}\n", encoding="utf-8"
+    )
+    _write_fold_bundles(run_dir)
+
+    assert selected_checkpoints(run_dir, arm) == tuple(
+        run_dir / f"fold_{fold}" / "bundle" for fold in range(5)
+    )
+    other = "class_conditioned" if arm == "uniform" else "uniform"
+    with pytest.raises(ValueError, match="sampler"):
+        selected_checkpoints(run_dir, other)
+
+
+def test_selected_checkpoints_refuse_a_run_without_a_sampler(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "config.yaml").write_text("run:\n  seed: 0\n", encoding="utf-8")
+    _write_fold_bundles(run_dir)
+
+    with pytest.raises(ValueError, match="sampler"):
+        selected_checkpoints(run_dir, "uniform")
 
 
 def test_selected_run_recipe_rejects_wrong_pixel_mapping(tmp_path: Path) -> None:
@@ -269,7 +299,7 @@ def test_external_infer_command_ensembles_spacing_maps_pngs_and_flat_zip(
     run_dir = tmp_path / "uniform_run"
     run_dir.mkdir()
     (run_dir / "config.yaml").write_text(
-        "run:\n  tags: [beetle, project_protocol, uniform]\n", encoding="utf-8"
+        "loaders:\n  sampler:\n    name: uniform\n", encoding="utf-8"
     )
 
     # Three weak class-1 folds versus two strong class-3 folds. Majority voting would emit

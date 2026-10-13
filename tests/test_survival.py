@@ -12,7 +12,9 @@ import pytest
 import torch
 
 from soma.data import CachedSetSource
-from soma.config import AggregatorConfig, PipelineConfig, TaskConfig, TrainingConfig
+from soma.config import FeaturesConfig
+from soma.plan import check
+from tests.experiment_configs import experiment
 from soma.data import SampleRecord
 from soma.data._legacy import legacy_samples_from_csv
 from soma.evaluation import Predictions
@@ -254,25 +256,20 @@ class TestValidateSurvivalDataset:
 
 
 class TestSurvivalConfigValidation:
-    def _base(self, tmp_path, **kw):
-        return dict(
-            dataset_csv=tmp_path / "d.csv",
-            splits_csv=tmp_path / "s.csv",
-            output_root=tmp_path / "out",
-            task=TaskConfig(name="survival"),
-            **kw,
-        )
+    def _check(self, tmp_path, **fields):
+        check(experiment(tmp_path / "d.csv", tmp_path / "s.csv", head="survival", **fields))
 
     def test_rejects_tile(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="tile.*not supported for survival|survival"):
-            PipelineConfig(**self._base(tmp_path, dataset_type="tile"))
+        # A tile encoder without an aggregator embeds each tile: a tile-level sample.
+        with pytest.raises(ValueError, match="not a single tile"):
+            self._check(tmp_path, features=FeaturesConfig(encoder="phikon"))
 
     def test_rejects_clam(self, tmp_path: Path):
         with pytest.raises(ValueError, match="not supported for survival"):
-            PipelineConfig(**self._base(tmp_path, dataset_type="slide", aggregator=AggregatorConfig(name="clam_sb")))
+            self._check(tmp_path, aggregator="clam_sb")
 
     def test_allows_slide_with_abmil(self, tmp_path: Path):
-        PipelineConfig(**self._base(tmp_path, dataset_type="slide", aggregator=AggregatorConfig(name="abmil")))
+        self._check(tmp_path, aggregator="abmil")
 
 
 # ---------------------------------------------------------------------------
@@ -316,14 +313,15 @@ def _setup_survival_slide_data(tmp_path: Path):
 class TestSurvivalEndToEnd:
     def test_slide_level_survival_run(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_survival_slide_data(tmp_path)
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "out",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="survival"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'out',
+            aggregator='mean_pool',
+            head='survival',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -370,14 +368,15 @@ class TestSurvivalEndToEnd:
         for pid in ["p0", "p1", "p2", "p3"]:
             torch.save(torch.randn(D), feature_dir / f"{pid}.pt")
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "out",
-            dataset_type="patient",
-            aggregator=None,
-            task=TaskConfig(name="survival"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'out',
+            head='survival',
+            cohort={"collapse": "patient_id"},
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -404,15 +403,19 @@ def test_explicit_width_trains_sparse_whole_dataset_with_four_outputs(tmp_path, 
         tensor = torch.tensor(values)
         torch.save(tensor.unsqueeze(0) if aggregation else tensor, features / f"{sid}.pt")
     original = {p.name: p.read_bytes() for p in features.iterdir()}
-    config = PipelineConfig(
-        dataset_csv=dataset_csv, splits_csv=splits_csv,
-        output_root=tmp_path / "out", run_id="sparse-nll",
-        dataset_type="slide",
-        aggregator=AggregatorConfig(name=aggregation) if aggregation else None,
-        task=TaskConfig(name="survival", params={"loss": "nll", "num_bins": 4}),
-        training=TrainingConfig(epochs=1, batch_size=2, seed=0,
-                                checkpoint_selection="last", patience=None,
-                                allow_missing_tune=True),
+    config = experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / 'out',
+        aggregator=aggregation or None,
+        head='survival',
+        head_params={'num_bins': 4},
+        seed=0,
+        cohort={"allow_missing_tune": True},
+        run={"run_id": 'sparse-nll'},
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1, "callbacks": [{"name": "checkpoint", "params": {"selection": 'last'}}]},
+        scheduler='cosine',
     )
     result = Pipeline(config, source=CachedSetSource(features)).run()
     fold = result.fold_results[0]

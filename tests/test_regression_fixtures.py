@@ -10,7 +10,7 @@ import pytest
 import slide2vec
 from hs2p import FilterConfig
 
-from soma.config import CacheConfig
+from soma.config import CacheOptions
 from tests.extraction_configs import extraction
 from soma.data._legacy import legacy_samples_from_csv
 from soma.extraction import FeatureExtractor
@@ -77,7 +77,7 @@ def test_prism_slide_feature_matches_slide2vec_gt(tmp_path: Path):
         dataset,
         "prism",
         preprocessing=_regression_preprocessing(),
-        cache=CacheConfig(enabled=False),
+        cache=CacheOptions(enabled=False),
         output_root=tmp_path,
     )
 

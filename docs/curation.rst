@@ -44,7 +44,7 @@ assigned to ``test``, fold ``0``.
 EVA patch-level classification
 ------------------------------
 
-The EVA patch curator supports these ``dataset_type: tile`` datasets:
+The EVA patch curator supports these tile-level datasets:
 
 - ``bach``
 - ``mhist``
@@ -92,7 +92,7 @@ Split policy
 
 The curator follows EVA's official protocol and has no split knob. EVA train
 is soma ``train``. When EVA provides only a validation split, it becomes soma
-``test`` and the run sets ``training.tune_is_test: true``. When EVA also
+``test`` and the run sets ``cohort.tune_is_test: true``. When EVA also
 provides a test split, validation becomes ``tune`` and test becomes ``test``.
 
 Raw layout expectations
@@ -148,7 +148,7 @@ covered by this tile-classification curation path.
 OCELOT 2023 cell detection
 --------------------------
 
-The OCELOT curator targets soma's ``dataset_type: detection`` path. It converts
+The OCELOT curator targets soma's detection path. It converts
 the unzipped `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ release
 (``ocelot2023_v1.0.1.zip``) into soma's detection manifests. Download and unzip
 it first (see ``examples/ocelot/README.md``).
@@ -248,7 +248,7 @@ comparable to the published leaderboard.
 MONKEY inflammatory-cell detection
 ----------------------------------
 
-The MONKEY curator targets soma's ``dataset_type: detection`` path. It converts
+The MONKEY curator targets soma's detection path. It converts
 the public training set of the
 `MONKEY challenge <https://monkey.grand-challenge.org/>`_ (81 PAS-stained
 kidney-biopsy slides from centres A–D, one slide per patient) into soma's

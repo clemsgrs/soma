@@ -19,7 +19,8 @@ import pytest
 from PIL import Image, TiffImagePlugin
 
 from examples.beetle.curate import curate_beetle_slide_manifest
-from soma.config import load_config
+from soma.config import ExperimentConfig
+from soma.plan import check, head_family
 from soma.dense.reader import build_label_remap
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -133,14 +134,16 @@ def _full_cohort(root: Path) -> tuple[Path, Path, list[dict[str, str]]]:
 
 
 def _load_beetle_config():
-    return load_config(BEETLE_CONFIG, overrides={"training": {"batch_size": 4}})
+    config = ExperimentConfig.from_yaml(BEETLE_CONFIG, overrides={"loaders": {"batch_size": 4}})
+    check(config)
+    return config
 
 
 def test_beetle_config_loads_and_validates():
     cfg = _load_beetle_config()
-    assert cfg.dataset_type == "segmentation"
-    assert cfg.task.name == "segmentation"
-    assert cfg.task.params == {
+    assert head_family(cfg) == "segmentation"
+    assert cfg.learner.params["head"].name == "segmentation"
+    assert cfg.learner.params["head"].params == {
         "classes": {
             "other": [1],
             "non_invasive_epithelium": [2],
@@ -174,7 +177,7 @@ def test_beetle_config_encodes_recipe():
     assert cfg.features.dense.window_size == 224
     assert cfg.features.dense.overlap == 0.5
     assert cfg.features.encoder.name == "virchow2"
-    assert cfg.decoder.name == "lightweight_conv"
+    assert cfg.learner.params["decoder"].name == "lightweight_conv"
     assert cfg.evaluation.metrics == [
         "mean_dice",
         "dataset_global_mean_dice",
@@ -187,7 +190,9 @@ def test_beetle_config_encodes_recipe():
 def test_beetle_remap_matches_curation_contract():
     cfg = _load_beetle_config()
     lut = build_label_remap(
-        cfg.task.params["classes"], ignore=cfg.task.params["ignore"], ignore_index=255
+        cfg.learner.params["head"].params["classes"],
+        ignore=cfg.learner.params["head"].params["ignore"],
+        ignore_index=255,
     )
     raw = np.array(sorted(EXPECTED_REMAP), dtype=np.int64)
     expected = np.array([EXPECTED_REMAP[int(v)] for v in raw], dtype=lut.dtype)

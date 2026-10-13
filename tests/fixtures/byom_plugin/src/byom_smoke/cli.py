@@ -17,12 +17,15 @@ from soma.benchmarks import (
 )
 from soma.cli import main
 from soma.config import (
-    CacheConfig,
-    EvalConfig,
+    CacheOptions,
+    CohortConfig,
+    EvaluationConfig,
+    ExperimentConfig,
     FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
+    LearnerConfig,
+    LoadersConfig,
+    RunConfig,
+    TrainerConfig,
 )
 from soma.curation.manifest import write_manifest
 from slide2vec import ExecutionOptions
@@ -112,28 +115,26 @@ class ByomSmokeBenchmark:
         seed=None,
         overrides=None,
     ):
-        return PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="tile",
+        return ExperimentConfig(
+            run=RunConfig(output_dir=output_root, seed=0 if seed is None else seed),
+            cohort=CohortConfig(records=dataset_csv, splits=splits_csv),
             features=FeaturesConfig(
                 encoder=encoder,
                 execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, batch_size=4),
-                cache=CacheConfig(**(overrides or {}).get("cache", {})),
+                cache=CacheOptions(**(overrides or {}).get("cache", {})),
             ),
-            task=TaskConfig(name="binary_classification"),
-            evaluation=EvalConfig(metrics=["accuracy"]),
-            training=TrainingConfig(
-                seed=0 if seed is None else seed,
-                epochs=1,
-                patience=1,
-                batch_size=2,
-                num_workers=0,
-                pin_memory=False,
-                persistent_workers=False,
+            loaders=LoadersConfig(batch_size=2),
+            learner=LearnerConfig(
+                "mil", {"head": "binary_classification", "scheduler": "cosine"}
             ),
-            tags=["byom-smoke"],
+            trainer=TrainerConfig(
+                max_epochs=1,
+                callbacks=[
+                    {"name": "checkpoint"},
+                    {"name": "early_stopping", "params": {"patience": 1}},
+                ],
+            ),
+            evaluation=EvaluationConfig(metrics=["accuracy"]),
         )
 
     def expected(self, **axes):

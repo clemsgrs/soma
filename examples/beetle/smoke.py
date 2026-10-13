@@ -20,7 +20,7 @@ from examples.beetle.launch import (
 from examples.beetle.protocol import ARM_NAMES, BATCH_SIZE_CANDIDATES, NUM_FOLDS
 from examples.beetle.report_oof import BeetleCohort, assemble_beetle_oof_report, write_tune_evidence
 from examples.beetle.select_arm import select_development_arm
-from soma.config import load_config
+from soma.config import Component, ExperimentConfig
 from soma.data import AnnotationManifest, LabelMapSource, build_label_remap
 from soma.dense.geometry import compute_dense_geometry
 from soma.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid
@@ -121,7 +121,7 @@ def run_offline_smoke(output_dir: str | Path) -> Path:
     evidence_by_arm: dict[str, list[Path]] = {}
     arm_artifacts: dict[str, dict[str, list[str]]] = {}
     for arm in ARM_NAMES:
-        production = load_config(resolved_paths[arm])
+        production = ExperimentConfig.from_yaml(resolved_paths[arm])
         # Pre-cropped cached grids: hs2p's binary tissue vocabulary (no ROI sampling) and
         # one whole-tile forward at the fixture's tile size.
         from hs2p import DEFAULT_MASK_SAMPLING
@@ -136,23 +136,35 @@ def run_offline_smoke(output_dir: str | Path) -> Path:
             ),
             dense=replace(features.dense, target_size=TARGET_SIZE, window_size=None, overlap=0.0),
         )
-        smoke_training = replace(
-            production.training,
-            epochs=1,
-            patience=1,
-            roi_draws_per_epoch=4,
+        sampler = production.loaders.sampler
+        smoke_loaders = replace(
+            production.loaders,
             num_workers=0,
             pin_memory=False,
             persistent_workers=False,
+            sampler=Component(sampler.name, {**sampler.params, "draws_per_epoch": 4}),
+        )
+        smoke_trainer = replace(
+            production.trainer,
+            max_epochs=1,
+            callbacks=[
+                Component(leaf.name, {**leaf.params, "patience": 1})
+                if leaf.name == "early_stopping"
+                else leaf
+                for leaf in production.trainer.callbacks
+            ],
         )
         config = replace(
             production,
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_dir / "runs" / arm,
-            mirror_root=output_dir / "mirror" / arm,
+            run=replace(
+                production.run,
+                output_dir=output_dir / "runs" / arm,
+                mirror_root=output_dir / "mirror" / arm,
+            ),
+            cohort=replace(production.cohort, records=dataset_csv, splits=splits_csv),
             features=smoke_features,
-            training=smoke_training,
+            loaders=smoke_loaders,
+            trainer=smoke_trainer,
         )
         # This project smoke is a CPU-only contract even when invoked on a GPU node.
         # Cached grids need no encoder device, and masking availability before Pipeline
@@ -160,12 +172,13 @@ def run_offline_smoke(output_dir: str | Path) -> Path:
         with patch.object(torch.cuda, "is_available", return_value=False):
             result = Pipeline(config, source=CachedGridSource(feature_dir)).run()
         run_dir = result.run_dir
-        mirrored_run = config.mirror_root / run_dir.relative_to(config.output_root)
+        mirrored_run = Path(config.run.mirror_root) / run_dir.relative_to(config.run.output_dir)
         targets = LabelMapSource.from_manifests(
             AnnotationManifest.from_csv(dataset_csv),
             size=(TARGET_SIZE, TARGET_SIZE),
             label_remap=build_label_remap(
-                production.task.params["classes"], ignore=production.task.params["ignore"]
+                production.learner.params["head"].params["classes"],
+                ignore=production.learner.params["head"].params["ignore"],
             ),
         )
         evidence = write_tune_evidence(run_dir, num_folds=NUM_FOLDS, targets=targets)

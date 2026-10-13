@@ -24,16 +24,9 @@ import pytest
 
 import slide2vec
 
-from soma.config import (
-    CacheConfig,
-    DecoderConfig,
-    EvalConfig,
-    FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
-)
+from soma.config import CacheOptions, Component, FeaturesConfig
 from tests.extraction_configs import annotation_masks, extraction
+from tests.experiment_configs import experiment
 
 NUM_CLASSES = 2
 # A patch-16 encoder that accepts a variable encoder input, so the tiny 32 px fixtures
@@ -47,6 +40,9 @@ FEATURE_DIM = 4
 PIXEL_MAPPING = {"background": 0, "tumor": 1}
 #: hs2p's MaskSamplingConfig holds every label's raw values as a tuple.
 HELD_PIXEL_MAPPING = {"background": (0,), "tumor": (1,)}
+# Re-recorded on main after annotation sampling defaulted an unset filter to a_t=0.
+#: The ROI sampling key and the dense grid key(s) of the end-to-end run (pinned in slice 6c).
+PINNED_ROI_CACHE_KEYS = ("289c9fd9da4118af", ["84972292be8cc6dc"])
 
 
 def _roi_extraction(*, min_cov: float = 0.0, **tiling_fields) -> slide2vec.PreprocessingConfig:
@@ -267,27 +263,21 @@ def _config(
     min_cov: float = 0.0,
     kind: str = "cached",
     spacing_policy: str = "strict",
-    cache: CacheConfig | None = None,
+    cache: CacheOptions | None = None,
     **tiling_fields,
 ):
-    return PipelineConfig(
-        dataset_csv=manifest,
-        splits_csv=splits,
-        output_root=root / "out",
-        dataset_type="segmentation",
-        features=FeaturesConfig(
-            kind=kind,
-            encoder=ENCODER,
-            extraction=_roi_extraction(min_cov=min_cov, **tiling_fields),
-            spacing_policy=spacing_policy,
-            cache=cache if cache is not None else CacheConfig(),
-        ),
-        decoder=DecoderConfig(name="lightweight_conv"),
-        task=TaskConfig(
-            name="segmentation", params={"classes": {"background": [0], "tumor": [1]}}
-        ),
-        training=TrainingConfig(epochs=1, batch_size=2),
-        evaluation=EvalConfig(metrics=["mean_dice", "mean_iou"]),
+    return experiment(
+        manifest,
+        splits,
+        output_dir=root / 'out',
+        features=FeaturesConfig(kind=kind, encoder=ENCODER, extraction=_roi_extraction(min_cov=min_cov, **tiling_fields), spacing_policy=spacing_policy, cache=cache if cache is not None else CacheOptions()),
+        decoder="lightweight_conv",
+        head="segmentation",
+        head_params={"classes": {"background": [0], "tumor": [1]}},
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1},
+        evaluation={"metrics": ["mean_dice", "mean_iou"]},
+        scheduler="cosine",
     )
 
 
@@ -309,7 +299,10 @@ def test_the_slide_manifest_mode_is_inferred_from_the_cohorts_label_mask_path_co
     pre_cropped = replace(
         annotated,
         features=replace(annotated.features, extraction=extraction(0.5, TARGET)),
-        task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+        learner=replace(
+            annotated.learner,
+            params={**annotated.learner.params, "head": Component("segmentation", {"num_classes": 2})},
+        ),
     )
 
     assert extraction_unit(annotated) == "slide"
@@ -317,7 +310,7 @@ def test_the_slide_manifest_mode_is_inferred_from_the_cohorts_label_mask_path_co
 
     points_only = tmp_path / "points.csv"
     points_only.write_text("sample_id,image_path,points_path\ns0,/fake/s0.tif,/fake/s0.csv\n")
-    assert extraction_unit(replace(annotated, dataset_csv=points_only)) == "tile"
+    assert extraction_unit(replace(annotated, cohort=replace(annotated.cohort, records=points_only))) == "tile"
 
 
 # --------------------------------------------------------------------------- #
@@ -379,6 +372,10 @@ def test_slide_manifest_runs_end_to_end(tmp_path: Path, monkeypatch):
 
     # One raw-value crop per ROI under the ROI sampling entry, addressed by the dataset.
     (sampling_entry,) = (tmp_path / "out").rglob("roi_sampling/*")
+    # The ROI sampling and dense grid keys derive from the features config alone; a
+    # config-layout change must not move them (pinned in slice 6c).
+    dense_entries = sorted(path.name for path in (tmp_path / "out").rglob("dense/*") if path.is_dir())
+    assert (sampling_entry.name, dense_entries) == PINNED_ROI_CACHE_KEYS
     from PIL import Image
 
     for row in roi_df.itertuples():
@@ -891,7 +888,7 @@ def _launch(
     """Drive the context builder as one launch (a fresh Pipeline, its own run dir)."""
     from soma.pipeline import Pipeline
 
-    cfg = _config(tmp_path, manifest, splits, cache=CacheConfig(enabled=cache_enabled))
+    cfg = _config(tmp_path, manifest, splits, cache=CacheOptions(enabled=cache_enabled))
     return _attach(Pipeline(cfg), tmp_path / "out" / run_name)
 
 
@@ -900,7 +897,7 @@ def _attach(pipeline, run_dir: Path):
     from soma.pipeline.build import attach_source
 
     return attach_source(
-        pipeline.config,
+        pipeline.plan,
         source=pipeline.source,
         dataset=pipeline.dataset,
         splits=pipeline.splits,
@@ -1130,7 +1127,7 @@ def test_slide_manifest_resume_encodes_only_missing(tmp_path: Path, monkeypatch)
             ENCODER,
             preprocessing=_roi_extraction(),
             execution=slide2vec.ExecutionOptions(batch_size=2),
-            cache=CacheConfig(enabled=True),
+            cache=CacheOptions(enabled=True),
             output_root=tmp_path / "extraction",
             shape="grid",
         )

@@ -41,12 +41,12 @@ Rung 4 of the decoder ladder (#235, the multi-FM ensemble) swaps the base recipe
 committed composite recipe via ``--config``. The cell's encoder label is the composite's
 member names joined by ``+`` (its cell dir, its ``--encoders`` name when scoring). Members
 resolve to the per-encoder dense caches the ranking sweep already extracted, so point
-``cache.root_dir`` at that sweep's cache and give the ablation its own ``--out-root``::
+``features.cache.root_dir`` at that sweep's cache and give the ablation its own ``--out-root``::
 
     python examples/detection_benchmark/campaign.py rank --data-root data \
         --config examples/detection_benchmark/ensemble_top2_midog.yaml --datasets midog \
         --out-root output/detection_benchmark/ensemble \
-        --set cache.root_dir=output/detection_benchmark/midog/feature_cache
+        --set features.cache.root_dir=output/detection_benchmark/midog/feature_cache
 
 Phase 3 — the annotation-efficiency ladder (#237) — reuses the sweep's dense caches and its
 full-data cells (never retrained) and trains one cell per ``(dataset, encoder, rung, seed)``
@@ -130,8 +130,8 @@ def cell_dir(out_root: str | Path, dataset: str, encoder: str, replicate: int) -
 def feature_cache_dir(out_root: str | Path, dataset: str) -> Path:
     """The dense-grid cache shared by every ``(encoder, replicate)`` cell of a dataset.
 
-    ``CacheConfig.root_dir`` defaults to ``None`` ⇒ ``<run.output_root>/feature_cache``, and
-    ``run.output_root`` is per-replicate — so without this the identical grids would be
+    ``features.cache.root_dir`` defaults to ``None`` ⇒ ``<run.output_dir>/feature_cache``, and
+    ``run.output_dir`` is per-replicate — so without this the identical grids would be
     re-extracted and re-stored once per seed (3x the disk, 3x the extraction). The dense key
     (``build_dense_cache_key``) folds in encoder / geometry / preprocessing / dtype but *not*
     the seed or the output root, so one root per dataset is exactly right: replicates of an
@@ -147,7 +147,7 @@ def training_done(
 
     Two traps here, both of which the old ``best_model.pt``-at-``cell_dir`` probe fell into:
 
-    * **Layout.** soma does not drop artifacts at ``run.output_root``; it writes the run under
+    * **Layout.** soma does not drop artifacts at ``run.output_dir``; it writes the run under
       ``<output_root>/experiments/<experiment_key>/runs/<timestamp>/``. Probing the direct path
       meant the guard never fired, so phase 2 retrained every replicate-0 cell phase 1 had
       already trained (~2h x one per encoder).
@@ -382,8 +382,8 @@ def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
 
 def _data_overrides(data_root: Path, dataset: str) -> list[str]:
     return [
-        "--set", f"data.dataset_csv={dataset_csv_for(data_root, dataset)}",
-        "--set", f"data.splits_csv={splits_csv_for(data_root, dataset)}",
+        "--set", f"cohort.records={dataset_csv_for(data_root, dataset)}",
+        "--set", f"cohort.splits={splits_csv_for(data_root, dataset)}",
     ]
 
 
@@ -403,22 +403,22 @@ def train_cell(
     The replicate maps onto ``run.seed`` for the seeds axis and onto ``run.folds=[k]`` for the
     folds axis, so a fold cell trains that one fold under ``<run>/fold_<k>/``. The
     committed config's encoder is swapped for the roster encoder — unless ``config_path``
-    names a composite (rung 4) recipe, whose ``composite:`` block *is* the encoder and
+    names a composite (rung 4) recipe, whose ``composite`` encoder *is* the encoder and
     whose ``encoder`` is then the composite label (the cell-dir name).
     """
     cmd = [sys.executable, "-m", "soma", str(config_path or _config_path(dataset))]
     cmd += _data_overrides(data_root, dataset)
     if config_path is None:
-        cmd += ["--set", f"encoder.name={encoder}"]
+        cmd += ["--set", f"features.encoder.name={encoder}"]
     if decoder:
-        cmd += ["--set", f"decoder.name={decoder}"]
+        cmd += ["--set", f"learner.params.decoder.name={decoder}"]
     for override in extra_sets:
         cmd += ["--set", override]
-    cmd += ["--set", f"run.output_root={cell_dir(out_root, dataset, encoder, replicate)}"]
+    cmd += ["--set", f"run.output_dir={cell_dir(out_root, dataset, encoder, replicate)}"]
     # Point every cell at the dataset-wide grid cache, else each replicate builds its own
     # private copy under its run dir. score_cell reloads the run's persisted config, so it
     # inherits this root too and reads the same grids it trained on.
-    cmd += ["--set", f"cache.root_dir={feature_cache_dir(out_root, dataset)}"]
+    cmd += ["--set", f"features.cache.root_dir={feature_cache_dir(out_root, dataset)}"]
     if axis == "seeds":
         cmd += ["--set", f"run.seed={replicate}"]
     else:
@@ -638,20 +638,23 @@ def _sweep_thresholds_on_rois(tune, targets, manifest, frame, *, tile_px: int) -
 
 
 def _point_frame(cfg, spec, predictions):
-    """The run's point frame for scoring: class count, matcher, radii and spacings.
+    """The run's point frame for scoring: class count, matcher, radii, spacings, tile size.
 
-    Radii are the run's own µm distances at its frame spacing (``delta_px`` /
-    ``nms_distance_px`` in frame pixels, as the stitch expects); the level-0 spacing
-    follows from the predictions' level-0 tolerance (``match_distance_px``).
+    Radii are the detection head's µm distances at the run's dense read spacing
+    (``delta_px`` / ``nms_distance_px`` in frame pixels, as the stitch expects); the
+    level-0 spacing follows from the predictions' level-0 tolerance
+    (``match_distance_px``); ``tile_px`` is the run's supervision tile size.
     """
     from types import SimpleNamespace
 
     from soma.dense import DenseSampleSpacing
+    from soma.preprocessing.resolution import resolve_pipeline_dense
 
-    params = dict(cfg.task.params)
+    params = dict(cfg.learner.params["head"].params)
     match_um = float(params["match_distance"])
-    tiling = cfg.features.extraction.tiling
-    effective = float((tiling.requested_spacing_um if tiling is not None else None) or spec.spacing_um)
+    nms_um = params.get("nms_distance")  # None (a resolved plan's default) means δ, as in DetectionHead
+    dense = resolve_pipeline_dense(cfg)
+    effective = float(dense.spacing_um)
     spacing = DenseSampleSpacing(
         source_spacing_um=match_um / float(predictions.match_distance_px),
         effective_spacing_um=effective,
@@ -659,10 +662,11 @@ def _point_frame(cfg, spec, predictions):
     return SimpleNamespace(
         num_classes=predictions.num_classes,
         delta_px=match_um / effective,
-        nms_distance_px=float(params.get("nms_distance", match_um)) / effective,
+        nms_distance_px=(match_um if nms_um is None else float(nms_um)) / effective,
         matching=spec.match_method,
         spacing=spacing,
         spacing_for_sample=lambda sid: spacing,
+        tile_px=int(dense.target_size),
     )
 
 
@@ -683,21 +687,21 @@ def _decode_cell_points(
     from soma.benchmarks.detection_benchmark import CellPredictions, dataset_spec
     from soma.benchmarks.ocelot import _locate_run_config
     from soma.class_scheme import resolve_classes
-    from soma.config import load_config
+    from soma.config import ExperimentConfig
     from soma.data import AnnotationManifest, PointSource
     from soma.data._legacy import legacy_samples_from_csv
     from soma.evaluation import PointPredictions, sweep_threshold
 
     spec = dataset_spec(dataset)
     config_path = _locate_run_config(run_dir)
-    cfg = load_config(str(config_path))
+    cfg = ExperimentConfig.from_yaml(config_path)
     folder = config_path.parent if fold_index is None else config_path.parent / f"fold_{fold_index}"
-    manifest = legacy_samples_from_csv(cfg.dataset_csv)
+    manifest = legacy_samples_from_csv(cfg.cohort.records)
     _, _, class_remap, dropped = resolve_classes(
-        cfg.task.params, excluded_key="drop", subject="detection"
+        cfg.learner.params["head"].params, excluded_key="drop", subject="detection"
     )
     targets = PointSource.from_manifest(
-        AnnotationManifest.from_csv(cfg.dataset_csv), class_remap=class_remap, drop=dropped
+        AnnotationManifest.from_csv(cfg.cohort.records), class_remap=class_remap, drop=dropped
     )
     tune = PointPredictions.from_parquet(folder / "predictions_tune.parquet")
     tests = [
@@ -706,7 +710,7 @@ def _decode_cell_points(
         if path.name != "predictions_tune.parquet"
     ]
     frame = _point_frame(cfg, spec, tune)
-    tile_px = int(cfg.features.extraction.tiling.requested_tile_size_px)
+    tile_px = frame.tile_px
     if spec.stitch_to_roi:
         score_thresholds = _sweep_thresholds_on_rois(tune, targets, manifest, frame, tile_px=tile_px)
     else:
@@ -765,11 +769,25 @@ def link_feature_cache(rung_root: Path, dataset: str, cache_dir: Path) -> Path:
 
 def base_recipe(dataset: str, config_path: Path | None = None) -> dict[str, int | None]:
     """``{"epochs", "patience"}`` of the committed recipe (what the rungs scale)."""
-    import yaml
+    from soma.config import ExperimentConfig
 
-    raw = yaml.safe_load((config_path or _config_path(dataset)).read_text(encoding="utf-8"))
-    training = raw.get("training", {})
-    return {"epochs": int(training.get("epochs", 1)), "patience": training.get("patience")}
+    trainer = ExperimentConfig.from_yaml(config_path or _config_path(dataset)).trainer
+    stopping = next((leaf for leaf in trainer.callbacks if leaf.name == "early_stopping"), None)
+    patience = None if stopping is None else stopping.params.get("patience", 10)
+    return {"epochs": int(trainer.max_epochs or 1), "patience": patience}
+
+
+def callbacks_with_patience(dataset: str, patience: int, config_path: Path | None = None) -> str:
+    """A ``trainer.callbacks=...`` override: the committed recipe's callbacks with the early
+    stop's ``patience`` replaced (a list cannot be overridden one item at a time)."""
+    from soma.config import ExperimentConfig
+
+    trainer = ExperimentConfig.from_yaml(config_path or _config_path(dataset)).trainer
+    leaves = [
+        {"name": leaf.name, "params": {**leaf.params, "patience": patience} if leaf.name == "early_stopping" else dict(leaf.params)}
+        for leaf in trainer.callbacks
+    ]
+    return f"trainer.callbacks={json.dumps(leaves)}"
 
 
 def realized_epochs(cell_directory: Path, fold: int | None = None) -> int | None:
@@ -975,13 +993,13 @@ def run_efficiency(
                     continue
                 if not training_done(rung_root, dataset, entry.name, seed):
                     sets = [
-                        f"data.dataset_csv={variant.dataset_path}",
-                        f"data.splits_csv={variant.path}",
-                        f"training.epochs={scaled['epochs']}",
-                        f"training.tune_every_n_epochs={scaled['tune_every']}",
+                        f"cohort.records={variant.dataset_path}",
+                        f"cohort.splits={variant.path}",
+                        f"trainer.max_epochs={scaled['epochs']}",
+                        f"trainer.val_every_n_epochs={scaled['tune_every']}",
                     ]
                     if "patience" in scaled:
-                        sets.append(f"training.patience={scaled['patience']}")
+                        sets.append(callbacks_with_patience(dataset, scaled["patience"]))
                     train_cell(
                         entry.name, dataset, seed, "seeds", data_root, rung_root,
                         extra_sets=[*sets, *extra_sets],
@@ -1008,7 +1026,7 @@ def _composite_roster(args) -> tuple[RosterEntry, ...]:
     ablation"): it must never share ``--out-root`` with the headline sweep, where the
     roster-driven aggregation would otherwise pick it up as just another encoder.
     """
-    from soma.config import load_config
+    from soma.config import ExperimentConfig
 
     if args.phase == "score":
         raise SystemExit("--config is for extract/rank; score reloads the cell's persisted config")
@@ -1021,9 +1039,9 @@ def _composite_roster(args) -> tuple[RosterEntry, ...]:
             "--config cells are an ablation: pair them with their own --out-root "
             "(not the headline sweep's)"
         )
-    cfg = load_config(str(args.config))
+    cfg = ExperimentConfig.from_yaml(args.config)
     if not cfg.features.is_composite:
-        raise SystemExit(f"{args.config} has no composite: block; --config is for rung-4 recipes")
+        raise SystemExit(f"{args.config} has no composite encoder; --config is for rung-4 recipes")
     return (RosterEntry(_encoder_label(cfg)),)
 
 
@@ -1061,7 +1079,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--set", dest="extra_sets", action="append", default=[],
                     metavar="KEY=VALUE",
                     help="extra soma config override forwarded verbatim to every train "
-                         "command (repeatable), e.g. decoder.params.num_upsample_blocks=2. "
+                         "command (repeatable), e.g. learner.params.decoder.params.num_upsample_blocks=2. "
                          "Scoring inherits them from the run's persisted config.")
     ap.add_argument("--config", type=Path, default=None,
                     help="extract/rank only: a committed composite (rung-4 ensemble) recipe, "

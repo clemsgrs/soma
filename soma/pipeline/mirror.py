@@ -15,7 +15,10 @@ from typing import Any
 
 import yaml
 
-from soma.config import PipelineConfig, config_yaml_dict, without_machine_resolved_fields
+from soma.plan import Plan, comparable
+
+#: The run-level records every fold bundle carries: the config as given and its plan.
+_RUN_RECORDS = ("config.yaml", "plan.yaml")
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +89,8 @@ def _verified_manifest(
 
 
 def _resume_recipe(payload: dict[str, Any]) -> dict[str, Any]:
-    normalized = without_machine_resolved_fields(json.loads(json.dumps(payload)))
-    run = normalized.get("run")
-    if isinstance(run, dict):
-        run.pop("mirror_root", None)
-        run.pop("resume", None)
-        run.pop("run_id", None)
-    return normalized
+    """A plan's dict form as a resume compares it (:meth:`~soma.plan.Plan.comparable`)."""
+    return comparable(json.loads(json.dumps(payload)))
 
 
 def _published_fold_bundles(run_dir: Path) -> list[Path]:
@@ -110,7 +108,7 @@ def _published_fold_bundles(run_dir: Path) -> list[Path]:
 
 
 def _compatible_fold_bundle(
-    bundle: Path, config: PipelineConfig
+    bundle: Path, plan: Plan
 ) -> tuple[dict[str, Any], Path] | None:
     manifest = _verified_manifest(bundle, raise_io_errors=True)
     if manifest is None or manifest.get("kind") != "fold":
@@ -120,24 +118,24 @@ def _compatible_fold_bundle(
         return None
     try:
         saved = (
-            yaml.safe_load((bundle / "config.yaml").read_text(encoding="utf-8")) or {}
+            yaml.safe_load((bundle / "plan.yaml").read_text(encoding="utf-8")) or {}
         )
     except OSError:
         raise
     except (ValueError, yaml.YAMLError):
         return None
-    if _resume_recipe(saved) != _resume_recipe(config_yaml_dict(config)):
+    if _resume_recipe(saved) != _resume_recipe(yaml.safe_load(plan.to_yaml())):
         return None
     return manifest, bundle
 
 
 def _compatible_fold_bundles(
-    run_dir: Path, config: PipelineConfig
+    run_dir: Path, plan: Plan
 ) -> list[tuple[dict[str, Any], Path]]:
     return [
         compatible
         for bundle in _published_fold_bundles(run_dir)
-        if (compatible := _compatible_fold_bundle(bundle, config)) is not None
+        if (compatible := _compatible_fold_bundle(bundle, plan)) is not None
     ]
 
 
@@ -148,8 +146,9 @@ def _fold_sources(fold_dir: Path, run_dir: Path) -> list[tuple[str, Path]]:
         if relative.parts and relative.parts[0] == "recovery":
             continue
         sources.append((relative.as_posix(), source))
-    if not any(relative == "config.yaml" for relative, _ in sources):
-        sources.append(("config.yaml", run_dir / "config.yaml"))
+    for record in _RUN_RECORDS:
+        if not any(relative == record for relative, _ in sources):
+            sources.append((record, run_dir / record))
     return sources
 
 
@@ -239,7 +238,7 @@ def _materialize_fold(source: Path, run_dir: Path, *, num_folds: int) -> None:
     )
     try:
         for relative, expected in sorted(manifest["files"].items()):
-            if relative == "config.yaml" and num_folds > 1:
+            if relative in _RUN_RECORDS and num_folds > 1:
                 continue
             _atomic_copy_verified_file(source / relative, staging / relative, expected)
         if not (staging / "metrics.json").is_file():
@@ -249,47 +248,45 @@ def _materialize_fold(source: Path, run_dir: Path, *, num_folds: int) -> None:
         if staging.exists():
             shutil.rmtree(staging, ignore_errors=True)
     if num_folds > 1:
-        config_target = run_dir / "config.yaml"
-        if not config_target.is_file():
-            _atomic_copy_verified_file(
-                source / "config.yaml",
-                config_target,
-                manifest["files"]["config.yaml"],
-            )
+        for record in _RUN_RECORDS:
+            target_record = run_dir / record
+            if not target_record.is_file():
+                _atomic_copy_verified_file(source / record, target_record, manifest["files"][record])
 
 
-def restore_run_from_mirror(config: PipelineConfig, *, num_folds: int) -> str | None:
+def restore_run_from_mirror(plan: Plan, *, num_folds: int) -> str | None:
     """Restore verified completed folds before local resume resolution."""
-    if config.mirror_root is None or not (config.resume or config.run_id):
+    run = plan.run
+    if run.mirror_root is None or not (run.resume or run.run_id):
         return None
 
     from soma.pipeline.layout import build_experiment_spec, latest_existing_run_id
 
-    experiment = build_experiment_spec(config)
+    experiment = build_experiment_spec(plan)
     local_experiment_dir = (
-        Path(config.output_root).resolve()
+        Path(run.output_dir).resolve()
         / "experiments"
         / experiment.experiment_dirname
     )
     local_runs_dir = local_experiment_dir / "runs"
     existing_local_run_id = latest_existing_run_id(local_experiment_dir)
-    if config.run_id is None and existing_local_run_id is not None:
+    if run.run_id is None and existing_local_run_id is not None:
         return None
     pinned_local_run = (
-        local_runs_dir / config.run_id if config.run_id is not None else None
+        local_runs_dir / run.run_id if run.run_id is not None else None
     )
     if pinned_local_run is not None and pinned_local_run.is_dir():
         return None
 
     mirror_runs_dir = (
-        Path(config.mirror_root).resolve()
+        Path(run.mirror_root).resolve()
         / "experiments"
         / experiment.experiment_dirname
         / "runs"
     )
     try:
-        if config.run_id is not None:
-            candidate_paths = [mirror_runs_dir / config.run_id]
+        if run.run_id is not None:
+            candidate_paths = [mirror_runs_dir / run.run_id]
         elif mirror_runs_dir.is_dir():
             candidate_paths = sorted(mirror_runs_dir.iterdir())
         else:
@@ -300,16 +297,16 @@ def restore_run_from_mirror(config: PipelineConfig, *, num_folds: int) -> str | 
         for candidate in candidate_paths:
             if not candidate.is_dir():
                 continue
-            fold_bundles = _compatible_fold_bundles(candidate, config)
+            fold_bundles = _compatible_fold_bundles(candidate, plan)
             if fold_bundles:
                 candidates.append((candidate, fold_bundles))
-        if config.run_id is None and len(candidates) > 1:
+        if run.run_id is None and len(candidates) > 1:
             raise ValueError(
                 "resume=True found multiple compatible mirrored runs; set "
                 "run.run_id to choose one explicitly."
             )
         if not candidates:
-            if config.resume:
+            if run.resume:
                 raise FileNotFoundError(
                     "no compatible verified mirror run exists and no local run is "
                     "available to resume"

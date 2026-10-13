@@ -9,7 +9,7 @@ import pytest
 import torch
 
 from soma import cache as cache_mod
-from soma.config import CacheConfig, EncoderLeaf
+from soma.config import CacheOptions, EncoderLeaf
 from soma.encoders.validation import resolve_preprocessing_config
 from tests.extraction_configs import extraction
 from soma.data._legacy import legacy_samples_from_csv
@@ -79,7 +79,7 @@ def population(tmp_path, request):
         dataset,
         EncoderLeaf(name=_TEST_TILE),
         preprocessing,
-        cache=CacheConfig(root_dir=tmp_path / "cache"),
+        cache=CacheOptions(root_dir=tmp_path / "cache"),
         output_root=tmp_path / "out",
     )
 

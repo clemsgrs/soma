@@ -1,33 +1,36 @@
 run:
-  output_root: runs/tile_classifier
+  output_dir: runs/tile_classifier
   seed: 0
-  tags: []
 
-data:
-  dataset_csv: data/dataset.csv
-  splits_csv: data/splits.csv
-  dataset_type: tile
+cohort:
+  records: data/dataset.csv
+  splits: data/splits.csv
 
-preprocessing: {}
+# One row is one tile image: a tile encoder without an aggregator embeds each image
+# whole, so there is no tiling and no bag.
+features:
+  encoder:
+    name: uni2
 
-cache:
-  enabled: true
+learner:
+  name: mil
+  params:
+    head:
+      name: binary_classification
+    optimizer:
+      name: adam
+      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+    scheduler: cosine
 
-encoder:
-  name: uni2
-
-aggregation: null
-
-task:
-  name: binary_classification
+trainer:
+  max_epochs: 30
+  callbacks:
+    - name: checkpoint
+    - name: early_stopping
+      params: {patience: 5}
 
 evaluation:
   metrics:
     - auroc
     - balanced_accuracy
     - f1
-
-training:
-  epochs: 30
-  learning_rate: 1.0e-4
-  patience: 5

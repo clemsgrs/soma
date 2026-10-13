@@ -246,7 +246,7 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     encoder the run actually used — otherwise empty axes fall back to the benchmark
     default and a ``uni`` run is silently compared against the ``uni2`` reference. Reads the
     tolerant ``canonical_spec`` (the same source the leaderboard projects), so it still
-    resolves on runs whose full config no longer round-trips through ``load_config``.
+    resolves on runs whose full config no longer loads with the installed soma.
     Unresolved axes are skipped; a missing/unrankable run dir yields ``{}``.
     """
     from soma.leaderboard import _MISSING, axis_value, load_run_record

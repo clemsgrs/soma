@@ -17,15 +17,10 @@ from rich.console import Console
 
 import slide2vec
 
-from soma.config import (
-    AggregatorConfig,
-    CacheConfig,
-    EvalConfig,
-    FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
-)
+from soma import ExperimentConfig, Plan, resolve
+from soma.config import CacheOptions, FeaturesConfig
+from soma.plan import load_cohort
+from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
 from soma.data._legacy import legacy_samples_from_csv, legacy_folds_from_csv
 from soma.evaluation import Predictions
@@ -49,9 +44,13 @@ NUM_SAMPLES = 8
 FIXED_RUN_ID = "2026-04-09_16-22-10__local"
 
 
-def _expected_run_dir(config: PipelineConfig) -> Path:
-    experiment = build_experiment_spec(config)
-    return Path(config.output_root) / "experiments" / experiment.experiment_dirname / "runs" / FIXED_RUN_ID
+def _plan(config: ExperimentConfig) -> Plan:
+    return resolve(config, load_cohort(config))
+
+
+def _expected_run_dir(config: ExperimentConfig) -> Path:
+    spec = build_experiment_spec(_plan(config))
+    return Path(config.run.output_dir) / "experiments" / spec.experiment_dirname / "runs" / FIXED_RUN_ID
 
 
 def _setup_synthetic_data(tmp_path: Path) -> tuple[Path, Path, Path]:
@@ -221,17 +220,15 @@ class TestCompletedRunPanel:
 class TestPipeline:
     def test_pooled_mask_config_can_read_preextracted_features(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "output",
-            dataset_type="slide",
-            features=FeaturesConfig(
-                extraction=extraction(None, None, masks=annotation_masks({"tumor": 1}, {"tumor": 0.5}))
-            ),
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'output',
+            features=FeaturesConfig(extraction=extraction(None, None, masks=annotation_masks({'tumor': 1}, {'tumor': 0.5}))),
+            aggregator='mean_pool',
+            loaders={"batch_size": 2, "pin_memory": False},
+            trainer={"max_epochs": 1},
+            scheduler='cosine',
         )
         source = CachedSetSource(feature_dir)
 
@@ -246,14 +243,14 @@ class TestPipeline:
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         output_root = tmp_path / "output"
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         pipeline = Pipeline(config, source=CachedSetSource(feature_dir))
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -263,6 +260,40 @@ class TestPipeline:
         assert len(result.fold_results) == 1
         assert result.run_dir == _expected_run_dir(config)
 
+    @pytest.mark.parametrize("callbacks", [[], [{"name": "early_stopping"}]])
+    def test_run_installs_only_the_planned_selection_callbacks(
+        self, tmp_path: Path, monkeypatch, callbacks
+    ):
+        """The plan's callbacks are the whole policy: a run without ``checkpoint`` keeps
+        its final weights instead of an implicit best-loss selection."""
+        from soma.learn import Checkpoint, EarlyStopping
+        from soma.learn.trainer import Trainer
+
+        installed: list[type] = []
+        fit = Trainer.fit
+
+        def spying(self, *args, **kwargs):
+            installed.extend(type(callback) for callback in self.callbacks)
+            return fit(self, *args, **kwargs)
+
+        monkeypatch.setattr(Trainer, "fit", spying)
+        dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / "output",
+            aggregator="mean_pool",
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 3, "callbacks": callbacks},
+        )
+        result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
+
+        assert Checkpoint not in installed
+        assert (EarlyStopping in installed) == bool(callbacks)
+        fit_result = result.fold_results[0].train_result
+        assert fit_result.selected_epoch == 2  # the final epoch
+        assert fit_result.checkpoint_path is None
+
     def test_run_trains_on_a_supplied_in_memory_source(self, tmp_path: Path):
         """A supplied source without a feature manifest (``from_arrays``) trains and
         scores like a cache: every listed sample must simply have features."""
@@ -270,14 +301,14 @@ class TestPipeline:
 
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         features = {path.stem: torch.load(path) for path in sorted(feature_dir.glob("*.pt"))}
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "output",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'output',
+            aggregator='mean_pool',
+            loaders={"batch_size": 2, "pin_memory": False},
+            trainer={"max_epochs": 1},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=from_arrays(features)).run()
@@ -293,25 +324,25 @@ class TestPipeline:
         import yaml
 
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "output",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'output',
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
 
         run_dir = _expected_run_dir(config)
-        experiment = json.loads(
+        recorded = json.loads(
             (run_dir.parents[1] / "experiment.json").read_text(encoding="utf-8")
         )
         run = yaml.safe_load((run_dir / "run.yaml").read_text(encoding="utf-8"))
-        assert result.dataset_checksum == experiment["dataset_checksum"] != ""
-        assert result.splits_checksum == experiment["splits_checksum"] != ""
+        assert result.dataset_checksum == recorded["dataset_checksum"] != ""
+        assert result.splits_checksum == recorded["splits_checksum"] != ""
         assert result.test_checksum == run["test_checksum"] != ""
 
     def test_run_ignores_samples_without_features(self, tmp_path: Path):
@@ -332,14 +363,14 @@ class TestPipeline:
         )
         output_root = tmp_path / "output"
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -353,14 +384,14 @@ class TestPipeline:
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         output_root = tmp_path / "output"
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -371,14 +402,14 @@ class TestPipeline:
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
         output_root = tmp_path / "output"
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -422,16 +453,16 @@ class TestPipeline:
 
         output_root = tmp_path / "output"
 
-        def _config(test_sample: str, **eval_kwargs) -> PipelineConfig:
-            return PipelineConfig(
-                dataset_csv=dataset_csv,
-                splits_csv=_splits(test_sample),
-                output_root=output_root,
-                dataset_type="slide",
-                aggregator=AggregatorConfig(name="mean_pool"),
-                task=TaskConfig(name="binary_classification"),
-                evaluation=EvalConfig(**eval_kwargs),
-                training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        def _config(test_sample: str, **eval_kwargs) -> ExperimentConfig:
+            return experiment(
+                dataset_csv,
+                _splits(test_sample),
+                output_dir=output_root,
+                aggregator='mean_pool',
+                loaders={"batch_size": 2},
+                trainer={"max_epochs": 2},
+                evaluation=eval_kwargs,
+                scheduler='cosine',
             )
 
         config_a = _config("sA")
@@ -439,8 +470,8 @@ class TestPipeline:
 
         # Same train/tune, different test set → identical experiment id (checkpoint reuse).
         assert (
-            build_experiment_spec(config_a).experiment_id
-            == build_experiment_spec(config_b).experiment_id
+            build_experiment_spec(_plan(config_a)).experiment_id
+            == build_experiment_spec(_plan(config_b)).experiment_id
         )
 
         run_a = "2026-04-09_16-22-10__local"
@@ -454,8 +485,8 @@ class TestPipeline:
         assert result_a.run_dir.parent == result_b.run_dir.parent
         reg_a = read_test_results(result_a.run_dir)
         reg_b = read_test_results(result_b.run_dir)
-        assert list(reg_a) == [compute_test_digest(config_a)]
-        assert list(reg_b) == [compute_test_digest(config_b)]
+        assert list(reg_a) == [compute_test_digest(_plan(config_a))]
+        assert list(reg_b) == [compute_test_digest(_plan(config_b))]
         assert set(reg_a) != set(reg_b)  # distinct test sets coexist
         assert "test" in result_a.fold_results[0].test_evaluations
 
@@ -491,14 +522,14 @@ class TestPipeline:
         )
         output_root = tmp_path / "output"
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -513,14 +544,14 @@ class TestPipeline:
         dataset_csv, splits_csv, feature_dir = _setup_multifold_data(tmp_path)
         output_root = tmp_path / "output"
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -545,14 +576,13 @@ class TestPipeline:
             torch.save(torch.randn(D), slide_feature_dir / f"s{i}.pt")
 
         output_root = tmp_path / "output_slide"
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            aggregator=None,
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(slide_feature_dir)).run()
@@ -572,14 +602,13 @@ class TestPipeline:
             torch.save(torch.randn(D), slide_feature_dir / f"s{i}.pt")
 
         output_root = tmp_path / "output_slide_omitted"
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            aggregator=None,
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(slide_feature_dir)).run()
@@ -592,26 +621,15 @@ class TestPipeline:
         dataset_csv, splits_csv, feature_dir = _setup_hierarchical_data(tmp_path)
         output_root = tmp_path / "output_hier"
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            features=FeaturesConfig(
-                encoder="uni2",
-                extraction=extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2),
-            ),
-            aggregator=AggregatorConfig(
-                name="hipt",
-                params={
-                    "embed_dim_region": 12,
-                    "embed_dim_slide": 12,
-                    "num_heads": 2,
-                    "dropout": 0.0,
-                },
-            ),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            features=FeaturesConfig(encoder='uni2', extraction=extraction(0.5, 224, requested_region_size_px=448, region_tile_multiple=2)),
+            aggregator={"name": 'hipt', "params": {'embed_dim_region': 12, 'embed_dim_slide': 12, 'num_heads': 2, 'dropout': 0.0}},
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -624,15 +642,15 @@ class TestPipeline:
 
     def test_resolve_preprocessing_populates_hipt_geometry(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "output_resolve",
-            dataset_type="slide",
-            features=FeaturesConfig(encoder="uni2", extraction=slide2vec.PreprocessingConfig()),
-            aggregator=AggregatorConfig(name="hipt", params={"tile_multiple": 6}),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'output_resolve',
+            features=FeaturesConfig(encoder='uni2', extraction=slide2vec.PreprocessingConfig()),
+            aggregator={"name": 'hipt', "params": {'tile_multiple': 6}},
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         from soma.preprocessing.resolution import resolve_pipeline_preprocessing
 
@@ -657,15 +675,14 @@ class TestPipeline:
                 dataset=self._dataset,
             )
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=output_root,
-            dataset_type="slide",
-            features=FeaturesConfig(encoder="prism"),
-            aggregator=None,
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=output_root,
+            features=FeaturesConfig(encoder='prism'),
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
 
         with patch("soma.extraction.FeatureExtractor.extract", new=_fake_extract):
@@ -682,16 +699,16 @@ class TestPipeline:
         for i in range(NUM_SAMPLES):
             torch.save(torch.randn(D), slide_feature_dir / f"s{i}.pt")
 
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "output_slide_error",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'output_slide_error',
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
-        with pytest.raises(ValueError, match="aggregator must be None"):
+        with pytest.raises(ValueError, match="an aggregator pools a bag"):
             with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
                 Pipeline(config, source=CachedSetSource(slide_feature_dir)).run()
 
@@ -824,33 +841,24 @@ class TestPipeline:
             for i in range(NUM_SAMPLES)
         ]
 
-        slide_config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "slide_run",
-            dataset_type="slide",
-            features=FeaturesConfig(
-                encoder=test_slide,
-                extraction=extraction(None, None),
-                cache=CacheConfig(root_dir=shared_cache),
-            ),
-            aggregator=None,
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        slide_config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'slide_run',
+            features=FeaturesConfig(encoder=test_slide, extraction=extraction(None, None), cache=CacheOptions(root_dir=shared_cache)),
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
-        tile_config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "tile_run",
-            dataset_type="slide",
-            features=FeaturesConfig(
-                encoder=test_tile,
-                extraction=extraction(None, None),
-                cache=CacheConfig(root_dir=shared_cache),
-            ),
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        tile_config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'tile_run',
+            features=FeaturesConfig(encoder=test_tile, extraction=extraction(None, None), cache=CacheOptions(root_dir=shared_cache)),
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
 
         def _fake_preprocess(self_, tiling_dir, *, skip_existing=True, backend="auto"):
@@ -945,14 +953,14 @@ class TestPipeline:
         (feature_dir / "cache_metadata.json").write_text(
             json.dumps({"cache_key": "abc123", "artifact_kind": "tile", "encoder_name": "uni2"})
         )
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "output",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=1, batch_size=2, pin_memory=False),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'output',
+            aggregator='mean_pool',
+            loaders={"batch_size": 2, "pin_memory": False},
+            trainer={"max_epochs": 1},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -966,12 +974,11 @@ class TestPipeline:
 
     def test_dataset_and_splits_properties(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "output",
-            dataset_type="slide",
-            task=TaskConfig(name="binary_classification"),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'output',
+            scheduler='cosine',
         )
         pipeline = Pipeline(config, source=CachedSetSource(feature_dir))
 
@@ -982,14 +989,14 @@ class TestPipeline:
 
     def test_pipeline_writes_experiment_metadata_and_indexes(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_synthetic_data(tmp_path)
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "output",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="mean_pool"),
-            task=TaskConfig(name="binary_classification"),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'output',
+            aggregator='mean_pool',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
 
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
@@ -999,7 +1006,7 @@ class TestPipeline:
         experiment_yaml = experiment_dir / "experiment.yaml"
         run_yaml = result.run_dir / "run.yaml"
         latest = experiment_dir / "latest"
-        runs_index = Path(config.output_root) / "indexes" / "runs.csv"
+        runs_index = Path(config.run.output_dir) / "indexes" / "runs.csv"
 
         assert experiment_yaml.exists()
         assert run_yaml.exists()
@@ -1102,13 +1109,14 @@ def test_patient_run_scores_patients_and_fills_a_tileless_tune_patient(tmp_path:
     dataset_csv, splits_csv, feature_dir = _setup_patient_data(tmp_path)
     (feature_dir / "p2.pt").unlink()
     _write_patient_feature_manifest(feature_dir, {"p0": "success", "p1": "success", "p2": "empty", "p3": "success"})
-    config = PipelineConfig(
-        dataset_csv=dataset_csv,
-        splits_csv=splits_csv,
-        output_root=tmp_path / "output",
-        dataset_type="patient",
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=2, patience=10, batch_size=2, pin_memory=False),
+    config = experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / 'output',
+        cohort={"collapse": "patient_id"},
+        loaders={"batch_size": 2, "pin_memory": False},
+        trainer={"max_epochs": 2},
+        scheduler='cosine',
     )
     with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
         result = Pipeline(config, source=CachedSetSource(feature_dir)).run()

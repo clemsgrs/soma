@@ -8,6 +8,9 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from soma.config import Component
+from soma.plan import head_family
+from tests.experiment_configs import callback
 from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva_segmentation as seg
 from soma.benchmarks.eva import EvaTileClassificationBenchmark
@@ -82,41 +85,41 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
         output_root=tmp_path / "out",
         seed=3,
     )
-    assert config.dataset_type == "segmentation"
-    assert config.decoder.name == "eva_conv_with_image" and config.decoder.params == {}
-    assert config.task.name == "eva_segmentation"
-    assert config.task.params == {"num_classes": 5}
+    params = config.learner.params
+    assert config.learner.name == "dense" and head_family(config) == "segmentation"
+    assert params["decoder"] == Component("eva_conv_with_image")
+    assert params["head"] == Component("eva_segmentation", {"num_classes": 5})
     assert config.features.extraction.tiling.requested_tile_size_px == 224
     assert config.features.dense.feature_kind == "patch_features_prenorm"  # EVA's timm tap
     assert config.evaluation.metrics[0] == "foreground_mean_dice"
-    training = config.training
-    assert training.optimizer == "adamw"
-    # EVA's SemanticSegmentationModule defaults ``lr_scheduler`` to torch ConstantLR
-    # (factor 1/3 for 5 epochs), which its YAML configs never override.
-    assert training.scheduler["name"] == "constant"
-    assert training.scheduler["params"]["total_iters"] == 5
-    assert training.scheduler["params"]["factor"] == pytest.approx(1 / 3)
-    assert training.learning_rate == pytest.approx(2e-3)
-    assert training.weight_decay == pytest.approx(0.01)
-    assert training.batch_size == 64
-    assert training.epochs is None and training.max_steps == 2000
-    assert training.patience == 200
-    assert training.monitor == "foreground_mean_dice" and training.monitor_mode == "max"
-    assert training.tune_is_test is True
-    assert training.seed == 3
+    optimizer = params["optimizer"]
+    assert optimizer.name == "adamw"
+    # EVA's warm-up (ConstantLR, factor 1/3 for 5 epochs) is the only scheduler leaf.
+    (scheduler,) = params["scheduler"]
+    assert scheduler.name == "constant"
+    assert scheduler.params["total_iters"] == 5
+    assert scheduler.params["factor"] == pytest.approx(1 / 3)
+    assert optimizer.params["lr"] == pytest.approx(2e-3)
+    assert optimizer.params["weight_decay"] == pytest.approx(0.01)
+    assert config.loaders.batch_size == 64
+    assert config.trainer.max_epochs is None and config.trainer.max_steps == 2000
+    monitor = {"monitor": "foreground_mean_dice", "mode": "max"}
+    assert callback(config, "checkpoint") == monitor
+    assert callback(config, "early_stopping") == {**monitor, "patience": 200}
+    assert config.cohort.tune_is_test is True
+    assert config.run.seed == 3
     assert config.features.encoder.output_variant is None
-    assert config.tags == ["eva", "consep", "uni2", "segmentation"]
     # CoNSeP's online transforms are deterministic: the cached grids are EVA's samples.
     assert config.features.kind == "cached"
-    assert config.augmentation is None
+    assert config.loaders.augment is None
 
 
 def test_monusac_config_ignores_the_ambiguous_class(tmp_path: Path):
     config = get_benchmark("eva/monusac").build_config(
         dataset_csv=tmp_path / "d.csv", splits_csv=tmp_path / "s.csv", output_root=tmp_path
     )
-    assert config.task.params == {"num_classes": 5, "ignore_index": 5}
-    assert config.training.patience == 100
+    assert config.learner.params["head"].params == {"num_classes": 5, "ignore_index": 5}
+    assert callback(config, "early_stopping")["patience"] == 100
     assert config.features.encoder.name == "uni2"  # DEFAULT_ENCODER shared with the family
 
 
@@ -127,7 +130,7 @@ def test_monusac_config_random_resized_crops_whole_train_images_live(tmp_path: P
         dataset_csv=tmp_path / "d.csv", splits_csv=tmp_path / "s.csv", output_root=tmp_path
     )
     assert config.features.kind == "live"
-    assert config.augmentation == {"name": "segmentation", "params": {"crop_scale": [0.08, 1.0]}}
+    assert config.loaders.augment == Component("segmentation", {"crop_scale": [0.08, 1.0]})
 
 
 def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):
@@ -139,7 +142,7 @@ def test_build_config_honours_smoke_overrides_and_cache(tmp_path: Path):
         patience=1,
         overrides={"cache": {"enabled": True, "root_dir": str(tmp_path / "cache")}},
     )
-    assert config.training.max_steps == 5 and config.training.patience == 1
+    assert config.trainer.max_steps == 5 and callback(config, "early_stopping")["patience"] == 1
     assert str(config.features.cache.root_dir) == str(tmp_path / "cache")
 
 
@@ -150,19 +153,21 @@ def test_saved_benchmark_config_loads_in_a_fresh_process(tmp_path: Path):
     import sys
 
     import soma
-    from soma.config import save_config
 
     config = get_benchmark("eva/monusac").build_config(
         dataset_csv=tmp_path / "d.csv", splits_csv=tmp_path / "s.csv", output_root=tmp_path
     )
     path = tmp_path / "config.yaml"
-    save_config(config, path)
+    config.to_yaml(path)
     script = (
         "import sys\n"
-        "from soma.config import load_config\n"
-        f"config = load_config({str(path)!r})\n"
+        "from soma.config import ExperimentConfig\n"
+        "from soma.plan import check\n"
+        f"config = ExperimentConfig.from_yaml({str(path)!r})\n"
+        "check(config)\n"
         "assert 'soma.benchmarks' in sys.modules, 'registries import the bundled module'\n"
-        "print(config.task.name, config.decoder.name)\n"
+        "params = config.learner.params\n"
+        "print(params['head'].name, params['decoder'].name)\n"
     )
     # Import the same soma as this process (the checkout may shadow an installed copy).
     env = {**os.environ, "PYTHONPATH": str(Path(soma.__file__).resolve().parents[1])}
@@ -331,7 +336,6 @@ def _finished_run(tmp_path: Path, dataset: str, masks: dict, predicted: dict) ->
     import pandas as pd
     from PIL import Image
 
-    from soma.config import save_config
     from soma.evaluation import LabelMapPredictions
 
     rows = []
@@ -355,7 +359,7 @@ def _finished_run(tmp_path: Path, dataset: str, masks: dict, predicted: dict) ->
     )
     run_dir = tmp_path / "experiments" / "exp" / "runs" / "run"
     run_dir.mkdir(parents=True)
-    save_config(config, run_dir / "config.yaml")
+    config.to_yaml(run_dir / "config.yaml")
     spec = seg.DATASETS[dataset]
     LabelMapPredictions(
         {sid: np.asarray(m, dtype=np.uint8) for sid, m in predicted.items()},

@@ -1,9 +1,9 @@
 Run outputs
 ===========
 
-Each pipeline run writes a run bundle beneath ``output_root``.
-The bundle captures the resolved configuration, per-fold artifacts, and the
-metrics needed to compare experiments reproducibly.
+Each pipeline run writes a run bundle beneath ``run.output_dir``.
+The bundle captures the configuration as given and as resolved, per-fold
+artifacts, and the metrics needed to compare experiments reproducibly.
 
 The shared cache, which stores reusable upstream artifacts such as tiling and
 feature extraction, is documented separately in :doc:`caching`.
@@ -12,16 +12,18 @@ Experiment identity
 -------------------
 
 Managed outputs group runs by experiment identity, with a timestamp/W&B suffix
-for each run. Identity version 2 hashes the ``train`` and ``tune`` manifest
-slices, preprocessing, encoders, downstream model, task, training, evaluation,
-feature mode, augmentation, normalization, projection, cache policy, and tags.
-Representation-only runs instead hash their configured evaluation split and
-representation settings.
+for each run. Identity version 9 hashes the ``train`` and ``tune`` manifest
+slices and the run's *plan* (see :ref:`plan-yaml`): the features section as
+extraction resolves it, the cohort options, the loaders' batch size, sampler and
+augmentation, the learner with every leaf's params, the trainer and the
+evaluation. Representation-only runs instead hash their configured evaluation
+split and representation settings.
 
-Training seed and loader settings are run-level choices. Dense-output toggles
-and ``evaluation.overwrite_test`` also do not change experiment identity.
-Enabled attention-heatmap settings do, because they change generated artifacts;
-inactive heatmap rendering options are excluded.
+The ``run`` section (output directory, seed, run id, resume, mirror root, fold
+selection), the cohort file paths, the loader worker settings,
+``trainer.device``, the grid-output save toggles and
+``evaluation.overwrite_test`` do not change experiment identity. Enabled
+attention-heatmap settings do, because they change generated artifacts.
 
 Adding or changing ``test*`` rows leaves the training experiment identity
 unchanged. A separate test digest identifies the test assignments and their
@@ -39,7 +41,8 @@ inputs as described in :doc:`caching`.
 Run directory layout
 --------------------
 
-The run directory holds the resolved ``config.yaml`` and ``summary.json``.
+The run directory holds ``config.yaml`` (the config as given), ``plan.yaml``
+(the config as resolved, see :ref:`plan-yaml`) and ``summary.json``.
 When ``splits.csv`` has no ``fold`` column (or a single fold value), the
 per-fold artifacts are written directly inside it; with several folds, each
 ``fold_N/`` subdirectory holds its own set:
@@ -54,10 +57,37 @@ per-fold artifacts are written directly inside it; with several folds, each
   tile run, and ``subgroup_metrics_<split>.json`` when subgroup columns are
   configured
 - ``attention/<split>/<sample_id>.npz`` and ``heatmaps/<sample_id>.png`` when
-  heatmaps are enabled
+  ``evaluation.attention_heatmaps`` is set
 - for segmentation and detection, the predictions of tune and every test split
   and the optional overlays, probabilities and heatmaps; see
   :ref:`grid-outputs`
+
+.. _plan-yaml:
+
+The plan
+--------
+
+:func:`soma.resolve` turns a config into a :class:`soma.Plan` before anything
+runs: the config with every default of every component's params spelled out,
+plus what the cohort decides (for example a classification head's label map or
+a survival head's bin count). A value the config states wins over what the
+cohort suggests; a contradiction (an explicit class count the cohort does not
+match) is refused. Feature dimensions are not in the plan: they come from the
+features at build time and are recorded in the bundle's ``model.json``.
+
+``plan.yaml`` is the plan as YAML. It loads as a config, so ``soma
+plan.yaml`` replays the run with every value pinned. A component named by a
+dotted import path keeps that path in the plan, and the bundle's
+``provenance.json`` records the installed version of each top-level package such
+a path imports from (``<package>_version``); versions are not part of the plan.
+
+A resume into an existing run directory (``run.resume`` or ``run.run_id``)
+compares the current plan with the saved ``plan.yaml`` and refuses on any
+difference, except where and how the launch runs: ``run.output_dir``,
+``run.run_id``, ``run.resume``, ``run.mirror_root``, ``run.folds`` and the
+execution resources slide2vec resolves for the machine (GPU and preprocessing
+worker counts). A changed ``run.seed`` is drift. The cohort files' content is
+then checked against the run's experiment identity.
 
 .. _model-bundle:
 
@@ -76,9 +106,10 @@ is a directory of four files:
   class names, target schema, metrics, and for grid runs the grid geometry, read
   spacing and tile size. A detection bundle also records the score threshold
   chosen on tune and the matching distance.
-- ``provenance.json``: the soma, slide2vec and hs2p versions, the selected epoch
-  and its monitor value, the fold, the run id and the identity of the feature
-  source (the cache key and feature identity, not a path).
+- ``provenance.json``: the soma, slide2vec and hs2p versions, the version of
+  each package a dotted-path component comes from, the selected epoch and its
+  monitor value, the fold, the run id and the identity of the feature source
+  (the cache key and feature identity, not a path).
 
 :func:`soma.load` rebuilds the model in eval mode and returns a
 :class:`soma.ModelBundle` with ``model``, ``preprocessing`` and ``provenance``.
@@ -160,20 +191,20 @@ artifacts follow ``evaluation`` settings:
    * - Setting
      - Writes
      - Default
-   * - ``save_segmentation_overlays``
+   * - ``save_overlays`` (segmentation)
      - ``overlays/<split>/pred/`` and ``overlays/<split>/gt/``: predicted and
        annotated classes blended over each tile
      - ``true``
-   * - ``save_segmentation_probabilities``
+   * - ``save_probabilities`` (segmentation)
      - ``probabilities/<split>/<sample_id>.npz``: the float16
        ``(C, H, W)`` softmax
      - ``false``
-   * - ``save_detection_overlays``
+   * - ``save_overlays`` (detection)
      - ``overlays/<split>/pred/`` and ``overlays/<split>/gt/``: predicted
        points (at ``validation_threshold``) and annotated points drawn over
        each tile
      - ``true``
-   * - ``save_detection_heatmaps``
+   * - ``save_heatmaps`` (detection)
      - ``heatmaps/<split>/<sample_id>.npz``: the float16 ``(C, H, W)``
        heatmap
      - ``false``
@@ -184,14 +215,14 @@ label maps with :func:`soma.evaluation.confusion_records`.
 Run index
 ---------
 
-``<output_root>/indexes/runs.csv`` is append-only: every status change of a run
-appends one line, and readers keep the last line per ``run_id``. Run
-``soma compact-index <output_root>`` to rewrite it with one row per run.
+``<run.output_dir>/indexes/runs.csv`` is append-only: every status change of a
+run appends one line, and readers keep the last line per ``run_id``. Run
+``soma compact-index <output_dir>`` to rewrite it with one row per run.
 
 Heatmap artifacts
 -----------------
 
-When ``HeatmapConfig.enabled`` is true, the pipeline scores each fold's bundle
+When ``evaluation.attention_heatmaps`` is set, the pipeline scores each fold's bundle
 once every fold is done and stores raw attention scores in
 ``attention/<split>/<sample_id>.npz`` and rendered overlays in ``heatmaps/``
 (directly in the run directory for single-fold runs, inside each ``fold_N/``
@@ -202,9 +233,10 @@ Aggregators that support attention extraction: ``abmil``, ``clam_sb``,
 ``clam_mb``, ``dsmil``. Heatmaps are skipped for ``mean_pool``, ``max_pool``,
 ``transmil``, ``dtfdmil``, and ``hipt``.
 
-Heatmap appearance is controlled by :class:`soma.config.HeatmapConfig`:
-``cmap`` (colormap name, default ``jet``), ``alpha`` (overlay opacity),
-``blur_sigma`` (Gaussian blur radius in pixels).
+Heatmap appearance is set by the keys of ``evaluation.attention_heatmaps``
+(``{}`` keeps the defaults): ``cmap`` (colormap name, default ``coolwarm``),
+``alpha`` (overlay opacity, default 0.5), ``blur_sigma`` (Gaussian blur radius
+in pixels, default 0).
 
 Recoverable shared-storage mirrors
 ----------------------------------
@@ -214,7 +246,7 @@ publishing recovery bundles to shared storage by setting ``run.mirror_root``. Th
 mirror destination preserves the managed run path beneath that root. Leaving the
 setting ``null`` is a no-op and does not change experiment identity.
 
-Only completed folds are published, each with the resolved ``config.yaml`` and
+Only completed folds are published, each with ``config.yaml``, ``plan.yaml`` and
 a ``manifest.json`` of SHA-256 digests, through an atomic rename so a partial
 copy never looks complete. Mirror errors never change the local training
 result; a later fold event or resumed run retries any fold whose destination

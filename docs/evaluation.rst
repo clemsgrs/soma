@@ -8,23 +8,18 @@ exposes ``f1_per_class``, ``precision``, ``recall`` and ``mean_f1_per_image``
 (see :doc:`detection`). Segmentation and detection predictions are covered in
 :ref:`grid-predictions`.
 
-.. autoclass:: soma.config.EvalConfig
-   :members:
-
-.. autoclass:: soma.config.SubgroupConfig
-   :members:
+.. autoclass:: soma.config.EvaluationConfig
 
 Subgroup metrics
 ----------------
 
-``evaluation.subgroups.columns`` names ``dataset.csv`` columns whose distinct
-values receive their own metrics:
+``evaluation.subgroups`` names ``dataset.csv`` columns whose distinct values
+receive their own metrics:
 
 .. code-block:: yaml
 
    evaluation:
-     subgroups:
-       columns: [center, grade]
+     subgroups: [center, grade]
 
 For each column, every value with at least two samples gets the run's metrics
 and its sample count. A significance test then compares each group with the

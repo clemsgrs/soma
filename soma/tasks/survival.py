@@ -46,7 +46,10 @@ class SurvivalParams:
 
 
 def infer_num_bins(cohort: "Cohort", params: Mapping[str, Any]) -> dict[str, Any]:
-    """``num_bins``: the cohort's largest ``bin`` index plus one."""
+    """``num_bins``: the cohort's largest ``bin`` index plus one. An explicit ``num_bins``
+    may be wider than the bins the cohort uses, so nothing is inferred beside it."""
+    if params.get("num_bins") is not None:
+        return {}
     return {"num_bins": max(int(record.targets["bin"]) for record in cohort.records) + 1}
 
 
@@ -253,8 +256,8 @@ class CoxSurvivalHead(TaskHead):
     (Reusing the NLL head's ``-sum(surv)`` derivation here would double-invert the
     C-index sign.)
 
-    Selected via ``task.params.loss: cox``. Two training modes, switched by
-    ``task.params.cox_window`` (carried here as ``accumulation_window``):
+    The ``cox_survival`` head. Two training modes, switched by its ``cox_window``
+    param (carried here as ``accumulation_window``):
 
     * **Padded mode** (``cox_window`` unset / 1): the risk set is the batch.
       Single-embedding slide/patient features (no aggregator, ``batch_size >= 2``)
@@ -350,32 +353,13 @@ class CoxSurvivalHead(TaskHead):
         return compute_survival_metrics(self.metrics, event, time, risk)
 
 
-def resolve_survival_head(loss: str = "nll") -> type[TaskHead]:
-    """Map the ``task.params.loss`` selector to the survival head class.
-
-    ``"nll"`` (default) → discrete-time :class:`SurvivalHead`; ``"cox"`` →
-    continuous-time :class:`CoxSurvivalHead`. Keeps the registry keyed on the
-    single task name ``"survival"`` while routing to the right head.
-    """
-    if loss == "nll":
-        return SurvivalHead
-    if loss == "cox":
-        return CoxSurvivalHead
-    raise ValueError(f"Unknown survival loss {loss!r}; use 'nll' or 'cox'.")
-
-
-def resolve_survival_task(
-    task_name: str, task_params: Mapping[str, Any]
-) -> tuple[type[TaskHead], str]:
-    """Resolve the head and objective shared by config and dataset validation.
-
-    The loss selector switches the built-in ``survival`` head only. Registered
-    subclasses keep their class and inherit the objective of their base.
-    """
-    builtin_head = resolve_survival_head(task_params.get("loss", "nll"))
-    head_cls = builtin_head if task_name == "survival" else task_registry.resolve(task_name)
-    loss = "cox" if issubclass(head_cls, CoxSurvivalHead) else "nll"
-    return head_cls, loss
+def resolve_survival_task(task_name: str) -> tuple[type[TaskHead], str]:
+    """The head class a survival leaf names and its objective: ``cox`` for a
+    :class:`CoxSurvivalHead` (or a subclass), else the discrete-time ``nll``. The leaf's
+    name selects the objective (``survival`` or ``cox_survival``); a registered subclass
+    inherits its base's."""
+    head_cls = task_registry.resolve(task_name)
+    return head_cls, ("cox" if issubclass(head_cls, CoxSurvivalHead) else "nll")
 
 
 def validate_survival_dataset(
@@ -408,7 +392,7 @@ def validate_survival_dataset(
             if key not in record.targets:
                 raise ValueError(
                     f"Survival task requires a '{key}' target (a '{key}' column in the "
-                    f"dataset CSV, or task.targets mapping it); sample '{sid}' has none."
+                    f"dataset CSV, or the head's 'targets' mapping it); sample '{sid}' has none."
                 )
         event = record.targets["event"]
         time = record.targets["time"]

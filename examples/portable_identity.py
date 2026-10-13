@@ -4,7 +4,7 @@ Since soma 1.12.0, path columns (``image_path``, ``mask_path``,
 ``label_mask_path``, ``points_path``) are excluded from the semantic manifest
 digest. Moving a dataset to a different storage root therefore keeps
 ``experiment_id`` — and the leaderboard triple
-``(dataset_checksum, splits_checksum, task)`` — unchanged, so runs stay
+``(dataset_checksum, splits_checksum, head)`` — unchanged, so runs stay
 comparable and checkpoints stay reusable after relocation.
 
 Content still counts: adding an explicit ``image_path_sha256`` column declares
@@ -12,7 +12,7 @@ the *bytes* behind the paths as part of the experiment, and does change
 identity.
 
 No pipeline runs and no encoder weights are involved — identity is computed
-from the manifests and the config alone.
+from the manifests and the plan alone.
 
 Run with no arguments:
 
@@ -29,13 +29,8 @@ import pandas as pd
 from hs2p import TilingConfig
 from slide2vec import PreprocessingConfig
 
-from soma import (
-    AggregatorConfig,
-    FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
-)
+from soma import ExperimentConfig, Plan
+from soma.config import CohortConfig, FeaturesConfig, LearnerConfig, RunConfig, TrainerConfig
 from soma.pipeline.layout import build_experiment_spec
 
 WORK = Path(tempfile.mkdtemp(prefix="soma-portable-identity-"))
@@ -67,11 +62,9 @@ def write_manifests(
 
 def identity(dataset_csv: Path, splits_csv: Path):
     """Build the experiment spec for one fixed model config over these manifests."""
-    config = PipelineConfig(
-        dataset_csv=str(dataset_csv),
-        splits_csv=str(splits_csv),
-        output_root=dataset_csv.parent / "outputs",
-        dataset_type="slide",
+    config = ExperimentConfig(
+        run=RunConfig(output_dir=dataset_csv.parent / "outputs", seed=0),
+        cohort=CohortConfig(records=dataset_csv, splits=splits_csv),
         features=FeaturesConfig(
             encoder="phikon",
             extraction=PreprocessingConfig(
@@ -83,11 +76,10 @@ def identity(dataset_csv: Path, splits_csv: Path):
                 )
             ),
         ),
-        aggregator=AggregatorConfig(name="abmil"),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=5, seed=0),
+        learner=LearnerConfig("mil", {"aggregator": "abmil", "head": "binary_classification"}),
+        trainer=TrainerConfig(max_epochs=5),
     )
-    return build_experiment_spec(config)
+    return build_experiment_spec(Plan(config))
 
 
 def report(title: str, spec) -> None:
@@ -96,7 +88,7 @@ def report(title: str, spec) -> None:
     print("  leaderboard triple:")
     print(f"    dataset_checksum: {spec.dataset_checksum}")
     print(f"    splits_checksum:  {spec.splits_checksum}")
-    print(f"    task:             {spec.canonical_spec['task']['name']}")
+    print(f"    head:             {spec.canonical_spec['learner']['params']['head']['name']}")
 
 
 # --- 1. The same dataset under two different storage roots ------------------------

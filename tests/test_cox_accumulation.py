@@ -16,14 +16,10 @@ import torch
 
 from soma.data import CachedSetSource
 from soma.aggregators.registry import aggregator_registry
+from tests.experiment_configs import experiment
 from tests.extraction_configs import extraction
-from soma.config import (
-    AggregatorConfig,
-    PipelineConfig,
-    FeaturesConfig,
-    TaskConfig,
-    TrainingConfig,
-)
+from soma.config import FeaturesConfig
+from soma.plan import check
 from soma.evaluation import Predictions
 from soma.tasks.survival import CoxSurvivalHead, cox_breslow_loss
 from soma.pipeline import Pipeline, PipelineResult
@@ -230,90 +226,46 @@ class TestFullCohortMILEval:
 
 
 class TestRevisedCoxGuards:
-    def _base(self, tmp_path, **kw):
-        return dict(
-            dataset_csv=tmp_path / "d.csv",
-            splits_csv=tmp_path / "s.csv",
-            output_root=tmp_path / "out",
-            dataset_type="slide",
-            **kw,
+    def _check(self, tmp_path, *, aggregator="abmil", batch_size, accumulate=1, **head_params):
+        check(
+            experiment(
+                tmp_path / "d.csv",
+                tmp_path / "s.csv",
+                output_dir=tmp_path / "out",
+                aggregator=aggregator,
+                head="cox_survival",
+                head_params=head_params,
+                loaders={"batch_size": batch_size},
+                trainer={"accumulate_grad_batches": accumulate},
+            )
         )
 
     def test_padded_mil_now_allowed(self, tmp_path: Path):
         # Phase-2 change: Cox + MIL aggregator at batch_size >= 2 is valid.
-        PipelineConfig(
-            **self._base(
-                tmp_path,
-                aggregator=AggregatorConfig(name="abmil"),
-                task=TaskConfig(name="survival", params={"loss": "cox"}),
-                training=TrainingConfig(batch_size=4),
-            )
-        )
+        self._check(tmp_path, batch_size=4)
 
     def test_accumulation_requires_batch_size_one(self, tmp_path: Path):
         with pytest.raises(ValueError, match="batch_size = 1"):
-            PipelineConfig(
-                **self._base(
-                    tmp_path,
-                    aggregator=AggregatorConfig(name="abmil"),
-                    task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 8}),
-                    training=TrainingConfig(batch_size=2),
-                )
-            )
+            self._check(tmp_path, batch_size=2, cox_window=8)
 
     def test_accumulation_requires_aggregator(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="requires an aggregator"):
-            PipelineConfig(
-                **self._base(
-                    tmp_path,
-                    aggregator=None,
-                    task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 8}),
-                    training=TrainingConfig(batch_size=1),
-                )
-            )
+        with pytest.raises(ValueError, match="needs an aggregator"):
+            self._check(tmp_path, aggregator=None, batch_size=1, cox_window=8)
 
     def test_accumulation_valid_config_passes(self, tmp_path: Path):
-        PipelineConfig(
-            **self._base(
-                tmp_path,
-                aggregator=AggregatorConfig(name="abmil"),
-                task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 8}),
-                training=TrainingConfig(batch_size=1),
-            )
-        )
+        self._check(tmp_path, batch_size=1, cox_window=8)
 
     def test_gradient_accumulation_still_rejected(self, tmp_path: Path):
-        with pytest.raises(ValueError, match="gradient_accumulation = 1"):
-            PipelineConfig(
-                **self._base(
-                    tmp_path,
-                    aggregator=AggregatorConfig(name="abmil"),
-                    task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 8}),
-                    training=TrainingConfig(batch_size=1, gradient_accumulation=2),
-                )
-            )
+        with pytest.raises(ValueError, match="accumulate_grad_batches = 1"):
+            self._check(tmp_path, batch_size=1, accumulate=2, cox_window=8)
 
     def test_single_embedding_cox_still_valid(self, tmp_path: Path):
         # Phase-1 path unchanged: no aggregator, no cox_window, batch_size >= 2.
-        PipelineConfig(
-            **self._base(
-                tmp_path,
-                aggregator=None,
-                task=TaskConfig(name="survival", params={"loss": "cox"}),
-                training=TrainingConfig(batch_size=4),
-            )
-        )
+        self._check(tmp_path, aggregator=None, batch_size=4)
 
     def test_invalid_cox_window_rejected(self, tmp_path: Path):
         with pytest.raises(ValueError, match="cox_window"):
-            PipelineConfig(
-                **self._base(
-                    tmp_path,
-                    aggregator=AggregatorConfig(name="abmil"),
-                    task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 0}),
-                    training=TrainingConfig(batch_size=1),
-                )
-            )
+            self._check(tmp_path, batch_size=1, cox_window=0)
 
 
 # ---------------------------------------------------------------------------
@@ -355,14 +307,16 @@ def _setup_mil_survival_data(tmp_path: Path):
 class TestMILCoxEndToEnd:
     def test_accumulation_mode_run(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path)
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "out",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="abmil"),
-            task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 2}),
-            training=TrainingConfig(epochs=2, patience=10, batch_size=1),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'out',
+            aggregator='abmil',
+            head='cox_survival',
+            head_params={'cox_window': 2},
+            loaders={"batch_size": 1},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -375,14 +329,15 @@ class TestMILCoxEndToEnd:
 
     def test_padded_mode_run(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path)
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "out",
-            dataset_type="slide",
-            aggregator=AggregatorConfig(name="abmil"),
-            task=TaskConfig(name="survival", params={"loss": "cox"}),  # padded mode
-            training=TrainingConfig(epochs=2, patience=10, batch_size=2),
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'out',
+            aggregator='abmil',
+            head='cox_survival',
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
@@ -393,23 +348,17 @@ class TestMILCoxEndToEnd:
         dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path)
         for i in range(8):
             torch.save(torch.randn(2 + (i % 2), 4, D), feature_dir / f"s{i}.pt")
-        config = PipelineConfig(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=tmp_path / "out",
-            dataset_type="slide",
+        config = experiment(
+            dataset_csv,
+            splits_csv,
+            output_dir=tmp_path / 'out',
             features=FeaturesConfig(extraction=extraction(0.5, 4, requested_region_size_px=8)),
-            aggregator=AggregatorConfig(
-                name="hipt",
-                params={
-                    "embed_dim_region": 12,
-                    "embed_dim_slide": 12,
-                    "num_heads": 2,
-                    "dropout": 0.0,
-                },
-            ),
-            task=TaskConfig(name="survival", params={"loss": "cox", "cox_window": 2}),
-            training=TrainingConfig(epochs=1, patience=10, batch_size=1),
+            aggregator={"name": 'hipt', "params": {'embed_dim_region': 12, 'embed_dim_slide': 12, 'num_heads': 2, 'dropout': 0.0}},
+            head='cox_survival',
+            head_params={'cox_window': 2},
+            loaders={"batch_size": 1},
+            trainer={"max_epochs": 1},
+            scheduler='cosine',
         )
         with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()

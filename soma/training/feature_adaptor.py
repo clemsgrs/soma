@@ -45,21 +45,151 @@ import hashlib
 import json
 import math
 from collections.abc import Iterable
+from dataclasses import dataclass
+from numbers import Integral, Real
 from pathlib import Path
 from typing import Any
 
 import torch
 from torch import Tensor, nn
 
-from soma.config import NormalizationConfig, ProjectionConfig
-
 __all__ = [
     "FEATURE_ADAPTER_FILENAME",
     "FeatureAdaptor",
+    "NormalizationParams",
+    "ProjectionParams",
     "build_feature_adaptor",
     "feature_adaptor_output_dim",
+    "validate_feature_adaptor_compatibility",
     "write_feature_adapter_sidecar",
 ]
+
+_NORMALIZATION_METHODS = ("none", "zscore", "l2", "layernorm")
+_DEFAULT_NORMALIZATION_EPS = 1e-6
+_PROJECTION_METHODS = ("none", "pca", "random")
+
+
+def _is_exact_integer(value: object) -> bool:
+    return isinstance(value, Integral) and not isinstance(value, bool)
+
+
+@dataclass(frozen=True)
+class NormalizationParams:
+    """``learner.params.normalization``: the adaptor's per-feature normalization stage.
+
+    ``method``: ``none`` (no stage), ``zscore`` (**fitted** on the train split only, so
+    leak-free; ``eps`` floors the scale), ``l2`` (stateless per-vector L2) or
+    ``layernorm`` (stateless per-vector standardization with ``eps``). Orthogonal to a
+    composite's per-member ``member_norm``.
+    """
+
+    method: str = "none"
+    eps: float = _DEFAULT_NORMALIZATION_EPS
+
+    def __post_init__(self) -> None:
+        if self.method not in _NORMALIZATION_METHODS:
+            raise ValueError(
+                f"normalization.method must be one of {list(_NORMALIZATION_METHODS)}, got {self.method!r}."
+            )
+        if not (
+            isinstance(self.eps, Real)
+            and not isinstance(self.eps, bool)
+            and math.isfinite(float(self.eps))
+            and float(self.eps) > 0.0
+        ):
+            raise ValueError(
+                f"normalization.eps must be a finite positive real number (it floors the scale), got {self.eps!r}."
+            )
+        if self.method == "none" and self.eps != _DEFAULT_NORMALIZATION_EPS:
+            raise ValueError(
+                f"normalization.method='none' requires the default eps ({_DEFAULT_NORMALIZATION_EPS}); "
+                f"got {self.eps!r}."
+            )
+
+
+@dataclass(frozen=True)
+class ProjectionParams:
+    """``learner.params.projection``: the adaptor's label-free projection to a common width.
+
+    The dim-matched ablation (issue #284), applied after normalization: ``none`` (no
+    stage), ``pca`` (**fitted** per fold on the train split, deterministic, ``seed`` 0;
+    needs ``n_fit_samples >= target_dim <= D``) or ``random`` (a fixed Gaussian matrix
+    seeded from ``seed`` and the encoder identity, scaled by ``1/sqrt(target_dim)``). The
+    map is a frozen buffer, never learned.
+    """
+
+    method: str = "none"
+    target_dim: int | None = None
+    seed: int = 0
+
+    def __post_init__(self) -> None:
+        if self.method not in _PROJECTION_METHODS:
+            raise ValueError(f"projection.method must be one of {list(_PROJECTION_METHODS)}, got {self.method!r}.")
+        if not _is_exact_integer(self.seed):
+            raise ValueError(f"projection.seed must be an integer, got {self.seed!r}.")
+        if self.method == "none" and (self.target_dim is not None or self.seed != 0):
+            raise ValueError(
+                "projection.method='none' requires target_dim=None and seed=0; "
+                f"got target_dim={self.target_dim!r}, seed={self.seed!r}."
+            )
+        if self.method == "pca" and self.seed != 0:
+            raise ValueError(f"projection.method='pca' is deterministic and requires seed=0; got seed={self.seed!r}.")
+        if self.method != "none":
+            if self.target_dim is None:
+                raise ValueError(
+                    f"projection.method={self.method!r} requires target_dim, the common width "
+                    "every encoder is projected to."
+                )
+            if not _is_exact_integer(self.target_dim) or self.target_dim < 1:
+                raise ValueError(f"projection.target_dim must be a positive integer, got {self.target_dim!r}.")
+
+
+def validate_feature_adaptor_compatibility(
+    normalization: NormalizationParams | None,
+    projection: ProjectionParams | None,
+    *,
+    feature_mode: str = "cached",
+    unit: str | None = None,
+    has_composite: bool = False,
+    is_hierarchical: bool = False,
+) -> None:
+    """Enforce which data planes own the feature adaptor.
+
+    Both the plan checks and the builders call this rule, so a path cannot become
+    permissive merely by bypassing the orchestrator. ``unit`` is the run's sample unit
+    (``patient`` or ``tile`` refuse the adaptor).
+    """
+    requested = []
+    if normalization is not None and normalization.method != "none":
+        requested.append(f"normalization.method={normalization.method!r}")
+    if projection is not None and projection.method != "none":
+        requested.append(f"projection.method={projection.method!r}")
+    if not requested:
+        return
+    requested_text = " and ".join(requested)
+    if feature_mode == "live":
+        raise ValueError(
+            f"{requested_text} requires features.kind='cached': the feature adaptor is fit on "
+            "the cached train grids, and the live path re-encodes augmented tiles every step, "
+            "so the fitted transform would not match what it transforms. Use {method: none}."
+        )
+    unsupported = (
+        "a composite (multi-encoder) dense stream"
+        if has_composite
+        else f"{unit}-level features"
+        if unit in {"patient", "tile"}
+        else "a hierarchical feature stream"
+        if is_hierarchical
+        else None
+    )
+    if unsupported is not None:
+        raise ValueError(
+            f"{requested_text} is not yet supported for {unsupported}: the feature adaptor fits "
+            "on the tile-encoder MIL path, the slide-encoder embedding path, and the "
+            "single-encoder dense path. Use {method: none} here (composites normalize per "
+            "member via member_norm)."
+        )
+
 
 #: QC sidecar filename written next to a fold's checkpoint.
 FEATURE_ADAPTER_FILENAME = "feature_adapter.json"
@@ -123,11 +253,11 @@ class FeatureAdaptor(nn.Module):
         method: str = "none",
         eps: float = 1e-6,
         num_features: int,
-        projection: ProjectionConfig | None = None,
+        projection: ProjectionParams | None = None,
         encoder_identity: str = "",
     ) -> None:
         super().__init__()
-        projection = projection or ProjectionConfig()
+        projection = projection or ProjectionParams()
         if method == "none" and projection.method == "none":
             raise ValueError(
                 "FeatureAdaptor is never constructed with every stage off — with no "
@@ -490,8 +620,8 @@ class FeatureAdaptor(nn.Module):
 
 
 def build_feature_adaptor(
-    normalization: NormalizationConfig | None,
-    projection: ProjectionConfig | None = None,
+    normalization: NormalizationParams | None,
+    projection: ProjectionParams | None = None,
     *,
     num_features: int,
     encoder_identity: str = "",
@@ -502,8 +632,8 @@ def build_feature_adaptor(
     off structurally identical to a model built before this module existed. The two
     sections are independently optional — either one alone brings the adaptor into being.
     """
-    normalization = normalization or NormalizationConfig()
-    projection = projection or ProjectionConfig()
+    normalization = normalization or NormalizationParams()
+    projection = projection or ProjectionParams()
     if normalization.method == "none" and projection.method == "none":
         return None
     return FeatureAdaptor(

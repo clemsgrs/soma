@@ -9,7 +9,7 @@ from slide2vec import Model
 from slide2vec.encoders.registry import encoder_registry as _slide2vec_encoders
 from slide2vec.encoders.registry import resolve_encoder_level
 
-from soma.config import AggregatorConfig
+from soma.config import Component
 from soma.encoders.composite import CompositeMember, CompositeParams
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.registry import Registry, _Entry, signature_params
@@ -82,8 +82,8 @@ encoder_registry = EncoderRegistry()
 
 def resolve_aggregator(
     encoder_name: str,
-    tile_recipe: AggregatorConfig,
-) -> AggregatorConfig | None:
+    tile_recipe: Component,
+) -> Component | None:
     """Resolve a slide benchmark's aggregation mechanism from encoder metadata."""
     try:
         metadata = _slide2vec_encoders.info(encoder_name)

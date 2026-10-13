@@ -15,7 +15,8 @@ import yaml
 
 from soma.cache import roi_sampling_signature
 from soma.cache.keys import _canonical_json, build_roi_sampling_cache_key, build_tiling_cache_key
-from soma.config import DecoderConfig, FeaturesConfig, PipelineConfig, TaskConfig, load_config, save_config
+from soma.config import ExperimentConfig, FeaturesConfig
+from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
 
 
@@ -51,12 +52,8 @@ def test_a_one_value_list_is_the_scalar():
 
 
 def test_list_entries_round_trip_through_yaml(tmp_path: Path):
-    config = PipelineConfig(
-        dataset_csv="data.csv",
-        splits_csv="splits.csv",
-        output_root="out",
-        dataset_type="segmentation",
-        decoder=DecoderConfig(name="lightweight_conv"),
+    config = experiment(
+        decoder="lightweight_conv",
         features=FeaturesConfig(
             extraction=extraction(
                 0.5,
@@ -65,20 +62,18 @@ def test_list_entries_round_trip_through_yaml(tmp_path: Path):
                 masks=annotation_masks({"background": 0, "tumor": [1, 2], "stroma": 3}, {"tumor": 0.5}),
             )
         ),
-        task=TaskConfig(
-            name="segmentation",
-            params={"classes": {"tumor": [1, 2], "stroma": [3]}, "ignore": [0]},
-        ),
+        head="segmentation",
+        head_params={"classes": {"tumor": [1, 2], "stroma": [3]}, "ignore": [0]},
     )
     path = tmp_path / "cfg.yaml"
-    save_config(config, path)
+    config.to_yaml(path)
 
-    assert yaml.safe_load(path.read_text())["preprocessing"]["masks"]["pixel_mapping"] == {
+    assert yaml.safe_load(path.read_text())["features"]["extraction"]["masks"]["pixel_mapping"] == {
         "background": [0],
         "tumor": [1, 2],
         "stroma": [3],
     }
-    assert load_config(path).features.extraction.masks.pixel_mapping == {
+    assert ExperimentConfig.from_yaml(path).features.extraction.masks.pixel_mapping == {
         "background": (0,),
         "tumor": (1, 2),
         "stroma": (3,),
@@ -95,13 +90,13 @@ def test_list_entries_round_trip_through_yaml(tmp_path: Path):
 )
 def test_an_invalid_vocabulary_is_refused_when_the_yaml_is_read(tmp_path: Path, pixel_mapping, match):
     data = {
-        "data": {"dataset_csv": "d.csv", "splits_csv": "s.csv", "dataset_type": "slide"},
-        "preprocessing": {"masks": {"pixel_mapping": pixel_mapping, "min_coverage": {"tumor": 0.5}}},
+        "cohort": {"records": "d.csv", "splits": "s.csv"},
+        "features": {"extraction": {"masks": {"pixel_mapping": pixel_mapping, "min_coverage": {"tumor": 0.5}}}},
     }
     path = tmp_path / "cfg.yaml"
     path.write_text(yaml.safe_dump(data))
     with pytest.raises(ValueError, match=match):
-        load_config(path)
+        ExperimentConfig.from_yaml(path)
 
 
 def test_training_classes_may_split_a_merged_sampling_label():

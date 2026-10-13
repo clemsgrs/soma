@@ -7,21 +7,9 @@ try:
 except PackageNotFoundError:  # not installed (e.g. running from a source checkout)
     __version__ = "0.0.0+unknown"
 
-from soma.config import (
-    AggregatorConfig,
-    CacheConfig,
-    DecoderConfig,
-    EncoderLeaf,
-    EvalConfig,
-    FeaturesConfig,
-    PipelineConfig,
-    RepresentationConfig,
-    SubgroupConfig,
-    TaskConfig,
-    TrainingConfig,
-    HeatmapConfig,
-)
+from soma.config import CacheOptions, Component, EncoderLeaf, ExperimentConfig
 from soma.discovery import components, register
+from soma.plan import Plan, resolve
 from soma.data import (
     AnnotationManifest,
     CachedLabelMapSource,
@@ -100,18 +88,12 @@ from soma.training.seed import seed_everything
 __all__ = [
     "__version__",
     # Config
-    "AggregatorConfig",
-    "CacheConfig",
-    "DecoderConfig",
+    "CacheOptions",
+    "Component",
     "EncoderLeaf",
-    "EvalConfig",
-    "FeaturesConfig",
-    "PipelineConfig",
-    "RepresentationConfig",
-    "SubgroupConfig",
-    "TaskConfig",
-    "TrainingConfig",
-    "HeatmapConfig",
+    "ExperimentConfig",
+    "Plan",
+    "resolve",
     # Discovery
     "components",
     "register",

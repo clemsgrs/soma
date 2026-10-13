@@ -3,8 +3,12 @@
 Absorbs the former ``soma.output_layout`` (experiment identity, run metadata, run index,
 test-identity registry) and ``soma.provenance`` (git state of the soma checkout), and
 adds the pieces :class:`~soma.pipeline.Pipeline` composes: :class:`RunRecorder` (the
-run's status lifecycle), the config and manifest resume drift guards, the fold
+run's status lifecycle), the plan and manifest resume drift guards, the fold
 directory layout and the fold-completeness rule (``metrics.json`` + ``bundle/``).
+
+Everything here reads the run's :class:`~soma.plan.Plan`: the experiment identity is a
+digest of the plan (minus where and how a launch runs) and of the train/tune content of
+the cohort files, and a resume must match the saved ``plan.yaml``.
 """
 
 from __future__ import annotations
@@ -27,13 +31,8 @@ from typing import Any
 import yaml
 
 from soma.atomic_io import atomic_write_text
-from soma.config import (
-    PipelineConfig,
-    config_yaml_dict,
-    save_config,
-    task_config_dict,
-    without_machine_resolved_fields,
-)
+from soma.config import ExperimentConfig
+from soma.plan import Plan, comparable
 
 logger = logging.getLogger(__name__)
 
@@ -140,49 +139,31 @@ def _stable_json(payload: dict[str, Any]) -> str:
 
 #: Bump when the canonical payload changes shape. Recorded on every run and
 #: experiment manifest so ids minted under different rules are never compared as equal.
-#: v5 added ``augmentation.random_resized_crop_scale`` to the augmentation block; v6 added
-#: ``training.hold_patience_until_monitor_moves``; v7 dropped ``pixel_classifier`` and
-#: ``training.method`` / ``max_train_pixels`` and made ``augmentation`` a ``{name, params}``
-#: leaf (or ``None``); v8 replaced ``feature_mode`` / ``preprocessing`` / ``cache`` /
-#: ``encoder`` / ``composite`` / ``execution`` with one ``features`` block holding the
-#: slide2vec and hs2p dataclasses (ADR 0019).
-IDENTITY_VERSION = 8
+#: v8 replaced the extraction blocks with one ``features`` block holding the slide2vec
+#: and hs2p dataclasses (ADR 0019); v9 hashes the resolved plan (ADR 0020).
+IDENTITY_VERSION = 9
 
-# Loader plumbing: changes throughput, never the trained model or its evaluation.
-_TRAINING_IDENTITY_EXCLUDED = ("seed", "num_workers", "pin_memory", "persistent_workers")
-# Artifact toggles and operational flags: what is *saved* or guarded, not what is measured.
-_EVALUATION_IDENTITY_EXCLUDED = (
-    "overwrite_test",
-    "save_segmentation_overlays",
-    "save_segmentation_probabilities",
-    "save_detection_overlays",
-    "save_detection_heatmaps",
-)
+#: Plan fields left out of the experiment identity, by section: where and how a launch
+#: runs (the whole ``run`` section, so the seed too: one experiment, several seeded
+#: runs), the cohort files (their train/tune content is hashed instead), loader
+#: throughput, the device, and what is saved rather than measured.
+_IDENTITY_EXCLUDED: dict[str, tuple[str, ...]] = {
+    "cohort": ("records", "splits"),
+    "loaders": ("num_workers", "pin_memory", "persistent_workers"),
+    "trainer": ("device",),
+    "evaluation": ("overwrite_test", "save_overlays", "save_probabilities", "save_heatmaps"),
+}
 
 
-def _training_identity(config: PipelineConfig) -> dict[str, Any]:
-    """Every ``TrainingConfig`` field except the explicit exclusions, emitted
-    unconditionally (identity v2 dropped the "only when non-default" guards; v3 added
-    ``tune_every_n_epochs``; v4 added the warm-up knobs, which v5 folded into the
-    ``scheduler`` leaf alongside the new ``learner`` leaf)."""
-    training = asdict(config.training)
-    for key in _TRAINING_IDENTITY_EXCLUDED:
-        training.pop(key, None)
-    return training
-
-
-def _evaluation_identity(config: PipelineConfig) -> dict[str, Any]:
-    evaluation = asdict(config.evaluation)
-    for key in _EVALUATION_IDENTITY_EXCLUDED:
-        evaluation.pop(key, None)
-    return evaluation
-
-
-def _heatmap_identity(config: PipelineConfig) -> dict[str, Any]:
-    heatmaps = asdict(config.heatmaps)
-    if not config.heatmaps.enabled:
-        return {"enabled": False}
-    return heatmaps
+def _plan_identity(plan: Plan) -> dict[str, Any]:
+    """The experiment-defining part of a plan (see :data:`_IDENTITY_EXCLUDED`)."""
+    payload = plan.to_dict()
+    payload.pop("run", None)
+    payload["features"] = _features_identity(plan)
+    for section, names in _IDENTITY_EXCLUDED.items():
+        for name in names:
+            payload[section].pop(name, None)
+    return payload
 
 
 def _split_assignments(splits_path: Path, keep) -> list[list[str]]:
@@ -239,7 +220,7 @@ def _is_test_split(name: str) -> bool:
     return name.startswith("test")
 
 
-def test_identity_digest(config: PipelineConfig) -> str:
+def test_identity_digest(plan: Plan) -> str:
     """Digest identifying WHICH test set a run is scored against (issue #247).
 
     The test-slice counterpart of the training digest: a byte-stable sha256 over the
@@ -248,8 +229,8 @@ def test_identity_digest(config: PipelineConfig) -> str:
     but differ here, so their results can be namespaced and a re-score of an already-scored
     test set refused rather than silently clobbered. Empty when a run has no ``test*`` rows.
     """
-    dataset_path = Path(config.dataset_csv).resolve()
-    splits_path = Path(config.splits_csv).resolve()
+    dataset_path = Path(plan.cohort.records).resolve()
+    splits_path = Path(plan.cohort.splits).resolve()
     dataset_digest, splits_digest = _manifest_slice_digests(
         dataset_path, splits_path, _is_test_split
     )
@@ -258,30 +239,27 @@ def test_identity_digest(config: PipelineConfig) -> str:
     ).hexdigest()
 
 
-def _features_identity(config: PipelineConfig, *, cache_dtype: bool = False) -> dict[str, Any]:
+def _features_identity(plan: Plan, *, cache_dtype: bool = False) -> dict[str, Any]:
     """The experiment-defining part of a run's features: every field of the slide2vec /
     hs2p dataclasses but the execution resources (only the precision counts).
 
     The extraction and a grid run's dense options are hashed as the run resolves them
-    (the geometry left to the encoder preset or to ``dense`` filled in), and the encoder
-    params as their params dataclass holds them (defaults filled in), so a Python config
-    and the ``config.yaml`` it saves, which spells these out, share one identity.
+    (the geometry left to the encoder preset or to ``dense`` filled in), so two plans that
+    extract the same features share one identity however the geometry was spelled.
     """
     from soma.cache.keys import _jsonable
-    from soma.encoders import encoder_registry
     from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
-    features = config.features
+    features = plan.features
     encoder = None
     if features.encoder is not None:
-        params = encoder_registry.canonical_params(features.encoder.name, features.encoder.params)
-        encoder = {"name": features.encoder.name, "params": _jsonable(params)}
-    extraction = resolve_pipeline_preprocessing(config)
+        encoder = {"name": features.encoder.name, "params": _jsonable(features.encoder.params)}
+    extraction = resolve_pipeline_preprocessing(plan)
     dense = None
-    if config.dataset_type in {"segmentation", "detection"}:
+    if plan.shape == "grid":
         dense = features.dense
         if dense is None and extraction.tiling is not None:
-            dense = resolve_pipeline_dense(config)
+            dense = resolve_pipeline_dense(plan)
     cache: dict[str, Any] = {
         "enabled": features.cache.enabled,
         "reuse_policy": features.cache.reuse_policy,
@@ -299,66 +277,37 @@ def _features_identity(config: PipelineConfig, *, cache_dtype: bool = False) -> 
     }
 
 
-def canonical_experiment_payload(config: PipelineConfig) -> dict[str, Any]:
-    dataset_path = Path(config.dataset_csv).resolve()
-    splits_path = Path(config.splits_csv).resolve()
-    if config.representation is not None:
-        representation = asdict(config.representation)
+def canonical_experiment_payload(plan: Plan) -> dict[str, Any]:
+    """What the experiment id digests: the plan's experiment-defining fields and the
+    content of the cohort files' {train, tune} slice (the representation split of a
+    CRoMa run).
+
+    Experiment identity is invariant to the *test* set (issue #247) and to the cohort
+    files' paths: dropping in a new or official test set leaves the experiment id, and the
+    leaderboard triple, unchanged, so a frozen checkpoint is re-scored rather than
+    retrained. Full-file and test-slice provenance is recorded on the run metadata.
+    """
+    dataset_path = Path(plan.cohort.records).resolve()
+    splits_path = Path(plan.cohort.splits).resolve()
+    representation = plan.evaluation.representation
+    if representation is not None:
         dataset_digest, splits_digest = _manifest_slice_digests(
-            dataset_path,
-            splits_path,
-            lambda name: name == config.representation.split,
+            dataset_path, splits_path, lambda name: name == representation.split
         )
         return {
             "identity_version": IDENTITY_VERSION,
             "dataset": {"checksum": dataset_digest},
             "splits": {"checksum": splits_digest},
-            "dataset_type": config.dataset_type,
-            "features": _features_identity(config, cache_dtype=True),
-            "task": None,
-            "representation": representation,
+            "features": _features_identity(plan, cache_dtype=True),
+            "representation": asdict(representation),
         }
-
-    # Experiment identity is invariant to the *test* set (issue #247): only the {train,
-    # tune} slice of the dataset + splits manifest enters the digest, so dropping in a
-    # new/official test set (which only adds test rows) leaves experiment_id — and the
-    # leaderboard triple — unchanged, letting a frozen checkpoint be re-scored rather than
-    # retrained. Full-file + test-slice provenance is recorded on the RunMetadata instead.
-    dataset_digest, splits_digest = _manifest_slice_digests(
-        dataset_path, splits_path, _is_training_split
-    )
-    payload: dict[str, Any] = {
+    dataset_digest, splits_digest = _manifest_slice_digests(dataset_path, splits_path, _is_training_split)
+    return {
         "identity_version": IDENTITY_VERSION,
-        # No manifest ``path`` here: identity is the {train,tune} content, not the machine-
-        # local file location, so a checkpoint is reused even when the official test set
-        # arrives as a *new* splits/dataset file rather than appended rows (issue #247).
-        # The resolved paths are still kept on ExperimentSpec + RunMetadata for provenance.
-        "dataset": {
-            "checksum": dataset_digest,
-        },
-        "splits": {
-            "checksum": splits_digest,
-        },
-        "dataset_type": config.dataset_type,
-        "features": _features_identity(config),
-        "aggregator": asdict(config.aggregator) if config.aggregator is not None else None,
-        "decoder": asdict(config.decoder) if config.decoder is not None else None,
-        "task": task_config_dict(config.task),
-        "evaluation": _evaluation_identity(config),
-        "heatmaps": _heatmap_identity(config),
-        "augmentation": config.augmentation,
-        "training": _training_identity(config),
-        "tags": list(config.tags),
+        "dataset": {"checksum": dataset_digest},
+        "splits": {"checksum": splits_digest},
+        **_plan_identity(plan),
     }
-    # Identity v2: the feature adaptor blocks are always part of the payload. ``none``
-    # is a value like any other; the guarded "only when non-default" form was a
-    # backward-compat device for pre-1.13 ids, which are no longer reproduced.
-    payload["normalization"] = {
-        "method": config.normalization.method,
-        "eps": config.normalization.eps,
-    }
-    payload["projection"] = asdict(config.projection)
-    return payload
 
 
 @dataclass(frozen=True)
@@ -388,25 +337,26 @@ class ExperimentSpec:
         }
 
 
-def build_experiment_spec(config: PipelineConfig) -> ExperimentSpec:
-    canonical_spec = canonical_experiment_payload(config)
+def build_experiment_spec(plan: Plan) -> ExperimentSpec:
+    canonical_spec = canonical_experiment_payload(plan)
     digest = hashlib.sha256(_stable_json(canonical_spec).encode("utf-8")).hexdigest()
     short_hash = digest[:12]
-    dataset_name = _slugify(Path(config.dataset_csv).stem)
-    encoder = config.features.encoder
+    dataset_name = _slugify(Path(plan.cohort.records).stem)
+    encoder = plan.features.encoder
     encoder_name = _slugify(encoder.name if encoder is not None else "precomputed")
-    aggregator_name = _slugify(config.aggregator.name if config.aggregator is not None else "slide")
-    task_name = _slugify(
-        config.task.name if config.task is not None else config.representation.kind
-    )
+    params = plan.learner.params if plan.learner is not None else {}
+    trained = params.get("aggregator") or params.get("decoder")
+    aggregator_name = _slugify(trained.name if trained is not None else "slide")
+    head = params.get("head")
+    task_name = _slugify(head.name if head is not None else (plan.learner.name if plan.learner else "croma"))
     slug = f"{dataset_name}-{encoder_name}-{aggregator_name}-{task_name}_{short_hash}"
     return ExperimentSpec(
         experiment_id=digest,
         slug=slug,
         short_hash=short_hash,
         experiment_dirname=slug,
-        dataset_path=Path(config.dataset_csv).resolve(),
-        splits_path=Path(config.splits_csv).resolve(),
+        dataset_path=Path(plan.cohort.records).resolve(),
+        splits_path=Path(plan.cohort.splits).resolve(),
         dataset_checksum=str(canonical_spec["dataset"]["checksum"]),
         splits_checksum=str(canonical_spec["splits"]["checksum"]),
         canonical_spec=canonical_spec,
@@ -520,7 +470,7 @@ def latest_existing_run_id(experiment_dir: Path) -> str | None:
 
 
 def _resolve_run_id(
-    config: PipelineConfig, experiment_dir: Path, *, when: datetime | None = None
+    plan: Plan, experiment_dir: Path, *, when: datetime | None = None
 ) -> str:
     """Pick the run id for this launch, honoring the resume directives (issue #244).
 
@@ -529,9 +479,9 @@ def _resolve_run_id(
     existing run for this experiment (error if none); otherwise a fresh
     timestamped id — the unchanged default.
     """
-    if config.run_id:
-        return config.run_id
-    if config.resume:
+    if plan.run.run_id:
+        return plan.run.run_id
+    if plan.run.resume:
         latest = latest_existing_run_id(experiment_dir)
         if latest is None:
             raise FileNotFoundError(
@@ -554,17 +504,17 @@ class ManagedOutputPaths:
 
 
 def resolve_managed_output_paths(
-    config: PipelineConfig,
+    plan: Plan,
     *,
     run_id: str | None = None,
     when: datetime | None = None,
 ) -> ManagedOutputPaths:
-    output_root = Path(config.output_root).resolve()
-    experiment = build_experiment_spec(config)
+    output_root = Path(plan.run.output_dir).resolve()
+    experiment = build_experiment_spec(plan)
     experiment_dir = output_root / "experiments" / experiment.experiment_dirname
     # An explicit run_id arg (e.g. tests, leaderboard replay) pins the run as-is;
     # otherwise consult the config's resume directives (issue #244).
-    resolved_run_id = run_id or _resolve_run_id(config, experiment_dir, when=when)
+    resolved_run_id = run_id or _resolve_run_id(plan, experiment_dir, when=when)
     run_dir = experiment_dir / "runs" / resolved_run_id
     return ManagedOutputPaths(
         output_root=output_root,
@@ -579,7 +529,7 @@ def resolve_managed_output_paths(
 
 def create_run_metadata(
     *,
-    config: PipelineConfig,
+    plan: Plan,
     experiment: ExperimentSpec,
     run_dir: Path,
     run_id: str,
@@ -592,25 +542,26 @@ def create_run_metadata(
     wandb_url: str | None = None,
 ) -> RunMetadata:
     git_state = soma_git_state()
-    dataset_path = Path(config.dataset_csv)
-    splits_path = Path(config.splits_csv)
-    if config.representation is not None:
+    dataset_path = Path(plan.cohort.records)
+    splits_path = Path(plan.cohort.splits)
+    if plan.evaluation.representation is not None:
         comparison_key = {
             "kind": "representation",
             "dataset_checksum": experiment.dataset_checksum,
             "splits_checksum": experiment.splits_checksum,
-            "representation": asdict(config.representation),
+            "representation": asdict(plan.evaluation.representation),
         }
         from importlib.metadata import version
 
         croma_version = version("croma")
         representation_provenance = {"croma": croma_version}
     else:
+        head = plan.learner.params.get("head") if plan.learner is not None else None
         comparison_key = {
             "kind": "task",
             "dataset_checksum": experiment.dataset_checksum,
             "splits_checksum": experiment.splits_checksum,
-            "task": config.task.name if config.task is not None else "",
+            "task": head.name if head is not None else "",
         }
         representation_provenance = {}
     return RunMetadata(
@@ -619,7 +570,7 @@ def create_run_metadata(
         status=status,
         started_at=started_at or _timestamp_now(),
         finished_at=finished_at,
-        seed=config.training.seed,
+        seed=plan.run.seed,
         wandb_id=wandb_id,
         wandb_url=wandb_url,
         git_sha=git_state.sha,
@@ -630,7 +581,7 @@ def create_run_metadata(
         summary_metrics=summary_metrics or {},
         error=error,
         environment=capture_environment(),
-        test_checksum=test_identity_digest(config),
+        test_checksum=test_identity_digest(plan),
         dataset_file_checksum=_sha256_file(dataset_path) if dataset_path.is_file() else "",
         splits_file_checksum=_sha256_file(splits_path) if splits_path.is_file() else "",
         comparison_key=comparison_key,
@@ -858,18 +809,24 @@ def register_test_result(
 # ---------------------------------------------------------------------------
 
 
-def open_run(config: PipelineConfig, *, num_folds: int):
-    """Create (or reopen) the run directory a config writes to.
+#: What a run dir records: the config as given, and the plan it resolved to.
+CONFIG_FILENAME = "config.yaml"
+PLAN_FILENAME = "plan.yaml"
+
+
+def open_run(plan: Plan, *, config: ExperimentConfig | None = None, num_folds: int):
+    """Create (or reopen) the run directory a plan writes to.
 
     Restores completed folds from the artifact mirror, resolves the managed layout,
-    writes the experiment metadata, refuses a resume whose config or manifests drifted,
-    records the config and returns ``(layout, mirror)``; ``mirror`` is ``None`` without
+    writes the experiment metadata, refuses a resume whose plan or manifests drifted,
+    records ``config.yaml`` (``config`` as given; the plan's config when none is given)
+    and ``plan.yaml``, and returns ``(layout, mirror)``; ``mirror`` is ``None`` without
     ``run.mirror_root``.
     """
     from soma.pipeline.mirror import ArtifactMirror, restore_run_from_mirror
 
-    restored_run_id = restore_run_from_mirror(config, num_folds=num_folds)
-    layout = resolve_managed_output_paths(config, run_id=restored_run_id)
+    restored_run_id = restore_run_from_mirror(plan, num_folds=num_folds)
+    layout = resolve_managed_output_paths(plan, run_id=restored_run_id)
     for directory in (
         layout.output_root,
         layout.experiment_dir,
@@ -879,80 +836,78 @@ def open_run(config: PipelineConfig, *, num_folds: int):
     ):
         directory.mkdir(parents=True, exist_ok=True)
     write_experiment_metadata(layout.experiment_dir, layout.experiment)
-    # Runs before save_config overwrites the record it compares against.
-    guard_resume_config_drift(layout.run_dir, config)
-    save_config(config, layout.run_dir / "config.yaml")
+    # Runs before plan.yaml is overwritten with the record it compares against.
+    guard_resume_plan_drift(layout.run_dir, plan)
+    record_plan(layout.run_dir, plan, config=config)
     mirror = None
-    if config.mirror_root is not None:
+    if plan.run.mirror_root is not None:
         mirror = ArtifactMirror(
             run_dir=layout.run_dir,
-            mirror_run_dir=Path(config.mirror_root) / layout.run_dir.relative_to(layout.output_root),
+            mirror_run_dir=Path(plan.run.mirror_root) / layout.run_dir.relative_to(layout.output_root),
         )
         mirror.retry_pending()
     return layout, mirror
 
 
-def guard_resume_config_drift(run_dir: Path, config: PipelineConfig) -> None:
-    """Refuse to resume into a run dir whose saved config differs from the current one.
+def record_plan(run_dir: Path, plan: Plan, *, config: ExperimentConfig | None = None) -> None:
+    """Write ``config.yaml`` (as given) and ``plan.yaml`` into ``run_dir``."""
+    (config if config is not None else plan.config).to_yaml(Path(run_dir) / CONFIG_FILENAME)
+    plan.to_yaml(Path(run_dir) / PLAN_FILENAME)
 
-    Only a resume (``resume``/``run_id`` set) that lands on an existing ``config.yaml``
-    is checked — a fresh run, or a pinned run id naming a not-yet-created dir, has
-    nothing to compare against. The comparison is over the persisted YAML form
-    (:func:`config_yaml_dict`, which omits the ``resume``/``run_id`` directives), so an
-    otherwise-identical relaunch passes while a changed seed, split file, encoder, or
-    eval protocol is caught before it silently mixes incompatible folds (issue #244)."""
-    if not (config.resume or config.run_id):
+
+def guard_resume_plan_drift(run_dir: Path, plan: Plan) -> None:
+    """Refuse to resume into a run dir whose saved plan differs from the current one.
+
+    Only a resume (``run.resume`` / ``run.run_id``) that lands on an existing
+    ``plan.yaml`` is checked: a fresh run, or a pinned run id naming a not-yet-created
+    dir, has nothing to compare against. The plans are compared without where and how a
+    launch runs (``run.output_dir``, ``run.run_id``, ``run.resume``, ``run.mirror_root``,
+    and ``run.folds``, the folds this launch takes on) and the execution fields slide2vec
+    resolves for the machine (:meth:`Plan.comparable`), so an otherwise identical relaunch
+    passes while a changed seed, encoder, head or evaluation protocol is caught before it
+    mixes incompatible folds (issue #244). The manifest guard then checks the cohort
+    files' content."""
+    if not (plan.run.resume or plan.run.run_id):
         return
-    saved_path = run_dir / "config.yaml"
+    saved_path = Path(run_dir) / PLAN_FILENAME
     if not saved_path.is_file():
         return
-    saved = yaml.safe_load(saved_path.read_text(encoding="utf-8")) or {}
-    # Round-trip the current config through YAML so both sides are the same primitive
-    # shapes (tuples→lists, Paths→str) and compare cleanly.
-    current = yaml.safe_load(yaml.safe_dump(config_yaml_dict(config)))
-    # GPU and worker counts slide2vec resolves for the machine are operational, and so is
-    # shared-storage routing: a resume may repoint a pending spool without changing the
-    # training recipe that produced its checkpoint.
-    saved, current = without_machine_resolved_fields(saved), without_machine_resolved_fields(current)
-    for payload in (saved, current):
-        run = payload.get("run")
-        if isinstance(run, dict):
-            run.pop("mirror_root", None)
+    saved = comparable(yaml.safe_load(saved_path.read_text(encoding="utf-8")) or {})
+    # Round-trip the current plan through YAML so both sides are the same primitives.
+    current = comparable(yaml.safe_load(plan.to_yaml()))
     if saved == current:
-        guard_resume_manifest_drift(run_dir, config)
+        guard_resume_manifest_drift(run_dir, plan)
         return
-    differing = sorted(
-        key for key in set(saved) | set(current) if saved.get(key) != current.get(key)
-    )
+    differing = sorted(key for key in set(saved) | set(current) if saved.get(key) != current.get(key))
     raise ValueError(
-        f"Refusing to resume run '{run_dir.name}': its saved config.yaml differs from the "
-        f"current config (differing top-level sections: {differing}). Resuming would mix "
-        "folds trained under different recipes. Start a fresh run, or reconcile the config "
-        "to match the existing run."
+        f"Refusing to resume run '{Path(run_dir).name}': its saved plan.yaml differs from the "
+        f"current plan (differing sections: {differing}). Resuming would mix folds trained "
+        "under different recipes. Start a fresh run, or reconcile the config to match the "
+        "existing run."
     )
 
 
-def guard_resume_manifest_drift(run_dir: Path, config: PipelineConfig) -> None:
+def guard_resume_manifest_drift(run_dir: Path, plan: Plan) -> None:
     """Refuse to resume when the train/tune manifest *content* changed under the same paths.
 
-    ``config.yaml`` only records the dataset/splits file paths. The run's ``run.yaml``
-    carries the ``experiment_id`` minted from the train+tune slice content, so recompute
-    that identity for the current files and compare: an edited label or reshuffled fold
-    with unchanged paths is caught here rather than mixing folds trained on different data.
+    ``plan.yaml`` only records the cohort file paths. The run's ``run.yaml`` carries the
+    ``experiment_id`` minted from the train+tune slice content, so recompute that identity
+    for the current files and compare: an edited label or reshuffled fold with unchanged
+    paths is caught here rather than mixing folds trained on different data.
     """
-    run_yaml = run_dir / "run.yaml"
+    run_yaml = Path(run_dir) / "run.yaml"
     if not run_yaml.is_file():
         return
     saved = yaml.safe_load(run_yaml.read_text(encoding="utf-8")) or {}
     saved_experiment_id = saved.get("experiment_id")
     if not saved_experiment_id:
         return
-    current_experiment_id = build_experiment_spec(config).experiment_id
+    current_experiment_id = build_experiment_spec(plan).experiment_id
     if saved_experiment_id == current_experiment_id:
         return
     raise ValueError(
-        f"Refusing to resume run '{run_dir.name}': the train/tune content of "
-        f"{config.dataset_csv} / {config.splits_csv} differs from what the run was trained "
+        f"Refusing to resume run '{Path(run_dir).name}': the train/tune content of "
+        f"{plan.cohort.records} / {plan.cohort.splits} differs from what the run was trained "
         f"on (experiment identity {str(saved_experiment_id)[:12]} → "
         f"{current_experiment_id[:12]}). Resuming would mix folds trained on different "
         "data. Start a fresh run, or restore the original manifests."
@@ -968,9 +923,9 @@ class RunRecorder:
     exists) advances the latest pointer before re-raising.
     """
 
-    def __init__(self, layout: ManagedOutputPaths, config: PipelineConfig) -> None:
+    def __init__(self, layout: ManagedOutputPaths, plan: Plan) -> None:
         self._layout = layout
-        self._config = config
+        self._plan = plan
         self._metadata: RunMetadata | None = None
         self._summary_metrics: dict[str, float] | None = None
         self._pending_folds: tuple[int, ...] = ()
@@ -978,7 +933,7 @@ class RunRecorder:
     def __enter__(self) -> "RunRecorder":
         layout = self._layout
         self._metadata = create_run_metadata(
-            config=self._config,
+            plan=self._plan,
             experiment=layout.experiment,
             run_dir=layout.run_dir,
             run_id=layout.run_id,

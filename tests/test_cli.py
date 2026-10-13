@@ -6,29 +6,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from soma.config import (
-    AggregatorConfig,
-    FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
-    save_config,
-)
+from soma.config import FeaturesConfig
+from tests.experiment_configs import experiment
 
 
 def _make_valid_config(tmp_path: Path) -> Path:
-    cfg = PipelineConfig(
-        dataset_csv="data/dataset.csv",
-        splits_csv="data/splits.csv",
-        output_root="runs",
-        dataset_type="slide",
-        features=FeaturesConfig(encoder="uni2"),
-        aggregator=AggregatorConfig(name="abmil"),
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=5),
+    cfg = experiment(
+        'data/dataset.csv',
+        'data/splits.csv',
+        output_dir='runs',
+        features=FeaturesConfig(encoder='uni2'),
+        aggregator='abmil',
+        trainer={"max_epochs": 5},
+        scheduler='cosine',
     )
     path = tmp_path / "config.yaml"
-    save_config(cfg, path)
+    cfg.to_yaml(path)
     return path
 
 
@@ -43,14 +36,14 @@ def test_run_shorthand_passes_config_and_runs_pipeline(tmp_path: Path):
     MockPipeline.return_value.run.assert_called_once()
     config_arg = MockPipeline.call_args[0][0]
     assert config_arg.features.encoder.name == "uni2"
-    assert config_arg.task.name == "binary_classification"
+    assert config_arg.learner.params["head"].name == "binary_classification"
 
 
 # --- --set overrides ---
 
 
 def _run_with_args(config_args: list[str]):
-    """Run main() with Pipeline patched; return the PipelineConfig it received."""
+    """Run main() with Pipeline patched; return the ExperimentConfig it received."""
     with patch("soma.cli.Pipeline") as MockPipeline:
         MockPipeline.return_value = MagicMock()
         from soma.cli import main
@@ -60,33 +53,33 @@ def _run_with_args(config_args: list[str]):
 
 def test_set_override_repoints_scalar(tmp_path: Path):
     config_path = _make_valid_config(tmp_path)
-    config_arg = _run_with_args([str(config_path), "--set", "encoder.name=phikon"])
+    config_arg = _run_with_args([str(config_path), "--set", "features.encoder.name=phikon"])
     assert config_arg.features.encoder.name == "phikon"
 
 
 def test_set_override_parses_value_type(tmp_path: Path):
     config_path = _make_valid_config(tmp_path)
-    config_arg = _run_with_args([str(config_path), "--set", "training.epochs=3"])
+    config_arg = _run_with_args([str(config_path), "--set", "trainer.max_epochs=3"])
     # YAML-parsed, so it lands as an int, not the string "3".
-    assert config_arg.training.epochs == 3
-    assert isinstance(config_arg.training.epochs, int)
+    assert config_arg.trainer.max_epochs == 3
+    assert isinstance(config_arg.trainer.max_epochs, int)
 
 
 def test_set_override_equals_form_and_paths(tmp_path: Path):
     config_path = _make_valid_config(tmp_path)
     config_arg = _run_with_args(
-        [str(config_path), "--set=data.dataset_csv=/elsewhere/dataset.csv"]
+        [str(config_path), "--set=cohort.records=/elsewhere/dataset.csv"]
     )
-    assert str(config_arg.dataset_csv) == "/elsewhere/dataset.csv"
+    assert str(config_arg.cohort.records) == "/elsewhere/dataset.csv"
 
 
 def test_multiple_set_overrides(tmp_path: Path):
     config_path = _make_valid_config(tmp_path)
     config_arg = _run_with_args(
-        [str(config_path), "--set", "encoder.name=phikon", "--set", "run.output_root=/out"]
+        [str(config_path), "--set", "features.encoder.name=phikon", "--set", "run.output_dir=/out"]
     )
     assert config_arg.features.encoder.name == "phikon"
-    assert str(config_arg.output_root) == "/out"
+    assert str(config_arg.run.output_dir) == "/out"
 
 
 def test_parse_set_overrides_builds_nested_dict():
@@ -145,21 +138,16 @@ def test_feature_dir_attaches_a_cached_set_source(tmp_path: Path):
 
 
 def test_feature_dir_attaches_a_cached_grid_source_for_a_dense_task(tmp_path: Path):
-    from soma.config import DecoderConfig
     from soma.dense import CachedGridSource
 
     config_path = tmp_path / "config.yaml"
-    save_config(
-        PipelineConfig(
-            dataset_csv="data/dataset.csv",
-            splits_csv="data/splits.csv",
-            output_root="runs",
-            dataset_type="segmentation",
-            decoder=DecoderConfig(name="lightweight_conv"),
-            task=TaskConfig(name="segmentation", params={"num_classes": 2}),
-        ),
-        config_path,
-    )
+    experiment(
+        "data/dataset.csv",
+        "data/splits.csv",
+        decoder="lightweight_conv",
+        head="segmentation",
+        head_params={"num_classes": 2},
+    ).to_yaml(config_path)
     grids = tmp_path / "grids"
     grids.mkdir()
 
@@ -206,13 +194,10 @@ def test_run_invalid_yaml_exits(tmp_path: Path, capsys):
 
 
 def test_run_invalid_config_content_exits(tmp_path: Path, capsys):
-    # Valid YAML but invalid dataset_type.
+    # Valid YAML but an unknown section.
     raw = {
-        "data": {
-            "dataset_csv": "data.csv",
-            "splits_csv": "splits.csv",
-            "dataset_type": "case",
-        }
+        "cohort": {"records": "data.csv", "splits": "splits.csv"},
+        "data": {"dataset_type": "case"},
     }
     config_path = tmp_path / "config.yaml"
     with config_path.open("w") as f:

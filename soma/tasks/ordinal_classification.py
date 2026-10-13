@@ -11,7 +11,7 @@ from torch import Tensor, nn
 
 from soma.evaluation.metrics import compute_metrics, resolve_metrics
 from soma.tasks.base import TaskHead, build_input_dropout
-from soma.tasks.classification import ClassificationParams, _extract_categorical_target, infer_label_map
+from soma.tasks.classification import ClassificationParams, _extract_categorical_target, infer_ordinal_label_map
 from soma.tasks.registry import task_registry
 
 if TYPE_CHECKING:
@@ -80,5 +80,5 @@ class OrdinalClassificationHead(TaskHead):
 
 
 task_registry.register(
-    "ordinal_classification", OrdinalClassificationHead, params=ClassificationParams, infer=infer_label_map
+    "ordinal_classification", OrdinalClassificationHead, params=ClassificationParams, infer=infer_ordinal_label_map
 )

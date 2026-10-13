@@ -41,7 +41,7 @@ from soma.cache.features import FeatureCacheResolution, _validate_feature_cache_
 from soma.cache.tiling import _validate_tiling_cache_contents
 from slide2vec import ExecutionOptions
 
-from soma.config import CacheConfig
+from soma.config import CacheOptions
 from tests.extraction_configs import extraction
 from soma.data._legacy import legacy_samples_from_csv
 
@@ -260,7 +260,7 @@ def test_build_tiling_cache_key_changes_with_preprocessing(tmp_path: Path):
 
 def test_resolve_tiling_cache_root_is_sibling_of_feature_cache(tmp_path: Path):
     root = resolve_tiling_cache_root(
-        CacheConfig(root_dir=tmp_path / "shared" / "feature_cache"),
+        CacheOptions(root_dir=tmp_path / "shared" / "feature_cache"),
         tiling_dir=tmp_path / "run" / "tiling",
     )
     assert root == tmp_path / "shared" / "tiling_cache"
@@ -268,7 +268,7 @@ def test_resolve_tiling_cache_root_is_sibling_of_feature_cache(tmp_path: Path):
 
 def test_resolve_cache_root_uses_output_root_when_provided(tmp_path: Path):
     root = resolve_cache_root(
-        CacheConfig(),
+        CacheOptions(),
         feature_dir=tmp_path / "run" / "features",
         output_root=tmp_path / "outputs",
     )
@@ -277,7 +277,7 @@ def test_resolve_cache_root_uses_output_root_when_provided(tmp_path: Path):
 
 def test_resolve_tiling_cache_root_uses_output_root_when_provided(tmp_path: Path):
     root = resolve_tiling_cache_root(
-        CacheConfig(),
+        CacheOptions(),
         tiling_dir=tmp_path / "run" / "tiling",
         output_root=tmp_path / "outputs",
     )

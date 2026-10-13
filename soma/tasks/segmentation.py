@@ -22,7 +22,7 @@ from torch import Tensor
 from soma.dense.reader import accepted_mask_values
 from soma.dense.reader import load_mask as load_mask
 from soma.evaluation.metrics import resolve_metrics
-from soma.params import check_non_negative, check_positive
+from soma.params import check_non_negative, check_positive, run_decided
 from soma.tasks.base import TaskHead, as_grid_geometry
 from soma.tasks.dense_metrics import (
     dense_confusion_counts,
@@ -40,10 +40,15 @@ if TYPE_CHECKING:
 
 @dataclass
 class SegmentationParams:
-    """:class:`SegmentationHead`'s loss params. ``num_classes`` (and the class names and
-    label remap) follow from the task's class scheme; ``geometry`` from the grid source;
-    the spacing and mask-read backends from preprocessing; ``metrics`` from evaluation."""
+    """:class:`SegmentationHead`'s params. The class scheme is ``classes`` (class name ->
+    the raw mask value(s) forming it) and ``ignore`` (raw values left out of loss and
+    metrics), or a bare ``num_classes`` when the masks already hold class indices; the run
+    turns it into the class count, names and label remap. ``geometry`` comes from the grid
+    source, the spacing and mask-read backends from the features, ``metrics`` from the
+    evaluation section."""
 
+    classes: dict[str, Any] | None = run_decided()
+    ignore: list[int] | int | None = run_decided()
     num_classes: int | None = None
     ignore_index: int = 255
     dice_weight: float = 1.0
@@ -177,7 +182,7 @@ class SegmentationHead(TaskHead):
         # Reads each mask's image (the slide for an ROI) to align the mask to it.
         self._image_backend = image_backend
         self._tolerance = float(tolerance)
-        # Optional raw-pixel → class-index LUT built from task.params.classes / ignore
+        # Optional raw-pixel → class-index LUT built from the head's classes / ignore
         # (see soma.dense.reader.build_label_remap). None ⇒ masks are already contiguous
         # class indices.
         if label_remap is not None:
@@ -221,7 +226,7 @@ class SegmentationHead(TaskHead):
 
     @property
     def label_remap(self) -> "np.ndarray | None":
-        """The raw-pixel → class-index LUT from ``task.params.classes`` (``None`` without)."""
+        """The raw-pixel → class-index LUT from the head's ``classes`` (``None`` without)."""
         return self._label_remap
 
     @property

@@ -118,11 +118,16 @@ def test_public_import_surface_dependencies_are_declared():
 
 def test_top_level_package_exports_dense_configuration_and_discovery_surface():
     import soma
-    from soma.config import EncoderLeaf, FeaturesConfig
+    from soma.config import CacheOptions, Component, EncoderLeaf, ExperimentConfig
+    from soma.plan import Plan, resolve
 
     expected_exports = {
-        "FeaturesConfig": FeaturesConfig,
+        "ExperimentConfig": ExperimentConfig,
+        "Plan": Plan,
+        "resolve": resolve,
+        "Component": Component,
         "EncoderLeaf": EncoderLeaf,
+        "CacheOptions": CacheOptions,
         "components": soma.discovery.components,
         "register": soma.discovery.register,
         "DenseModel": soma.training.model.DenseModel,

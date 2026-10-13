@@ -25,16 +25,18 @@ from pathlib import Path
 
 import pandas as pd
 
-from soma import (
-    AggregatorConfig,
-    EvalConfig,
+from soma import Component, ExperimentConfig, Plan
+from soma.config import (
+    CohortConfig,
+    EvaluationConfig,
     FeaturesConfig,
-    PipelineConfig,
-    TaskConfig,
-    TrainingConfig,
+    LearnerConfig,
+    RunConfig,
+    TrainerConfig,
 )
 from soma.encoders import resolve_aggregator
 from soma.pipeline.layout import build_experiment_spec
+from soma.plan import check
 
 # --- Scaffolding (not soma API): manifest CSVs only -------------------------------
 # Config validation never opens the images, so the manifests are enough.
@@ -55,47 +57,49 @@ pd.DataFrame(
 ).to_csv(splits_csv, index=False)
 
 # --- 1. One fixed MIL recipe ------------------------------------------------------
-RECIPE = AggregatorConfig(name="abmil", params={"hidden_dim": 128})
+RECIPE = Component("abmil", {"hidden_dim": 128})
 print(f"fixed MIL recipe: {RECIPE.name} params={RECIPE.params}")
 
 
-def build_validated_config(encoder_name: str) -> PipelineConfig:
-    """Resolve the recipe for one encoder and build a validated PipelineConfig.
+def build_validated_config(encoder_name: str) -> ExperimentConfig:
+    """Resolve the recipe for one encoder and build a checked ExperimentConfig.
 
-    PipelineConfig validates its component combination on construction; no
-    encoder weights are loaded.
+    :func:`soma.plan.check` validates the component combination; no encoder weights
+    are loaded.
     """
     aggregator = resolve_aggregator(encoder_name, RECIPE)
-    return PipelineConfig(
-        dataset_csv=str(dataset_csv),
-        splits_csv=str(splits_csv),
-        output_root=WORK / "outputs" / encoder_name,
-        dataset_type="slide",
+    params = {"head": "binary_classification"}
+    if aggregator is not None:
+        params["aggregator"] = aggregator
+    config = ExperimentConfig(
+        run=RunConfig(output_dir=WORK / "outputs" / encoder_name, seed=0),
+        cohort=CohortConfig(records=dataset_csv, splits=splits_csv),
         # Tile size and spacing resolve from the encoder's preset when the run extracts.
         features=FeaturesConfig(encoder=encoder_name),
-        aggregator=aggregator,
-        task=TaskConfig(name="binary_classification"),
-        training=TrainingConfig(epochs=5, seed=0),
-        evaluation=EvalConfig(metrics=["balanced_accuracy"]),
+        learner=LearnerConfig("mil", params),
+        trainer=TrainerConfig(max_epochs=5),
+        evaluation=EvaluationConfig(metrics=["balanced_accuracy"]),
     )
+    check(config)
+    return config
 
 
 # --- 2. Tile encoder: the recipe applies unchanged --------------------------------
 tile_config = build_validated_config("phikon")
-tile_spec = build_experiment_spec(tile_config)
+tile_spec = build_experiment_spec(Plan(tile_config))
+tile_aggregator = tile_config.learner.params["aggregator"]
 print()
 print("phikon (tile encoder):")
-print(f"  resolved aggregator: {tile_config.aggregator.name} "
-      f"params={tile_config.aggregator.params}")
-print(f"  PipelineConfig validated -> experiment slug: {tile_spec.slug}")
+print(f"  resolved aggregator: {tile_aggregator.name} params={tile_aggregator.params}")
+print(f"  config checked -> experiment slug: {tile_spec.slug}")
 
 # --- 3. Slide encoder: no aggregator ----------------------------------------------
 slide_config = build_validated_config("titan")
-slide_spec = build_experiment_spec(slide_config)
+slide_spec = build_experiment_spec(Plan(slide_config))
 print()
 print("titan (slide encoder):")
-print(f"  resolved aggregator: {slide_config.aggregator}")
-print(f"  PipelineConfig validated -> experiment slug: {slide_spec.slug}")
+print(f"  resolved aggregator: {slide_config.learner.params.get('aggregator')}")
+print(f"  config checked -> experiment slug: {slide_spec.slug}")
 
 # --- 4. Patient encoder: refused with a clear error -------------------------------
 print()
@@ -105,5 +109,5 @@ try:
 except ValueError as error:
     print(f"  refused as expected: {error}")
 
-assert tile_config.aggregator == RECIPE
-assert slide_config.aggregator is None
+assert tile_aggregator == RECIPE
+assert "aggregator" not in slide_config.learner.params

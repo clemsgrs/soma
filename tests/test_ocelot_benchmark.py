@@ -64,15 +64,15 @@ def test_build_config_loads_committed_anchor_yaml():
     cfg = OCELOT.build_config(
         dataset_csv="/x/dataset.csv", splits_csv="/x/splits.csv", output_root="/out", seed=3
     )
-    assert cfg.dataset_type == "detection"
+    assert cfg.learner.name == "dense" and cfg.learner.params["head"].name == "detection"
     assert cfg.features.encoder.name == "virchow2"
-    assert cfg.decoder.name == "lightweight_conv"
+    assert cfg.learner.params["decoder"].name == "lightweight_conv"
     # No spacing given (as reproduce now calls it): the protocol fixes it at the anchor.
-    assert cfg.features.extraction.tiling.requested_spacing_um == pytest.approx(0.2)
-    assert str(cfg.dataset_csv) == "/x/dataset.csv"
-    assert str(cfg.splits_csv) == "/x/splits.csv"
-    assert str(cfg.output_root) == "/out"
-    assert cfg.training.seed == 3
+    assert cfg.features.dense.spacing_um == pytest.approx(0.2)
+    assert str(cfg.cohort.records) == "/x/dataset.csv"
+    assert str(cfg.cohort.splits) == "/x/splits.csv"
+    assert str(cfg.run.output_dir) == "/out"
+    assert cfg.run.seed == 3
 
 
 @pytest.mark.parametrize(
@@ -91,16 +91,16 @@ def test_build_config_selects_one_native_manifest_for_every_protocol(
     cfg = OCELOT.build_config(encoder=encoder, spacing=spacing)
 
     assert cfg.features.encoder.name == encoder
-    assert cfg.features.extraction.tiling.requested_spacing_um == pytest.approx(spacing)
-    assert cfg.features.extraction.tiling.requested_tile_size_px == target_size
-    assert Path(cfg.dataset_csv).parts[-3:] == ("ocelot", "curated", "dataset.csv")
-    assert Path(cfg.splits_csv).parts[-3:] == ("ocelot", "curated", "splits.csv")
+    assert cfg.features.dense.spacing_um == pytest.approx(spacing)
+    assert cfg.features.dense.target_size == target_size
+    assert Path(cfg.cohort.records).parts[-3:] == ("ocelot", "curated", "dataset.csv")
+    assert Path(cfg.cohort.splits).parts[-3:] == ("ocelot", "curated", "splits.csv")
 
 
 def test_build_config_accepts_unreferenced_encoder_at_packaged_spacing():
     cfg = OCELOT.build_config(encoder="phikon", spacing=0.2)
     assert cfg.features.encoder.name == "phikon"
-    assert cfg.features.extraction.tiling.requested_spacing_um == pytest.approx(0.2)
+    assert cfg.features.dense.spacing_um == pytest.approx(0.2)
     assert cfg.features.encoder.allow_non_recommended_settings is True
 
 

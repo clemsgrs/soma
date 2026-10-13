@@ -1,8 +1,10 @@
 """``Pipeline``: the managed run, composed of the public verbs (ADR 0017).
 
-``run()`` only orchestrates: the canonical per-fold order is
-:func:`~soma.pipeline.folds.run_fold`, config → objects is :mod:`soma.pipeline.build`,
-the run layout and resume guards are :mod:`soma.pipeline.layout`.
+``Pipeline(config)`` reads the cohort and resolves the config into its
+:class:`~soma.plan.Plan` once (ADR 0020); everything after reads the plan. ``run()`` only
+orchestrates: the canonical per-fold order is :func:`~soma.pipeline.folds.run_fold`,
+plan → objects is :mod:`soma.pipeline.build`, the run layout and resume guards are
+:mod:`soma.pipeline.layout`.
 """
 
 from __future__ import annotations
@@ -17,11 +19,11 @@ from rich.console import Console
 from soma._logging import ensure_default_logging
 from soma.atomic_io import atomic_write_json
 from soma.cache import resolve_cache_root
-from soma.config import PipelineConfig
+from soma.config import ExperimentConfig
 from soma.data import AnnotationManifest, Cohort, ImageManifest
 from soma.pipeline._legacy import LegacyFolds, LegacySamples, legacy_inputs
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_summary
-from soma.pipeline.build import RunInputs, attach_source, build_fold, extraction_shape, load_pipeline_data
+from soma.pipeline.build import RunInputs, attach_source, build_fold, load_pipeline_data
 from soma.pipeline.console import build_completed_run_panel, build_run_summary_panel
 from soma.pipeline.folds import FoldResult, run_fold
 from soma.pipeline.layout import (
@@ -35,6 +37,7 @@ from soma.pipeline.layout import (
     test_identity_digest,
 )
 from soma.pipeline.representation import run_representation
+from soma.plan import Plan, check, dotted_packages, resolve
 from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 __all__ = ["Pipeline", "PipelineResult"]
@@ -63,27 +66,40 @@ class PipelineResult:
 class Pipeline:
     """Runs a config: attach or extract features → train every fold → summarize.
 
+    The constructor reads the cohort and resolves ``config`` into its :attr:`plan`
+    (:func:`soma.resolve`), so a bad config fails before anything is extracted.
+
     Args:
-        config: Complete pipeline specification.
+        config: The experiment (:class:`~soma.config.ExperimentConfig`).
         source: Features to train on (a :class:`~soma.data.SetSource`,
             :class:`~soma.data.GridSource` or, for a live grid run, the pixels'
             :class:`~soma.data.ImageSource`). Without one, ``run()`` extracts them as the
             config describes (or builds the live encoder stage).
     """
 
-    def __init__(self, config: PipelineConfig, *, source: Any = None) -> None:
+    def __init__(self, config: ExperimentConfig, *, source: Any = None) -> None:
         ensure_default_logging()
+        if not isinstance(config, ExperimentConfig):
+            raise TypeError(f"Pipeline takes an ExperimentConfig, got {type(config).__name__}")
+        check(config)  # config errors surface before any data is read
         self._config = config
         self._source = source
         self._cohort, self._image_manifest, self._annotation_manifest = load_pipeline_data(config)
+        self._plan = resolve(config, self._cohort)
         # Fat-record bridge (slice 7 deletes it): the builders still consume these.
         self._dataset, self._splits = legacy_inputs(
-            self._cohort, self._image_manifest, self._annotation_manifest, path=config.dataset_csv
+            self._cohort, self._image_manifest, self._annotation_manifest, path=config.cohort.records
         )
 
     @property
-    def config(self) -> PipelineConfig:
+    def config(self) -> ExperimentConfig:
+        """The config as given (``config.yaml``)."""
         return self._config
+
+    @property
+    def plan(self) -> Plan:
+        """The resolved plan (``plan.yaml``) every step of the run reads."""
+        return self._plan
 
     @property
     def source(self) -> Any:
@@ -112,11 +128,11 @@ class Pipeline:
 
     def run(self) -> PipelineResult:
         """Run every fold not yet complete on disk, then summarize the run from disk."""
-        if self._config.representation is not None:
+        plan, num_folds = self._plan, self._splits.num_folds
+        if plan.evaluation.representation is not None:
             return run_representation(self)
-        config, num_folds = self._config, self._splits.num_folds
-        layout, mirror = open_run(config, num_folds=num_folds)
-        with RunRecorder(layout, config) as recorder:
+        layout, mirror = open_run(plan, config=self._config, num_folds=num_folds)
+        with RunRecorder(layout, plan) as recorder:
             inputs = self._prepare(layout)
             results = []
             for fold, fold_split in enumerate(inputs.splits.folds):
@@ -138,11 +154,11 @@ class Pipeline:
             summary = aggregate_fold_metrics_from_disk(
                 layout.run_dir,
                 single_fold=num_folds == 1,
-                include_tune=config.evaluation.holdout_test,
+                include_tune=plan.evaluation.holdout_test,
                 num_folds=num_folds,
             )
             save_summary(summary, layout.run_dir / "summary.json")
-            if config.heatmaps.enabled:
+            if plan.evaluation.attention_heatmaps is not None:
                 self._render_heatmaps(layout.run_dir, inputs)
             _write_source_provenance(layout.run_dir, inputs.source)
             Console().print(build_completed_run_panel(summary_metrics=summary))
@@ -153,43 +169,34 @@ class Pipeline:
 
     def _prepare(self, layout) -> RunInputs:
         """Attach the source, apply the test-clobber guard and print the run summary."""
-        config = self._config
+        plan = self._plan
+        folds = plan.run.folds
         if self._splits.num_folds > 1:
             reject_undeclared_fold_dirs(layout.run_dir, self._splits.num_folds)
-        if config.folds is not None:
-            unknown = sorted(set(config.folds) - set(range(self._splits.num_folds)))
+        if folds is not None:
+            unknown = sorted(set(folds) - set(range(self._splits.num_folds)))
             if self._splits.num_folds == 1 or unknown:
                 raise ValueError(
-                    f"run.folds={list(config.folds)} does not fit the splits: they declare "
+                    f"run.folds={list(folds)} does not fit the splits: they declare "
                     f"{self._splits.num_folds} fold(s), indexed from 0."
                 )
         context = attach_source(
-            config,
+            plan,
             source=self._source,
             dataset=self._dataset,
             splits=self._splits,
             image_manifest=self._image_manifest,
             run_dir=layout.run_dir,
         )
-        preprocessing = resolve_pipeline_preprocessing(config)
+        preprocessing = resolve_pipeline_preprocessing(plan)
         dense = None
-        if extraction_shape(config.dataset_type) == "grid":
-            dense = config.features.dense
+        if plan.shape == "grid":
+            dense = plan.features.dense
             if dense is None and preprocessing.tiling is not None:
-                dense = resolve_pipeline_dense(config)
-        Console().print(
-            build_run_summary_panel(
-                encoder=config.features.encoder,
-                preprocessing=preprocessing,
-                aggregator=config.aggregator,
-                task=config.task,
-                feature_store=context.source,
-                dataset_type=config.dataset_type,
-                decoder=config.decoder,
-            )
-        )
+                dense = resolve_pipeline_dense(plan)
+        Console().print(build_run_summary_panel(plan=plan, preprocessing=preprocessing, feature_store=context.source))
         return RunInputs(
-            config=config,
+            plan=plan,
             preprocessing=preprocessing,
             evaluation=self._guard_test_clobber(layout),
             source=context.source,
@@ -203,12 +210,13 @@ class Pipeline:
             dense=dense,
             roi_population_cache_root=(
                 resolve_cache_root(
-                    config.features.cache, feature_dir=layout.run_dir / "features", output_root=config.output_root
+                    plan.features.cache, feature_dir=layout.run_dir / "features", output_root=plan.run.output_dir
                 )
                 / "segmentation_roi_population"
-                if config.features.cache.enabled
+                if plan.features.cache.enabled
                 else layout.run_dir / "segmentation_roi_population"
             ),
+            packages=dotted_packages(plan),
         )
 
     def _pending_folds(self, run_dir: Path) -> tuple[int, ...]:
@@ -219,12 +227,12 @@ class Pipeline:
         """Resume (issue #244): a complete fold is skipped on a relaunch into its run
         dir (a single fold only under ``resume``/``run_id``); ``run.folds`` leaves the
         other folds to another launch."""
-        config = self._config
-        resuming = self._splits.num_folds > 1 or bool(config.resume or config.run_id)
+        run = self._plan.run
+        resuming = self._splits.num_folds > 1 or bool(run.resume or run.run_id)
         if resuming and fold_is_complete(directory):
             logger.info("Fold %d already complete (%s); skipping (resume).", fold, directory)
             return True
-        if config.folds is not None and fold not in config.folds:
+        if run.folds is not None and fold not in run.folds:
             logger.info("Fold %d is not in run.folds; leaving it to another launch.", fold)
             return True
         return False
@@ -233,10 +241,10 @@ class Pipeline:
         """Test-results clobber guard (issue #247): a test identity already scored for
         this run is not re-scored unless ``evaluation.overwrite_test``; its test splits
         are held out instead. A resume scoring still-pending folds is not a re-score."""
-        config, evaluation = self._config, self._config.evaluation
+        plan, evaluation = self._plan, self._plan.evaluation
         if evaluation.holdout_test:
             return evaluation
-        digest = test_identity_digest(config)
+        digest = test_identity_digest(plan)
         decision = register_test_result(
             layout.run_dir,
             digest,
@@ -269,8 +277,9 @@ class Pipeline:
         """Attention heatmaps over the fold bundles (a fresh pass with the attention hook)."""
         from soma.heatmaps import generate_heatmaps
 
-        if extraction_shape(self._config.dataset_type) == "grid":
-            logger.info("reporting.heatmaps: a %s run has no tile attention; skipping.", self._config.dataset_type)
+        plan = self._plan
+        if plan.shape == "grid":
+            logger.info("evaluation.attention_heatmaps: a %s run has no tile attention; skipping.", plan.task_family)
             return
         logger.info("Rendering attention heatmaps...")
         generate_heatmaps(
@@ -278,8 +287,8 @@ class Pipeline:
             dataset=inputs.dataset,
             feature_store=inputs.source,
             tiling_dir=run_dir / "tiling",
-            heatmap_config=self._config.heatmaps,
-            seg_downsample=self._config.features.extraction.segmentation.downsample,
+            seg_downsample=plan.features.extraction.segmentation.downsample,
+            **plan.evaluation.attention_heatmaps,
         )
 
 

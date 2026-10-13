@@ -48,7 +48,7 @@ from soma.cache import (
     write_tiling_cache_payload,
     write_tiling_cache_stub,
 )
-from soma.config import CacheConfig, EncoderLeaf, is_annotation_sampling
+from soma.config import CacheOptions, EncoderLeaf, is_annotation_sampling
 from soma.data import ensure_filename_safe_id
 from soma.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.extraction.orchestration import (
@@ -267,7 +267,7 @@ class _PooledFeatureExtractor:
         *,
         output_root: str | Path,
         execution: ExecutionOptions | None = None,
-        cache: CacheConfig = CacheConfig(),
+        cache: CacheOptions = CacheOptions(),
     ) -> None:
         self._dataset = dataset
         self._encoder = encoder
@@ -700,7 +700,7 @@ class _PooledFeatureExtractor:
             (
                 "This directory is a cache-backed feature location placeholder.\n"
                 f"Actual embedding payloads are stored under: {cache_dir}\n"
-                "Configure CacheConfig.root_dir to control the cache location.\n"
+                "Set features.cache.root_dir to control the cache location.\n"
             ),
             encoding="utf-8",
         )

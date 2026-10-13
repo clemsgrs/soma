@@ -157,7 +157,7 @@ jobs:
             'soma/cache/*'                       # cache keys/io/tile artifact metadata, used even with the cache off
             'soma/atomic_io.py'                  # writes the config and cache metadata files on this path
             'soma/_logging.py'                   # FeatureExtractor sets up default logging on every run
-            'soma/config.py'                     # EncoderLeaf/CacheConfig the test builds
+            'soma/config.py'                     # EncoderLeaf/CacheOptions the test builds
             'soma/dataset.py'                    # Dataset/SampleRecord the slides are read through
             'soma/spacing.py'                    # effective spacing resolution used by config
             'tests/conftest.py'                  # shared pytest setup the regression runs under

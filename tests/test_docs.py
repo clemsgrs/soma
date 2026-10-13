@@ -4,6 +4,7 @@ import ast
 import importlib.util
 from html.parser import HTMLParser
 import json
+import os
 from pathlib import Path
 import re
 import tomllib
@@ -12,7 +13,8 @@ from jinja2 import Environment
 import pytest
 import yaml
 
-from soma.config import PipelineConfig, load_config
+from soma.config import ExperimentConfig
+from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS, check
 
 TUTORIALS = [
     "walkthrough-tile-level.ipynb",
@@ -257,38 +259,69 @@ def test_documented_yaml_examples_load_through_public_config_interface() -> None
         sorted((repo_root / "examples").glob("*.yaml"))
         + sorted((repo_root / "examples" / "eva").glob("*.yaml"))
         + sorted((repo_root / "examples" / "ocelot").glob("*.yaml"))
+        + sorted((repo_root / "examples" / "detection_benchmark").glob("*.yaml"))
+        + sorted((repo_root / "soma" / "benchmarks" / "configs").rglob("*.yaml"))
     )
 
     assert example_paths
     for path in example_paths:
-        load_config(path)
+        check(ExperimentConfig.from_yaml(path))
 
 
-def test_generated_cli_reference_yaml_matches_bundled_defaults() -> None:
+def test_generated_cli_reference_yaml_is_the_reference_example() -> None:
     generator, docs_dir = _load_reference_generator()
-    generated = generator.build_cli_rst()
-    reference_yaml = _extract_first_yaml_block(generated)
+    reference_yaml = _extract_first_yaml_block(generator.build_cli_rst())
+    example = docs_dir.parent / "examples" / "reference.yaml"
 
-    documented = yaml.safe_load(reference_yaml)
-    bundled_defaults = yaml.safe_load(
-        (docs_dir.parent / "soma" / "configs" / "default.yaml").read_text(
-            encoding="utf-8"
-        )
+    assert yaml.safe_load(reference_yaml) == yaml.safe_load(example.read_text(encoding="utf-8"))
+
+
+def test_reference_yaml_does_not_depend_on_the_generating_machine(monkeypatch) -> None:
+    # slide2vec resolves the GPU and preprocessing-worker counts for the machine it
+    # runs on; the checked-in reference must read the same wherever it is generated.
+    import slide2vec.api
+
+    generator, _ = _load_reference_generator()
+    for env_name in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE", "SLURM_JOB_CPUS_PER_NODE"):
+        monkeypatch.delenv(env_name, raising=False)
+    builds = []
+    for cpus, gpus in ((4, 1), (8, 2)):
+        monkeypatch.setattr(os, "cpu_count", lambda cpus=cpus: cpus)
+        monkeypatch.setattr(slide2vec.api, "_default_num_gpus", lambda gpus=gpus: gpus)
+        builds.append((generator.build_reference_yaml(), generator.build_cli_rst()))
+
+    assert builds[0] == builds[1]
+    execution = yaml.safe_load(builds[0][0])["features"]["execution"]
+    assert {name: execution[name] for name in MACHINE_RESOLVED_EXECUTION_FIELDS} == dict.fromkeys(
+        MACHINE_RESOLVED_EXECUTION_FIELDS
     )
 
-    assert documented == bundled_defaults
 
+def test_reference_example_yaml_spells_every_default() -> None:
+    from soma.config import EvaluationConfig, LoadersConfig, RunConfig, TrainerConfig
 
-def test_reference_example_yaml_matches_bundled_defaults() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    documented = yaml.safe_load(
-        (repo_root / "examples" / "reference.yaml").read_text(encoding="utf-8")
+    generator, docs_dir = _load_reference_generator()
+    example = docs_dir.parent / "examples" / "reference.yaml"
+    text = example.read_text(encoding="utf-8")
+    assert text == generator.build_reference_yaml()
+
+    config = ExperimentConfig.from_yaml(example)
+    check(config)
+    # The machine-resolved execution fields load from null as the dataclass defaults do,
+    # so the file reads back as the reference experiment.
+    assert config == generator.reference_config()
+    # Every field is spelled out (the machine-resolved ones as null), and every section
+    # beyond the experiment's own records, encoder and learner is the dataclass default.
+    spelled = config.to_dict()
+    for name in MACHINE_RESOLVED_EXECUTION_FIELDS:
+        spelled["features"]["execution"][name] = None
+    assert spelled == yaml.safe_load(text)
+    assert (config.run, config.loaders, config.trainer, config.evaluation) == (
+        RunConfig(),
+        LoadersConfig(),
+        TrainerConfig(),
+        EvaluationConfig(),
     )
-    bundled_defaults = yaml.safe_load(
-        (repo_root / "soma" / "configs" / "default.yaml").read_text(encoding="utf-8")
-    )
-
-    assert documented == bundled_defaults
 
 
 def test_home_page_links_its_primary_routes_to_pages_that_exist() -> None:
@@ -349,7 +382,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "croma-robustness-benchmark",
             "benchmark-in-house-encoder",
         ),
-        "reference.rst": ("api", "cli"),
+        "reference.rst": ("configuration", "api", "cli"),
         "system.rst": ("caching", "outputs"),
     }
     for filename, children in expected_children.items():
@@ -370,14 +403,34 @@ def test_getting_started_pipeline_example_constructs_public_config() -> None:
     blocks = [
         block
         for block in _extract_code_blocks(rst, "python")
-        if "PipelineConfig(" in block
+        if "ExperimentConfig(" in block
     ]
     assert blocks
 
     for block in blocks:
         namespace: dict[str, object] = {}
         exec(_without_pipeline_run(block), namespace)
-        assert isinstance(namespace["config"], PipelineConfig)
+        assert isinstance(namespace["config"], ExperimentConfig)
+        check(namespace["config"])
+
+
+def test_getting_started_yaml_is_the_pipeline_example(tmp_path: Path) -> None:
+    docs_dir = Path(__file__).resolve().parents[1] / "docs"
+    rst = (docs_dir / "getting-started.rst").read_text(encoding="utf-8")
+    (python,) = [
+        block
+        for block in _extract_code_blocks(rst, "python")
+        if "ExperimentConfig(" in block and "features=FeaturesConfig(" in block
+    ]
+    (config_yaml,) = [
+        block for block in _extract_code_blocks(rst, "yaml") if block.startswith("run:")
+    ]
+    namespace: dict[str, object] = {}
+    exec(_without_pipeline_run(python), namespace)
+    path = tmp_path / "config.yaml"
+    path.write_text(config_yaml, encoding="utf-8")
+
+    assert ExperimentConfig.from_yaml(path) == namespace["config"]
 
 
 def test_getting_started_python_examples_are_syntactically_valid() -> None:
