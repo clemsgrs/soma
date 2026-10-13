@@ -23,7 +23,7 @@ from slide2vec.encoders.base import PatientEncoder, SlideEncoder, TileEncoder
 from slide2vec.encoders.registry import encoder_registry
 from torchvision.transforms import v2
 
-from soma.cache import CacheFeatureIdentityMismatch
+from soma.extract.cache import CacheFeatureIdentityMismatch
 from hs2p import FilterConfig
 from slide2vec import ExecutionOptions
 
@@ -458,7 +458,7 @@ def test_features_written_by_a_run_killed_before_its_commit_are_verified_like_an
     with pytest.MonkeyPatch.context() as patch:
         # Every image is written, then the process dies before soma commits them.
         patch.setattr(
-            "soma.tile_extraction.commit_extracted_samples",
+            "soma.extract.tile_extraction.commit_extracted_samples",
             lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
         )
         with pytest.raises(KeyboardInterrupt):
@@ -670,7 +670,7 @@ def test_slide_cache_interrupted_before_its_commit_records_its_identity_when_com
     _extract_slides(slide_manifests[4], tmp_path, "tile")
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(
-            "soma.extraction.extractor.record_sample_identity_signatures",
+            "soma.extract.extractor.record_sample_identity_signatures",
             lambda *args, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
         )
         with pytest.raises(KeyboardInterrupt):

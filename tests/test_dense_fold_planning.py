@@ -7,7 +7,7 @@ import pytest
 
 from soma.config import CohortConfig
 from soma.data import FoldSplit, SampleRecord
-from soma.training.fold_planning import plan_dense_fold
+from soma.pipeline.fold_planning import plan_dense_fold
 
 
 def _dataset(*sample_ids: str):

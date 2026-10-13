@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from soma.cache import roi_sampling_signature
-from soma.cache.keys import _canonical_json, build_roi_sampling_cache_key, build_tiling_cache_key
+from soma.extract.cache import roi_sampling_signature
+from soma.extract.cache.keys import _canonical_json, build_roi_sampling_cache_key, build_tiling_cache_key
 from soma.config import ExperimentConfig, FeaturesConfig
 from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
@@ -102,7 +102,7 @@ def test_an_invalid_vocabulary_is_refused_when_the_yaml_is_read(tmp_path: Path, 
 def test_training_classes_may_split_a_merged_sampling_label():
     """The layers are independent: a merged sampling label may be two training classes,
     and every raw value of a list entry counts as declared."""
-    from soma.dense.reader import check_classes_declared
+    from soma.extract.dense.reader import check_classes_declared
 
     pixel_mapping = annotation_masks({"background": 0, "tumor": [1, 2]}).pixel_mapping
     check_classes_declared(

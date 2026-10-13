@@ -13,7 +13,7 @@ OCELOT (Zenodo record 8417503, ``ocelot2023_v1.0.1.zip``) ships paired *cell* an
     1 = BC (background cell, i.e. every non-tumor cell)
     2 = TC (tumor cell)
 
-Soma's :class:`~soma.tasks.detection.DetectionHead` wants **0-based** class ids, so we
+Soma's :class:`~soma.models.heads.detection.DetectionHead` wants **0-based** class ids, so we
 remap ``1 -> 0`` (BC) and ``2 -> 1`` (TC) and write one ``x,y,class`` point CSV per
 sample under ``points/``. Points stay in the cell-patch pixel frame (0..1023) because
 the JPEGs are referenced at native resolution. The curator therefore declares each

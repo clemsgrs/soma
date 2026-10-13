@@ -8,16 +8,16 @@ import pytest
 import torch
 
 from soma import components
-from soma.aggregators import aggregator_registry
-from soma.decoders.registry import decoder_registry
-from soma.dense.geometry import compute_dense_geometry
+from soma.models.aggregators import aggregator_registry
+from soma.models.decoders.registry import decoder_registry
+from soma.data.geometry import compute_dense_geometry
 from soma.learn import Budget, DenseLearner, GridBatch, MILLearner
-from soma.tasks.classification import BinaryClassificationHead, BranchAwareClassificationHead
-from soma.tasks.detection import DetectionHead
-from soma.tasks.segmentation import SegmentationHead
+from soma.models.heads.classification import BinaryClassificationHead, BranchAwareClassificationHead
+from soma.models.heads.detection import DetectionHead
+from soma.models.heads.segmentation import SegmentationHead
 from soma.testing import ConformanceError, FakeEncoder, check_learner
-from soma.training.collate import BagBatch, HierarchicalBagBatch
-from soma.training.model import DenseModel, MILModel
+from soma.learn.collate import BagBatch, HierarchicalBagBatch
+from soma.models.model import DenseModel, MILModel
 
 D = 16
 BUDGET = Budget(max_epochs=2, max_steps=None, updates_per_epoch=2)

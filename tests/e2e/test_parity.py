@@ -26,7 +26,7 @@ import json
 from pathlib import Path
 
 import soma
-from soma.aggregators import ABMIL
+from soma.models.aggregators import ABMIL
 from soma.data import (
     AnnotationManifest,
     CachedSetSource,
@@ -36,15 +36,15 @@ from soma.data import (
     LabelMapSource,
     PointSource,
 )
-from soma.decoders.registry import build_decoder_for_grid
-from soma.dense import CachedGridSource
+from soma.models.decoders.registry import build_decoder_for_grid
+from soma.extract.dense import CachedGridSource
 from soma.evaluation import Baseline, Predictions, sweep_threshold
 from soma.learn import Checkpoint, DenseLearner, EarlyStopping, MILLearner, loaders
-from soma.tasks.classification import BinaryClassificationHead
-from soma.tasks.detection import DetectionHead
-from soma.tasks.segmentation import SegmentationHead
-from soma.training.feature_adaptor import FeatureAdaptor
-from soma.training.model import DenseModel, MILModel
+from soma.models.heads.classification import BinaryClassificationHead
+from soma.models.heads.detection import DetectionHead
+from soma.models.heads.segmentation import SegmentationHead
+from soma.learn.feature_adaptor import FeatureAdaptor
+from soma.models.model import DenseModel, MILModel
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma, sha256
 from tests.e2e.synthetic import (
     SPACING_UM,

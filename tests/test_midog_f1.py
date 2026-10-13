@@ -1,7 +1,7 @@
 """Unit tests for the MIDOG-native F1 scorer, on hand-constructed point sets.
 
 MIDOG 2022 scores mitosis detection with a single dataset-global F1 (one-to-one match
-within a 7.5 µm tolerance). The scorer is a thin adapter over ``soma.detection.matching``,
+within a 7.5 µm tolerance). The scorer is a thin adapter over ``soma.evaluation.detection.matching``,
 so these tests fix its TP/FP/FN pooling + reduction against explicit tiny inputs.
 """
 

@@ -17,12 +17,12 @@ from typing import Any
 from rich.console import Console
 
 from soma import extract
-from soma._logging import ensure_default_logging
-from soma.atomic_io import atomic_write_json
-from soma.cache import resolve_cache_root
+from soma._internal.logging import ensure_default_logging
+from soma._internal.atomic_io import atomic_write_json
+from soma.extract.cache import resolve_cache_root
 from soma.config import ExperimentConfig
 from soma.data import AnnotationManifest, Cohort, GridSource, ImageManifest, TileImageSource
-from soma.extraction import RoiSet
+from soma.extract import RoiSet
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_summary
 from soma.pipeline.build import (
     RunInputs,
@@ -47,7 +47,7 @@ from soma.pipeline.layout import (
 )
 from soma.pipeline.representation import run_representation
 from soma.plan import Plan, check, dotted_packages, resolve, revalidated
-from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 __all__ = ["Pipeline", "PipelineResult"]
 
@@ -280,7 +280,7 @@ class Pipeline:
             )
             return RunFeatures(source=pixels, cohort=self._cohort, encoder_stage=live_encoder_for(plan))
         if grid and features.is_composite:
-            from soma.dense import DenseSourceProvenance
+            from soma.extract.dense import DenseSourceProvenance
 
             store = build_composite_dense_store(plan, self._image_manifest, output_root=run_dir / "features")
             store.provenance = DenseSourceProvenance(kind="composite_dense_cache", dataset_csv=plan.cohort.records)
@@ -354,7 +354,7 @@ class Pipeline:
 
     def _render_heatmaps(self, run_dir: Path, inputs: RunInputs) -> None:
         """Attention heatmaps over the fold bundles (a fresh pass with the attention hook)."""
-        from soma.heatmaps import generate_heatmaps
+        from soma.evaluation.heatmaps import generate_heatmaps
 
         plan = self._plan
         if plan.shape == "grid":

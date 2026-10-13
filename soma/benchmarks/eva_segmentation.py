@@ -13,7 +13,7 @@ exist only to reproduce EVA's decoder protocol:
 * ``eva_conv_ms`` — EVA's offline ``ConvDecoderMS``: ``Upsample(x2) -> Conv3x3(in, 64)
   -> Upsample(x2) -> Conv3x3(64, classes)``, no normalisation, no activation. Kept for
   reference; EVA publishes no numbers for it.
-* ``eva_segmentation`` — a :class:`~soma.tasks.segmentation.SegmentationHead` whose loss is
+* ``eva_segmentation`` — a :class:`~soma.models.heads.segmentation.SegmentationHead` whose loss is
   EVA's pure soft Dice (MONAI ``DiceLoss(softmax=True, batch=True)``, background included,
   no cross-entropy term) and whose confusion counts follow EVA's metric wrapper.
 
@@ -102,12 +102,12 @@ from soma.curation.eva_segmentation import (
     curate_eva_segmentation_dataset,
 )
 from soma.curation.manifest import CuratedManifest
-from soma.decoders.base import Decoder
-from soma.decoders.registry import decoder_registry
-from soma.params import NoParams
-from soma.tasks.dense_metrics import _validate_dense_shapes
-from soma.tasks.registry import task_registry
-from soma.tasks.segmentation import SegmentationHead, SegmentationParams
+from soma.models.decoders.base import Decoder
+from soma.models.decoders.registry import decoder_registry
+from soma._internal.params import NoParams
+from soma.models.heads.dense_metrics import _validate_dense_shapes
+from soma.models.heads.registry import task_registry
+from soma.models.heads.segmentation import SegmentationHead, SegmentationParams
 
 # --- Protocol constants (eva online segmentation configs) -----------------------------
 MAX_STEPS = 2000
@@ -266,7 +266,7 @@ def eva_confusion_counts(
     therefore contribute no target and no intersection, yet still count towards the
     predicted area of whatever class was predicted there. Matching that keeps the
     MoNuSAC Dice comparable with the leaderboard; without an ignored class the counts
-    equal :func:`soma.tasks.dense_metrics.dense_confusion_counts`.
+    equal :func:`soma.models.heads.dense_metrics.dense_confusion_counts`.
     """
     _validate_dense_shapes(logits, mask, num_classes)
     pred = logits.argmax(dim=1)
@@ -563,7 +563,7 @@ def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
             "saved test predictions"
         )
     _, _, label_remap = resolve_class_scheme(cfg.learner.params["head"].params, annotation_rasters=False)
-    from soma.preprocessing.resolution import resolve_pipeline_dense
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
 
     dense = resolve_pipeline_dense(cfg)
     tiling = cfg.features.extraction.tiling

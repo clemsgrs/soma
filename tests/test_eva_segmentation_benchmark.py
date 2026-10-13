@@ -15,10 +15,10 @@ from soma.benchmarks import Benchmark, benchmark_registry, get_benchmark
 from soma.benchmarks import eva_segmentation as seg
 from soma.benchmarks.eva import EvaTileClassificationBenchmark
 from soma.curation.manifest import CuratedManifest
-from soma.decoders.registry import decoder_registry
-from soma.dense import compute_dense_geometry
-from soma.tasks.dense_metrics import dense_confusion_counts, reduce_foreground_dice
-from soma.tasks.registry import task_family_of, task_registry
+from soma.models.decoders.registry import decoder_registry
+from soma.data.geometry import compute_dense_geometry
+from soma.models.heads.dense_metrics import dense_confusion_counts, reduce_foreground_dice
+from soma.models.heads.registry import task_family_of, task_registry
 
 
 def _logits_from_pred(pred: torch.Tensor, num_classes: int) -> torch.Tensor:
@@ -207,7 +207,7 @@ def test_conv_ms_decoder_matches_eva_shape_and_layers():
 
 
 def test_conv_ms_decoder_builds_through_the_registry_for_a_grid():
-    from soma.decoders.registry import build_decoder_for_grid
+    from soma.models.decoders.registry import build_decoder_for_grid
 
     geometry = compute_dense_geometry(target_size=224, patch_size=14)
     decoder = build_decoder_for_grid("eva_conv_ms", None, geometry=geometry, input_dim=3, num_classes=5)
@@ -225,7 +225,7 @@ def test_eva_dice_loss_is_monai_batch_dice_without_cross_entropy():
     expected = 1.0 - (2 * 1 + 1e-5) / (4 + 1e-5)
     assert seg.eva_dice_loss(uniform, mask, num_classes=2, ignore_index=255) == pytest.approx(expected)
     # The built-in objective adds cross-entropy, so it must differ on the uniform case.
-    from soma.tasks.dense_metrics import segmentation_loss
+    from soma.models.heads.dense_metrics import segmentation_loss
 
     assert segmentation_loss(uniform, mask, num_classes=2, ignore_index=255) > expected + 0.1
 
@@ -315,7 +315,7 @@ def test_conv_with_image_decoder_normalises_the_image_like_eva():
 
 
 def test_conv_with_image_decoder_builds_through_the_registry_for_a_grid():
-    from soma.decoders.registry import build_decoder_for_grid
+    from soma.models.decoders.registry import build_decoder_for_grid
 
     geometry = compute_dense_geometry(target_size=224, patch_size=14)
     decoder = build_decoder_for_grid(

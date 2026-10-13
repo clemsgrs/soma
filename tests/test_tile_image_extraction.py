@@ -21,16 +21,16 @@ import torch
 from PIL import Image
 from slide2vec.artifacts import write_image_embedding
 
-import soma.cache.io as cache_io
-import soma.tile_extraction as tile_extraction
-from soma.cache import MissingFeatureIdentity, resolve_cache_dtype
-from soma.cache.keys import build_tile_cache_key
+import soma.extract.cache.io as cache_io
+import soma.extract.tile_extraction as tile_extraction
+from soma.extract.cache import MissingFeatureIdentity, resolve_cache_dtype
+from soma.extract.cache.keys import build_tile_cache_key
 from slide2vec import ExecutionOptions
 
 from soma.config import CacheOptions, EncoderLeaf
 import soma
 from soma.data import ImageManifest
-from soma.tile_extraction import _TileFeatureExtractor
+from soma.extract.tile_extraction import _TileFeatureExtractor
 from tests.test_extraction import (
     _TEST_TILE,
     _make_tile_dataset,
@@ -283,7 +283,7 @@ def _crash_at_final_commit(monkeypatch) -> None:
     def crash(*args, **kwargs):
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("soma.tile_extraction.commit_extracted_samples", crash)
+    monkeypatch.setattr("soma.extract.tile_extraction.commit_extracted_samples", crash)
 
 
 def test_switching_back_after_a_crash_before_the_commit_returns_the_original_vector(
@@ -451,7 +451,7 @@ def test_final_commit_failing_before_replacement_leaves_a_safe_resume_state(
 def recording_model(monkeypatch: pytest.MonkeyPatch):
     _register_test_encoders()
     _RecordingModel.calls = []
-    monkeypatch.setattr("soma.tile_extraction.Model", _RecordingModel)
+    monkeypatch.setattr("soma.extract.tile_extraction.Model", _RecordingModel)
     return _RecordingModel
 
 

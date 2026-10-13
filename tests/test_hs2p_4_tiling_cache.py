@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 
 from soma.data import ImageManifest
-from soma.slide2vec_adapter import load_tilings
+from soma.extract.slide2vec_adapter import load_tilings
 
 FIXTURE = Path(__file__).parent / "fixtures" / "hs2p_4_4_3_tiling"
 

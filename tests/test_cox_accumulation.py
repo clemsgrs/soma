@@ -15,16 +15,16 @@ import pytest
 import torch
 
 from soma.data import CachedSetSource
-from soma.aggregators.registry import aggregator_registry
+from soma.models.aggregators.registry import aggregator_registry
 from tests.experiment_configs import experiment
 from tests.extraction_configs import extraction
 from soma.config import FeaturesConfig
 from soma.plan import check
 from soma.evaluation import Predictions
-from soma.tasks.survival import CoxSurvivalHead, cox_breslow_loss
+from soma.models.heads.survival import CoxSurvivalHead, cox_breslow_loss
 from soma.pipeline import Pipeline, PipelineResult
-from soma.training.collate import CoxWindowBatch, bag_collate_fn, cox_window_collate
-from soma.training.model import MILModel
+from soma.learn.collate import CoxWindowBatch, bag_collate_fn, cox_window_collate
+from soma.models.model import MILModel
 from soma.learn import MILLearner
 
 D = 16

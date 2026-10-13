@@ -10,9 +10,9 @@ from typing import Any
 from torch.utils.data import DataLoader
 
 from soma.data import Cohort, require_coverage
-from soma.training.bag_dataset import BagDataset, HierarchicalBagDataset
-from soma.training.collate import bag_collate_fn, hierarchical_bag_collate_fn
-from soma.training.sample_dataset import SampleDataset, sample_collate_fn
+from soma.learn.bag_dataset import BagDataset, HierarchicalBagDataset
+from soma.learn.collate import bag_collate_fn, hierarchical_bag_collate_fn
+from soma.learn.sample_dataset import SampleDataset, sample_collate_fn
 
 __all__ = ["Loaders", "loaders"]
 

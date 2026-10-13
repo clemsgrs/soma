@@ -1,21 +1,21 @@
-"""Tests for soma.aggregators.mil.dsmil — DSMIL aggregator."""
+"""Tests for soma.models.aggregators.mil.dsmil — DSMIL aggregator."""
 
 from __future__ import annotations
 
 import torch
 import pytest
 
-from soma.aggregators.base import AggregatorOutput
-from soma.aggregators.registry import aggregator_registry
-from soma.tasks.classification import MulticlassClassificationHead
-from soma.tasks.ordinal_classification import OrdinalClassificationHead
-from soma.tasks.regression import RegressionHead
-from soma.training.model import MILModel
+from soma.models.aggregators.base import AggregatorOutput
+from soma.models.aggregators.registry import aggregator_registry
+from soma.models.heads.classification import MulticlassClassificationHead
+from soma.models.heads.ordinal_classification import OrdinalClassificationHead
+from soma.models.heads.regression import RegressionHead
+from soma.models.model import MILModel
 
 
 class TestDSMIL:
     def test_returns_aggregator_output(self):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         torch.manual_seed(0)
         model = DSMIL(input_dim=16, att_dim=8)
@@ -25,7 +25,7 @@ class TestDSMIL:
         assert out.bag_representation.shape == (2, 16)
 
     def test_tile_attention_shape(self):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         torch.manual_seed(0)
         model = DSMIL(input_dim=16, att_dim=8)
@@ -35,7 +35,7 @@ class TestDSMIL:
         assert out.tile_attention.shape == (2, 10)
 
     def test_auxiliary_instance_logits(self):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         torch.manual_seed(0)
         model = DSMIL(input_dim=16, att_dim=8)
@@ -46,13 +46,13 @@ class TestDSMIL:
         assert out.auxiliary["instance_logits"].shape == (2, 10)
 
     def test_output_dim(self):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         model = DSMIL(input_dim=32, att_dim=16)
         assert model.output_dim == 32
 
     def test_with_mask(self):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         torch.manual_seed(42)
         model = DSMIL(input_dim=8, att_dim=4)
@@ -63,7 +63,7 @@ class TestDSMIL:
         assert out.tile_attention.shape == (1, 6)
 
     def test_nonlinear_q(self):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         torch.manual_seed(0)
         model = DSMIL(input_dim=16, att_dim=8, nonlinear_q=True)
@@ -72,7 +72,7 @@ class TestDSMIL:
         assert out.bag_representation.shape == (2, 16)
 
     def test_nonlinear_v(self):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         torch.manual_seed(0)
         model = DSMIL(input_dim=16, att_dim=8, nonlinear_v=True, dropout=0.1)
@@ -81,7 +81,7 @@ class TestDSMIL:
         assert out.bag_representation.shape == (2, 16)
 
     def test_gradient_flows(self):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         torch.manual_seed(0)
         model = DSMIL(input_dim=8, att_dim=4)
@@ -94,7 +94,7 @@ class TestDSMIL:
 
     def test_registered(self):
         cls = aggregator_registry.get("dsmil")
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         assert cls is DSMIL
 
@@ -107,7 +107,7 @@ class TestDSMIL:
         ],
     )
     def test_rejects_non_binary_task_heads(self, head):
-        from soma.aggregators.mil.dsmil import DSMIL
+        from soma.models.aggregators.mil.dsmil import DSMIL
 
         with pytest.raises(ValueError, match="dsmil.*binary_classification"):
             MILModel(aggregator=DSMIL(input_dim=16, att_dim=8), task_head=head)

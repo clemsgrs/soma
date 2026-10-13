@@ -83,13 +83,13 @@ output over the samples, averaged over the outputs. The
 :doc:`hest-gene-expression-benchmark` scores a closed-form Ridge+PCA probe
 with the same columns and metric.
 
-.. autoclass:: soma.tasks.regression.RegressionHead
+.. autoclass:: soma.models.heads.regression.RegressionHead
    :members:
 
 Task-head interface
 -------------------
 
-.. autoclass:: soma.tasks.base.TaskHead
+.. autoclass:: soma.models.heads.base.TaskHead
    :members:
 
 ``soma.components("heads")`` lists the registered task heads with their params

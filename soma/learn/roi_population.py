@@ -182,7 +182,7 @@ def resolve_segmentation_roi_population(
 
     ``identity`` says, per sample and in population order, what its target is read from
     (``sample_id``, ``slide_id``, ``label_mask_path``, ``label_mask_crop_path``,
-    ``region``, ``spacing_at_level_0``: :func:`soma.extraction.rois.label_map_identity`);
+    ``region``, ``spacing_at_level_0``: :func:`soma.extract.rois.label_map_identity`);
     ``target_fn(sample_id)`` reads it. The key fingerprints a slide-manifest ROI's stored
     mask crop, never its annotation raster, and any other sample's mask.
     """

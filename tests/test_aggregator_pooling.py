@@ -1,13 +1,13 @@
-"""Tests for soma.aggregators — base classes, registry, and simple pooling."""
+"""Tests for soma.models.aggregators — base classes, registry, and simple pooling."""
 
 from __future__ import annotations
 
 import torch
 import pytest
 
-from soma.aggregators.base import Aggregator, AggregatorOutput
-from soma.aggregators.registry import aggregator_registry
-from soma.aggregators.pooling import MeanPool, MaxPool
+from soma.models.aggregators.base import Aggregator, AggregatorOutput
+from soma.models.aggregators.registry import aggregator_registry
+from soma.models.aggregators.pooling import MeanPool, MaxPool
 
 
 # ---------------------------------------------------------------------------

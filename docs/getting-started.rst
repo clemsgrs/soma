@@ -137,7 +137,8 @@ of ``dataset.csv``), runs once, and returns a reusable feature source.
    from slide2vec import PreprocessingConfig
 
    import soma
-   from soma import CacheOptions, ImageManifest
+   from soma import ImageManifest
+   from soma.config import CacheOptions
 
    preprocessing = PreprocessingConfig(
        tiling=TilingConfig(

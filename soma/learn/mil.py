@@ -10,8 +10,8 @@ import torch
 from torch import Tensor, nn
 
 from soma.learn.learner import Learner, LearnerParams, PredictOutput, StepOutput, learner_registry
-from soma.training.collate import CoxWindowBatch
-from soma.training.model import MILModelOutput
+from soma.learn.collate import CoxWindowBatch
+from soma.models.model import MILModelOutput
 
 __all__ = ["MILLearner", "MILLearnerParams"]
 
@@ -25,10 +25,10 @@ class MILLearnerParams(LearnerParams):
 
 
 class MILLearner(Learner):
-    """Trains a :class:`~soma.training.model.MILModel` (or an ``EmbeddingModel``).
+    """Trains a :class:`~soma.models.model.MILModel` (or an ``EmbeddingModel``).
 
     ``forward_batch`` forwards one batch (a padded bag batch in one call; a
-    :class:`~soma.training.collate.CoxWindowBatch` bag by bag, keeping the risks
+    :class:`~soma.learn.collate.CoxWindowBatch` bag by bag, keeping the risks
     graph-connected); ``compute_loss`` is the head's loss (or ``loss=``) plus the
     aggregator's auxiliary term. An intermediate loss is one override of
     ``training_step`` that calls both and adds a term.

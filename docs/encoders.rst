@@ -235,10 +235,10 @@ Resolving a fixed benchmark MIL recipe
 --------------------------------------
 
 A slide-level benchmark that accepts both tile- and slide-level encoders can
-use :func:`soma.encoders.resolve_aggregator` when it builds each
+use :func:`soma.models.encoders.resolve_aggregator` when it builds each
 ``ExperimentConfig``. The helper returns the supplied aggregator leaf for a
 tile encoder and ``None`` for a slide encoder, allowing the existing slide
 representation path to pass the embedding directly to the task head. Patient
 encoders are rejected because their representations are not slide-level.
 
-.. autofunction:: soma.encoders.resolve_aggregator
+.. autofunction:: soma.models.encoders.resolve_aggregator

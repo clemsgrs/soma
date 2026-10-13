@@ -17,13 +17,13 @@ __all__ = ["components", "register", "registry"]
 
 #: Each domain's registry, as ``(module that registers its entries, attribute)``.
 _DOMAINS: dict[str, tuple[str, str]] = {
-    "aggregators": ("soma.aggregators", "aggregator_registry"),
+    "aggregators": ("soma.models.aggregators", "aggregator_registry"),
     "augmentations": ("soma.learn", "augment_registry"),
     "benchmarks": ("soma.benchmarks", "benchmark_registry"),
     "callbacks": ("soma.learn", "callback_registry"),
-    "decoders": ("soma.decoders", "decoder_registry"),
-    "encoders": ("soma.encoders", "encoder_registry"),
-    "heads": ("soma.tasks", "task_registry"),
+    "decoders": ("soma.models.decoders", "decoder_registry"),
+    "encoders": ("soma.models.encoders", "encoder_registry"),
+    "heads": ("soma.models.heads", "task_registry"),
     "learners": ("soma.learn", "learner_registry"),
     "optimizers": ("soma.learn", "optimizer_registry"),
     "presets": ("soma.presets", "preset_registry"),

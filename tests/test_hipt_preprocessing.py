@@ -4,8 +4,8 @@ import pytest
 import slide2vec
 
 from soma.config import Component
-from soma.encoders.validation import resolve_preprocessing_config
-from soma.preprocessing.hierarchy import derive_preprocessing_for_aggregator
+from soma.models.encoders.validation import resolve_preprocessing_config
+from soma.extract.preprocessing.hierarchy import derive_preprocessing_for_aggregator
 
 
 def test_hipt_derives_hierarchical_preprocessing_from_tile_multiple():

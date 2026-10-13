@@ -10,7 +10,7 @@ import pytest
 
 import soma
 from soma import discovery
-from soma.params import is_run_decided
+from soma._internal.params import is_run_decided
 
 
 def _entry(kind: str, name: str) -> dict:
@@ -83,7 +83,7 @@ def test_every_soma_entry_declares_params_mirroring_its_constructor(kind, name):
 def test_a_domain_lists_its_entries_with_params_and_defaults():
     abmil = _entry("aggregators", "abmil")
 
-    assert abmil["class"] == "soma.aggregators.mil.abmil.ABMIL"
+    assert abmil["class"] == "soma.models.aggregators.mil.abmil.ABMIL"
     assert abmil["params"] == {"hidden_dim": 128, "activation": "tanh", "gated": True, "dropout": 0.25}
 
 
@@ -114,7 +114,7 @@ def test_an_encoder_name_is_its_own_registry_key():
 def test_the_composite_encoder_is_an_entry_whose_params_list_the_members():
     composite = _entry("encoders", "composite")
 
-    assert composite["class"] == "soma.dense.composite.CompositeDenseFeatureStore"
+    assert composite["class"] == "soma.extract.dense.composite.CompositeDenseFeatureStore"
     assert composite["params"] == {"members": (), "concat_resolution": "grid", "concat_grid_size": None}
     registry = discovery.registry("encoders")
     params = {"members": [{"name": "uni", "dense": {"window_size": 224}}, {"name": "phikon"}]}
@@ -193,11 +193,11 @@ def test_a_dotted_path_naming_a_registered_class_is_that_entry(tmp_path):
     """The plan keeps the name as written, so it reloads in a fresh process (importing the
     path registers the class); its params take the entry's defaults, and name-keyed
     routing (``clam_mb``'s branch-aware head) sees the entry's key."""
-    from soma.aggregators.registry import aggregator_registry
+    from soma.models.aggregators.registry import aggregator_registry
     from soma.pipeline.build import _bag_head_class
-    from soma.tasks import BranchAwareClassificationHead, MulticlassClassificationHead
+    from soma.models.heads import BranchAwareClassificationHead, MulticlassClassificationHead
 
-    dotted = "soma.aggregators.mil.clam.CLAM_MB"
+    dotted = "soma.models.aggregators.mil.clam.CLAM_MB"
     plan = _plan(tmp_path, aggregator=dotted, head="multiclass_classification")
 
     aggregator = plan.learner.params["aggregator"]
@@ -210,9 +210,9 @@ def test_a_dotted_path_naming_a_registered_class_is_that_entry(tmp_path):
 
 
 def test_a_dotted_survival_head_selects_its_objective_by_class(tmp_path):
-    from soma.tasks.survival import CoxSurvivalHead, resolve_survival_task
+    from soma.models.heads.survival import CoxSurvivalHead, resolve_survival_task
 
-    dotted = "soma.tasks.survival.CoxSurvivalHead"
+    dotted = "soma.models.heads.survival.CoxSurvivalHead"
     plan = _plan(tmp_path, head=dotted, aggregator="abmil", loaders={"batch_size": 4})
 
     assert plan.learner.params["head"].name == dotted
@@ -221,10 +221,10 @@ def test_a_dotted_survival_head_selects_its_objective_by_class(tmp_path):
 
 def test_a_dotted_registered_decoder_takes_its_entry_s_defaults():
     from soma.config import Component
-    from soma.decoders.registry import decoder_registry
+    from soma.models.decoders.registry import decoder_registry
     from soma.plan import _expand
 
-    dotted = "soma.decoders.lightweight_conv.LightweightConvDecoder"
+    dotted = "soma.models.decoders.lightweight_conv.LightweightConvDecoder"
     leaf = _expand(decoder_registry, Component(dotted))
     assert leaf.name == dotted
     assert leaf.params == decoder_registry.canonical_params("lightweight_conv")
@@ -241,11 +241,11 @@ def test_an_unregistered_dotted_path_keeps_its_name_and_params_verbatim(aggregat
 
 
 def test_components_is_the_only_discovery_surface():
-    import soma.aggregators
+    import soma.models.aggregators
     import soma.benchmarks
-    import soma.decoders
-    import soma.encoders
-    import soma.tasks
+    import soma.models.decoders
+    import soma.models.encoders
+    import soma.models.heads
     from soma.registry import Registry
 
     for module, name in [
@@ -253,10 +253,10 @@ def test_components_is_the_only_discovery_surface():
         (soma, "list_aggregators"),
         (soma, "list_decoders"),
         (soma, "list_task_heads"),
-        (soma.encoders, "list_models"),
-        (soma.aggregators, "list_aggregators"),
-        (soma.decoders, "list_decoders"),
-        (soma.tasks, "list_task_heads"),
+        (soma.models.encoders, "list_models"),
+        (soma.models.aggregators, "list_aggregators"),
+        (soma.models.decoders, "list_decoders"),
+        (soma.models.heads, "list_task_heads"),
         (soma.benchmarks, "list_benchmarks"),
     ]:
         assert not hasattr(module, name), f"{module.__name__}.{name} is still exported"

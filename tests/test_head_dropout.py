@@ -12,16 +12,16 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-from soma.aggregators.pooling import MeanPool
-from soma.tasks.classification import (
+from soma.models.aggregators.pooling import MeanPool
+from soma.models.heads.classification import (
     BinaryClassificationHead,
     BranchAwareClassificationHead,
     MulticlassClassificationHead,
 )
-from soma.tasks.ordinal_classification import OrdinalClassificationHead
-from soma.tasks.regression import RegressionHead
-from soma.tasks.survival import CoxSurvivalHead, SurvivalHead
-from soma.training.model import EmbeddingModel, MILModel
+from soma.models.heads.ordinal_classification import OrdinalClassificationHead
+from soma.models.heads.regression import RegressionHead
+from soma.models.heads.survival import CoxSurvivalHead, SurvivalHead
+from soma.models.model import EmbeddingModel, MILModel
 
 from tests.test_pipeline import D as PIPELINE_D, NUM_SAMPLES, _setup_synthetic_data
 
@@ -193,8 +193,8 @@ class TestReachesTheHeadThroughTheConfig:
     @pytest.fixture
     def built_probabilities(self, monkeypatch):
         """Record every probability the classification heads hand to the builder."""
-        import soma.tasks.classification as classification
-        from soma.tasks.base import build_input_dropout
+        import soma.models.heads.classification as classification
+        from soma.models.heads.base import build_input_dropout
 
         seen: list[float] = []
 

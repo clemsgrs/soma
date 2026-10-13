@@ -22,8 +22,8 @@ from examples.beetle.report_oof import BeetleCohort, assemble_beetle_oof_report,
 from examples.beetle.select_arm import select_development_arm
 from soma.config import Component, ExperimentConfig
 from soma.data import AnnotationManifest, LabelMapSource, build_label_remap
-from soma.dense.geometry import compute_dense_geometry
-from soma.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid
+from soma.data.geometry import compute_dense_geometry
+from soma.extract.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid
 from soma.pipeline import Pipeline
 
 

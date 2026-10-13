@@ -6,7 +6,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from soma.extraction import slide_aggregation_spawn as sas
+from soma.extract import slide_aggregation_spawn as sas
 
 
 class _FakeContext:

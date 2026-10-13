@@ -264,7 +264,7 @@ optional; see :doc:`outputs`.
 Task head
 ---------
 
-.. autoclass:: soma.tasks.detection.DetectionHead
+.. autoclass:: soma.models.heads.detection.DetectionHead
    :members:
 
 Benchmarks

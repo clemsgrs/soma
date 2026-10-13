@@ -111,7 +111,8 @@ def build() -> nbformat.NotebookNode:
         ),
         code(
             "import soma\n"
-            "from soma import CacheOptions, ImageManifest\n"
+            "from soma import ImageManifest\n"
+            "from soma.config import CacheOptions\n"
             "from slide2vec import DenseOptions\n"
             "\n"
             "# One CSV, three readers: Cohort (ids + splits; dense heads declare no scalar\n"

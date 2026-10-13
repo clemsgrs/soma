@@ -1,0 +1,230 @@
+"""Shared dataclasses and constants for the cache layer."""
+
+from __future__ import annotations
+
+from abc import ABC
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+
+CACHE_METADATA_NAME = "cache_metadata.json"
+MANIFEST_NAME = "manifest.csv"
+PROCESS_LIST_NAME = "process_list.csv"
+#: v2: keys derive from the slide2vec / hs2p dataclasses soma holds (ADR 0019).
+SCHEMA_VERSION = "v2"
+# Single-file pack of every 1-D feature of a features directory, written next to the
+# per-sample files by ``soma.data.CachedSetSource``. A commit that changes the features
+# of a cache deletes it, so a re-encoded sample is never served from it.
+PACKED_FILENAME = "packed_features.pt"
+
+_FEATURE_TYPE_TO_RANK = {
+    "tile": 1,
+    "bag": 2,
+    "slide": 1,
+    "patient": 1,
+    "hierarchical": 3,
+    # dense_grid is (channels, grid_h, grid_w); same rank as hierarchical but the
+    # feature dim is the channel axis (0), not the last axis. The dense validator
+    # and CachedGridSource read the channel axis from metadata, never from rank.
+    "dense_grid": 3,
+}
+
+_CACHE_KIND_TO_FEATURES_SUBDIR = {
+    "tile": "tile_embeddings",
+    # Given-geometry images (pre-cropped patch benchmarks) are their own kind, not a
+    # variant of "tile": slide2vec writes them to ``image_embeddings/`` and their sidecar
+    # records ``encoder_input_regime="given"``, where a tile bag's geometry was declared.
+    # Keeping the kinds distinct means soma's features_dir *is* slide2vec's output layout,
+    # with no translation step between the two schemas (ADR 0007).
+    "image": "image_embeddings",
+    "slide": "slide_embeddings",
+    "patient": "patient_embeddings",
+    "hierarchical": "hierarchical_embeddings",
+    "dense": "dense_embeddings",
+    "dense_image": "dense_image_embeddings",
+}
+
+
+def _features_subdir_for_kind(cache_kind: str) -> str:
+    try:
+        return _CACHE_KIND_TO_FEATURES_SUBDIR[cache_kind]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported cache_kind '{cache_kind}' for features_dir resolution") from exc
+
+
+def _required_sidecar_suffix(cache_kind: str | None, feature_type: str) -> str | None:
+    """The sidecar a sample needs beside its ``.pt`` to count as present, if any.
+
+    Dense grids need their shape sidecar to be loadable. Pre-cropped images need the
+    provenance sidecar slide2vec publishes after the payload: a payload without it is
+    an interrupted write, which slide2vec repairs, not a feature to reuse. The other
+    pooled kinds stay sidecar-agnostic (their ``.pt`` is self-describing).
+    """
+    if feature_type == "dense_grid":
+        from soma.extract.dense.store import DENSE_SIDECAR_SUFFIX
+
+        return DENSE_SIDECAR_SUFFIX
+    if cache_kind == "image":
+        return ".meta.json"
+    return None
+
+
+def _list_feature_filenames(features_dir: Path) -> set[str]:
+    """Walk ``features_dir`` once, returning every entry's path relative to it.
+
+    Single source of truth for cache-content existence: one walk answers both the
+    ``<stem>.pt`` and ``<stem>.meta.json`` questions for *every* expected id, so the
+    validator and :meth:`FeatureCacheResolution.missing_sample_ids` decide presence by
+    set membership instead of a per-id ``stat`` — the per-launch tax that, on a slow or
+    near-full network mount, dwarfs the useful work and scales with cache size. Both
+    consumers route through this helper so they cannot drift.
+
+    Entries are keyed by *relative* posix path rather than bare filename because dense
+    ROI grids are namespaced per slide (``<slide>/<x>_<y>.pt``, slide2vec's layout). For
+    the flat kinds the relative path *is* the filename, so nothing changes for them.
+    """
+    return {entry.relative_to(features_dir).as_posix() for entry in features_dir.rglob("*")}
+
+
+@dataclass(frozen=True)
+class BaseCacheResolution(ABC):
+    key: str
+    cache_dir: Path
+    metadata_path: Path
+    manifest_path: Path
+    reused: bool
+    complete: bool
+    metadata: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CacheValidationResult:
+    complete: bool
+    reason: str | None = None
+
+
+@dataclass(frozen=True)
+class FeatureCacheResolution(BaseCacheResolution):
+    cache_kind: str
+    features_dir: Path
+    cache_ids: tuple[str, ...]
+    cache_stem_by_id: dict[str, str]
+    validation: CacheValidationResult
+    # Where each id's payload lives *inside* features_dir, without the extension. Defaults
+    # to the cache id (the flat layout every pooled kind uses). Dense ROI grids override
+    # it with slide2vec's per-slide namespacing, ``<slide_id>/<x>_<y>`` — recorded by the
+    # caller from its manifest, never re-derived by splitting the ROI id apart (ADR 0007).
+    payload_stem_by_id: dict[str, str] | None = None
+    # The key each id's identity signature and empty marker are recorded under. Defaults
+    # to the cache id. Content-addressed caches (supplied coordinates) key them by the
+    # payload stem instead, so the records of several tile sets of one sample coexist.
+    identity_key_by_id: dict[str, str] | None = None
+
+    def identity_key(self, cache_id: str) -> str:
+        if self.identity_key_by_id is None:
+            return str(cache_id)
+        return str(self.identity_key_by_id[str(cache_id)])
+
+    @property
+    def empty_sample_ids(self) -> set[str]:
+        """Ids recorded empty under the identity they have now.
+
+        An empty marker recorded under another identity (the slide's image or tile set
+        changed since) is stale: the sample must be extracted again.
+        """
+        recorded_empty = {str(s) for s in self.metadata.get("empty_sample_ids", [])}
+        signatures = self.metadata.get("sample_identity_signature_by_id", {})
+        empty: set[str] = set()
+        for cache_id in self.cache_ids:
+            key = self.identity_key(cache_id)
+            if key in recorded_empty and str(signatures.get(key)) == str(self.cache_stem_by_id[str(cache_id)]):
+                empty.add(str(cache_id))
+        return empty
+
+    def payload_stem(self, cache_id: str) -> str:
+        if self.payload_stem_by_id is None:
+            return str(cache_id)
+        return str(self.payload_stem_by_id[str(cache_id)])
+
+    def feature_path_for_id(self, cache_id: str) -> Path:
+        return self.features_dir / f"{self.payload_stem(cache_id)}.pt"
+
+    def missing_sample_ids(self) -> list[str]:
+        expected = self.cache_ids
+        empty = self.empty_sample_ids
+        # One directory listing decides ``.pt`` (and sidecar) existence for every id,
+        # mirroring the validator — no per-id stat. The ``.pt`` and its sidecar are
+        # written non-atomically (``.pt`` first), so a crash between them leaves a
+        # ``.pt`` with no sidecar; where the kind needs one, that sample is missing.
+        existing = _list_feature_filenames(self.features_dir)
+        sidecar_suffix = _required_sidecar_suffix(
+            self.cache_kind, str(self.metadata.get("feature_type", ""))
+        )
+        cached_signature_by_id = {
+            str(cache_id): str(signature)
+            for cache_id, signature in self.metadata.get("sample_identity_signature_by_id", {}).items()
+        }
+        missing: list[str] = []
+        for cache_id in expected:
+            cache_id = str(cache_id)
+            if cache_id in empty:
+                continue
+            expected_signature = str(self.cache_stem_by_id[cache_id])
+            cached_signature = cached_signature_by_id.get(self.identity_key(cache_id))
+            if cached_signature is None or cached_signature != expected_signature:
+                missing.append(cache_id)
+                continue
+            payload_stem = self.payload_stem(cache_id)
+            if f"{payload_stem}.pt" not in existing:
+                missing.append(cache_id)
+                continue
+            if sidecar_suffix is not None and f"{payload_stem}{sidecar_suffix}" not in existing:
+                missing.append(cache_id)
+        return missing
+
+
+@dataclass(frozen=True)
+class RoiSamplingCacheResolution(BaseCacheResolution):
+    """Resolved ``roi_sampling`` cache entry: per-slide hit/miss plus the loaded coords.
+
+    ``coords_by_id`` holds the hits only — each value is the slide's list of level-0
+    integer ``(x, y)`` ROI origins, possibly empty (a cached zero-ROI answer). A slide
+    absent from it is a miss: its coords artifact was missing or failed to load, or one
+    of its ROIs has no mask crop. ``complete`` (and ``reused``) mean every slide hit.
+    """
+
+    coords_dir: Path
+    masks_dir: Path
+    cache_ids: tuple[str, ...]
+    cache_stem_by_id: dict[str, str]
+    coords_by_id: dict[str, list[tuple[int, int]]]
+
+    @property
+    def miss_sample_ids(self) -> list[str]:
+        return [cache_id for cache_id in self.cache_ids if cache_id not in self.coords_by_id]
+
+    def mask_crop_dir(self, sample_id: str) -> Path:
+        """Directory holding one slide's ROI mask crops."""
+        return self.masks_dir / self.cache_stem_by_id[str(sample_id)]
+
+    def mask_crop_path(self, sample_id: str, x: int, y: int) -> Path:
+        """Where the mask crop of the slide's ROI at level-0 ``(x, y)`` lives."""
+        return self.mask_crop_dir(sample_id) / mask_crop_name(x, y)
+
+
+def mask_crop_name(x: int, y: int) -> str:
+    """File name of a ROI's mask crop within its slide's directory."""
+    return f"{int(x)}_{int(y)}.png"
+
+
+@dataclass(frozen=True)
+class TilingCacheResolution(BaseCacheResolution):
+    process_list_path: Path
+    artifacts_dir: Path
+    cache_ids: tuple[str, ...]
+    cache_stem_by_id: dict[str, str]
+
+    @property
+    def previews_dir(self) -> Path:
+        return self.cache_dir / "previews"

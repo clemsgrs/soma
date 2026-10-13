@@ -1,20 +1,20 @@
-"""Tests for soma.training.model — MILModel composition."""
+"""Tests for soma.models.model — MILModel composition."""
 
 from __future__ import annotations
 
 import torch
 
-from soma.aggregators.base import Aggregator, AggregatorOutput
-from soma.aggregators.pooling import MeanPool
-from soma.aggregators.mil.abmil import ABMIL
-from soma.tasks.classification import (
+from soma.models.aggregators.base import Aggregator, AggregatorOutput
+from soma.models.aggregators.pooling import MeanPool
+from soma.models.aggregators.mil.abmil import ABMIL
+from soma.models.heads.classification import (
     BinaryClassificationHead,
     BranchAwareClassificationHead,
     MulticlassClassificationHead,
 )
-from soma.tasks.ordinal_classification import OrdinalClassificationHead
-from soma.tasks.regression import RegressionHead
-from soma.training.model import MILModel, MILModelOutput
+from soma.models.heads.ordinal_classification import OrdinalClassificationHead
+from soma.models.heads.regression import RegressionHead
+from soma.models.model import MILModel, MILModelOutput
 
 
 class TestMILModel:
@@ -107,7 +107,7 @@ class TestMILModel:
         assert X.grad.abs().sum() > 0
 
     def test_branch_aware_classification_supported(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         model = MILModel(
             aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
@@ -117,7 +117,7 @@ class TestMILModel:
         assert out.logits.shape == (2, 3)
 
     def test_plain_classification_rejected_for_branch_aware_input(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         model = MILModel(
             aggregator=CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3),
@@ -131,7 +131,7 @@ class TestMILModel:
             raise AssertionError("Expected plain classification head to be rejected for CLAM_MB")
 
     def test_branch_aware_representation_rejected_for_regression(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         try:
             MILModel(
@@ -144,7 +144,7 @@ class TestMILModel:
             raise AssertionError("Expected branch-aware CLAM_MB to be rejected for regression")
 
     def test_clam_mb_rejected_for_ordinal(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         try:
             MILModel(
@@ -157,7 +157,7 @@ class TestMILModel:
             raise AssertionError("Expected clam_mb to be rejected for ordinal")
 
     def test_clam_sb_accepts_regression(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = MILModel(
             aggregator=CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3),
@@ -167,7 +167,7 @@ class TestMILModel:
         assert out.logits.shape == (2, 1)
 
     def test_clam_sb_rejects_multitarget_regression(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         try:
             MILModel(

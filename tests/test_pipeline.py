@@ -651,7 +651,7 @@ class TestPipeline:
             trainer={"max_epochs": 2},
             scheduler='cosine',
         )
-        from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+        from soma.extract.preprocessing.resolution import resolve_pipeline_preprocessing
 
         resolved = resolve_pipeline_preprocessing(config)
 
@@ -660,7 +660,7 @@ class TestPipeline:
         assert resolved.requested_region_size_px == 1344
 
     def test_run_auto_extracts_slide_features_without_feature_dir(self, tmp_path: Path):
-        pytest.importorskip("soma.extraction")
+        pytest.importorskip("soma.extract.extractor")
         dataset_csv, splits_csv, _ = _setup_synthetic_data(tmp_path)
         output_root = tmp_path / "output_prism"
 
@@ -724,9 +724,9 @@ class TestPipeline:
         from hs2p import SlideSpec
         from slide2vec.encoders.base import SlideEncoder, TileEncoder
         from slide2vec.encoders.registry import encoder_registry
-        from soma.slide2vec_adapter import LoadedTiling
-        from soma.cache import record_feature_dim, record_sample_identity_signatures
-        from soma.extraction.extractor import _PooledFeatureExtractor
+        from soma.extract.slide2vec_adapter import LoadedTiling
+        from soma.extract.cache import record_feature_dim, record_sample_identity_signatures
+        from soma.extract.extractor import _PooledFeatureExtractor
         from tests.test_extraction import _save_committable
 
         test_tile = "_test_pipeline_cache_tile"
@@ -901,16 +901,16 @@ class TestPipeline:
             record_sample_identity_signatures(tile_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
             record_sample_identity_signatures(slide_cache, [f"s{i}" for i in range(NUM_SAMPLES)])
 
-        with patch("soma.extraction.extractor.torch.cuda.is_available", return_value=False), patch(
-            "soma.extraction.extractor.torch.cuda.device_count", return_value=1
+        with patch("soma.extract.extractor.torch.cuda.is_available", return_value=False), patch(
+            "soma.extract.extractor.torch.cuda.device_count", return_value=1
         ), patch.object(
             _PooledFeatureExtractor,
             "preprocess",
             autospec=True,
             side_effect=_fake_preprocess,
         ), patch(
-            "soma.extraction.extractor.load_tilings", return_value=loaded_tilings
-        ), patch("soma.extraction.extractor._validate_runtime"), patch.object(
+            "soma.extract.extractor.load_tilings", return_value=loaded_tilings
+        ), patch("soma.extract.extractor._validate_runtime"), patch.object(
             _PooledFeatureExtractor,
             "_populate_tile_cache",
             autospec=True,
@@ -925,16 +925,16 @@ class TestPipeline:
                 Pipeline(slide_config).run()
             assert populate_slide_cache.called
 
-        with patch("soma.extraction.extractor.torch.cuda.is_available", return_value=False), patch(
-            "soma.extraction.extractor.torch.cuda.device_count", return_value=1
+        with patch("soma.extract.extractor.torch.cuda.is_available", return_value=False), patch(
+            "soma.extract.extractor.torch.cuda.device_count", return_value=1
         ), patch.object(
             _PooledFeatureExtractor,
             "preprocess",
             autospec=True,
             side_effect=_fake_preprocess,
         ), patch(
-            "soma.extraction.extractor.load_tilings", return_value=loaded_tilings
-        ), patch("soma.extraction.extractor._validate_runtime"), patch.object(
+            "soma.extract.extractor.load_tilings", return_value=loaded_tilings
+        ), patch("soma.extract.extractor._validate_runtime"), patch.object(
             _PooledFeatureExtractor,
             "_populate_tile_cache",
             side_effect=AssertionError("tile extraction should be reused"),
@@ -978,7 +978,7 @@ class TestPipeline:
         )
         pipeline = Pipeline(config, source=CachedSetSource(feature_dir))
 
-        from soma.tasks.classification import categorical_label_map
+        from soma.models.heads.classification import categorical_label_map
 
         assert len(categorical_label_map(pipeline.cohort.records)) == 2
         assert pipeline.cohort.num_folds == 1

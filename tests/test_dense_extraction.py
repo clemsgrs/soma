@@ -1,4 +1,4 @@
-"""Offline tests for dense extraction over given images (soma.dense_extraction).
+"""Offline tests for dense extraction over given images (soma.extract.dense_extraction).
 
 The encode itself is slide2vec's (``Model.embed_images_dense``, tested upstream and gated
 on byte-identity against the pre-migration grids), so it is stubbed here at soma's import
@@ -28,9 +28,10 @@ from slide2vec import DenseOptions, ExecutionOptions  # noqa: E402
 
 from soma.config import CacheOptions, EncoderLeaf  # noqa: E402
 from soma.data import ImageEntry, ImageManifest  # noqa: E402
-from soma.dense import CachedGridSource, compute_dense_geometry  # noqa: E402
-from soma.dense.store import DENSE_SIDECAR_SUFFIX  # noqa: E402
-from soma.dense_extraction import _DenseImageExtractor  # noqa: E402
+from soma.extract.dense import CachedGridSource  # noqa: E402
+from soma.data.geometry import compute_dense_geometry
+from soma.extract.dense.store import DENSE_SIDECAR_SUFFIX  # noqa: E402
+from soma.extract.dense_extraction import _DenseImageExtractor  # noqa: E402
 
 FEATURE_DIM = 8
 PATCH = 16
@@ -134,7 +135,7 @@ class _FakeDenseImageModel:
 
 @pytest.fixture
 def fake_model(monkeypatch) -> type[_FakeDenseImageModel]:
-    import soma.dense_extraction as de
+    import soma.extract.dense_extraction as de
 
     _FakeDenseImageModel.calls = []
     monkeypatch.setattr(de, "Model", _FakeDenseImageModel)
@@ -249,7 +250,7 @@ def test_run_logs_the_dense_mode_it_resolved(tmp_path: Path, fake_model, caplog)
     assert [
         record.getMessage()
         for record in caplog.records
-        if record.name == "soma.dense_extraction"
+        if record.name == "soma.extract.dense_extraction"
         and record.getMessage().startswith("Dense extraction mode: ")
     ] == ["Dense extraction mode: whole (single padded forward)"]
 
@@ -411,7 +412,7 @@ def test_constructor_rejects_an_unencodable_pad_mode(tmp_path: Path):
 
 
 def test_extract_lock_is_a_noop_without_the_env(monkeypatch):
-    from soma.dense_extraction import DENSE_EXTRACT_LOCK_ENV, _dense_extract_lock
+    from soma.extract.dense_extraction import DENSE_EXTRACT_LOCK_ENV, _dense_extract_lock
 
     monkeypatch.delenv(DENSE_EXTRACT_LOCK_ENV, raising=False)
     with _dense_extract_lock():
@@ -421,7 +422,7 @@ def test_extract_lock_is_a_noop_without_the_env(monkeypatch):
 def test_extract_lock_serializes_holders(tmp_path: Path, monkeypatch):
     import fcntl
 
-    from soma.dense_extraction import DENSE_EXTRACT_LOCK_ENV, _dense_extract_lock
+    from soma.extract.dense_extraction import DENSE_EXTRACT_LOCK_ENV, _dense_extract_lock
 
     lock_path = tmp_path / "locks" / "extract.lock"
     monkeypatch.setenv(DENSE_EXTRACT_LOCK_ENV, str(lock_path))
@@ -447,8 +448,8 @@ def test_prenorm_run_forwards_the_feature_kind_without_attention_knobs(tmp_path:
 
 
 def test_dense_grid_metadata_treats_prenorm_as_patch_tokens_not_attention():
-    from soma.dense import compute_dense_geometry
-    from soma.dense.store import dense_grid_metadata
+    from soma.data.geometry import compute_dense_geometry
+    from soma.extract.dense.store import dense_grid_metadata
 
     geometry = compute_dense_geometry(target_size=16, patch_size=8)
     pre = dense_grid_metadata(

@@ -16,9 +16,9 @@ import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from soma.aggregators.mil.abmil import ABMIL
-from soma.aggregators.mil.clam import CLAM_SB
-from soma.aggregators.pooling import MeanPool
+from soma.models.aggregators.mil.abmil import ABMIL
+from soma.models.aggregators.mil.clam import CLAM_SB
+from soma.models.aggregators.pooling import MeanPool
 from soma.learn import (
     Budget,
     Checkpoint,
@@ -30,12 +30,12 @@ from soma.learn import (
     StepOutput,
     Trainer,
 )
-from soma.tasks.classification import BinaryClassificationHead
-from soma.tasks.regression import RegressionHead
-from soma.tasks.survival import CoxSurvivalHead, cox_breslow_loss
-from soma.training.collate import BagBatch, CoxWindowBatch, bag_collate_fn
-from soma.training.model import EmbeddingModel, MILModel
-from soma.training.sample_dataset import SampleBatch
+from soma.models.heads.classification import BinaryClassificationHead
+from soma.models.heads.regression import RegressionHead
+from soma.models.heads.survival import CoxSurvivalHead, cox_breslow_loss
+from soma.learn.collate import BagBatch, CoxWindowBatch, bag_collate_fn
+from soma.models.model import EmbeddingModel, MILModel
+from soma.learn.sample_dataset import SampleBatch
 
 D = 16
 
@@ -248,7 +248,7 @@ class TestAuxiliaryLoss:
         assert not torch.isclose(total, head_loss)
 
     def test_label_aware_auxiliary_loss_refuses_a_head_without_a_label(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         agg = DTFDMIL(input_dim=D, embed_dim=D, hidden_dim=8, n_groups=2)

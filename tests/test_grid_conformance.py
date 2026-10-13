@@ -12,13 +12,13 @@ from PIL import Image
 
 from soma.data import ImageManifest, TileImageSource
 from soma.data.manifests import ImageEntry
-from soma.dense import CachedGridSource
-from soma.dense.composite import CompositeDenseFeatureStore
-from soma.dense.geometry import compute_dense_geometry
-from soma.dense.store import dense_grid_metadata, write_dense_grid
+from soma.extract.dense import CachedGridSource
+from soma.extract.dense.composite import CompositeDenseFeatureStore
+from soma.data.geometry import compute_dense_geometry
+from soma.extract.dense.store import dense_grid_metadata, write_dense_grid
 from soma.learn import GridBatch
-from soma.tasks.detection import DetectionHead
-from soma.tasks.segmentation import SegmentationHead
+from soma.models.heads.detection import DetectionHead
+from soma.models.heads.segmentation import SegmentationHead
 from soma.testing import (
     ConformanceError,
     FakeEncoder,
@@ -275,7 +275,7 @@ class _ProtocolGridSource:
 
 
 def test_a_protocol_grid_source_at_the_configured_spacing_passes_the_spacing_check():
-    from soma.dense import require_declared_spacing
+    from soma.extract.dense import require_declared_spacing
 
     source = _ProtocolGridSource({"a": 0.5, "b": 1.0})
     # "b" is a flat read (no configured spacing): nothing to compare.
@@ -283,7 +283,7 @@ def test_a_protocol_grid_source_at_the_configured_spacing_passes_the_spacing_che
 
 
 def test_a_protocol_grid_source_at_another_spacing_fails_the_spacing_check():
-    from soma.dense import require_declared_spacing
+    from soma.extract.dense import require_declared_spacing
 
     source = _ProtocolGridSource({"a": 0.5, "b": 1.0})
     with pytest.raises(ValueError, match="segmentation sample 'b'"):

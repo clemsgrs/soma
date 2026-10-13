@@ -15,9 +15,9 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-import soma.dense.store as store_mod  # noqa: E402
-from soma.dense.geometry import compute_dense_geometry  # noqa: E402
-from soma.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid  # noqa: E402
+import soma.extract.dense.store as store_mod  # noqa: E402
+from soma.data.geometry import compute_dense_geometry  # noqa: E402
+from soma.extract.dense.store import CachedGridSource, dense_grid_metadata, write_dense_grid  # noqa: E402
 
 TARGET = 8
 PATCH = 4

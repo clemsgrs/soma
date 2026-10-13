@@ -14,10 +14,10 @@ import pytest
 import torch
 from PIL import Image
 
-from soma.dense import CachedGridSource
-from soma.dense.composite import CompositeDenseFeatureStore, resample_grid_to_target
-from soma.dense.geometry import compute_dense_geometry
-from soma.dense.store import dense_grid_metadata, write_dense_grid
+from soma.extract.dense import CachedGridSource
+from soma.extract.dense.composite import CompositeDenseFeatureStore, resample_grid_to_target
+from soma.data.geometry import compute_dense_geometry
+from soma.extract.dense.store import dense_grid_metadata, write_dense_grid
 from tests.experiment_configs import experiment
 
 TARGET = 8
@@ -252,7 +252,7 @@ def test_a_composite_states_the_geometry_its_members_read_at():
     """The composite's members read at the run's dense options: nothing picks a spacing
     for them, so a composite run without a dense geometry is refused."""
     from soma.config import FeaturesConfig
-    from soma.preprocessing.resolution import resolve_pipeline_dense
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
     from tests.experiment_configs import experiment
 
     members = {"members": [{"name": "conch"}, {"name": "h0-mini"}]}

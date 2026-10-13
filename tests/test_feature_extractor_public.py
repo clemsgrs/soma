@@ -32,9 +32,9 @@ def _provenance(output_dir: Path) -> dict:
 
 
 def test_extract_is_the_root_verb_and_the_namespace_of_the_live_encoder() -> None:
-    assert callable(soma.extract) and soma.extract.extract is soma.extraction.extract
+    assert callable(soma.extract) and soma.extract.extract is soma.extract.extract
     assert soma.extract.live_encoder is not None
-    parameters = inspect.signature(soma.extraction.extract).parameters
+    parameters = inspect.signature(soma.extract.extract).parameters
     assert list(parameters) == [
         "images",
         "encoder",
@@ -53,7 +53,8 @@ def test_extract_is_the_root_verb_and_the_namespace_of_the_live_encoder() -> Non
 
 
 def test_extract_reads_an_image_manifest_never_records(tmp_path: Path) -> None:
-    from soma import CacheOptions, SampleRecord
+    from soma import SampleRecord
+    from soma.config import CacheOptions
 
     with pytest.raises(TypeError, match="ImageManifest"):
         soma.extract(
@@ -69,7 +70,7 @@ def test_tile_dataset_extracts_through_canonical_result(
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
 
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     _write_scalar_dataset(dataset_csv)
@@ -92,7 +93,7 @@ def test_tile_dataset_extracts_through_canonical_result(
                 )
             ]
 
-    monkeypatch.setattr("soma.tile_extraction.Model", BoundaryModel)
+    monkeypatch.setattr("soma.extract.tile_extraction.Model", BoundaryModel)
 
     source = soma.extract(
         images,
@@ -117,7 +118,7 @@ def test_spatial_expression_extracts_through_canonical_result(
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
 
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -150,7 +151,7 @@ def test_spatial_expression_extracts_through_canonical_result(
                 )
             ]
 
-    monkeypatch.setattr("soma.tile_extraction.Model", SpatialBoundaryModel)
+    monkeypatch.setattr("soma.extract.tile_extraction.Model", SpatialBoundaryModel)
 
     source = soma.extract(
         images,
@@ -166,7 +167,7 @@ def test_spatial_expression_extracts_through_canonical_result(
 
 
 def test_unsupported_extraction_unit_fails_before_anything_runs(tmp_path: Path) -> None:
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     _write_scalar_dataset(dataset_csv)
@@ -186,7 +187,7 @@ def test_given_image_segmentation_extracts_dense_source(
 ) -> None:
     from slide2vec.artifacts import write_dense_image
 
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -224,9 +225,9 @@ def test_given_image_segmentation_extracts_dense_source(
                 )
             ]
 
-    monkeypatch.setattr("soma.dense_extraction.Model", DenseBoundaryModel)
+    monkeypatch.setattr("soma.extract.dense_extraction.Model", DenseBoundaryModel)
     monkeypatch.setattr(
-        "soma.dense_extraction.resolve_patch_size", lambda _name: (16, 16)
+        "soma.extract.dense_extraction.resolve_patch_size", lambda _name: (16, 16)
     )
 
     source = soma.extract(
@@ -252,9 +253,9 @@ def test_given_image_segmentation_extracts_dense_source(
 def test_rois_are_refused_as_pre_cropped_images(tmp_path: Path) -> None:
     """ROIs are windows of whole slides: read as pre-cropped images, each would be its
     whole parent slide with its address lost, so the verb refuses it before running."""
-    from soma import CacheOptions
-    from soma.extraction import RoiSet
-    from soma.extraction.rois import roi_entries
+    from soma.config import CacheOptions
+    from soma.extract import RoiSet
+    from soma.extract.rois import roi_entries
 
     dataset_csv = tmp_path / "slides.csv"
     dataset_csv.write_text(
@@ -276,7 +277,7 @@ def test_rois_are_refused_as_pre_cropped_images(tmp_path: Path) -> None:
 def test_given_image_detection_selects_dense_extraction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from soma.dense_extraction import _DenseImageExtractor
+    from soma.extract.dense_extraction import _DenseImageExtractor
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -306,7 +307,7 @@ def test_given_image_detection_selects_dense_extraction(
         encoder="phikon",
         extraction=extraction(0.5, 32),
         dense=DenseOptions(spacing_um=0.5, target_size=32),
-        cache=soma.CacheOptions(),
+        cache=soma.config.CacheOptions(),
         output_dir=tmp_path / "output",
         unit="tile",
     )
@@ -320,8 +321,8 @@ def test_dense_facade_reuses_existing_cache_key_for_explicit_preprocessing(
 ) -> None:
     from slide2vec.artifacts import write_dense_image
 
-    from soma import CacheOptions
-    from soma.dense_extraction import _DenseImageExtractor
+    from soma.config import CacheOptions
+    from soma.extract.dense_extraction import _DenseImageExtractor
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -360,9 +361,9 @@ def test_dense_facade_reuses_existing_cache_key_for_explicit_preprocessing(
                 )
             ]
 
-    monkeypatch.setattr("soma.dense_extraction.Model", CacheIdentityModel)
+    monkeypatch.setattr("soma.extract.dense_extraction.Model", CacheIdentityModel)
     monkeypatch.setattr(
-        "soma.dense_extraction.resolve_patch_size", lambda _name: (16, 16)
+        "soma.extract.dense_extraction.resolve_patch_size", lambda _name: (16, 16)
     )
     cache = CacheOptions(enabled=True, root_dir=tmp_path / "cache")
 
@@ -394,7 +395,7 @@ def test_annotation_sampled_slides_return_roi_keyed_grids_whose_rois_name_their_
 ) -> None:
     from slide2vec.artifacts import write_dense_region
 
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -454,9 +455,9 @@ def test_annotation_sampled_slides_return_roi_keyed_grids_whose_rois_name_their_
         return [np.ones((size[1], size[0]), dtype=np.uint8)]
 
     monkeypatch.setattr("hs2p.tile_slide", fake_tile_slide)
-    monkeypatch.setattr("soma.dense_slide_extraction.Model", RegionBoundaryModel)
+    monkeypatch.setattr("soma.extract.dense_slide_extraction.Model", RegionBoundaryModel)
     monkeypatch.setattr(
-        "soma.dense.reader.read_mask_regions_within_slide", fake_mask_regions
+        "soma.extract.dense.reader.read_mask_regions_within_slide", fake_mask_regions
     )
     preprocessing = extraction(
         0.5,
@@ -499,7 +500,7 @@ def test_annotation_sampled_slides_return_roi_keyed_grids_whose_rois_name_their_
 def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -524,7 +525,7 @@ def test_all_zero_roi_extraction_returns_empty_source_without_loading_encoder(
         def from_preset(cls, _name: str, **_kwargs):
             raise AssertionError("all-zero ROI extraction must not load the encoder")
 
-    monkeypatch.setattr("soma.dense_slide_extraction.Model", EncoderMustNotLoad)
+    monkeypatch.setattr("soma.extract.dense_slide_extraction.Model", EncoderMustNotLoad)
     source = soma.extract(
         ImageManifest.from_csv(dataset_csv),
         annotations=AnnotationManifest.from_csv(dataset_csv),
@@ -551,7 +552,7 @@ def test_annotation_sampling_samples_rois_at_the_geometry_the_grid_reads_them_at
     """ROIs are sampled (and their masks cropped) at the tiling and read at ``dense``: an
     unset tiling takes the dense geometry, not the encoder preset's, and a tiling that
     disagrees with ``dense`` is refused."""
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -592,7 +593,7 @@ def test_tile_extraction_missing_returned_outputs_commits_nothing_and_publishes_
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
 
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -627,7 +628,7 @@ def test_tile_extraction_missing_returned_outputs_commits_nothing_and_publishes_
                 for index, sample_id in enumerate(written)
             ]
 
-    monkeypatch.setattr("soma.tile_extraction.Model", PartialBoundaryModel)
+    monkeypatch.setattr("soma.extract.tile_extraction.Model", PartialBoundaryModel)
     kwargs = dict(
         unit="tile",
         encoder="phikon",
@@ -653,7 +654,7 @@ def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
 ) -> None:
     from slide2vec.artifacts import write_image_embedding
 
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     _write_scalar_dataset(dataset_csv)
@@ -682,7 +683,7 @@ def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
                 )
             ]
 
-    monkeypatch.setattr("soma.tile_extraction.Model", OneShotBoundaryModel)
+    monkeypatch.setattr("soma.extract.tile_extraction.Model", OneShotBoundaryModel)
     kwargs = dict(
         unit="tile",
         encoder="phikon",
@@ -705,7 +706,7 @@ def test_pooled_slide_extracts_through_the_same_public_interface(
 ) -> None:
     tifffile = pytest.importorskip("tifffile")
 
-    from soma import CacheOptions
+    from soma.config import CacheOptions
     from tests.dense_literal_encoder import register_literal_encoder
 
     encoder_name = register_literal_encoder()
@@ -764,8 +765,8 @@ def test_pooled_slide_extracts_through_the_same_public_interface(
 def test_hierarchical_extracts_through_the_same_public_interface(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from soma import CacheOptions
-    from soma.extraction.extractor import _PooledFeatureExtractor
+    from soma.config import CacheOptions
+    from soma.extract.extractor import _PooledFeatureExtractor
     from soma.data import CachedSetSource
 
     dataset_csv = tmp_path / "dataset.csv"
@@ -846,9 +847,9 @@ def _stub_roi_sampling(monkeypatch: pytest.MonkeyPatch):
             ]
 
     monkeypatch.setattr("hs2p.tile_slide", fake_tile_slide)
-    monkeypatch.setattr("soma.dense_slide_extraction.Model", RegionModel)
+    monkeypatch.setattr("soma.extract.dense_slide_extraction.Model", RegionModel)
     monkeypatch.setattr(
-        "soma.dense.reader.read_mask_regions_within_slide",
+        "soma.extract.dense.reader.read_mask_regions_within_slide",
         lambda path, *, regions, size, **_: [np.zeros((size[1], size[0]), np.uint8) for _ in regions],
     )
     return sampled, RegionModel
@@ -859,7 +860,7 @@ def test_rois_of_an_earlier_extraction_are_encoded_again_without_sampling(
 ) -> None:
     """``rois=`` re-encodes the ROIs an annotation-sampled extraction drew (another
     encoder or recipe over the same ROIs): no sampling, the same ROI ids."""
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -907,7 +908,7 @@ def test_rois_are_refused_at_another_geometry_than_they_were_sampled_at(
     """An ROI's label crop is stored at the spacing and window it was sampled at: replayed
     at another one, its grid would not align with that crop, so the verb refuses. The
     binding survives a replay and a subset."""
-    from soma import CacheOptions
+    from soma.config import CacheOptions
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
@@ -949,9 +950,9 @@ def test_rois_are_refused_with_a_manifest_whose_parent_row_differs(tmp_path: Pat
     """An ROI is read from (and its cache identity keyed on) the slide row it was sampled
     from: replayed with a manifest whose row for that slide differs, the verb refuses
     rather than silently encode the old row."""
-    from soma import CacheOptions
-    from soma.extraction import RoiSet
-    from soma.extraction.rois import roi_entries
+    from soma.config import CacheOptions
+    from soma.extract import RoiSet
+    from soma.extract.rois import roi_entries
 
     header = "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
     sampled_csv = tmp_path / "sampled.csv"

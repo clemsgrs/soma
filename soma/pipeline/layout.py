@@ -30,7 +30,7 @@ from typing import Any
 
 import yaml
 
-from soma.atomic_io import atomic_write_text
+from soma._internal.atomic_io import atomic_write_text
 from soma.config import ExperimentConfig
 from soma.plan import Plan, comparable
 
@@ -247,8 +247,8 @@ def _features_identity(plan: Plan, *, cache_dtype: bool = False) -> dict[str, An
     (the geometry left to the encoder preset or to ``dense`` filled in), so two plans that
     extract the same features share one identity however the geometry was spelled.
     """
-    from soma.cache.keys import _jsonable
-    from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+    from soma.extract.cache.keys import _jsonable
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     features = plan.features
     encoder = None

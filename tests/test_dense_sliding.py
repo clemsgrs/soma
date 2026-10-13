@@ -21,8 +21,8 @@ from slide2vec.runtime.dense_sliding import (  # noqa: E402
     resolve_window_geometry,
 )
 
-from soma.dense.geometry import compute_dense_geometry  # noqa: E402
-from soma.dense.sliding import cover_origins  # noqa: E402
+from soma.data.geometry import compute_dense_geometry  # noqa: E402
+from soma.extract.dense.sliding import cover_origins  # noqa: E402
 
 PATCH = 16
 

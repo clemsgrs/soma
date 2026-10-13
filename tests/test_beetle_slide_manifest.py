@@ -21,7 +21,7 @@ from PIL import Image, TiffImagePlugin
 from examples.beetle.curate import curate_beetle_slide_manifest
 from soma.config import ExperimentConfig
 from soma.plan import check, head_family
-from soma.dense.reader import build_label_remap
+from soma.extract.dense.reader import build_label_remap
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BEETLE_CONFIG = REPO_ROOT / "examples" / "beetle" / "configs" / "base.yaml"

@@ -20,9 +20,9 @@ from PIL import Image
 
 from soma.config import CacheOptions, FeaturesConfig
 from soma.data import Cohort, ImageManifest
-from soma.dense import CachedGridSource
-from soma.dense.geometry import compute_dense_geometry
-from soma.dense.store import dense_grid_metadata, write_dense_grid
+from soma.extract.dense import CachedGridSource
+from soma.data.geometry import compute_dense_geometry
+from soma.extract.dense.store import dense_grid_metadata, write_dense_grid
 from tests.experiment_configs import experiment
 
 NUM_CLASSES = 2

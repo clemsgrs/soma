@@ -1,4 +1,4 @@
-"""Tests for soma.aggregators.mil.dtfdmil — DTFD-MIL aggregator."""
+"""Tests for soma.models.aggregators.mil.dtfdmil — DTFD-MIL aggregator."""
 
 from __future__ import annotations
 
@@ -7,17 +7,17 @@ import torch
 import torch.nn.functional as F
 import pytest
 
-from soma.aggregators.base import AggregatorOutput
-from soma.aggregators.registry import aggregator_registry
-from soma.tasks.classification import MulticlassClassificationHead
-from soma.tasks.ordinal_classification import OrdinalClassificationHead
-from soma.tasks.regression import RegressionHead
-from soma.training.model import MILModel
+from soma.models.aggregators.base import AggregatorOutput
+from soma.models.aggregators.registry import aggregator_registry
+from soma.models.heads.classification import MulticlassClassificationHead
+from soma.models.heads.ordinal_classification import OrdinalClassificationHead
+from soma.models.heads.regression import RegressionHead
+from soma.models.model import MILModel
 
 
 class TestDTFDMIL:
     def test_returns_aggregator_output(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4)
@@ -28,7 +28,7 @@ class TestDTFDMIL:
 
     def test_tile_attention_shape(self):
         """Tile attention (instance CAM) should cover all tiles in original order."""
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4)
@@ -38,7 +38,7 @@ class TestDTFDMIL:
         assert out.tile_attention.shape == (2, 12)
 
     def test_auxiliary_pseudo_predictions(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=16, embed_dim=16, hidden_dim=8, n_groups=4)
@@ -49,13 +49,13 @@ class TestDTFDMIL:
         assert out.auxiliary["pseudo_predictions"].shape == (2, 4)
 
     def test_output_dim(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         model = DTFDMIL(input_dim=32, embed_dim=32, hidden_dim=16)
         assert model.output_dim == 32
 
     def test_with_mask(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(42)
         model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=3)
@@ -65,7 +65,7 @@ class TestDTFDMIL:
         assert out.bag_representation.shape == (1, 8)
 
     def test_masked_forward_ignores_padded_tiles(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=4, embed_dim=4, hidden_dim=3, n_groups=4, dropout=0.0)
@@ -94,7 +94,7 @@ class TestDTFDMIL:
 
     def test_n_groups_clipping(self):
         """n_groups should be clipped to bag_size when bag is small."""
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=100)
@@ -105,7 +105,7 @@ class TestDTFDMIL:
         assert out.auxiliary["pseudo_predictions"].shape[1] <= 3
 
     def test_distill_mode_maxmin(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, distill_mode="maxmin")
@@ -114,7 +114,7 @@ class TestDTFDMIL:
         assert out.bag_representation.shape == (2, 8)
 
     def test_distill_mode_max(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, distill_mode="max")
@@ -123,7 +123,7 @@ class TestDTFDMIL:
         assert out.bag_representation.shape == (2, 8)
 
     def test_distill_mode_afs(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, distill_mode="afs")
@@ -132,13 +132,13 @@ class TestDTFDMIL:
         assert out.bag_representation.shape == (2, 8)
 
     def test_invalid_distill_mode(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         with pytest.raises(ValueError, match="distill_mode"):
             DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, distill_mode="invalid")
 
     def test_gradient_flows(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=2)
@@ -151,12 +151,12 @@ class TestDTFDMIL:
 
     def test_registered(self):
         cls = aggregator_registry.get("dtfdmil")
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         assert cls is DTFDMIL
 
     def test_multiclass_auxiliary_loss_uses_cross_entropy(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         agg = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=2)
@@ -175,7 +175,7 @@ class TestDTFDMIL:
         assert torch.isclose(loss, expected)
 
     def test_ordinal_auxiliary_loss_uses_scalar_mse(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         agg = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=2)
@@ -196,7 +196,7 @@ class TestDTFDMIL:
         assert torch.isclose(loss, expected)
 
     def test_regression_auxiliary_loss_uses_scalar_mse(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         agg = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=2)
@@ -235,7 +235,7 @@ class TestDTFDMILDistillation:
         return seen["n"]
 
     def test_default_distills_one_instance_per_group_and_direction(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         X = torch.randn(1, 12, 8)
@@ -245,7 +245,7 @@ class TestDTFDMILDistillation:
         assert self._distilled_count(max_only, X) == 4
 
     def test_instances_per_group_is_honoured_and_clamped(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         X = torch.randn(1, 12, 8)  # 4 groups of 3
@@ -259,13 +259,13 @@ class TestDTFDMILDistillation:
         assert self._distilled_count(clamped, X) == 12  # every instance, no duplicates
 
     def test_instances_per_group_must_be_positive(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         with pytest.raises(ValueError, match="instances_per_group"):
             DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, instances_per_group=0)
 
     def test_eval_partition_is_deterministic_without_seeding(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=3, dropout=0.0).eval()
@@ -278,7 +278,7 @@ class TestDTFDMILDistillation:
         )
 
     def test_train_partition_follows_torch_seed(self):
-        from soma.aggregators.mil.dtfdmil import DTFDMIL
+        from soma.models.aggregators.mil.dtfdmil import DTFDMIL
 
         torch.manual_seed(0)
         model = DTFDMIL(input_dim=8, embed_dim=8, hidden_dim=4, n_groups=3, dropout=0.0).train()

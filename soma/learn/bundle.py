@@ -80,7 +80,7 @@ def save(fit, path: str | Path, *, preprocessing: Mapping[str, Any] | None = Non
     """
     from safetensors.torch import save_file
 
-    from soma.training.model import DenseModel
+    from soma.models.model import DenseModel
 
     model = fit.learner.model
     recipe = getattr(model, "build_recipe", None)

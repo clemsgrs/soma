@@ -1,7 +1,7 @@
 """``Predictions``: what a model said about each sample, and nothing about the truth.
 
 A frame keyed by ``sample_id`` whose other columns the task head declares
-(:attr:`soma.tasks.TaskHead.prediction_columns`). Targets never travel here; they come
+(:attr:`soma.models.heads.TaskHead.prediction_columns`). Targets never travel here; they come
 from the cohort (:meth:`soma.data.Cohort.targets`) and meet the predictions only inside
 :func:`soma.evaluate`.
 """

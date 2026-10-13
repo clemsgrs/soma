@@ -309,5 +309,5 @@ probabilities are optional; see :doc:`outputs` for the artifact layout and
 Task head
 ---------
 
-.. autoclass:: soma.tasks.segmentation.SegmentationHead
+.. autoclass:: soma.models.heads.segmentation.SegmentationHead
    :members:

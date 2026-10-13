@@ -1,19 +1,19 @@
-"""Tests for soma.aggregators.mil.clam — CLAM aggregators and SmoothTop1SVM."""
+"""Tests for soma.models.aggregators.mil.clam — CLAM aggregators and SmoothTop1SVM."""
 
 from __future__ import annotations
 
 import torch
 
-from soma.aggregators.base import AggregatorOutput
-from soma.aggregators.mil.losses import SmoothTop1SVM
-from soma.aggregators.registry import aggregator_registry
-from soma.tasks.classification import (
+from soma.models.aggregators.base import AggregatorOutput
+from soma.models.aggregators.mil.losses import SmoothTop1SVM
+from soma.models.aggregators.registry import aggregator_registry
+from soma.models.heads.classification import (
     BinaryClassificationHead,
     BranchAwareClassificationHead,
     MulticlassClassificationHead,
 )
-from soma.tasks.ordinal_classification import OrdinalClassificationHead
-from soma.tasks.regression import RegressionHead
+from soma.models.heads.ordinal_classification import OrdinalClassificationHead
+from soma.models.heads.regression import RegressionHead
 
 
 class TestSmoothTop1SVM:
@@ -39,7 +39,7 @@ class TestSmoothTop1SVM:
 
 class TestCLAMSB:
     def test_returns_aggregator_output(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4)
         out = model(torch.randn(2, 10, 16))
@@ -47,7 +47,7 @@ class TestCLAMSB:
         assert out.bag_representation.shape == (2, 8)
 
     def test_attention_shape(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4)
         out = model(torch.randn(2, 10, 16))
@@ -55,7 +55,7 @@ class TestCLAMSB:
         assert out.tile_attention.shape == (2, 10)
 
     def test_auxiliary_contains_embeddings_and_attention(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=16, hidden_dim=8, attn_dim=4)
         out = model(torch.randn(2, 10, 16))
@@ -64,25 +64,25 @@ class TestCLAMSB:
         assert out.auxiliary["attention"].shape == (2, 1, 10)
 
     def test_output_dim(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         assert CLAM_SB(input_dim=32, hidden_dim=12, attn_dim=6).output_dim == 12
 
     def test_gated_default(self):
-        from soma.aggregators.mil.clam import CLAM_SB, AttnNetGated
+        from soma.models.aggregators.mil.clam import CLAM_SB, AttnNetGated
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
         assert isinstance(model.attention_net[-1], AttnNetGated)
 
     def test_configure_for_classification(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
         model.configure_for_task(BinaryClassificationHead(input_dim=4, num_classes=2))
         assert model._resolved_instance_loss_mode == "classification"
 
     def test_configure_for_classification_syncs_num_classes(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
         model.configure_for_task(MulticlassClassificationHead(input_dim=4, num_classes=6))
@@ -97,21 +97,21 @@ class TestCLAMSB:
         assert inst_loss.dim() == 0
 
     def test_configure_for_ordinal(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
         model.configure_for_task(OrdinalClassificationHead(input_dim=4, num_classes=6))
         assert model._resolved_instance_loss_mode == "ordinal"
 
     def test_configure_for_regression(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
         model.configure_for_task(RegressionHead(input_dim=4))
         assert model._resolved_instance_loss_mode == "regression"
 
     def test_multitarget_regression_rejected(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3)
         try:
@@ -122,7 +122,7 @@ class TestCLAMSB:
             raise AssertionError("Expected multi-target regression to be rejected for CLAM_SB")
 
     def test_inconsistent_instance_loss_mode_rejected(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, instance_loss_mode="classification")
         try:
@@ -133,7 +133,7 @@ class TestCLAMSB:
             raise AssertionError("Expected inconsistent CLAM instance loss mode to be rejected")
 
     def test_negative_class_instance_loss_rejected_for_ordinal(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(
             input_dim=8,
@@ -149,7 +149,7 @@ class TestCLAMSB:
             raise AssertionError("Expected negative-class instance loss to be rejected for ordinal")
 
     def test_compute_instance_loss_classification(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=3)
         model.configure_for_task(BinaryClassificationHead(input_dim=4, num_classes=2))
@@ -164,7 +164,7 @@ class TestCLAMSB:
         assert inst_loss.item() >= 0
 
     def test_compute_instance_loss_with_mask_and_clipping(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=100)
         model.configure_for_task(BinaryClassificationHead(input_dim=4, num_classes=2))
@@ -180,7 +180,7 @@ class TestCLAMSB:
         assert inst_loss.dim() == 0
 
     def test_ordinal_auxiliary_loss_is_scalar(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=2)
         model.configure_for_task(OrdinalClassificationHead(input_dim=4, num_classes=6))
@@ -192,7 +192,7 @@ class TestCLAMSB:
         assert aux_loss.item() >= 0
 
     def test_regression_auxiliary_loss_is_scalar(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=2)
         model.configure_for_task(RegressionHead(input_dim=4))
@@ -204,7 +204,7 @@ class TestCLAMSB:
         assert aux_loss.item() >= 0
 
     def test_regression_bottom_k_regularization_uses_variance_not_fake_labels(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, k_sample=2, low_attention_weight=0.5)
         model.configure_for_task(RegressionHead(input_dim=4))
@@ -216,7 +216,7 @@ class TestCLAMSB:
         assert aux_loss.item() >= 0
 
     def test_combine_losses_uses_bag_weight(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, bag_weight=0.25)
         model.compute_auxiliary_loss = lambda auxiliary, labels, mask=None: torch.tensor(2.0)  # type: ignore[method-assign]
@@ -225,7 +225,7 @@ class TestCLAMSB:
         assert torch.isclose(combined, torch.tensor(3.0))
 
     def test_combine_losses_skips_instance_loss_when_disabled(self):
-        from soma.aggregators.mil.clam import CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_SB
 
         model = CLAM_SB(input_dim=8, hidden_dim=4, attn_dim=3, bag_weight=1.0)
         task_loss = torch.tensor(6.0)
@@ -235,7 +235,7 @@ class TestCLAMSB:
 
 class TestCLAMMB:
     def test_returns_branch_aware_representation_and_attention(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         model = CLAM_MB(input_dim=16, hidden_dim=8, attn_dim=4, n_classes=3)
         model.configure_for_task(BranchAwareClassificationHead(input_dim=8, num_classes=3))
@@ -246,7 +246,7 @@ class TestCLAMMB:
         assert out.auxiliary["attention"].shape == (2, 3, 10)
 
     def test_instance_loss_multiclass(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         model = CLAM_MB(
             input_dim=8,
@@ -267,7 +267,7 @@ class TestCLAMMB:
         assert inst_loss.item() >= 0
 
     def test_configure_for_classification_syncs_num_classes(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         model = CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3)
         model.configure_for_task(BranchAwareClassificationHead(input_dim=4, num_classes=6))
@@ -276,7 +276,7 @@ class TestCLAMMB:
         assert out.bag_representation.shape == (2, 6, 4)
 
     def test_out_of_class_branch_uses_negative_only_helper(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         model = CLAM_MB(
             input_dim=8,
@@ -301,7 +301,7 @@ class TestCLAMMB:
         assert ("in", 1) in calls
 
     def test_rejected_for_ordinal(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         model = CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3)
         try:
@@ -312,7 +312,7 @@ class TestCLAMMB:
             raise AssertionError("Expected clam_mb to reject ordinal tasks")
 
     def test_rejected_for_regression(self):
-        from soma.aggregators.mil.clam import CLAM_MB
+        from soma.models.aggregators.mil.clam import CLAM_MB
 
         model = CLAM_MB(input_dim=8, hidden_dim=4, attn_dim=3, n_classes=3)
         try:
@@ -323,7 +323,7 @@ class TestCLAMMB:
             raise AssertionError("Expected clam_mb to reject regression tasks")
 
     def test_registered(self):
-        from soma.aggregators.mil.clam import CLAM_MB, CLAM_SB
+        from soma.models.aggregators.mil.clam import CLAM_MB, CLAM_SB
 
         assert aggregator_registry.get("clam_sb") is CLAM_SB
         assert aggregator_registry.get("clam_mb") is CLAM_MB

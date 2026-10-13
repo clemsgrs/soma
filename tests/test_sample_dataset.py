@@ -1,4 +1,4 @@
-"""Tests for soma.training — SampleDataset and sample_collate_fn."""
+"""Tests for soma.learn — SampleDataset and sample_collate_fn."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from soma.data import SampleRecord
 from soma.data import CachedSetSource
-from soma.training.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
+from soma.learn.sample_dataset import SampleDataset, SampleBatch, sample_collate_fn
 
 
 # ---------------------------------------------------------------------------

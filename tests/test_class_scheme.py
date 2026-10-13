@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from soma.class_scheme import assign_raw_values, resolve_classes
+from soma._internal.class_scheme import assign_raw_values, resolve_classes
 
 
 def test_assign_maps_each_raw_value_to_its_class_index_in_declaration_order():

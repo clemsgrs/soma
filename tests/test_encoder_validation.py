@@ -11,7 +11,7 @@ import pytest
 import slide2vec
 from hs2p import FilterConfig
 
-from soma.encoders.validation import (
+from soma.models.encoders.validation import (
     resolve_encoder_precision,
     resolve_filter_config,
     resolve_preprocessing_config,

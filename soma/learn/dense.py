@@ -19,7 +19,7 @@ __all__ = ["DenseLearner"]
 
 
 class DenseLearner(Learner):
-    """Trains a :class:`~soma.training.model.DenseModel` (decoder + grid head).
+    """Trains a :class:`~soma.models.model.DenseModel` (decoder + grid head).
 
     The head encodes the batch's raw supervision at loss time (a label map, or level-0
     points rendered into a heatmap). ``validation_step`` returns the head's compact

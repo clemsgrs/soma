@@ -11,10 +11,10 @@ detection is multi-class (OCELOT/Monkey) — itself a benchmark finding.
 
 The map is turned into a heatmap purely geometrically: reduce the ``K`` attention
 channels to one saliency map, upsample it to the supervision frame with the run's
-:class:`~soma.dense.geometry.DenseGridGeometry` (bilinear to ``encoded_size``, crop
+:class:`~soma.data.geometry.DenseGridGeometry` (bilinear to ``encoded_size``, crop
 ``crop_box`` to ``target_size`` — the same map a decoder's logits take), and min-max
 normalise to ``[0, 1]``. The existing detection back half (``extract_peaks`` ->
-``match_points`` -> F1@δ, or :class:`~soma.tasks.detection.DetectionHead`) scores it
+``match_points`` -> F1@δ, or :class:`~soma.models.heads.detection.DetectionHead`) scores it
 unchanged, so the rung is swappable with no change to the peak/matching components.
 """
 
@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 from torch import Tensor
 
-from soma.dense.geometry import DenseGridGeometry
+from soma.data.geometry import DenseGridGeometry
 
 __all__ = ["attention_to_detection_heatmap"]
 

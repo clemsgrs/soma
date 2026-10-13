@@ -134,7 +134,8 @@ def build() -> nbformat.NotebookNode:
         ),
         code(
             "import soma\n"
-            "from soma import CacheOptions, ImageManifest\n"
+            "from soma import ImageManifest\n"
+            "from soma.config import CacheOptions\n"
             "from slide2vec import DenseOptions\n"
             "\n"
             "# Extraction reads the image manifest (image paths); the cohort holds no file paths.\n"
@@ -168,7 +169,7 @@ def build() -> nbformat.NotebookNode:
             "cannot dominate. The concatenated feature dim is the **sum** of the members'."
         ),
         code(
-            "from soma.dense.composite import CompositeDenseFeatureStore\n"
+            "from soma.extract.dense.composite import CompositeDenseFeatureStore\n"
             "\n"
             "composite_store = CompositeDenseFeatureStore(\n"
             "    member_stores,\n"
@@ -229,7 +230,7 @@ def build() -> nbformat.NotebookNode:
             "    CohortConfig, EvaluationConfig, FeaturesConfig, LearnerConfig, LoadersConfig,\n"
             "    RunConfig, TrainerConfig,\n"
             ")\n"
-            "from soma import EncoderLeaf\n"
+            "from soma.config import EncoderLeaf\n"
             "from slide2vec import DenseOptions\n"
             "\n"
             "config = ExperimentConfig(\n"

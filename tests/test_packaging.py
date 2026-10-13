@@ -116,28 +116,3 @@ def test_public_import_surface_dependencies_are_declared():
     assert not hasattr(soma, "FeatureExtractionResult")
     assert not hasattr(soma, "TileFeatureExtractor")
     assert not hasattr(soma, "DenseTileFeatureExtractor")
-
-
-def test_top_level_package_exports_dense_configuration_and_discovery_surface():
-    import soma
-    from soma.config import CacheOptions, Component, EncoderLeaf, ExperimentConfig
-    from soma.plan import Plan, resolve
-
-    expected_exports = {
-        "ExperimentConfig": ExperimentConfig,
-        "Plan": Plan,
-        "resolve": resolve,
-        "Component": Component,
-        "EncoderLeaf": EncoderLeaf,
-        "CacheOptions": CacheOptions,
-        "components": soma.discovery.components,
-        "register": soma.discovery.register,
-        "DenseModel": soma.training.model.DenseModel,
-        "TileImageSource": soma.data.TileImageSource,
-        "LabelMapPredictions": soma.evaluation.LabelMapPredictions,
-        "PointPredictions": soma.evaluation.PointPredictions,
-    }
-
-    for name, expected in expected_exports.items():
-        assert name in soma.__all__
-        assert getattr(soma, name) is expected

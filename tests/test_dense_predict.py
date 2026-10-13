@@ -2,7 +2,7 @@
 
 These exercise the inference-time *assembly* — tile cover, reflect-pad, Hann blend,
 spacing resample, native-dim mapping, encode-once ensembles — over real
-:class:`~soma.training.model.DenseModel`\\ s whose encoder stage is
+:class:`~soma.models.model.DenseModel`\\ s whose encoder stage is
 ``soma.testing.FakeEncoder`` (mean colour per patch) and whose decoder turns that colour
 into class logits, so a painted region must land at the right place. Also covers the
 slide2vec boundary of :func:`soma.extract.live_encoder` with a stubbed kit.
@@ -18,11 +18,11 @@ import torch
 from PIL import Image
 
 
-from soma.decoders.base import Decoder
-from soma.dense.predict import SlidingWindowSegmentationPredictor, _hann2d
-from soma.tasks.segmentation import SegmentationHead
+from soma.models.decoders.base import Decoder
+from soma.evaluation.sliding_window import SlidingWindowSegmentationPredictor, _hann2d
+from soma.models.heads.segmentation import SegmentationHead
 from soma.testing import FakeEncoder
-from soma.training.model import DenseModel
+from soma.models.model import DenseModel
 from tests.experiment_configs import experiment
 
 PATCH = 16

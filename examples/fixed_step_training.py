@@ -32,7 +32,8 @@ logging.getLogger().setLevel(logging.ERROR)
 import pandas as pd
 import torch
 
-from soma import CachedSetSource, ExperimentConfig, Pipeline
+from soma import ExperimentConfig, Pipeline
+from soma.data import CachedSetSource
 from soma.config import (
     CohortConfig,
     EvaluationConfig,

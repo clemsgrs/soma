@@ -600,8 +600,8 @@ def _decode_split_points(predictions, targets, manifest, frame, *, threshold=Non
 
     from soma.benchmarks.detection_benchmark import SamplePrediction, stitch_tiles_to_rois
     from soma.benchmarks.froc import patch_area_mm2
-    from soma.detection.encode import points_on_valid
-    from soma.detection.matching import match_assignment
+    from soma.models.detection_targets import points_on_valid
+    from soma.evaluation.detection.matching import match_assignment
 
     scale = frame.spacing.effective_spacing_um / frame.spacing.source_spacing_um
     delta_level0 = frame.delta_px * scale
@@ -666,7 +666,7 @@ def _sweep_thresholds_on_rois(tune, targets, manifest, frame, *, tile_px: int) -
     per ROI.
     """
     from soma.benchmarks.detection_benchmark import _per_image_arrays
-    from soma.detection.matching import sweep_score_thresholds
+    from soma.evaluation.detection.matching import sweep_score_thresholds
 
     roi_samples = _decode_split_points(tune, targets, manifest, frame, threshold=None, tile_px=tile_px)
     pred_xy, pred_score, pred_class, gt_xy, gt_class, _area = _per_image_arrays(roi_samples)
@@ -687,8 +687,8 @@ def _point_frame(cfg, spec, predictions):
     """
     from types import SimpleNamespace
 
-    from soma.dense import DenseSampleSpacing
-    from soma.preprocessing.resolution import resolve_pipeline_dense
+    from soma.extract.dense import DenseSampleSpacing
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
 
     params = dict(cfg.learner.params["head"].params)
     match_um = float(params["match_distance"])
@@ -726,7 +726,7 @@ def _decode_cell_points(
     """
     from soma.benchmarks.detection_benchmark import CellPredictions, dataset_spec
     from soma.benchmarks.ocelot import _locate_run_config
-    from soma.class_scheme import resolve_classes
+    from soma._internal.class_scheme import resolve_classes
     from soma.config import ExperimentConfig
     from soma.data import AnnotationManifest, Cohort, PointSource
     from soma.evaluation import PointPredictions, sweep_threshold
@@ -1087,7 +1087,7 @@ def _composite_roster(args) -> tuple[RosterEntry, ...]:
 
 def _encoder_label(cfg) -> str:
     """The cell's encoder name: a composite is labelled by its members joined with ``+``."""
-    from soma.encoders import CompositeParams
+    from soma.models.encoders import CompositeParams
 
     encoder = cfg.features.encoder
     if cfg.features.is_composite:

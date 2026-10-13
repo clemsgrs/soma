@@ -1,14 +1,14 @@
-"""Tests for soma.aggregators.mil — AttentionPool and ABMIL."""
+"""Tests for soma.models.aggregators.mil — AttentionPool and ABMIL."""
 
 from __future__ import annotations
 
 import torch
 import pytest
 
-from soma.aggregators.mil.attention_pool import AttentionPool, masked_softmax
-from soma.aggregators.mil.abmil import ABMIL
-from soma.aggregators.base import AggregatorOutput
-from soma.aggregators.registry import aggregator_registry
+from soma.models.aggregators.mil.attention_pool import AttentionPool, masked_softmax
+from soma.models.aggregators.mil.abmil import ABMIL
+from soma.models.aggregators.base import AggregatorOutput
+from soma.models.aggregators.registry import aggregator_registry
 
 
 # ---------------------------------------------------------------------------

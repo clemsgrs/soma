@@ -128,7 +128,7 @@ def test_build_config_is_roster_size_agnostic():
 
 def test_midog_config_carries_relaxed_tolerance():
     cfg = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset="midog")
-    from soma.preprocessing.resolution import resolve_pipeline_preprocessing
+    from soma.extract.preprocessing.resolution import resolve_pipeline_preprocessing
 
     assert resolve_pipeline_preprocessing(cfg).tiling.tolerance == pytest.approx(0.10)
     assert cfg.features.dense.tolerance == pytest.approx(0.10)
@@ -699,7 +699,7 @@ class _Points:
 
 
 def _frame(num_classes=1, delta=30.0):
-    from soma.dense import DenseSampleSpacing
+    from soma.extract.dense import DenseSampleSpacing
 
     spacing = DenseSampleSpacing(source_spacing_um=0.25, effective_spacing_um=0.25)
     return SimpleNamespace(
@@ -747,7 +747,7 @@ def test_roi_threshold_sweep_uses_stitched_predictions():
         }
     )
 
-    from soma.detection.matching import sweep_score_thresholds
+    from soma.evaluation.detection.matching import sweep_score_thresholds
 
     tiles = [predictions.points(sid) for sid in predictions.sample_ids]
     tile_threshold = sweep_score_thresholds(
@@ -795,7 +795,7 @@ def test_point_frame_reads_the_runs_detection_head_and_dense_geometry(tmp_path: 
 
 def test_point_frame_reads_a_null_nms_radius_as_the_match_distance(tmp_path: Path):
     """A replayed ``plan.yaml`` carries every head default, so its saved ``config.yaml``
-    holds ``nms_distance: null``; like :class:`~soma.tasks.DetectionHead`, the frame then
+    holds ``nms_distance: null``; like :class:`~soma.models.heads.DetectionHead`, the frame then
     suppresses at the match distance δ."""
     from soma.config import ExperimentConfig
 
@@ -843,7 +843,7 @@ def test_decode_split_points_drops_ignored_predictions_and_counts_valid_area():
     targets = _Points(
         {"s": Points(xy=torch.tensor([[5.0, 5.0], [5.0, 25.0], [25.0, 5.0]]), classes=torch.tensor([0, 0, 0]), ignore_mask=ignore)}
     )
-    from soma.dense import DenseSampleSpacing
+    from soma.extract.dense import DenseSampleSpacing
 
     spacing = DenseSampleSpacing(source_spacing_um=1.0, effective_spacing_um=1.0)
     frame = SimpleNamespace(
@@ -1215,7 +1215,7 @@ def test_ensemble_configs_load_with_agreed_semantics(dataset, comp, members):
     cfg = ExperimentConfig.from_yaml(
         repo_root / "examples" / "detection_benchmark" / f"ensemble_{comp}_{dataset}.yaml"
     )
-    from soma.encoders import CompositeParams
+    from soma.models.encoders import CompositeParams
 
     assert cfg.features.is_composite
     composite = CompositeParams(**cfg.features.encoder.params)
@@ -1248,9 +1248,9 @@ def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
     own overrides, exactly as a single-encoder run of it does.
     """
     from soma.config import EncoderLeaf, ExperimentConfig
-    from soma.dense_extraction import _DenseImageExtractor
-    from soma.encoders import CompositeParams
-    from soma.preprocessing.resolution import resolve_pipeline_dense
+    from soma.extract.dense_extraction import _DenseImageExtractor
+    from soma.models.encoders import CompositeParams
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
 
     repo_root = Path(__file__).resolve().parents[1]
     overrides = {"features": {"cache": {"root_dir": str(tmp_path)}}}

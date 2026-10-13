@@ -2,7 +2,7 @@
 """Fan the detection-benchmark sweep across GPUs: one encoder-shard per GPU.
 
 ``campaign.py`` is single-process. Its dense **extraction** is single-GPU by design
-(``soma.dense_extraction`` pins ``num_gpus=1``) and cheap (~minutes/encoder); the real cost
+(``soma.extract.dense_extraction`` pins ``num_gpus=1``) and cheap (~minutes/encoder); the real cost
 is the **rank** phase — training + tune-freeze + test-score of every ``(encoder, replicate)``
 cell (~2h each). Those cells are independent and each writes its own ``encoder/replicate_*``
 dir, so they parallelise across GPUs with zero code changes. This launcher shards the roster

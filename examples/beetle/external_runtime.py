@@ -217,9 +217,9 @@ def load_selected_fold_predictor(run_dir: Path, bundle_paths: tuple[Path, ...]):
     """Load the selected run recipe, one frozen encoder, and all five fold bundles."""
     from soma import load
     from soma.config import ExperimentConfig
-    from soma.dense.predict import SlidingWindowSegmentationPredictor
+    from soma.evaluation.sliding_window import SlidingWindowSegmentationPredictor
     from soma.pipeline.build import live_encoder_for
-    from soma.preprocessing.resolution import resolve_pipeline_dense
+    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
 
     config = ExperimentConfig.from_yaml(run_dir / "config.yaml")
     params = {} if config.learner is None else config.learner.params

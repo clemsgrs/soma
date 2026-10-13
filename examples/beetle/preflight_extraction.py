@@ -18,13 +18,13 @@ from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
 from soma.config import CacheOptions, EncoderLeaf
 from soma import extract
 from soma.data import AnnotationManifest, CachedLabelMapSource, Cohort, ImageManifest
-from soma.dense.reader import build_label_remap
-from soma.dense_slide_extraction import (
+from soma.extract.dense.reader import build_label_remap
+from soma.extract.dense_slide_extraction import (
     effective_spacing_um,
     sample_slide_rois,
     write_roi_mask_crops,
 )
-from soma.extraction.rois import RoiEntry, RoiSet, roi_entries, write_roi_table
+from soma.extract.rois import RoiEntry, RoiSet, roi_entries, write_roi_table
 
 from examples.beetle.curate import _NATIVE_LEVEL_0_EXCEPTIONS
 

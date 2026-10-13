@@ -12,7 +12,7 @@ from soma.learn.dense import DenseLearner
 from soma.learn.learner import Learner
 from soma.learn.mil import MILLearner
 from soma.learn.trainer import FitResult, Trainer
-from soma.training.model import DenseModel, EmbeddingModel, MILModel
+from soma.models.model import DenseModel, EmbeddingModel, MILModel
 
 __all__ = ["fit", "learner_for"]
 

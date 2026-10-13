@@ -7,19 +7,19 @@ unordered set of classes, or ordinal classification for ordered integer grades.
 Binary
 ------
 
-.. autoclass:: soma.tasks.classification.BinaryClassificationHead
+.. autoclass:: soma.models.heads.classification.BinaryClassificationHead
    :members:
 
 Multiclass
 ----------
 
-.. autoclass:: soma.tasks.classification.MulticlassClassificationHead
+.. autoclass:: soma.models.heads.classification.MulticlassClassificationHead
    :members:
 
 Ordinal
 -------
 
-.. autoclass:: soma.tasks.ordinal_classification.OrdinalClassificationHead
+.. autoclass:: soma.models.heads.ordinal_classification.OrdinalClassificationHead
    :members:
 
 Metric compatibility

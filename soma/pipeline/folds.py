@@ -27,12 +27,12 @@ from typing import Any
 
 from soma import evaluation as _verbs
 from soma import learn
-from soma.atomic_io import atomic_write_json
+from soma._internal.atomic_io import atomic_write_json
 from soma.evaluation import Evaluation, Predictions
 from soma.pipeline.aggregate import save_metrics, save_training_history
 from soma.pipeline.build import FoldSetup, SplitPlan
 from soma.pipeline.layout import BUNDLE_DIRNAME
-from soma.training.seed import seed_everything
+from soma.learn.seed import seed_everything
 
 __all__ = ["FoldResult", "run_fold"]
 

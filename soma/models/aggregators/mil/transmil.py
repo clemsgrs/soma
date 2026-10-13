@@ -1,0 +1,220 @@
+"""TransMIL — Transformer-based Correlated MIL (Shao et al., 2021).
+
+Adapted from torchmil. Unlike torchmil's monolithic TransMIL,
+this is a pure aggregator (no classifier, no loss). The classifier lives
+in TaskHead, making TransMIL composable with any task.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from math import ceil, sqrt
+
+import torch
+from torch import Tensor, nn
+
+from soma.models.aggregators.base import Aggregator, AggregatorOutput
+from soma.models.aggregators.mil.nystrom import NystromTransformerLayer
+from soma.models.aggregators.registry import aggregator_registry
+from soma._internal.params import check_positive, check_probability
+
+
+class PPEG(nn.Module):
+    """Pyramid Positional Encoding Generator.
+
+    Uses three depthwise convolutions (7x7, 5x5, 3x3) in parallel to
+    inject spatial positional information into the feature sequence.
+
+    Args:
+        dim: Feature dimension.
+    """
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.proj = nn.Conv2d(dim, dim, 7, 1, 7 // 2, groups=dim)
+        self.proj1 = nn.Conv2d(dim, dim, 5, 1, 5 // 2, groups=dim)
+        self.proj2 = nn.Conv2d(dim, dim, 3, 1, 3 // 2, groups=dim)
+
+    def forward(self, x: Tensor, H: int, W: int) -> Tensor:
+        """Apply pyramid positional encoding.
+
+        Args:
+            x: Input, shape (B, H*W+1, D). First token is cls_token.
+            H: Grid height.
+            W: Grid width.
+
+        Returns:
+            Positionally-encoded features, shape (B, H*W+1, D).
+        """
+        B, _, D = x.shape
+        cls_token, feat_token = x[:, 0], x[:, 1:]
+        cnn_feat = feat_token.transpose(1, 2).view(B, D, H, W)
+        y = cnn_feat + self.proj(cnn_feat) + self.proj1(cnn_feat) + self.proj2(cnn_feat)
+        y = y.flatten(2).transpose(1, 2)
+        return torch.cat((cls_token.unsqueeze(1), y), dim=1)
+
+
+class TransMIL(Aggregator):
+    """Transformer-based Correlated MIL aggregator.
+
+    Uses Nystromformer layers with PPEG positional encoding and a
+    learnable class token to aggregate tile features.
+
+    Args:
+        input_dim: Feature dimension of input tiles.
+        att_dim: Transformer embedding dimension.
+        n_layers: Number of Nystromformer layers (must be >= 2).
+        n_heads: Number of attention heads.
+        n_landmarks: Landmarks for Nystrom approximation (default: att_dim//2).
+        pinv_iterations: Pseudo-inverse iterations.
+        dropout: Dropout rate.
+        use_mlp: Whether to use MLP blocks in transformer layers.
+    """
+
+    def __init__(
+        self,
+        input_dim: int,
+        att_dim: int = 512,
+        n_layers: int = 2,
+        n_heads: int = 4,
+        n_landmarks: int | None = None,
+        pinv_iterations: int = 6,
+        dropout: float = 0.0,
+        use_mlp: bool = False,
+    ) -> None:
+        super().__init__()
+
+        if n_layers < 2:
+            msg = f"n_layers must be at least 2, got {n_layers}"
+            raise ValueError(msg)
+
+        self._att_dim = att_dim
+
+        if n_landmarks is None:
+            n_landmarks = att_dim // 2
+
+        self.fc1 = (
+            nn.Linear(input_dim, att_dim) if input_dim != att_dim else nn.Identity()
+        )
+        self.cls_token = nn.Parameter(torch.randn(1, 1, att_dim))
+        self.pos_layer = PPEG(dim=att_dim)
+
+        self.layers = nn.ModuleList(
+            [
+                NystromTransformerLayer(
+                    dim=att_dim,
+                    n_heads=n_heads,
+                    n_landmarks=n_landmarks,
+                    pinv_iterations=pinv_iterations,
+                    dropout=dropout,
+                    use_mlp=use_mlp,
+                )
+                for _ in range(n_layers)
+            ]
+        )
+
+        self.norm = nn.LayerNorm(att_dim)
+
+    def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
+        """Aggregate each bag on its own.
+
+        The square grid PPEG convolves over is sized by the bag, so bags of a padded
+        batch are run one at a time over their valid tiles: a bag's representation
+        must not depend on the length of the longest bag it is batched with.
+        """
+        B, bag_size, _ = X.shape
+        if mask is None:
+            return self._forward_bag(X)
+
+        representations = []
+        tile_attention = X.new_zeros(B, bag_size)
+        for index in range(B):
+            valid = mask[index].bool()
+            out = self._forward_bag(X[index, valid][None])
+            representations.append(out.bag_representation)
+            tile_attention[index, valid] = out.tile_attention[0].to(tile_attention.dtype)
+        return AggregatorOutput(
+            bag_representation=torch.cat(representations, dim=0),
+            tile_attention=tile_attention,
+        )
+
+    def _forward_bag(self, X: Tensor) -> AggregatorOutput:
+        """Aggregate unpadded bags of equal length, shape (B, N, D)."""
+        B, bag_size, _ = X.shape
+
+        X = self.fc1(X)  # (B, N, att_dim)
+
+        # Pad to perfect square
+        padded_size = int(ceil(sqrt(bag_size)))
+        total = padded_size * padded_size
+        add_length = total - bag_size
+
+        if add_length > 0:
+            # Repeat first tiles to fill the square
+            X = torch.cat([X, X[:, :add_length, :]], dim=1)
+
+        # Mask for the cls + square sequence: tiles duplicated to fill the square are
+        # padding (False), so attention reads each tile once.
+        layer_mask = torch.ones(B, total + 1, dtype=torch.bool, device=X.device)
+        layer_mask[:, bag_size + 1 :] = False
+
+        # Add cls_token
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        X = torch.cat((cls_tokens, X), dim=1)  # (B, total+1, att_dim)
+
+        # First transformer layer
+        X = self.layers[0](X, mask=layer_mask)
+
+        # Positional encoding
+        X = self.pos_layer(X, padded_size, padded_size)
+
+        # Remaining layers (except last)
+        for layer in self.layers[1:-1]:
+            X = layer(X, mask=layer_mask)
+
+        # Last layer with attention extraction
+        out = self.layers[-1](X, mask=layer_mask, return_att=True)
+        X, attn = out  # attn: (B, H, total+1, total+1)
+
+        # Average attention across heads, extract cls→instance attention
+        attn = attn.mean(dim=1)  # (B, total+1, total+1)
+        tile_attention = attn[:, 0, 1 : bag_size + 1]  # (B, bag_size)
+
+        # Layer norm and extract cls_token
+        X = self.norm(X)
+        cls_output = X[:, 0]  # (B, att_dim)
+
+        return AggregatorOutput(
+            bag_representation=cls_output,
+            tile_attention=tile_attention,
+        )
+
+    @property
+    def output_dim(self) -> int:
+        return self._att_dim
+
+
+@dataclass
+class TransMILParams:
+    """:class:`TransMIL`'s params (``input_dim`` comes from the features); ``None``
+    landmarks is ``att_dim // 2``."""
+
+    att_dim: int = 512
+    n_layers: int = 2
+    n_heads: int = 4
+    n_landmarks: int | None = None
+    pinv_iterations: int = 6
+    dropout: float = 0.0
+    use_mlp: bool = False
+
+    def __post_init__(self) -> None:
+        for name in ("att_dim", "n_heads", "pinv_iterations"):
+            check_positive(name, getattr(self, name), integer=True)
+        check_positive("n_landmarks", self.n_landmarks, integer=True, optional=True)
+        if isinstance(self.n_layers, bool) or not isinstance(self.n_layers, int) or self.n_layers < 2:
+            raise ValueError(f"n_layers must be at least 2, got {self.n_layers}")
+        check_probability("dropout", self.dropout)
+
+
+aggregator_registry.register("transmil", TransMIL, params=TransMILParams)

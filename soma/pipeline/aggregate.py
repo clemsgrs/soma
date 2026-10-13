@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from soma.atomic_io import atomic_write_json
+from soma._internal.atomic_io import atomic_write_json
 from soma.evaluation import Evaluation
 from soma.evaluation.metrics import metric_registry
 from soma.evaluation.summary import summarize_values

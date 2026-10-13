@@ -63,7 +63,7 @@ config take precedence. A registration does not inherit anything from the
 registration of its base class, so a subclass of a built-in head names the
 params and the hook it reuses. Both are public::
 
-    from soma.tasks import ClassificationParams, infer_label_map
+    from soma.models.heads import ClassificationParams, infer_label_map
 
     soma.register(
         "heads",
@@ -88,9 +88,9 @@ The example below trains a segmentation decoder with a pure Dice loss instead
 of the default cross-entropy plus Dice::
 
     import soma
-    from soma.tasks import SegmentationParams
-    from soma.tasks.dense_metrics import soft_dice_loss
-    from soma.tasks.segmentation import SegmentationHead
+    from soma.models.heads import SegmentationParams
+    from soma.models.heads.dense_metrics import soft_dice_loss
+    from soma.models.heads.segmentation import SegmentationHead
 
 
     class DiceOnlySegmentationHead(SegmentationHead):
@@ -151,21 +151,21 @@ Every head family can be subclassed this way: classification, regression,
 survival, segmentation and detection.
 
 With ``clam_mb``, custom multiclass heads must support per-class branch
-representations. Subclass :class:`~soma.tasks.classification.BranchAwareClassificationHead`
+representations. Subclass :class:`~soma.models.heads.classification.BranchAwareClassificationHead`
 to preserve custom loss and metric behavior. soma automatically adapts the
 built-in ordinary multiclass head, but rejects registered ordinary multiclass
 subclasses instead of replacing them.
 
 Survival subclasses retain the objective of their base class and inherit its
 Cox or discrete-time NLL config constraints: a subclass of
-:class:`~soma.tasks.survival.CoxSurvivalHead` trains the Cox objective, any other
+:class:`~soma.models.heads.survival.CoxSurvivalHead` trains the Cox objective, any other
 survival head the discrete-time NLL.
 
 Custom decoder
 --------------
 
 A decoder maps a dense feature grid ``(B, d, h, w)`` to class logits. Subclass
-:class:`soma.decoders.base.Decoder`, implement ``forward`` and the
+:class:`soma.models.decoders.base.Decoder`, implement ``forward`` and the
 ``num_classes`` property, and register it::
 
     from dataclasses import dataclass
@@ -173,7 +173,7 @@ A decoder maps a dense feature grid ``(B, d, h, w)`` to class logits. Subclass
     from torch import nn
 
     import soma
-    from soma.decoders.base import Decoder
+    from soma.models.decoders.base import Decoder
 
 
     @dataclass
@@ -300,13 +300,13 @@ weights. soma's own test suite checks this for a MIL, a segmentation and a
 detection run. A set-shape fold over cached features looks like this::
 
     import soma
-    from soma.aggregators import ABMIL
+    from soma.models.aggregators import ABMIL
     from soma.data import CachedSetSource, Cohort
     from soma.evaluation import Baseline, Predictions
     from soma.learn import Checkpoint, EarlyStopping, MILLearner, loaders
-    from soma.tasks.classification import BinaryClassificationHead
-    from soma.training.feature_adaptor import FeatureAdaptor
-    from soma.training.model import MILModel
+    from soma.models.heads.classification import BinaryClassificationHead
+    from soma.learn.feature_adaptor import FeatureAdaptor
+    from soma.models import MILModel
 
     cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
     source = CachedSetSource("features/")
@@ -347,7 +347,7 @@ Custom encoder stage or image source
 ------------------------------------
 
 The live path (see :ref:`live-mode`) re-encodes pixels through an encoder
-stage inside :class:`soma.training.model.DenseModel`. Any parameter-free
+stage inside :class:`soma.models.DenseModel`. Any parameter-free
 ``nn.Module`` with the stage contract can replace
 :class:`soma.extract.FrozenEncoder`: a ``geometry``, a ``feature_dim``, an
 ``input_device``, a ``preprocessor()`` and a deterministic ``forward`` over

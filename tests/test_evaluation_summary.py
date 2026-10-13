@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from soma.atomic_io import atomic_write_json, atomic_write_text
+from soma._internal.atomic_io import atomic_write_json, atomic_write_text
 from soma.evaluation.summary import sample_std, summarize_values
 from soma.pipeline.aggregate import summarize_fold_metric_dicts
 
@@ -66,7 +66,7 @@ class TestAtomicWrites:
         target = tmp_path / "summary.json"
         atomic_write_text(target, "old")
 
-        import soma.atomic_io as atomic_io
+        import soma._internal.atomic_io as atomic_io
 
         def boom(src, dst):
             raise OSError("disk full")

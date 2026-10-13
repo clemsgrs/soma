@@ -433,7 +433,7 @@ def _loaded_points(targets, sample_ids: Sequence[str]) -> dict[str, tuple]:
 
 def _scored_points(predictions: "PointPredictions", loaded: Mapping[str, tuple]):
     """Per sample: predictions and ground truth after dropping both on ignored pixels."""
-    from soma.detection.encode import points_on_valid
+    from soma.models.detection_targets import points_on_valid
 
     grouped = {sid: rows for sid, rows in predictions.frame.groupby("sample_id", sort=False)}
     out = []
@@ -477,7 +477,7 @@ def point_counts(
     Points (predicted or annotated) on an ignored pixel of the target's ignore mask are
     left out.
     """
-    from soma.detection.matching import match_points
+    from soma.evaluation.detection.matching import match_points
 
     delta = predictions.match_distance_px if match_distance is None else float(match_distance)
     loaded = _loaded if _loaded is not None else _loaded_points(targets, predictions.sample_ids)
@@ -684,7 +684,7 @@ def sweep_threshold(
     plus (per class) quantiles of the scores of points within δ of a same-class
     annotation, bracketed by keep-all and drop-all. Ties keep the higher threshold.
     """
-    from soma.detection.matching import sweep_score_thresholds
+    from soma.evaluation.detection.matching import sweep_score_thresholds
     from soma.evaluation.metrics import metric_registry
 
     if not isinstance(predictions, PointPredictions):

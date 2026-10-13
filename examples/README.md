@@ -17,7 +17,7 @@ in soma 1.12.0. Each runs with no arguments on synthetic data, from a clean
 | --- | --- |
 | [`external_benchmark_spec.py`](external_benchmark_spec.py) | Build a `BenchmarkSpec` (config builder, canonical seeds, scorer) and execute it with `run_benchmark_spec`: per-seed evidence roots, the shared feature cache root, and the aggregated `BenchmarkRunResult`. |
 | [`fixed_step_training.py`](fixed_step_training.py) | Train with `TrainerConfig(max_steps=N)`: the exact optimizer-update count, including a partial final epoch and its tune evaluation. |
-| [`aggregator_resolution.py`](aggregator_resolution.py) | Resolve one fixed MIL recipe with `soma.encoders.resolve_aggregator` for a tile encoder and a slide encoder; both resulting `ExperimentConfig`s pass `soma.plan.check` without loading encoder weights. |
+| [`aggregator_resolution.py`](aggregator_resolution.py) | Resolve one fixed MIL recipe with `soma.models.encoders.resolve_aggregator` for a tile encoder and a slide encoder; both resulting `ExperimentConfig`s pass `soma.plan.check` without loading encoder weights. |
 | [`portable_identity.py`](portable_identity.py) | The same manifest under two storage roots keeps `experiment_id` and the leaderboard triple unchanged, while an added `image_path_sha256` column changes identity. |
 
 `external_benchmark_spec.py` downloads the small ungated

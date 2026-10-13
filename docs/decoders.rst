@@ -5,7 +5,7 @@ Decoders train on a frozen encoder's dense feature grids to produce spatial
 predictions. They are used for :doc:`segmentation` and :doc:`detection`; only
 the downstream model is trained.
 
-To add your own decoder, subclass :class:`soma.decoders.base.Decoder` and
+To add your own decoder, subclass :class:`soma.models.decoders.base.Decoder` and
 register it; see :doc:`extending`.
 
 Choose a decoder

@@ -149,7 +149,7 @@ def build() -> nbformat.NotebookNode:
         ),
         code(
             "import soma\n"
-            "from soma import CacheOptions\n"
+            "from soma.config import CacheOptions\n"
             "\n"
             "store = soma.extract(\n"
             "    images,\n"
@@ -234,7 +234,8 @@ def build() -> nbformat.NotebookNode:
             "*(Shown for reference, not executed — it would repeat the work above.)*\n"
             "\n"
             "```python\n"
-            "from soma import CacheOptions, ExperimentConfig, Pipeline\n"
+            "from soma import ExperimentConfig, Pipeline\n"
+            "from soma.config import CacheOptions\n"
             "from soma.config import (\n"
             "    CohortConfig, EvaluationConfig, FeaturesConfig, LearnerConfig, LoadersConfig,\n"
             "    RunConfig, TrainerConfig,\n"

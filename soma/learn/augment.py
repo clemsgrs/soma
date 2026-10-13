@@ -16,7 +16,7 @@ import torch
 from torch import Tensor
 
 from soma.data import Points
-from soma.params import run_decided
+from soma._internal.params import run_decided
 from soma.registry import Registry
 
 __all__ = ["SegmentationAugment", "SegmentationAugmentParams", "augment_registry"]

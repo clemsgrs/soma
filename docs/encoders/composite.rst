@@ -5,7 +5,7 @@ Composite encoders
 
 A composite encoder concatenates several frozen encoders' dense features for
 segmentation or detection. Each member is cached independently;
-:class:`~soma.dense.composite.CompositeDenseFeatureStore` combines them at load
+:class:`~soma.extract.dense.composite.CompositeDenseFeatureStore` combines them at load
 time. Name the ``composite`` encoder in place of a single encoder. The
 :doc:`composite walkthrough <../tutorials/walkthrough-composite>` trains a
 segmentation decoder on two concatenated encoders.

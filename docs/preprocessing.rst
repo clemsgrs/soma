@@ -336,6 +336,6 @@ Tissue mask preview
 
 Preview rendering is inherited from :mod:`hs2p`:
 
-- :func:`soma.preprocessing.overlay_mask_on_slide` for tissue-mask overlays
-- :func:`soma.preprocessing.save_overlay_preview` for writing mask preview images
-- :func:`soma.preprocessing.write_coordinate_preview` for tile-grid previews
+- :func:`soma.extract.preprocessing.overlay_mask_on_slide` for tissue-mask overlays
+- :func:`soma.extract.preprocessing.save_overlay_preview` for writing mask preview images
+- :func:`soma.extract.preprocessing.write_coordinate_preview` for tile-grid previews
