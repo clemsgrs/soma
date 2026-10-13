@@ -22,6 +22,7 @@ import pytest
 from PIL import Image
 
 from soma import Plan
+from soma.config import ExperimentConfig
 from soma.benchmarks import get_benchmark
 from soma.benchmarks.registry import Benchmark
 from soma.benchmarks.detection_benchmark import (
@@ -943,38 +944,36 @@ def test_rank_scores_out_of_process(tmp_path: Path, monkeypatch):
     assert scored == [("uni2", "ocelot", 1, "seeds", data_root, out_root)]
 
 
-def test_train_cell_decoder_override_reaches_soma_argv(monkeypatch):
-    """``--decoder`` must land as a ``--set learner.params.decoder.name=`` override on the soma command.
+def test_train_cell_decoder_reaches_the_launched_config(tmp_path: Path, monkeypatch):
+    """``--decoder`` must land in the config the cell's ``soma run`` launches.
 
     The #235 ladder reruns the sweep with ``linear`` and ``heavy_conv``; scoring reloads the
-    run's persisted config, so the train-time override is the single source of truth. Without
-    the flag the committed config's ``lightweight_conv`` must stay untouched (no stray
-    override), keeping the rung-2 sweep byte-compatible with what already ran.
+    run's persisted config, so the train-time decoder is the single source of truth. Without
+    the flag the committed config's ``lightweight_conv`` must stay untouched, keeping the
+    rung-2 sweep byte-compatible with what already ran.
     """
     m = _load_driver()
     cmds: list[list[str]] = []
     monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
 
-    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), Path("o"), decoder="heavy_conv")
-    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), Path("o"))
+    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), tmp_path / "heavy", decoder="heavy_conv")
+    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), tmp_path / "base")
 
-    assert "learner.params.decoder.name=heavy_conv" in cmds[0]
-    assert not [a for a in cmds[1] if a.startswith("learner.params.decoder.name=")]
+    assert _launched_config(cmds[0]).learner.params["decoder"].name == "heavy_conv"
+    committed = ExperimentConfig.from_yaml(m._config_path("ocelot")).learner.params["decoder"]
+    assert _launched_config(cmds[1]).learner.params["decoder"] == committed
 
-    # Extra --set overrides must be forwarded verbatim (e.g. the heavy rung pins
+    # The driver's own --set pairs land in the config too (e.g. the heavy rung pins
     # num_upsample_blocks so the geometry-derived depth can't OOM or vary per encoder).
-    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), Path("o"), decoder="heavy_conv",
+    m.train_cell("uni2", "ocelot", 0, "seeds", Path("d"), tmp_path / "pinned", decoder="heavy_conv",
                  extra_sets=["learner.params.decoder.params.num_upsample_blocks=2"])
-    assert "learner.params.decoder.params.num_upsample_blocks=2" in cmds[2]
+    assert _launched_config(cmds[2]).learner.params["decoder"].params == {"num_upsample_blocks": 2}
 
 
-def _soma_config_from_argv(argv: list[str]):
-    """Parse a ``python -m soma <config> --set ...`` argv the way soma's CLI does."""
-    from soma.cli import _parse_set_overrides
-    from soma.config import ExperimentConfig
-
-    pairs = [argv[i + 1] for i, token in enumerate(argv) if token == "--set"]
-    return ExperimentConfig.from_yaml(argv[3], overrides=_parse_set_overrides(pairs))
+def _launched_config(argv: list[str]):
+    """The config a cell's ``python -m soma run <config>`` launches."""
+    assert argv[:4] == [sys.executable, "-m", "soma", "run"] and len(argv) == 5
+    return ExperimentConfig.from_yaml(argv[4])
 
 
 def test_train_cell_folds_axis_trains_only_its_own_fold(tmp_path: Path, monkeypatch):
@@ -991,34 +990,35 @@ def test_train_cell_folds_axis_trains_only_its_own_fold(tmp_path: Path, monkeypa
 
     m.train_cell("uni2", "monkey", 3, "folds", Path("d"), tmp_path)
 
-    cfg = _soma_config_from_argv(cmds[0])
-    assert cfg.run.folds == (3,)
+    cfg = _launched_config(cmds[0])
+    assert cfg.run.folds == (3,) and cfg.run.run_id == "fold_3"
     # The replicate is a fold, not a seed: the committed seed stays as it is.
-    assert not [a for a in cmds[0] if a.startswith("run.seed=")]
+    assert cfg.run.seed == ExperimentConfig.from_yaml(m._config_path("monkey")).run.seed
     # A fresh cell (nothing trained yet) must still resolve a run dir inside the cell.
     cell = m.cell_dir(tmp_path, "monkey", "uni2", 3)
     assert resolve_managed_output_paths(Plan(cfg)).run_dir.is_relative_to(cell.resolve())
 
 
-def test_train_cell_seeds_axis_command_is_unchanged(monkeypatch):
-    """Seeds-axis cells (OCELOT, MIDOG) keep the soma command they had, in the config's keys."""
+def test_train_cell_seeds_axis_launches_the_committed_recipe_repointed(tmp_path: Path, monkeypatch):
+    """Seeds-axis cells (OCELOT, MIDOG) run the committed config with only the cell's data,
+    encoder, output and cache paths and seed written in, saved in the cell's directory."""
     m = _load_driver()
     cmds: list[list[str]] = []
     monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
 
-    m.train_cell("uni2", "ocelot", 1, "seeds", Path("d"), Path("o"))
+    m.train_cell("uni2", "ocelot", 1, "seeds", Path("d"), tmp_path)
 
-    assert cmds[0] == [
-        sys.executable, "-m", "soma", str(m._config_path("ocelot")),
-        "--set", "cohort.records=d/ocelot/curated/dataset.csv",
-        "--set", "cohort.splits=d/ocelot/curated/splits.csv",
-        "--set", "features.encoder.name=uni2",
-        "--set", "run.output_dir=o/ocelot/uni2/replicate_1",
-        "--set", "features.cache.root_dir=o/ocelot/feature_cache",
-        "--set", "run.seed=1",
-    ]
-    cfg = _soma_config_from_argv(cmds[0])
-    assert cfg.features.encoder.name == "uni2" and cfg.run.seed == 1
+    cell = m.cell_dir(tmp_path, "ocelot", "uni2", 1)
+    assert cmds[0] == [sys.executable, "-m", "soma", "run", str(cell / "launch.yaml")]
+    expected = ExperimentConfig.from_yaml(
+        m._config_path("ocelot"),
+        overrides={
+            "cohort": {"records": "d/ocelot/curated/dataset.csv", "splits": "d/ocelot/curated/splits.csv"},
+            "features": {"encoder": {"name": "uni2"}, "cache": {"root_dir": str(tmp_path / "ocelot" / "feature_cache")}},
+            "run": {"output_dir": str(cell), "seed": 1},
+        },
+    )
+    assert _launched_config(cmds[0]).to_dict() == expected.to_dict()
 
 
 def _fabricate_scored_cell(m, out, dataset, encoder, replicate, axis, test_val):
@@ -1285,19 +1285,19 @@ def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
     assert key_member == key_single
 
 
-def test_train_cell_composite_config_replaces_base_recipe(monkeypatch):
-    """``--config`` launches an ensemble recipe: no encoder name override, cell keyed by label."""
+def test_train_cell_composite_config_replaces_base_recipe(tmp_path: Path, monkeypatch):
+    """``--config`` launches an ensemble recipe: its encoder is kept, cell keyed by label."""
     m = _load_driver()
     cmds: list[list[str]] = []
     monkeypatch.setattr(m, "_run", lambda cmd, **kw: cmds.append([str(c) for c in cmd]))
 
-    recipe = Path("examples/detection_benchmark/ensemble_top2_midog.yaml")
+    recipe = Path(__file__).resolve().parents[1] / "examples/detection_benchmark/ensemble_top2_midog.yaml"
     label = "genbio-pathfm+h-optimus-1"
-    m.train_cell(label, "midog", 0, "seeds", Path("d"), Path("o"), config_path=recipe)
+    m.train_cell(label, "midog", 0, "seeds", Path("d"), tmp_path, config_path=recipe)
     (cmd,) = cmds
-    assert cmd[3] == str(recipe)
-    assert not any(o.startswith("features.encoder.name=") for o in cmd)
-    assert f"run.output_dir={m.cell_dir('o', 'midog', label, 0)}" in cmd
+    cfg = _launched_config(cmd)
+    assert cfg.features.encoder == ExperimentConfig.from_yaml(recipe).features.encoder
+    assert str(cfg.run.output_dir) == str(m.cell_dir(tmp_path, "midog", label, 0))
 
 
 def test_main_composite_config_guards(monkeypatch, tmp_path: Path):

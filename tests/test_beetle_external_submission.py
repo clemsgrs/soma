@@ -188,7 +188,7 @@ def test_selected_run_recipe_must_equal_protocol_resolved_arm(tmp_path: Path) ->
     binding = validate_selected_run_recipe(resolution, "uniform", run_dir)
     assert binding["resolved_arm_config"] == str(resolved.resolve())
 
-    # ``run-arm --set run.run_id=... / run.resume=true`` lands in the run's config.yaml:
+    # ``run-arm --run-id ... / --resume`` lands in the run's config.yaml:
     # launch-only fields are not part of the recipe.
     relaunched = replace(
         config, run=replace(config.run, run_id="2026-10-13_09-00-00__local", resume=True)

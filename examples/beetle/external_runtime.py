@@ -185,8 +185,8 @@ def validate_selected_run_recipe(
     run_config_path = run_dir / "config.yaml"
     resolved_config = ExperimentConfig.from_yaml(resolved_path)
     run_config = ExperimentConfig.from_yaml(run_config_path)
-    # ``run-arm --set run.run_id=/run.resume=`` is written into the run's config.yaml:
-    # compare recipes without the launch-only fields, as the resume drift guard does.
+    # ``run-arm --run-id/--resume`` is written into the run's config.yaml: compare recipes
+    # without the launch-only fields, as the resume drift guard does.
     if comparable(run_config.to_dict()) != comparable(resolved_config.to_dict()):
         raise ValueError(
             "BEETLE selected run config disagrees with the protocol-resolved selected arm"

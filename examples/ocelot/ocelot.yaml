@@ -6,7 +6,7 @@
 #   python -m soma.curation.ocelot \
 #     --raw-root   /data/pathology/projects/clement/code/soma/data/ocelot \
 #     --output-dir /data/pathology/projects/clement/code/soma/data/ocelot/curated
-# Then run:  python -m soma examples/ocelot/ocelot.yaml
+# Then run:  python -m soma run examples/ocelot/ocelot.yaml
 
 run:
   output_dir: output/ocelot_conch_lightconv

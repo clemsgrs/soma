@@ -71,10 +71,10 @@ frame. A config selects physical scale only through
 on read and record the resolved source/effective spacing beside each dense grid.
 
 ```bash
-# All three configs use curated/dataset.csv + curated/splits.csv.
-python -m soma soma/benchmarks/configs/ocelot/ocelot_virchow2_0.25.yaml \
-  --set data.dataset_csv=<data_root>/ocelot/curated/dataset.csv \
-  --set data.splits_csv=<data_root>/ocelot/curated/splits.csv
+# All three configs use curated/dataset.csv + curated/splits.csv: copy one, point its
+# cohort.records / cohort.splits at your curated files, then run the copy.
+cp soma/benchmarks/configs/ocelot/ocelot_virchow2_0.25.yaml ocelot_virchow2_0.25.yaml
+python -m soma run ocelot_virchow2_0.25.yaml
 ```
 
 The committed 0.2/0.25/0.5 protocols declare target sizes 1024/819/410 pixels,
@@ -84,14 +84,13 @@ exported predictions are transformed back to level-0 coordinates.
 ## 3. Run
 
 The encoder is gated on Hugging Face — authenticate first (`huggingface-cli login` or
-`export HF_TOKEN=...`). Repoint the committed config at your paths with `--set`
-(`key=value` into the config layout) rather than editing it on disk:
+`export HF_TOKEN=...`). Point a copy of the committed config at your paths
+(`cohort.records`, `cohort.splits`) and run the copy:
 
 ```bash
 # full baseline (50 epochs, 663 samples)
-python -m soma examples/ocelot/ocelot.yaml \
-  --set data.dataset_csv=<data_root>/ocelot/curated/dataset.csv \
-  --set data.splits_csv=<data_root>/ocelot/curated/splits.csv
+cp examples/ocelot/ocelot.yaml my_ocelot.yaml   # then edit cohort.records / cohort.splits
+python -m soma run my_ocelot.yaml
 
 # OCELOT-official greedy re-score of the trained fold (Hungarian is the run headline)
 python examples/ocelot/eval_greedy.py \
