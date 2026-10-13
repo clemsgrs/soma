@@ -387,7 +387,7 @@ class ExperimentConfig(_Editable):
     @classmethod
     def from_yaml(cls, path: str | Path, overrides: Mapping[str, Any] | None = None) -> ExperimentConfig:
         """Read a YAML config; ``overrides`` (nested like the file) are merged in first, so
-        a committed config can be repointed (``--set``, a benchmark's paths) unedited."""
+        a benchmark can repoint a committed config's paths without editing it."""
         data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         if not isinstance(data, Mapping):
             raise TypeError(f"{path}: an experiment config is a mapping of sections")

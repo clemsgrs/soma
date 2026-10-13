@@ -2,8 +2,9 @@ Getting started
 ===============
 
 Run slide-level binary classification with a frozen ``phikon`` encoder and an
-AB-MIL aggregator. The modular API exposes each step; the pipeline and CLI
-examples express the same experiment in one configuration.
+AB-MIL aggregator. A preset gives a complete experiment from a few arguments;
+the modular API exposes each step; the pipeline and CLI examples express the
+same experiment in one configuration.
 
 Install
 -------
@@ -22,11 +23,77 @@ The first run downloads the selected model weights. Feature extraction is
 faster on a GPU, but a GPU is not required. ``phikon`` uses publicly available
 weights and needs no access token.
 
+.. _presets:
+
+Presets
+-------
+
+A preset is a function that returns a complete experiment for a common task
+from a few arguments. It needs a ``dataset.csv`` and a ``splits.csv`` (see
+:ref:`define-the-data`). soma ships five presets:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 42 58
+
+   * - Preset
+     - Experiment
+   * - ``mil_classification(encoder, aggregator="abmil")``
+     - Whole-slide classification: tiles embedded by a frozen encoder, pooled
+       by a MIL aggregator, a classification head.
+   * - ``tile_classification(encoder)``
+     - Tile-image classification: a linear head on each image's embedding.
+   * - ``survival(encoder, aggregator)``
+     - Whole-slide survival: a discrete-time hazard head over a MIL bag,
+       trained on the cohort's ``time``, ``event`` and ``bin`` columns.
+   * - ``segmentation(encoder, decoder)``
+     - Semantic segmentation: a decoder over the encoder's dense token grid.
+   * - ``detection(encoder, decoder)``
+     - Cell detection: a decoder predicting one peak heatmap per class.
+
+Run a preset on your files from the command line:
+
+.. code-block:: bash
+
+   soma run --preset mil_classification --encoder phikon \
+       --cohort dataset.csv --splits splits.csv --out output
+
+``--seed`` sets the seed; the other flags are the preset's own arguments.
+``soma list presets`` lists the presets with their arguments and defaults. A
+preset has no override flags. To change anything else, print the preset as an
+editable YAML file with every default filled in, edit it, and run the file:
+
+.. code-block:: bash
+
+   soma init mil_classification --encoder phikon > experiment.yaml
+   # point cohort.records and cohort.splits at your files, edit the rest
+   soma run experiment.yaml
+
+In Python, a preset returns an :class:`~soma.ExperimentConfig`. Change it by
+assigning its fields:
+
+.. code-block:: python
+
+   from soma import Pipeline, presets
+
+   config = presets.mil_classification("phikon")
+   config.cohort.records = "dataset.csv"
+   config.cohort.splits = "splits.csv"
+   config.run.output_dir = "output"
+   config.trainer.max_epochs = 20
+   result = Pipeline(config).run()
+
+The segmentation and detection presets cannot know your classes: before a run,
+set the head's ``classes`` (or ``num_classes``), and for detection its
+``match_distance`` in µm. See :doc:`segmentation` and :doc:`detection`.
+
 Modular API
 -----------
 
 Use the modular API to inspect intermediate results, reuse extracted features,
 or sweep one component without rerunning the others.
+
+.. _define-the-data:
 
 1. Define the data
 ~~~~~~~~~~~~~~~~~~
@@ -242,15 +309,14 @@ Then run:
 
 .. code-block:: bash
 
-   soma config.yaml
+   soma run config.yaml
 
 A field left out keeps its default. soma validates the file, then resolves it
 against the cohort into a *plan*: the config with every default spelled out and
 what the cohort decides (for example the label map) filled in.
 :func:`soma.resolve` does the same in Python. The run directory keeps your
 ``config.yaml`` next to the resolved ``plan.yaml``. See :doc:`configuration` for
-the sections and components, and :doc:`cli` for the full reference and
-command-line overrides.
+the sections and components, and :doc:`cli` for the full command reference.
 
 .. _log-output:
 

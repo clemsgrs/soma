@@ -6,7 +6,7 @@
 # prints them with their defaults, and a run's plan.yaml records every value it used.
 # features.execution.num_gpus and num_preprocessing_workers are null here: slide2vec
 # resolves them for the machine a run starts on.
-# Run with: soma /path/to/config.yaml
+# Run with: soma run /path/to/config.yaml
 
 run:
   output_dir: runs

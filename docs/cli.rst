@@ -1,7 +1,7 @@
 CLI
 ===
 
-Use ``soma`` to run YAML experiments, discover components, score
+Use ``soma`` to run experiments, discover components, score
 predictions, reproduce benchmarks, and compare completed runs.
 
 .. figure:: /_static/figures/run-flow.svg
@@ -14,23 +14,29 @@ predictions, reproduce benchmarks, and compare completed runs.
 Basic usage
 -----------
 
-The main entrypoint takes a config path directly::
+``soma run`` runs a YAML config::
 
-    soma /path/to/config.yaml
+    soma run /path/to/config.yaml
 
-Override individual settings without editing the file::
+or a preset on your cohort (see :ref:`presets`)::
 
-    soma config.yaml --set run.output_dir=runs/local --set trainer.max_epochs=5
+    soma run --preset mil_classification --encoder uni2 \
+        --cohort dataset.csv --splits splits.csv --out runs
 
-Repeat ``--set KEY=VALUE`` for multiple overrides. Keys are dotted YAML
-paths and values are parsed as YAML, preserving numbers and booleans.
+A config is edited, not overridden: there are no override flags. To start
+from a preset and change it, print it as YAML with every default filled in,
+edit the file, and run it::
+
+    soma init mil_classification --encoder uni2 > experiment.yaml
+    soma run experiment.yaml
+
 Use ``soma --help`` or ``soma COMMAND --help`` for command options.
 
 Train on features you already have with ``--feature-dir``: the directory of a
 pooled feature cache (slide, patient and tile runs) or of dense grids
 (segmentation and detection). The run attaches it and extracts nothing::
 
-    soma config.yaml --feature-dir runs/features/uni2
+    soma run config.yaml --feature-dir runs/features/uni2
 
 ``soma`` prints soma's INFO log messages to stderr, and warnings and errors
 from other libraries. See :ref:`log-output` for the same behaviour in a Python
@@ -39,12 +45,31 @@ script.
 Available commands
 ------------------
 
-``soma CONFIG [--set KEY=VALUE ...] [--feature-dir DIR]``
-   Run a full pipeline from the given YAML config file, optionally on
-   pre-extracted features.
+``soma run CONFIG [--feature-dir DIR]``
+   Run an experiment from a YAML config file, optionally on pre-extracted
+   features. The run directory keeps the config as given (``config.yaml``)
+   and its resolved plan (``plan.yaml``), written before training starts;
+   ``soma run plan.yaml`` replays a run with every value pinned.
+
+``soma run --preset NAME --cohort CSV --splits CSV --out DIR [--seed N] [PRESET ARGUMENTS] [--feature-dir DIR]``
+   Run a preset on a cohort: the preset's own arguments are flags
+   (``--encoder``, ``--aggregator``, ``--decoder``), its required ones are
+   required, and ``--seed`` defaults to 0. The registered presets:
+
+   * ``detection(encoder, decoder)`` — Detect cells: a decoder over a frozen encoder's dense token grid, one heatmap per class.
+   * ``mil_classification(encoder, aggregator="abmil")`` — Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
+   * ``segmentation(encoder, decoder)`` — Segment tissue: a decoder over a frozen encoder's dense token grid.
+   * ``survival(encoder, aggregator)`` — Predict survival from whole slides: a discrete-time hazard head over a MIL bag.
+   * ``tile_classification(encoder)`` — Classify tile images: a linear probe on a frozen tile encoder's embeddings.
+
+``soma init NAME [PRESET ARGUMENTS]``
+   Print the preset as an editable YAML config with every component's
+   params at their defaults. Fields the cohort or the machine decide are
+   ``null``; point ``cohort.records`` and ``cohort.splits`` at your files
+   before ``soma run``.
 
 ``soma list [KIND] [--level {tile,slide,patient}]``
-   Without ``KIND``, list the component kinds: ``aggregators``, ``augmentations``, ``benchmarks``, ``callbacks``, ``decoders``, ``encoders``, ``heads``, ``learners``, ``optimizers``, ``samplers``, ``schedulers``.
+   Without ``KIND``, list the component kinds: ``aggregators``, ``augmentations``, ``benchmarks``, ``callbacks``, ``decoders``, ``encoders``, ``heads``, ``learners``, ``optimizers``, ``presets``, ``samplers``, ``schedulers``.
    With a ``KIND``, list its registered components and the default of
    each of their params; ``soma list benchmarks`` prints the names
    ``soma reproduce`` and ``soma leaderboard`` accept. ``--level``

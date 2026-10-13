@@ -53,9 +53,18 @@ print(result.run_dir)
 Run the same pipeline from a YAML config:
 
 ```bash
-soma config.yaml
+soma run config.yaml
 # Equivalent:
-python -m soma config.yaml
+python -m soma run config.yaml
+```
+
+Or start from a preset, a complete experiment for a common task (`soma list presets`):
+
+```bash
+soma run --preset mil_classification --encoder phikon --cohort dataset.csv --splits splits.csv --out output
+# or print it as an editable YAML with every default filled in, edit it, then run it:
+soma init mil_classification --encoder phikon > experiment.yaml
+soma run experiment.yaml
 ```
 
 The YAML has the same seven sections as `ExperimentConfig` (`run`, `cohort`, `features`, `loaders`, `learner`, `trainer`, `evaluation`), spelled as the Python call spells them; a field left out keeps its default. soma resolves the config against the cohort and writes the result to the run's `plan.yaml`. Start with the [task examples](examples/README.md) or the [CLI reference](https://clemsgrs.github.io/soma/cli.html). `soma list` prints the component kinds and `soma list aggregators` (or `encoders`, `heads`, `decoders`, `benchmarks`, ...) prints one kind's registered components with their params.

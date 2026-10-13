@@ -269,7 +269,7 @@ Task-free representation evaluation
 
 Evaluate frozen tile embeddings with the fixed CRoMa v1 protocol by leaving out
 the ``learner`` and setting ``evaluation.representation``. Save this as a YAML
-config and run it with ``soma config.yaml``:
+config and run it with ``soma run config.yaml``:
 
 .. code-block:: yaml
 
