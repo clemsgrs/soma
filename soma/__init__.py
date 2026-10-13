@@ -10,6 +10,7 @@ except PackageNotFoundError:  # not installed (e.g. running from a source checko
 from soma.config import CacheOptions, Component, EncoderLeaf, ExperimentConfig
 from soma.discovery import components, register
 from soma.plan import Plan, resolve
+from soma import presets
 from soma.data import (
     AnnotationManifest,
     CachedLabelMapSource,
@@ -97,6 +98,7 @@ __all__ = [
     # Discovery
     "components",
     "register",
+    "presets",
     # Data
     "AnnotationManifest",
     "Cohort",
