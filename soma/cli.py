@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import sys
 from pathlib import Path
 from typing import Any
@@ -67,7 +68,7 @@ def _preset_arguments() -> dict[str, list[str]]:
     presets that take it, from :func:`soma.components`."""
     arguments: dict[str, list[str]] = {}
     for entry in components("presets"):
-        for name in entry["params"]:
+        for name in entry["params"] or {}:  # an entry registered without params takes none
             arguments.setdefault(name, []).append(entry["name"])
     return arguments
 
@@ -94,18 +95,24 @@ def _given_preset_arguments(args: argparse.Namespace) -> dict[str, str]:
 def _build_preset(parser: argparse.ArgumentParser, name: str, args: argparse.Namespace) -> ExperimentConfig:
     """The preset ``name`` called with the flags ``args`` gives: exactly its own arguments,
     every required one present."""
-    entry = next(entry for entry in components("presets") if entry["name"] == name)
-    given = _given_preset_arguments(args)
-    foreign = sorted(set(given) - set(entry["params"]))
-    if foreign:
-        parser.error(f"preset {name} takes no {', '.join(map(_flag, foreign))}")
-    missing = [argument for argument in entry["required"] if argument not in given]
-    if missing:
-        parser.error(f"preset {name} needs {', '.join(map(_flag, missing))}")
     from soma.presets import preset_registry
 
+    entry = next(entry for entry in components("presets") if entry["name"] == name)
+    preset = preset_registry.get(name)
+    given = _given_preset_arguments(args)
+    foreign = sorted(set(given) - set(entry["params"] or {}))
+    if foreign:
+        parser.error(f"preset {name} takes no {', '.join(map(_flag, foreign))}")
+    # From the signature, not registration metadata: soma.register supplies none.
+    required = [
+        p.name for p in inspect.signature(preset).parameters.values()
+        if p.default is p.empty and p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)
+    ]
+    missing = [argument for argument in required if argument not in given]
+    if missing:
+        parser.error(f"preset {name} needs {', '.join(map(_flag, missing))}")
     try:
-        return preset_registry.get(name)(**given)
+        return preset(**given)
     except (TypeError, ValueError) as exc:
         parser.error(f"preset {name}: {exc}")
 

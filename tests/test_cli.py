@@ -286,6 +286,53 @@ def test_init_refuses_arguments_that_make_an_invalid_config(capsys):
     assert "not supported for survival" in capsys.readouterr().err
 
 
+# --- a preset registered through soma.register ---
+
+
+def _my_preset(encoder: str, aggregator: str = "abmil") -> ExperimentConfig:
+    """A user's preset: the MIL preset under another name."""
+    return presets.mil_classification(encoder, aggregator=aggregator)
+
+
+def _bare_preset() -> ExperimentConfig:
+    """A user's preset without arguments."""
+    return presets.tile_classification("uni2")
+
+
+@pytest.fixture()
+def user_presets():
+    # The public soma.register supplies no ``required``/``description`` metadata; one
+    # entry has a params dataclass, the other none.
+    from soma import register
+    from soma.registry import signature_params
+
+    register("presets", "my_preset", _my_preset, params=signature_params(_my_preset, name="MyPresetParams"))
+    register("presets", "bare_preset", _bare_preset)
+    try:
+        yield
+    finally:
+        presets.preset_registry._entries.pop("my_preset", None)
+        presets.preset_registry._entries.pop("bare_preset", None)
+
+
+def test_a_publicly_registered_preset_inits_and_runs(tmp_path: Path, capsys, user_presets):
+    data = yaml.safe_load(_init(["my_preset", "--encoder", "uni2"], capsys))
+    check(ExperimentConfig.from_dict(data))
+    assert data["learner"]["params"]["aggregator"]["name"] == "abmil"
+    assert yaml.safe_load(_init(["bare_preset"], capsys))["features"]["encoder"]["name"] == "uni2"
+
+    run = ["run", "--preset", "my_preset", "--cohort", "d.csv", "--splits", "s.csv", "--out", str(tmp_path)]
+    config, _ = _pipeline_call([*run, "--encoder", "uni2", "--aggregator", "transmil"])
+    assert config.learner.params["aggregator"].name == "transmil"
+    code, err = _exit_code(run, capsys)  # its required argument missing: a usage error
+    assert code == 2 and "--encoder" in err
+
+
+def test_a_preset_registered_without_params_leaves_run_working(tmp_path: Path, user_presets):
+    config, _ = _pipeline_call(["run", str(_make_valid_config(tmp_path))])
+    assert config.features.encoder.name == "uni2"
+
+
 def _rows(out: str) -> list[list[str]]:
     """The cells of each table row ``soma list`` printed."""
     return [[cell.strip() for cell in line.split("│")[1:-1]] for line in out.splitlines() if line.startswith("│")]
