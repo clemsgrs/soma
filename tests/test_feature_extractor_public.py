@@ -797,20 +797,12 @@ def test_hierarchical_extracts_through_the_same_public_interface(
     assert torch.equal(source.load("s0"), expected.float())
 
 
-def test_rois_of_an_earlier_extraction_are_encoded_again_without_sampling(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """``rois=`` re-encodes the ROIs an annotation-sampled extraction drew (another
-    encoder or recipe over the same ROIs): no sampling, the same ROI ids."""
+def _stub_roi_sampling(monkeypatch: pytest.MonkeyPatch):
+    """Stub hs2p sampling (ROIs at (0, 0) and (32, 0) of every slide), slide2vec's region
+    encoder and the mask crop read; return the sampled slide ids and the model class
+    (``encoded``: the coordinates of each encode call)."""
     from slide2vec.artifacts import write_dense_region
 
-    from soma import CacheOptions
-
-    dataset_csv = tmp_path / "dataset.csv"
-    dataset_csv.write_text(
-        "sample_id,image_path,label_mask_path\ns0,s0.svs,s0-mask.tif\n", encoding="utf-8"
-    )
-    images = ImageManifest.from_csv(dataset_csv)
     sampled: list[str] = []
 
     def fake_tile_slide(slide, **_kwargs):
@@ -859,6 +851,22 @@ def test_rois_of_an_earlier_extraction_are_encoded_again_without_sampling(
         "soma.dense.reader.read_mask_regions_within_slide",
         lambda path, *, regions, size, **_: [np.zeros((size[1], size[0]), np.uint8) for _ in regions],
     )
+    return sampled, RegionModel
+
+
+def test_rois_of_an_earlier_extraction_are_encoded_again_without_sampling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``rois=`` re-encodes the ROIs an annotation-sampled extraction drew (another
+    encoder or recipe over the same ROIs): no sampling, the same ROI ids."""
+    from soma import CacheOptions
+
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label_mask_path\ns0,s0.svs,s0-mask.tif\n", encoding="utf-8"
+    )
+    images = ImageManifest.from_csv(dataset_csv)
+    sampled, RegionModel = _stub_roi_sampling(monkeypatch)
     dense = DenseOptions(spacing_um=0.5, target_size=32)
     masks = annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0})
     sampled_source = soma.extract(
@@ -886,6 +894,50 @@ def test_rois_of_an_earlier_extraction_are_encoded_again_without_sampling(
     assert again.sample_ids == sampled_source.sample_ids == ["s0__x0_y0", "s0__x32_y0"]
     assert again.rois.children == {"s0__x0_y0": "s0", "s0__x32_y0": "s0"}
     assert _provenance(tmp_path / "again")["provenance"]["kind"] == "slide_region_dense"
+
+
+@pytest.mark.parametrize(
+    "replay_dense",
+    [DenseOptions(spacing_um=1.0, target_size=32), DenseOptions(spacing_um=0.5, target_size=16)],
+    ids=["other-spacing", "smaller-window"],
+)
+def test_rois_are_refused_at_another_geometry_than_they_were_sampled_at(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, replay_dense: DenseOptions
+) -> None:
+    """An ROI's label crop is stored at the spacing and window it was sampled at: replayed
+    at another one, its grid would not align with that crop, so the verb refuses. The
+    binding survives a replay and a subset."""
+    from soma import CacheOptions
+
+    dataset_csv = tmp_path / "dataset.csv"
+    dataset_csv.write_text(
+        "sample_id,image_path,label_mask_path\ns0,s0.svs,s0-mask.tif\n", encoding="utf-8"
+    )
+    images = ImageManifest.from_csv(dataset_csv)
+    _, RegionModel = _stub_roi_sampling(monkeypatch)
+    masks = annotation_masks({"background": 0, "tumor": 1}, {"tumor": 0.0})
+    sampled_at = {
+        "encoder": "phikon",
+        "extraction": extraction(0.5, 32, masks=masks),
+        "dense": DenseOptions(spacing_um=0.5, target_size=32),
+        "cache": CacheOptions(enabled=False),
+    }
+    sampled_source = soma.extract(
+        images, annotations=AnnotationManifest.from_csv(dataset_csv), output_dir=tmp_path / "sampled", **sampled_at
+    )
+    again = soma.extract(images, rois=sampled_source.rois, output_dir=tmp_path / "again", **sampled_at)
+
+    with pytest.raises(ValueError, match="sampled at"):
+        soma.extract(
+            images,
+            rois=again.rois.subset(["s0__x32_y0"]),
+            encoder="phikon",
+            extraction=extraction(replay_dense.spacing_um, replay_dense.target_size, masks=masks),
+            dense=replay_dense,
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path / "elsewhere",
+        )
+    assert len(RegionModel.encoded) == 2
 
 
 @pytest.mark.parametrize(

@@ -59,7 +59,10 @@ def extract(
             needed only to sample ROIs from whole slides.
         unit: What one row is: a whole slide or a pre-cropped image.
         rois: The ROIs of an earlier annotation-sampled extraction (its source's
-            ``rois``): their grids are encoded again, without sampling.
+            ``rois``): their grids are encoded again, without sampling. Their label crops
+            were stored at the read spacing and window they were sampled at, so pass the
+            same ``extraction``, ``dense`` and ``spacing_policy``; another geometry is
+            refused.
         execution: slide2vec's ``ExecutionOptions`` (batch size, precision, GPUs).
         extraction: slide2vec's ``PreprocessingConfig`` (tiling, segmentation, masks);
             unset fields come from the encoder's recommendation.
@@ -301,7 +304,12 @@ class _Extraction:
         )
 
     def _extract_annotation_rois(self):
-        from soma.cache import resolve_cache_root, resolve_roi_sampling_cache, write_roi_sampling_coords
+        from soma.cache import (
+            resolve_cache_root,
+            resolve_roi_sampling_cache,
+            roi_sampling_signature,
+            write_roi_sampling_coords,
+        )
         from soma.dense import DenseSourceProvenance
         from soma.dense_slide_extraction import sample_slide_rois, write_roi_mask_crops
         from soma.extraction.rois import roi_entries, write_roi_table
@@ -351,7 +359,8 @@ class _Extraction:
             spacing_um_by_sample_id={entry.sample_id: store.spacing(entry.sample_id) for entry in crop_entries},
             preprocessing=preprocessing,
         )
-        store.rois = RoiSet(entries)
+        sampling = roi_sampling_signature(preprocessing, spacing_policy=self._spacing_policy)
+        store.rois = RoiSet(entries, sampling=sampling)
         store.provenance = DenseSourceProvenance(
             kind="slide_manifest_dense_cache", feature_dir=store.feature_dir, dataset_csv=roi_table
         )
@@ -364,11 +373,30 @@ class _Extraction:
         )
 
     def _extract_rois(self):
+        from soma.cache import roi_sampling_signature
         from soma.dense import DenseSourceProvenance
 
+        preprocessing = self._dense_preprocessing()
+        sampled = self._rois.sampling
+        if sampled is not None:
+            # Each ROI's label crop was stored at the geometry it was sampled at; a grid read
+            # at another one would not align with it.
+            replay = roi_sampling_signature(preprocessing, spacing_policy=self._spacing_policy)
+            differing = [
+                f"extraction.{field}"
+                for field, value in sampled["preprocessing"].items()
+                if replay["preprocessing"].get(field) != value
+            ] + (["spacing_policy"] if sampled["spacing_policy"] != replay["spacing_policy"] else [])
+            if differing:
+                raise ValueError(
+                    "The ROIs were sampled at another extraction than this one reads them at "
+                    f"(differing: {', '.join(differing)}), so their label crops would not align "
+                    "with the grids. Pass the extraction, dense and spacing_policy they were "
+                    "sampled with, or sample again with annotations=."
+                )
         entries = list(self._rois)
-        store = self._encode_rois(entries, self._dense_preprocessing())
-        store.rois = RoiSet(entries)
+        store = self._encode_rois(entries, preprocessing)
+        store.rois = RoiSet(entries, sampling=sampled)
         store.provenance = DenseSourceProvenance(kind="slide_region_dense_cache", feature_dir=store.feature_dir)
         return self._completed(
             store,

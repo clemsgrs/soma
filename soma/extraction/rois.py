@@ -145,14 +145,19 @@ class RoiSet:
     the mask crops sampling stored (:meth:`label_maps`) and each ROI's window of its slide
     (:meth:`pixels`). Pass it back as ``soma.extract(..., rois=...)`` to encode the same
     ROIs again (another encoder or recipe) without sampling.
+
+    ``sampling`` records the extraction the ROIs were sampled (and their mask crops
+    stored) at, as ``soma.cache.roi_sampling_signature`` gives it; a replay at another one
+    is refused. A set built without it is not checked.
     """
 
-    def __init__(self, entries: Sequence[RoiEntry]) -> None:
+    def __init__(self, entries: Sequence[RoiEntry], *, sampling: Mapping[str, Any] | None = None) -> None:
         self._entries: dict[str, RoiEntry] = {}
         for entry in entries:
             if entry.sample_id in self._entries:
                 raise ValueError(f"Duplicate ROI id {entry.sample_id!r}.")
             self._entries[entry.sample_id] = entry
+        self.sampling = sampling
 
     @property
     def sample_ids(self) -> list[str]:
@@ -180,7 +185,7 @@ class RoiSet:
 
     def subset(self, sample_ids: Sequence[str]) -> "RoiSet":
         """The same set restricted to ``sample_ids``, in their order."""
-        return RoiSet([self[str(sample_id)] for sample_id in sample_ids])
+        return RoiSet([self[str(sample_id)] for sample_id in sample_ids], sampling=self.sampling)
 
     def label_maps(self, *, size: tuple[int, int], label_remap: Any = None, ignore_index: int = 255):
         """The ROIs' label maps, read from the mask crops sampling stored (a
