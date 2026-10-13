@@ -108,6 +108,17 @@ class ImageManifest(_Manifest):
 
     def __init__(self, entries: Mapping[str, ImageEntry] | list[ImageEntry]) -> None:
         self._entries: dict[str, ImageEntry] = self._index(entries, what="image manifest")
+        missing = [
+            sample_id
+            for sample_id, entry in self._entries.items()
+            if entry.coordinates_path is None
+        ]
+        if missing and len(missing) < len(self._entries):
+            raise ValueError(
+                "Manifest column 'coordinates_path' must be set for every row or for "
+                f"none; missing for {len(missing)} sample(s): {missing[:20]}"
+                f"{' ...' if len(missing) > 20 else ''}."
+            )
 
     @classmethod
     def from_frame(cls, df: pd.DataFrame) -> "ImageManifest":
@@ -122,14 +133,6 @@ class ImageManifest(_Manifest):
         blank = df.loc[df["image_path"].isna(), "sample_id"].astype(str).tolist()
         if blank:
             raise ValueError(f"image_path is blank for sample(s): {blank}")
-        if "coordinates_path" in df.columns:
-            missing = df.loc[df["coordinates_path"].isna(), "sample_id"].astype(str).tolist()
-            if missing and len(missing) < len(df):
-                raise ValueError(
-                    "Manifest column 'coordinates_path' must be set for every row or for "
-                    f"none; missing for {len(missing)} sample(s): {missing[:20]}"
-                    f"{' ...' if len(missing) > 20 else ''}."
-                )
         entries: list[ImageEntry] = []
         for _, row in iter_rows(df):
             entries.append(
