@@ -263,13 +263,19 @@ def _features_identity(config: PipelineConfig, *, cache_dtype: bool = False) -> 
     hs2p dataclasses but the execution resources (only the precision counts).
 
     The extraction and a grid run's dense options are hashed as the run resolves them
-    (the geometry left to the encoder preset or to ``dense`` filled in), so a Python config
-    and the ``config.yaml`` it saves, which spells that geometry out, share one identity.
+    (the geometry left to the encoder preset or to ``dense`` filled in), and the encoder
+    params as their params dataclass holds them (defaults filled in), so a Python config
+    and the ``config.yaml`` it saves, which spells these out, share one identity.
     """
     from soma.cache.keys import _jsonable
+    from soma.encoders import encoder_registry
     from soma.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     features = config.features
+    encoder = None
+    if features.encoder is not None:
+        params = encoder_registry.canonical_params(features.encoder.name, features.encoder.params)
+        encoder = {"name": features.encoder.name, "params": _jsonable(params)}
     extraction = resolve_pipeline_preprocessing(config)
     dense = None
     if config.dataset_type in {"segmentation", "detection"}:
@@ -284,7 +290,7 @@ def _features_identity(config: PipelineConfig, *, cache_dtype: bool = False) -> 
         cache["dtype"] = features.cache.dtype
     return {
         "kind": features.kind,
-        "encoder": None if features.encoder is None else _jsonable(features.encoder),
+        "encoder": encoder,
         "extraction": _jsonable(extraction),
         "dense": None if dense is None else _jsonable(dense),
         "spacing_policy": features.spacing_policy,

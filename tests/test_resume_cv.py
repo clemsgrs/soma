@@ -28,11 +28,13 @@ from tests.extraction_configs import extraction
 from soma.config import (
     AggregatorConfig,
     CacheConfig,
+    DecoderConfig,
     FeaturesConfig,
     EvalConfig,
     PipelineConfig,
     TaskConfig,
     TrainingConfig,
+    load_config,
     save_config,
 )
 from soma.pipeline.layout import (
@@ -175,6 +177,28 @@ def test_drift_guard_passes_on_identical_config(tmp_path: Path):
     save_config(cfg, run_dir / "config.yaml")
     # Adding the resume directive alone is not drift (it is not serialized).
     guard_resume_config_drift(run_dir, replace(cfg, resume=True))  # no raise
+
+
+_SEGMENTATION = dict(
+    dataset_type="segmentation",
+    aggregator=None,
+    decoder=DecoderConfig(name="lightweight_conv", params={"hidden_dim": 64}),
+    task=TaskConfig(name="segmentation", params={"num_classes": 2}),
+)
+
+
+@pytest.mark.parametrize("overrides", [{}, _SEGMENTATION], ids=["slide", "segmentation"])
+def test_drift_guard_passes_resuming_from_the_saved_config_of_a_preset_tiling(tmp_path: Path, overrides):
+    """A Python config that leaves the tiling (and a grid run's dense options) to the
+    encoder preset saves what the loader resolves, so resuming from the config.yaml it
+    saved is not drift."""
+    run_dir = tmp_path / "run"
+    cfg = _make_config(tmp_path, features=FeaturesConfig(encoder="uni2"), **overrides)
+    save_config(cfg, run_dir / "config.yaml")
+
+    reloaded = load_config(run_dir / "config.yaml")
+
+    guard_resume_config_drift(run_dir, replace(reloaded, resume=True))  # no raise
 
 
 def test_drift_guard_refuses_changed_config(tmp_path: Path):

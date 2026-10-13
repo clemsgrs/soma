@@ -1411,7 +1411,7 @@ def _config_to_layout_dict(config: PipelineConfig) -> dict[str, Any]:
             "heatmaps": _normalize_yaml_value(asdict(config.heatmaps)),
         },
     }
-    features = features_to_layout(config.features)
+    features = features_to_layout(config.features, dataset_type=config.dataset_type)
     data["data"]["feature_mode"] = features.pop("feature_mode")
     data.update(_normalize_yaml_value(features))
     data["aggregation"] = (

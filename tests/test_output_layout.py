@@ -26,6 +26,7 @@ from soma.config import (
     load_config,
     save_config,
 )
+from soma.encoders import CompositeMember
 from soma.pipeline.layout import (
     ExperimentSpec,
     build_experiment_spec,
@@ -555,6 +556,50 @@ def test_a_config_and_its_saved_yaml_share_one_experiment_identity(tmp_path: Pat
     save_config(config, tmp_path / "config.yaml")
 
     assert canonical_experiment_payload(load_config(tmp_path / "config.yaml")) == canonical_experiment_payload(config)
+
+
+@pytest.mark.parametrize(
+    ("make", "features"),
+    [
+        (
+            _make_pipeline_config,
+            FeaturesConfig(
+                encoder=EncoderLeaf("uni2", {"allow_non_recommended_settings": False}),
+                extraction=extraction(0.5, 224),
+            ),
+        ),
+        (
+            _make_segmentation_config,
+            _segmentation_features(encoder=EncoderLeaf("composite", {"members": [{"name": "uni2"}, {"name": "phikon"}]})),
+        ),
+        (
+            _make_segmentation_config,
+            _segmentation_features(
+                encoder=EncoderLeaf("composite", {"members": [CompositeMember("uni2"), CompositeMember("phikon")]})
+            ),
+        ),
+        (
+            _make_segmentation_config,
+            _segmentation_features(
+                encoder=EncoderLeaf(
+                    "composite",
+                    {"members": [{"name": "uni2", "params": {"allow_non_recommended_settings": False}}]},
+                )
+            ),
+        ),
+    ],
+    ids=["leaf-default-param", "composite-default-resolution", "composite-member-dataclasses", "composite-member-default-param"],
+)
+def test_encoder_params_are_hashed_as_their_params_dataclass_holds_them(tmp_path: Path, make, features):
+    """Encoder params left to their defaults, spelling them, or given as dataclasses rather
+    than mappings define the same experiment, so a Python config and the ``config.yaml``
+    it saves share one experiment id."""
+    config = make(tmp_path, features=features)
+    save_config(config, tmp_path / "config.yaml")
+
+    reloaded = load_config(tmp_path / "config.yaml")
+
+    assert build_experiment_spec(reloaded).experiment_id == build_experiment_spec(config).experiment_id
 
 
 def test_build_experiment_spec_ignores_inactive_heatmap_rendering_settings(tmp_path: Path):

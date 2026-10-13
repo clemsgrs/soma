@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from slide2vec import Model
@@ -61,6 +62,14 @@ class EncoderRegistry(Registry):
             return self._describe(name, _composite_store_class(), CompositeParams, {"level": "tile"})
         metadata = _slide2vec_encoders.info(name)
         return self._describe(name, _slide2vec_encoders.require(name), EncoderParams, metadata)
+
+    def canonical_params(self, name: str, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """The base canonical params, with each composite member's own params canonical too."""
+        canonical = super().canonical_params(name, params)
+        if name == COMPOSITE:
+            for member in canonical["members"]:
+                member["params"] = self.canonical_params(member["name"], member["params"])
+        return canonical
 
     def _lookup(self, name: str) -> tuple[Any, _Entry]:
         params = CompositeParams if name == COMPOSITE else EncoderParams

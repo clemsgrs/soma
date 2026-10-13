@@ -358,13 +358,15 @@ def _execution(execution: dict[str, Any], encoder_block: dict[str, Any]) -> slid
 # ---------------------------------------------------------------------------
 
 
-def features_to_layout(features: FeaturesConfig) -> dict[str, Any]:
+def features_to_layout(features: FeaturesConfig, *, dataset_type: str | None) -> dict[str, Any]:
     """The YAML blocks :func:`features_from_layout` reads back into ``features``.
 
     Upstream fields the former vocabulary cannot spell (hs2p filter knobs other than
     ``a_t``, a dense ``pad_mode``, ...) are not written; the experiment identity in
     ``run.yaml`` still carries them. ``dense`` without a tiling is written as the tiling
-    it reads at (the layout derives the dense geometry from the tiling keys).
+    it reads at (the layout derives the dense geometry from the tiling keys). A leaf
+    encoder's unset tiling is written as the preset geometry the reader resolves it to,
+    and a grid run's unset dense options as the defaults the reader gives it.
     """
     from soma.preprocessing.resolution import reconcile_dense_tiling
 
@@ -372,12 +374,20 @@ def features_to_layout(features: FeaturesConfig) -> dict[str, Any]:
     tiling = extraction.tiling
     if tiling is None:
         tiling = reconcile_dense_tiling(extraction, dense).tiling
+    spacing_um = tile_size_px = None
+    if tiling is not None:
+        spacing_um, tile_size_px = tiling.requested_spacing_um, tiling.requested_tile_size_px
+    elif dataset_type != "tile" and features.encoder is not None and not features.is_composite:
+        spacing_um, tile_size_px = _encoder_geometry(features.encoder, None, None)
+    if dense is None and dataset_type in _GRID_DATASET_TYPES and None not in (spacing_um, tile_size_px):
+        # Read back, a grid run with a tiling gets slide2vec's default dense options.
+        dense = slide2vec.DenseOptions(spacing_um=float(spacing_um), target_size=int(tile_size_px))
     segmentation = extraction.segmentation
     preprocessing: dict[str, Any] = {
         "backend": "auto" if tiling is None else tiling.backend,
         "mask_backend": "auto" if tiling is None else tiling.mask_backend,
-        "requested_tile_size_px": None if tiling is None else tiling.requested_tile_size_px,
-        "requested_spacing_um": None if tiling is None else tiling.requested_spacing_um,
+        "requested_tile_size_px": tile_size_px,
+        "requested_spacing_um": spacing_um,
         "spacing_policy": features.spacing_policy,
         "requested_region_size_px": extraction.requested_region_size_px,
         "region_tile_multiple": extraction.region_tile_multiple,

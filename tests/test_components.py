@@ -94,6 +94,16 @@ def test_encoders_are_slide2vecs_listed_with_their_level_and_params():
         soma.register("encoders", "mine", object)
 
 
+def test_an_encoder_name_is_its_own_registry_key():
+    """``key_of`` holds for the encoders registry, whose entries are slide2vec's."""
+    registry = discovery.registry("encoders")
+
+    assert registry.key_of("uni2") == "uni2"
+    assert registry.key_of("composite") == "composite"
+    assert registry.key_of("not_an_encoder") == "not_an_encoder"
+    assert registry.key_of("no_such_module.Encoder") == "no_such_module.Encoder"
+
+
 def test_the_composite_encoder_is_an_entry_whose_params_list_the_members():
     composite = _entry("encoders", "composite")
 
