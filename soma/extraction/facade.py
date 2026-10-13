@@ -152,9 +152,18 @@ class _Extraction:
         if self._rois is not None:
             if self._unit != "slide":
                 raise TypeError("ROIs are windows of whole slides: extract them with unit='slide'.")
-            unknown = sorted({slide for slide in self._rois.children.values() if slide not in self._images})
-            if unknown:
-                raise ValueError(f"The ROIs' slide(s) {unknown[:20]} have no row in the image manifest.")
+            mismatched = sorted(
+                {
+                    entry.slide_id
+                    for entry in self._rois
+                    if entry.slide_id not in self._images or self._images[entry.slide_id] != entry.slide
+                }
+            )
+            if mismatched:
+                raise ValueError(
+                    f"The ROIs' slide(s) {mismatched[:20]} have no row in the image manifest or a "
+                    "row that differs from the one the ROIs were sampled from."
+                )
             return self._extract_rois
         if self._unit == "tile":
             if annotation_sampling:

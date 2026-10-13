@@ -886,3 +886,34 @@ def test_rois_of_an_earlier_extraction_are_encoded_again_without_sampling(
     assert again.sample_ids == sampled_source.sample_ids == ["s0__x0_y0", "s0__x32_y0"]
     assert again.rois.children == {"s0__x0_y0": "s0", "s0__x32_y0": "s0"}
     assert _provenance(tmp_path / "again")["provenance"]["kind"] == "slide_region_dense"
+
+
+@pytest.mark.parametrize(
+    "replay_row",
+    ["s0,s0.svs,s0-mask.tif,0.25", "s0,s0-rescanned.svs,s0-mask.tif,0.5"],
+    ids=["other-spacing", "other-image-path"],
+)
+def test_rois_are_refused_with_a_manifest_whose_parent_row_differs(tmp_path: Path, replay_row: str) -> None:
+    """An ROI is read from (and its cache identity keyed on) the slide row it was sampled
+    from: replayed with a manifest whose row for that slide differs, the verb refuses
+    rather than silently encode the old row."""
+    from soma import CacheOptions
+    from soma.extraction import RoiSet
+    from soma.extraction.rois import roi_entries
+
+    header = "sample_id,image_path,label_mask_path,spacing_at_level_0\n"
+    sampled_csv = tmp_path / "sampled.csv"
+    sampled_csv.write_text(header + "s0,s0.svs,s0-mask.tif,0.5\n", encoding="utf-8")
+    replay_csv = tmp_path / "replay.csv"
+    replay_csv.write_text(header + replay_row + "\n", encoding="utf-8")
+    rois = RoiSet(
+        roi_entries(ImageManifest.from_csv(sampled_csv), AnnotationManifest.from_csv(sampled_csv), {"s0": [(0, 0)]})
+    )
+    with pytest.raises(ValueError, match=r"\['s0'\].*differs"):
+        soma.extract(
+            ImageManifest.from_csv(replay_csv),
+            encoder="phikon",
+            rois=rois,
+            cache=CacheOptions(enabled=False),
+            output_dir=tmp_path / "out",
+        )

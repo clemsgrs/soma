@@ -1490,7 +1490,7 @@ def _overlay_images(inputs: RunInputs, sample_ids: Sequence[str], *, size):
 def _spacing_at_level_0(inputs: RunInputs, sample_id: str) -> float | None:
     """A sample's declared level-0 spacing: an ROI's is its slide's."""
     if inputs.rois is not None and sample_id in inputs.rois:
-        sample_id = inputs.rois.children[sample_id]
+        sample_id = inputs.rois[sample_id].slide_id
     return inputs.images[sample_id].spacing_at_level_0
 
 
