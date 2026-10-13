@@ -104,7 +104,7 @@ from soma.benchmark.eva.curate_segmentation import (
 from soma.benchmark.curation import CuratedManifest
 from soma.models.decoders.base import Decoder
 from soma.models.decoders.registry import decoder_registry
-from soma._internal.params import NoParams
+from soma.registry import NoParams
 from soma.models.heads.dense_metrics import _validate_dense_shapes
 from soma.models.heads.registry import task_registry
 from soma.models.heads.segmentation import SegmentationHead, SegmentationParams
@@ -542,14 +542,14 @@ class EvaSegmentationBenchmark:
 
 def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
     """``{<split>/<metric>: value}`` of a finished single-fold run's saved test label maps."""
-    from soma.benchmark.ocelot import _locate_run_config
+    from soma.benchmark.registry import locate_run_config
     from soma.config import ExperimentConfig
     from soma.data import AnnotationManifest, ImageManifest, LabelMapSource
     from soma.data.targets import resolve_class_scheme
     from soma.evaluation import LabelMapPredictions
     from soma.evaluation.metrics import metric_registry, resolve_metrics
 
-    config_path = _locate_run_config(Path(run_dir))
+    config_path = locate_run_config(run_dir)
     folder = config_path.parent
     cfg = ExperimentConfig.from_yaml(config_path)
     split_dirs = sorted(
@@ -563,7 +563,7 @@ def _eva_rescore(run_dir: str | Path) -> dict[str, float]:
             "saved test predictions"
         )
     _, _, label_remap = resolve_class_scheme(cfg.learner.params["head"].params, annotation_rasters=False)
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
+    from soma.pipeline.extraction import resolve_pipeline_dense
 
     dense = resolve_pipeline_dense(cfg)
     tiling = cfg.features.extraction.tiling

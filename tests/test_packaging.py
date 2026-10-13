@@ -116,3 +116,26 @@ def test_public_import_surface_dependencies_are_declared():
     assert not hasattr(soma, "FeatureExtractionResult")
     assert not hasattr(soma, "TileFeatureExtractor")
     assert not hasattr(soma, "DenseTileFeatureExtractor")
+
+
+def test_the_wheel_includes_every_benchmark_protocol_s_package_data():
+    # Reference rows, results ledgers and committed configs live next to each protocol
+    # (soma/benchmark/<protocol>/); the wheel's include globs must reach every one of them.
+    from fnmatch import fnmatch
+
+    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    include = data["tool"]["hatch"]["build"]["targets"]["wheel"]["include"]
+    package_data = [
+        path.as_posix()
+        for path in Path("soma/benchmark").rglob("*")
+        if path.is_file() and path.suffix in {".csv", ".json", ".yaml"}
+    ]
+
+    assert package_data
+    assert [path for path in package_data if not any(fnmatch(path, glob) for glob in include)] == []
+
+
+def test_import_linter_is_a_dev_dependency():
+    data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+
+    assert any(dependency.startswith("import-linter") for dependency in data["project"]["optional-dependencies"]["dev"])

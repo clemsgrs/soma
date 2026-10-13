@@ -191,7 +191,7 @@ def test_build_config_is_roster_size_agnostic():
 
 def test_midog_config_carries_relaxed_tolerance():
     cfg = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset="midog")
-    from soma.extract.preprocessing.resolution import resolve_pipeline_preprocessing
+    from soma.pipeline.extraction import resolve_pipeline_preprocessing
 
     assert resolve_pipeline_preprocessing(cfg).tiling.tolerance == pytest.approx(0.10)
     assert cfg.features.dense.tolerance == pytest.approx(0.10)
@@ -1313,7 +1313,7 @@ def test_composite_member_cache_key_matches_single_encoder_key(tmp_path: Path):
     from soma.config import EncoderLeaf, ExperimentConfig
     from soma.extract.dense_extraction import _DenseImageExtractor
     from soma.models.encoders import CompositeParams
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
+    from soma.pipeline.extraction import resolve_pipeline_dense
 
     repo_root = Path(__file__).resolve().parents[1]
     overrides = {"features": {"cache": {"root_dir": str(tmp_path)}}}

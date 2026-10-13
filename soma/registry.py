@@ -11,7 +11,18 @@ import sys
 import warnings
 import weakref
 from collections.abc import Callable, Collection, Mapping
+from dataclasses import dataclass, field
 from typing import Any
+
+# The params helpers a component author declares and checks its params with (ADR 0018):
+# public here, for components outside core such as the benchmarks'.
+from soma._internal.params import (  # noqa: F401
+    NoParams,
+    check_choice,
+    check_non_negative,
+    check_positive,
+    check_probability,
+)
 
 #: The package that registers soma's benchmark components when it is imported. Core
 #: never imports it (ADR 0022); it only names it in the hint of a failed lookup.
@@ -37,6 +48,38 @@ def benchmark_import_hint() -> str:
         f" The benchmarks and their components register when {BENCHMARK_PACKAGE} is imported: "
         f"`import {BENCHMARK_PACKAGE}` first (the soma CLI does), or name a component by its dotted path."
     )
+
+
+@dataclass(frozen=True)
+class Component:
+    """A ``{name, params}`` leaf: a registry key or a dotted import path, and its params."""
+
+    name: str
+    params: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.name, str) or not self.name:
+            raise ValueError(f"a component leaf needs a non-empty name, got {self.name!r}")
+        params = {} if self.params is None else self.params
+        if not isinstance(params, Mapping):
+            raise TypeError(f"the params of '{self.name}' must be a mapping, got {type(params).__name__}")
+        object.__setattr__(self, "params", dict(params))
+
+    @classmethod
+    def of(cls, value: Any) -> Any:
+        """``value`` as a leaf of this class: a leaf, a name or a ``{name, params}`` mapping."""
+        if value is None or type(value) is cls:
+            return value
+        if isinstance(value, Component):
+            return cls(value.name, value.params)
+        if isinstance(value, str):
+            return cls(value)
+        if isinstance(value, Mapping):
+            unknown = sorted(set(value) - {"name", "params"})
+            if unknown or "name" not in value:
+                raise ValueError(f"a component leaf is a name or a {{name, params}} mapping, got {dict(value)!r}")
+            return cls(value["name"], value.get("params") or {})
+        raise TypeError(f"a component leaf is a name or a {{name, params}} mapping, got {value!r}")
 
 
 class Registry:

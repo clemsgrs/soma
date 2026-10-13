@@ -3,16 +3,34 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 
 from slide2vec import Model
 from slide2vec.encoders.registry import encoder_registry as _slide2vec_encoders
 from slide2vec.encoders.registry import resolve_encoder_level
 
-from soma.config import Component
 from soma.models.encoders.composite import CompositeMember, CompositeParams
 from soma.models.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
-from soma.registry import Registry, _Entry, signature_params
+from soma.registry import Component, Registry, _Entry, signature_params
+
+@dataclass(frozen=True)
+class EncoderLeaf(Component):
+    """The frozen encoder: a slide2vec encoder, or ``composite`` for several concatenated.
+
+    ``params`` are slide2vec's ``Model.from_preset`` keywords (``output_variant``,
+    ``allow_non_recommended_settings``), or the composite's members
+    (:class:`soma.models.encoders.CompositeParams`); the ``encoders`` registry validates them.
+    """
+
+    @property
+    def output_variant(self) -> str | None:
+        return self.params.get("output_variant")
+
+    @property
+    def allow_non_recommended_settings(self) -> bool:
+        return bool(self.params.get("allow_non_recommended_settings", False))
+
 
 #: The params of every slide2vec encoder: ``Model.from_preset``'s keywords. The device is
 #: the run's to choose, so it is not a param.

@@ -543,6 +543,26 @@ def _rewrite_results_with_header(path: Path, header: Sequence[str]) -> None:
     staging.replace(path)
 
 
+# --- run artifacts -------------------------------------------------------------------
+
+
+def locate_run_config(run_dir: str | Path) -> Path:
+    """The saved ``config.yaml`` of the run under ``run_dir`` (an output root or the run dir).
+
+    Under an output root, the newest ``experiments/*/runs/*/config.yaml`` is the run's.
+    """
+    run_dir = Path(run_dir)
+    direct = run_dir / "config.yaml"
+    if direct.is_file():
+        return direct
+    configs = sorted(
+        run_dir.glob("experiments/*/runs/*/config.yaml"), key=lambda p: p.stat().st_mtime
+    )
+    if configs:
+        return configs[-1]
+    raise FileNotFoundError(f"no config.yaml found under {run_dir}")
+
+
 # --- default scorer ------------------------------------------------------------------
 
 

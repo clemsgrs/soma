@@ -25,7 +25,7 @@ from hs2p.tiling.io import normalize_artifact_path
 
 from slide2vec import PreprocessingConfig
 
-from soma.config import is_annotation_sampling
+from soma.extract.preprocessing import is_annotation_sampling
 from soma.data.manifests import ImageEntry, ImageManifest
 
 logger = logging.getLogger(__name__)

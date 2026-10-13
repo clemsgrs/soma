@@ -248,7 +248,7 @@ def _features_identity(plan: Plan, *, cache_dtype: bool = False) -> dict[str, An
     extract the same features share one identity however the geometry was spelled.
     """
     from soma.extract.cache.keys import _jsonable
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+    from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     features = plan.features
     encoder = None

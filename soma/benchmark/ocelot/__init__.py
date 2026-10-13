@@ -31,6 +31,7 @@ from soma.benchmark.registry import (
     Facet,
     ReferenceRow,
     expected_rows,
+    locate_run_config,
     register_benchmark,
 )
 from soma.config import ExperimentConfig
@@ -88,23 +89,10 @@ REFERENCE_ENVIRONMENT: dict[str, str] = {
 # --- greedy (OCELOT-official) scorer -------------------------------------------------
 
 
-def _locate_run_config(run_dir: Path) -> Path:
-    """The saved ``config.yaml`` for the run under ``run_dir`` (output_root or run dir)."""
-    direct = run_dir / "config.yaml"
-    if direct.is_file():
-        return direct
-    configs = sorted(
-        run_dir.glob("experiments/*/runs/*/config.yaml"), key=lambda p: p.stat().st_mtime
-    )
-    if configs:
-        return configs[-1]
-    raise FileNotFoundError(f"no config.yaml found under {run_dir}")
-
-
 def resolve_dense_cache_dir(cfg: ExperimentConfig, images: ImageManifest) -> Path | None:
     """Prepare and return the exact dense-image cache directory described by ``cfg``."""
     from soma import extract
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+    from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     features = cfg.features
     cache = features.cache
@@ -181,12 +169,12 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
     ``predictions_<test>.parquet`` (every peak above ``min_score``, level-0 pixels), then
     re-sweeps and re-scores with ``matching`` against the run's point annotations.
     """
-    from soma._internal.class_scheme import resolve_classes
     from soma.data import AnnotationManifest, PointSource
+    from soma.data.targets import resolve_point_classes
     from soma.evaluation import PointPredictions
     from soma.evaluation.metrics import resolve_metrics
 
-    config_path = _locate_run_config(Path(run_dir))
+    config_path = locate_run_config(run_dir)
     folder = config_path.parent
     cfg = ExperimentConfig.from_yaml(config_path)
     head = cfg.learner.params["head"]
@@ -201,7 +189,7 @@ def _greedy_report_for_run(run_dir: str | Path, *, matching: str = "greedy") -> 
         for path in sorted(folder.glob("predictions_*.parquet"))
         if path != tune_path
     }
-    _, _, class_remap, dropped = resolve_classes(head.params, excluded_key="drop", subject="detection")
+    _, _, class_remap, dropped = resolve_point_classes(head.params)
     targets = PointSource.from_manifest(
         AnnotationManifest.from_csv(cfg.cohort.records), class_remap=class_remap, drop=dropped
     )

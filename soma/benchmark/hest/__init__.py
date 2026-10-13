@@ -66,7 +66,7 @@ from soma.benchmark.hest.curate import curate_hest
 from soma.benchmark.curation import CuratedManifest
 from soma.benchmark.hest.probe import DEFAULT_PCA_COMPONENTS, RidgePCAProbe, gene_pearson
 from soma.learn import learner_registry
-from soma._internal.params import check_positive
+from soma.registry import check_positive
 
 REFERENCE_NAME = "hest"
 
@@ -330,7 +330,7 @@ class HestBenchmark:
         from soma.extract.cache import resolve_cache_root
         from soma.evaluation import Evaluation, evaluate
         from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_metrics, save_summary
-        from soma.extract.preprocessing.resolution import resolve_pipeline_preprocessing
+        from soma.pipeline.extraction import resolve_pipeline_preprocessing
 
         genes = list(cohort.target_names.get("expression") or [])
         features = plan.features

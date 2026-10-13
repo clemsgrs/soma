@@ -57,6 +57,7 @@ Issues = "https://github.com/clemsgrs/soma/issues"
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
+    "import-linter>=2.1",  # lint-imports checks the import rule (ADR 0022) in CI
 ]
 croma = [
     "pyarrow>=17,<26",  # 26 needs NumPy 2; the torch stack still resolves NumPy 1.26
@@ -111,3 +112,66 @@ pythonpath = ["."]
 markers = [
     "e2e: end-to-end scenario through the soma CLI on synthetic data (tests/e2e/)",
 ]
+
+# The import rule (design §2, ADR 0022). CI runs `lint-imports` before the suite.
+[tool.importlinter]
+root_package = "soma"
+
+[[tool.importlinter.contracts]]
+id = "layers"
+name = "soma.cli > soma.benchmark > the rest of soma"
+type = "layers"
+containers = ["soma"]
+layers = [
+    "cli",
+    "benchmark",
+    "config : plan : pipeline : presets : data : extract : models : learn : evaluation : testing : registry : discovery : _internal",
+]
+exhaustive = true
+exhaustive_ignores = ["__main__"]
+
+[[tool.importlinter.contracts]]
+id = "protocols-independent"
+name = "The benchmark protocols do not import each other"
+type = "independence"
+modules = [
+    "soma.benchmark.eva",
+    "soma.benchmark.hest",
+    "soma.benchmark.ocelot",
+    "soma.benchmark.midog",
+    "soma.benchmark.monkey",
+    "soma.benchmark.croma",
+]
+
+[[tool.importlinter.contracts]]
+id = "benchmark-public-api"
+name = "The benchmark package imports no private module"
+type = "forbidden"
+source_modules = ["soma.benchmark"]
+forbidden_modules = [
+    "soma._internal",
+    "soma.extract.cache._types",
+    "soma.testing._encoder",
+    "soma.testing._errors",
+    "soma.testing._learner",
+    "soma.testing._task_head",
+]
+allow_indirect_imports = true
+
+[[tool.importlinter.contracts]]
+id = "verbs-config-free"
+name = "No core namespace but the pipeline and the presets imports soma.config or soma.plan"
+type = "forbidden"
+source_modules = [
+    "soma.data",
+    "soma.extract",
+    "soma.models",
+    "soma.learn",
+    "soma.evaluation",
+    "soma.testing",
+    "soma._internal",
+    "soma.registry",
+    "soma.discovery",
+]
+forbidden_modules = ["soma.config", "soma.plan"]
+allow_indirect_imports = true

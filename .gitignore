@@ -245,3 +245,6 @@ scratch_logs/
 
 # End-to-end scenario artifacts (tests/e2e/)
 e2e-artifacts/
+
+# import-linter cache (lint-imports)
+.import_linter_cache/

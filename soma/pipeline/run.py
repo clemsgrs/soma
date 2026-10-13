@@ -47,7 +47,7 @@ from soma.pipeline.layout import (
 )
 from soma.pipeline.representation import run_representation
 from soma.plan import Plan, check, dotted_packages, resolve, revalidated
-from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 __all__ = ["Pipeline", "PipelineResult"]
 

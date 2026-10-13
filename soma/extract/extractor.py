@@ -48,7 +48,9 @@ from soma.extract.cache import (
     write_tiling_cache_payload,
     write_tiling_cache_stub,
 )
-from soma.config import CacheOptions, EncoderLeaf, is_annotation_sampling
+from soma.extract.cache.options import CacheOptions
+from soma.extract.preprocessing import is_annotation_sampling
+from soma.models.encoders import EncoderLeaf
 from soma.data import ensure_filename_safe_id
 from soma.models.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
 from soma.extract.orchestration import (

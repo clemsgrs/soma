@@ -34,6 +34,7 @@ __all__ = [
     "apply_label_remap",
     "build_label_remap",
     "resolve_class_scheme",
+    "resolve_point_classes",
 ]
 
 #: LUT entry for a raw pixel value that is in neither ``classes`` nor ``ignore``. Outside
@@ -107,6 +108,18 @@ def resolve_class_scheme(
     return num_classes, names, _label_lut(
         class_of, ignored, int(task_params.get("ignore_index", 255))
     )
+
+
+def resolve_point_classes(
+    head_params: Mapping[str, Any],
+) -> tuple[int, tuple[str, ...], dict[int, int] | None, tuple[int, ...]]:
+    """A detection head's class scheme: ``(num_classes, class names, {raw id: class index},
+    dropped ids)`` from its ``classes`` / ``drop`` / ``num_classes`` params.
+
+    The mapping and the dropped ids are what :meth:`PointSource.from_manifest` takes as
+    ``class_remap`` and ``drop``.
+    """
+    return resolve_classes(head_params, excluded_key="drop", subject="detection")
 
 
 def apply_label_remap(array: np.ndarray, label_remap: np.ndarray, *, sample_id: str) -> np.ndarray:

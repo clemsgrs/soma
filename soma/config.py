@@ -26,6 +26,11 @@ import slide2vec
 import yaml
 
 from soma._internal.atomic_io import atomic_write_text
+from soma._internal.editable import SEALED, Editable
+from soma.extract.cache.options import CacheOptions
+from soma.extract.preprocessing import is_annotation_sampling
+from soma.models.encoders import EncoderLeaf
+from soma.registry import Component
 
 __all__ = [
     "CRoMaOptions", "CacheOptions", "CohortConfig", "Component", "EncoderLeaf", "EvaluationConfig",
@@ -36,110 +41,25 @@ __all__ = [
 
 # --- editable sections -------------------------------------------------------------------
 
-_SEALED = "_sealed"
-
-
-class _Editable:
-    """A section its owner changes by assigning fields, until a plan seals it (:func:`seal`)."""
-
-    def __setattr__(self, name: str, value: Any) -> None:
-        if self.__dict__.get(_SEALED):
-            raise dataclasses.FrozenInstanceError(
-                f"cannot assign to field {name!r}: a plan is frozen (edit the config and resolve it again)"
-            )
-        object.__setattr__(self, name, value)
-
 
 def seal(config: ExperimentConfig) -> ExperimentConfig:
     """Make ``config`` and its sections refuse field writes (a :class:`~soma.plan.Plan`'s)."""
     for section in (config, *(getattr(config, f.name) for f in dataclasses.fields(config)), config.features.cache):
-        if isinstance(section, _Editable):
-            object.__setattr__(section, _SEALED, True)
+        if isinstance(section, Editable):
+            object.__setattr__(section, SEALED, True)
     return config
 
 
-# --- {name, params} leaves -------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class Component:
-    """A ``{name, params}`` leaf: a registry key or a dotted import path, and its params."""
-
-    name: str
-    params: dict[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.name, str) or not self.name:
-            raise ValueError(f"a component leaf needs a non-empty name, got {self.name!r}")
-        params = {} if self.params is None else self.params
-        if not isinstance(params, Mapping):
-            raise TypeError(f"the params of '{self.name}' must be a mapping, got {type(params).__name__}")
-        object.__setattr__(self, "params", dict(params))
-
-    @classmethod
-    def of(cls, value: Any) -> Any:
-        """``value`` as a leaf of this class: a leaf, a name or a ``{name, params}`` mapping."""
-        if value is None or type(value) is cls:
-            return value
-        if isinstance(value, Component):
-            return cls(value.name, value.params)
-        if isinstance(value, str):
-            return cls(value)
-        if isinstance(value, Mapping):
-            unknown = sorted(set(value) - {"name", "params"})
-            if unknown or "name" not in value:
-                raise ValueError(f"a component leaf is a name or a {{name, params}} mapping, got {dict(value)!r}")
-            return cls(value["name"], value.get("params") or {})
-        raise TypeError(f"a component leaf is a name or a {{name, params}} mapping, got {value!r}")
-
-
-@dataclass(frozen=True)
-class EncoderLeaf(Component):
-    """The frozen encoder: a slide2vec encoder, or ``composite`` for several concatenated.
-
-    ``params`` are slide2vec's ``Model.from_preset`` keywords (``output_variant``,
-    ``allow_non_recommended_settings``), or the composite's members
-    (:class:`soma.models.encoders.CompositeParams`); the ``encoders`` registry validates them.
-    """
-
-    @property
-    def output_variant(self) -> str | None:
-        return self.params.get("output_variant")
-
-    @property
-    def allow_non_recommended_settings(self) -> bool:
-        return bool(self.params.get("allow_non_recommended_settings", False))
-
-
 # --- features ------------------------------------------------------------------------
-
-@dataclass
-class CacheOptions(_Editable):
-    """``features.cache``: the feature and tiling cache policy. ``dtype`` (``None``
-    follows the compute precision) enters every cache key; ``on_identity_mismatch``
-    (``error`` or ``reextract``) handles a pooled cache from another slide2vec identity."""
-
-    enabled: bool = True
-    root_dir: str | Path | None = None
-    reuse_policy: str = "strict"
-    validate_payloads: bool = False
-    dtype: str | None = None
-    on_identity_mismatch: str = "error"
-
-    def __post_init__(self) -> None:
-        _check_choice("cache.on_identity_mismatch", self.on_identity_mismatch, ("error", "reextract"))
-
-
-def is_annotation_sampling(masks: Any) -> bool:
-    """Whether an hs2p ``MaskSamplingConfig`` samples annotations rather than binary
-    tissue (hs2p's own test)."""
-    from hs2p.configs.resolvers import is_binary_tissue_tiling
-
-    return not is_binary_tissue_tiling(masks)
+#
+# The leaves and the cache policy are the types the verbs take: ``Component`` is a
+# registry's ``{name, params}`` leaf, ``EncoderLeaf`` the encoder ``soma.extract`` reads,
+# ``CacheOptions`` its cache policy. They live beside those verbs so the verbs stay
+# config-free (ADR 0022); the config holds them.
 
 
 @dataclass
-class FeaturesConfig(_Editable):
+class FeaturesConfig(Editable):
     """``features``: where a run's features come from (ADR 0019).
 
     ``kind``: ``cached`` extracts once; ``live`` re-encodes the (augmented) pixels every
@@ -181,7 +101,7 @@ class FeaturesConfig(_Editable):
 
 
 @dataclass
-class RunConfig(_Editable):
+class RunConfig(Editable):
     """``run``: :class:`~soma.pipeline.Pipeline`'s keywords. ``resume`` reuses the latest
     run dir, ``run_id`` pins one, ``folds`` trains only those folds in this launch (launches
     pinned to one ``run_id`` split the folds); ``mirror_root`` mirrors fold artifacts."""
@@ -207,7 +127,7 @@ class RunConfig(_Editable):
 
 
 @dataclass
-class CohortConfig(_Editable):
+class CohortConfig(Editable):
     """``cohort``: :meth:`~soma.data.Cohort.from_csv`'s files. ``collapse: patient_id``
     makes one sample per patient; ``tune_is_test`` uses one held-out split for selection
     and test; ``allow_missing_tune`` lets a fold without tune select on train."""
@@ -224,7 +144,7 @@ class CohortConfig(_Editable):
 
 
 @dataclass
-class LoadersConfig(_Editable):
+class LoadersConfig(Editable):
     """``loaders``: :func:`soma.learn.loaders`' keywords. ``sampler`` is a training-batch
     sampler leaf (cached segmentation ROI strategies); ``augment`` augments a live grid
     run's train split."""
@@ -286,7 +206,7 @@ def _default_callbacks() -> list[Component]:
 
 
 @dataclass
-class TrainerConfig(_Editable):
+class TrainerConfig(Editable):
     """``trainer``: :class:`~soma.learn.Trainer`'s keywords. A step budget (``max_steps``)
     replaces the epoch budget; ``callbacks`` are the selection policy (``checkpoint``,
     ``early_stopping``; leave the latter out to train the whole budget)."""
@@ -334,7 +254,7 @@ class CRoMaOptions:
 
 
 @dataclass
-class EvaluationConfig(_Editable):
+class EvaluationConfig(Editable):
     """``evaluation``: :func:`soma.evaluate`'s ``metrics`` and ``subgroups`` (columns), and
     what a run scores and saves. ``holdout_test`` skips test work; ``overwrite_test``
     re-scores a test set. The grid shape saves overlays, the segmentation softmax and the
@@ -363,7 +283,7 @@ class EvaluationConfig(_Editable):
 
 
 @dataclass(kw_only=True)
-class ExperimentConfig(_Editable):
+class ExperimentConfig(Editable):
     """A whole experiment: the seven sections. Only ``cohort`` is required; a run that
     trains needs a ``learner`` with a ``head``."""
 
@@ -495,7 +415,8 @@ def _check_types(obj: Any, where: str, names) -> None:
         if not isinstance(value, hint):
             label = str(hint)
             if isinstance(hint, type):
-                label = hint.__qualname__ if hint.__module__ == __name__ else f"{hint.__module__}.{hint.__qualname__}"
+                own = hint.__module__.partition(".")[0] == "soma"
+                label = hint.__qualname__ if own else f"{hint.__module__}.{hint.__qualname__}"
             raise TypeError(f"{where}{name} must be a {label}, got {type(value).__name__}")
 
 

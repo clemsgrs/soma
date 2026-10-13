@@ -6,7 +6,7 @@ from dataclasses import replace
 
 from slide2vec import PreprocessingConfig
 
-from soma.config import Component
+from soma.registry import Component
 
 
 def derive_preprocessing_for_aggregator(

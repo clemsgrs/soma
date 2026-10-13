@@ -37,7 +37,8 @@ from soma.extract.cache import (
     resolve_dense_cache,
     resolve_cache_dtype,
 )
-from soma.config import CacheOptions, EncoderLeaf
+from soma.extract.cache.options import CacheOptions
+from soma.models.encoders import EncoderLeaf
 from soma.data.manifests import ImageManifest
 from soma.extract.dense import DENSE_IMAGE_PAYLOAD_SUBDIR, CachedGridSource
 from soma.data.geometry import compute_dense_geometry, normalize_hw

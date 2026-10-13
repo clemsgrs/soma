@@ -373,7 +373,7 @@ def _preflight_config_compatibility(
         )
 
     from soma.plan import learner_shape, sample_unit
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense, resolve_pipeline_preprocessing
+    from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     dense = resolve_pipeline_dense(config) if learner_shape(config) == "grid" else None
     feature_kind = None if dense is None else dense.feature_kind

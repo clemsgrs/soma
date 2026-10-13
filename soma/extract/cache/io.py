@@ -17,7 +17,7 @@ from slide2vec.artifacts import TileEmbeddingArtifact
 
 from soma._internal.atomic_io import atomic_write_json
 from soma.extract.cache._types import CACHE_METADATA_NAME, MANIFEST_NAME
-from soma.config import CacheOptions
+from soma.extract.cache.options import CacheOptions
 
 
 def resolve_cache_root(

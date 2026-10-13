@@ -691,7 +691,7 @@ def _point_frame(cfg, spec, predictions):
     from types import SimpleNamespace
 
     from soma.extract.dense import DenseSampleSpacing
-    from soma.extract.preprocessing.resolution import resolve_pipeline_dense
+    from soma.pipeline.extraction import resolve_pipeline_dense
 
     params = dict(cfg.learner.params["head"].params)
     match_um = float(params["match_distance"])
@@ -728,14 +728,14 @@ def _decode_cell_points(
     :func:`~soma.evaluation.sweep_threshold`), then decodes tune + test at those knobs.
     """
     from soma.benchmark.detection import CellPredictions, dataset_spec
-    from soma.benchmark.ocelot import _locate_run_config
+    from soma.benchmark.registry import locate_run_config
     from soma._internal.class_scheme import resolve_classes
     from soma.config import ExperimentConfig
     from soma.data import AnnotationManifest, Cohort, PointSource
     from soma.evaluation import PointPredictions, sweep_threshold
 
     spec = dataset_spec(dataset)
-    config_path = _locate_run_config(run_dir)
+    config_path = locate_run_config(run_dir)
     cfg = ExperimentConfig.from_yaml(config_path)
     folder = config_path.parent if fold_index is None else config_path.parent / f"fold_{fold_index}"
     # The tile origins stitching folds back to ROIs are the cohort's record metadata.
