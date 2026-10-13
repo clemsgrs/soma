@@ -32,7 +32,7 @@ stratification (#248) and the stability bootstrap are pure later re-aggregations
 retrain, no re-extract.
 
 Each cell's config is the committed per-dataset benchmark YAML under
-``soma/benchmark/configs/detection/`` (loaded by the registered ``detection-benchmark``'s
+``soma/benchmark/<dataset>/configs/detection.yaml`` (loaded by the ``detection-benchmark`` harness's
 ``build_config``, with the roster encoder swapped in); this driver only overrides the
 dataset paths (from ``--data-root``), the encoder, the replicate seed/fold, and the output
 dir. Needs a GPU + HF token for the gated encoders. Run from the soma repo root.

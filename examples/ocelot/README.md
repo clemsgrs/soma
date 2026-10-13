@@ -8,7 +8,7 @@ class-aware **F1 @ δ = 3 µm (15 px @ 0.2 µm/px)**, OCELOT's official toleranc
 The encoder is swappable (the configs cover an encoder × spacing ablation). `ocelot.yaml`
 here is a standalone CONCH example. The encoder × spacing configs
 (`ocelot_{virchow2,uni2}_*.yaml`) are **canonical under
-[`soma/benchmark/ocelot/configs/`](../../soma/benchmark/configs/ocelot)** — they are the
+[`soma/benchmark/ocelot/configs/`](../../soma/benchmark/ocelot/configs)** — they are the
 committed YAML the registered `ocelot` benchmark loads (`build_config`), and `campaign.py`
 resolves them from there by `(encoder, spacing)` (no local copies). The **published
 anchor** is `ocelot_virchow2_0.20.yaml` (frozen Virchow2 @ 0.2 µm/px, greedy test mean_F1
