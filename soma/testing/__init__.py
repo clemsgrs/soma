@@ -1,6 +1,11 @@
 """Conformance checks for soma's protocols: the :mod:`soma.data` sources, the live
 path's encoder stage, :class:`soma.learn.Learner` and :class:`soma.models.heads.TaskHead`
-implementations, plus :class:`FakeEncoder`, a parameter-free stand-in encoder stage.
+implementations, plus :class:`FakeEncoder`, a parameter-free stand-in encoder stage, and
+:func:`synthetic_cohort`, slides and labels to run soma on without data.
+
+Importing this module (``import soma`` does) registers ``fake`` with slide2vec: the
+:class:`FakeEncoder` pooling as a tile encoder, so ``encoder="fake"`` runs extraction,
+caching and the live path with no weights, no GPU and no network.
 
 Plain functions usable from pytest or a notebook. soma runs them on its own
 implementations; users run them on custom classes. Each raises
@@ -15,7 +20,8 @@ import torch
 
 from soma.data.geometry import GridGeometry
 from soma.data.sources import Points
-from soma.testing._encoder import FakeEncoder, check_encoder_stage, check_image_source
+from soma.testing._cohort import synthetic_cohort
+from soma.testing._encoder import FakeEncoder, check_encoder_stage, check_image_source, register_fake_encoder
 from soma.testing._errors import ConformanceError
 from soma.testing._learner import check_learner
 from soma.testing._task_head import check_task_head
@@ -30,7 +36,10 @@ __all__ = [
     "check_set_source",
     "check_target_source",
     "check_task_head",
+    "synthetic_cohort",
 ]
+
+register_fake_encoder()
 
 
 def _check_ids(source, method: str = "sample_ids") -> list[str]:

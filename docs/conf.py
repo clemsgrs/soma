@@ -48,11 +48,20 @@ extensions = [
     "sphinx_autodoc_typehints"
 ) + _optional_extension("nbsphinx")
 
-# Notebooks ship without outputs as code listings. Never execute them during a
-# docs build, which needs neither GPUs, model access tokens, nor slide data.
-# Smoke-test their execution separately via scripts/execute_tutorials.sh.
-nbsphinx_execute = "never"
+# Notebooks are committed without outputs (tests/repo/test_docs.py refuses any) and the
+# build executes them, so every page shows what the current code does. They run on CPU
+# with soma.testing's synthetic data and weight-free encoder: no GPU, weights or network.
+nbsphinx_execute = "auto"
 nbsphinx_allow_errors = False
+nbsphinx_timeout = 900  # seconds per cell
+nbsphinx_prolog = r"""
+{% set notebook = env.doc2path(env.docname, False) | string %}
+
+.. note::
+
+   This page is an executed notebook. :download:`Download it </{{ notebook }}>` to run it
+   yourself.
+"""
 
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tomllib
 
 from jinja2 import Environment
@@ -15,16 +16,6 @@ import yaml
 
 from soma.config import ExperimentConfig
 from soma.plan import check
-
-TUTORIALS = [
-    "walkthrough-tile-level.ipynb",
-    "walkthrough-slide-mil.ipynb",
-    "walkthrough-slide-encoder.ipynb",
-    "walkthrough-segmentation.ipynb",
-    "walkthrough-detection.ipynb",
-    "walkthrough-composite.ipynb",
-]
-
 
 def test_documentation_always_spells_soma_lowercase() -> None:
     docs_dir = Path(__file__).resolve().parents[2] / "docs"
@@ -276,7 +267,11 @@ def test_home_page_links_its_primary_routes_to_pages_that_exist() -> None:
     routes = re.findall(r'<a class="soma-route" href="([^"#]+)(?:#[^"]*)?">', page)
 
     assert routes
-    assert [route for route in routes if not (docs_dir / route).with_suffix(".rst").exists()] == []
+    assert [
+        route
+        for route in routes
+        if not any((docs_dir / route).with_suffix(suffix).exists() for suffix in (".rst", ".ipynb"))
+    ] == []
 
 
 def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None:
@@ -289,6 +284,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         ":maxdepth: 2",
         ":hidden:",
         "how-soma-works",
+        "installation",
         "getting-started",
         "data",
         "components",
@@ -296,7 +292,6 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         "training",
         "evaluation",
         "extending",
-        "tutorials/index",
         "benchmarking",
         "reference",
         "system",
@@ -310,14 +305,6 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "survival",
             "segmentation",
             "detection",
-        ),
-        "tutorials/index.rst": (
-            "walkthrough-tile-level",
-            "walkthrough-slide-mil",
-            "walkthrough-slide-encoder",
-            "walkthrough-detection",
-            "walkthrough-segmentation",
-            "walkthrough-composite",
         ),
         "benchmarking.rst": (
             "eva-patch-classification-benchmark",
@@ -341,103 +328,27 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         assert entries == list(children), filename
 
 
-def test_getting_started_pipeline_example_constructs_public_config() -> None:
-    docs_dir = Path(__file__).resolve().parents[2] / "docs"
-    rst = (docs_dir / "getting-started.rst").read_text(encoding="utf-8")
+def _e2e_scenarios() -> set[str]:
+    """The scenario names of ``tests/e2e/README.md``'s table, ``a_{b,c}`` spelled out."""
+    readme = (Path(__file__).resolve().parents[1] / "e2e" / "README.md").read_text(encoding="utf-8")
+    names: set[str] = set()
+    for pattern in re.findall(r"^\| `([^`]+)` \|", readme, flags=re.MULTILINE):
+        match = re.fullmatch(r"(.*)\{([^}]*)\}(.*)", pattern)
+        alternatives = match.group(2).split(",") if match else [""]
+        names |= {f"{match.group(1)}{alt}{match.group(3)}" if match else pattern for alt in alternatives}
+    return names
 
-    blocks = [
-        block
-        for block in _extract_code_blocks(rst, "python")
-        if "ExperimentConfig(" in block
+
+def test_the_use_case_table_names_scenarios_the_e2e_suite_runs() -> None:
+    rst = (Path(__file__).resolve().parents[2] / "docs" / "how-soma-works.rst").read_text(encoding="utf-8")
+    table = rst.split(".. _use-cases:", 1)[1].split(".. list-table::", 1)[1]
+    rows = [row for row in table.split("   * - ")[2:]]
+    use_cases = [row.splitlines()[0].strip() for row in rows]
+    assert use_cases == [
+        "Slide classification", "Survival", "Regression", "Tile-level classification", "Segmentation", "Detection",
     ]
-    assert blocks
-
-    for block in blocks:
-        namespace: dict[str, object] = {}
-        exec(_without_pipeline_run(block), namespace)
-        assert isinstance(namespace["config"], ExperimentConfig)
-        check(namespace["config"])
-
-
-def test_getting_started_yaml_is_the_pipeline_example(tmp_path: Path) -> None:
-    docs_dir = Path(__file__).resolve().parents[2] / "docs"
-    rst = (docs_dir / "getting-started.rst").read_text(encoding="utf-8")
-    (python,) = [
-        block
-        for block in _extract_code_blocks(rst, "python")
-        if "ExperimentConfig(" in block and "features=FeaturesConfig(" in block
-    ]
-    (config_yaml,) = [
-        block for block in _extract_code_blocks(rst, "yaml") if block.startswith("run:")
-    ]
-    namespace: dict[str, object] = {}
-    exec(_without_pipeline_run(python), namespace)
-    path = tmp_path / "config.yaml"
-    path.write_text(config_yaml, encoding="utf-8")
-
-    assert ExperimentConfig.from_yaml(path) == namespace["config"]
-
-
-def test_getting_started_python_examples_are_syntactically_valid() -> None:
-    page = (
-        Path(__file__).resolve().parents[2] / "docs" / "getting-started.rst"
-    ).read_text(encoding="utf-8")
-    blocks = _extract_code_blocks(page, "python")
-
-    assert blocks
-    for block in blocks:
-        ast.parse(block)
-
-
-def test_getting_started_preset_example_edits_a_checked_config() -> None:
-    rst = (Path(__file__).resolve().parents[2] / "docs" / "getting-started.rst").read_text(encoding="utf-8")
-    (block,) = [block for block in _extract_code_blocks(rst, "python") if "presets." in block]
-    namespace: dict[str, object] = {}
-    exec(_without_pipeline_run(block), namespace)
-
-    config = namespace["config"]
-    check(config)
-    assert (str(config.cohort.records), str(config.run.output_dir), config.trainer.max_epochs) == (
-        "dataset.csv",
-        "output",
-        20,
-    )
-
-
-def _without_pipeline_run(code: str) -> str:
-    return "\n".join(
-        line
-        for line in code.splitlines()
-        if not ("Pipeline(config" in line and ".run()" in line)
-    )
-
-
-def _extract_code_blocks(rst: str, language: str) -> list[str]:
-    lines = rst.splitlines()
-    blocks: list[str] = []
-    marker = f".. code-block:: {language}"
-    index = 0
-    while index < len(lines):
-        if lines[index] != marker:
-            index += 1
-            continue
-        index += 1
-        while index < len(lines) and not lines[index].strip():
-            index += 1
-        block: list[str] = []
-        while index < len(lines):
-            line = lines[index]
-            if line.startswith("   "):
-                block.append(line[3:])
-                index += 1
-                continue
-            if not line.strip():
-                block.append("")
-                index += 1
-                continue
-            break
-        blocks.append("\n".join(block))
-    return blocks
+    named = {name for row in rows for name in re.findall(r"``(\w+)``", row.split("     - ")[-1])}
+    assert named and named <= _e2e_scenarios()
 
 
 def _extract_first_yaml_block(rst: str) -> str:
@@ -472,26 +383,33 @@ def test_sphinx_docs_build(tmp_path: Path) -> None:
     assert "@pradyunsg" not in index_html
     assert (out_dir / "index.html").exists()
     assert (out_dir / "cli.html").exists()
+    # The getting-started notebook ships without outputs: the build executed it, and the
+    # page offers the notebook itself for download.
+    notebook_html = (out_dir / "getting-started.html").read_text(encoding="utf-8")
+    assert notebook_html.count('class="output_area') > 10
+    assert re.search(r'href="_downloads/[0-9a-f]+/getting-started\.ipynb"', notebook_html)
 
 
-@pytest.mark.parametrize("name", TUTORIALS)
-def test_tutorial_notebook_ships_without_outputs(name: str) -> None:
-    """Tutorials ship as clean code listings — valid JSON, code cells, no outputs.
+def _committed_notebooks(root: Path) -> list[Path]:
+    """Every ``.ipynb`` git tracks (or, outside a git checkout, every one under ``root``)."""
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "*.ipynb"], cwd=root, check=True, capture_output=True, text=True
+        ).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        return sorted(p for p in root.rglob("*.ipynb") if not {"_build", ".ipynb_checkpoints"} & set(p.parts))
+    return [root / name for name in listed]
 
-    The committed notebooks deliberately carry **no** stored outputs (the docs
-    build never executes them — nbsphinx_execute = "never" — and rendering empty
-    cells keeps the pages uncluttered). This guards that policy: each notebook is
-    valid JSON with code cells, and no code cell carries stored outputs. Smoke-test
-    that the code still runs via ``scripts/execute_tutorials.sh``.
-    """
-    path = Path(__file__).resolve().parents[2] / "docs" / "tutorials" / name
-    nb = json.loads(path.read_text(encoding="utf-8"))
 
-    code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
-    assert code_cells, f"{name} has no code cells"
-
-    for i, cell in enumerate(code_cells):
-        assert not cell.get("outputs"), (
-            f"{name} code cell {i} carries stored outputs; strip them "
-            f"(committed tutorials ship without outputs)"
-        )
+def test_no_committed_notebook_carries_outputs_or_execution_counts() -> None:
+    """Notebooks are committed clean; the docs build executes them (``nbsphinx_execute``)."""
+    root = Path(__file__).resolve().parents[2]
+    notebooks = _committed_notebooks(root)
+    assert root / "docs" / "getting-started.ipynb" in notebooks
+    dirty = []
+    for path in notebooks:
+        cells = json.loads(path.read_text(encoding="utf-8"))["cells"]
+        for index, cell in enumerate(cells):
+            if cell["cell_type"] == "code" and (cell.get("outputs") or cell.get("execution_count") is not None):
+                dirty.append(f"{path.relative_to(root)} cell {index}")
+    assert dirty == [], "strip outputs and execution counts before committing: " + ", ".join(dirty)

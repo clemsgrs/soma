@@ -13,8 +13,8 @@ distance δ. It shares dense extraction and caching with :doc:`segmentation`.
    Detection extracts heatmap peaks; segmentation selects a class per pixel.
    Both use the same decoder architecture, trained for their respective task.
 
-The :doc:`detection walkthrough <tutorials/walkthrough-detection>` runs this
-path end to end on a small synthetic dataset.
+The :ref:`use-case table <use-cases>` names the end-to-end scenarios that run this
+path on a small synthetic dataset.
 
 The method
 ----------

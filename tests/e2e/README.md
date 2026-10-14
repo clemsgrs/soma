@@ -3,15 +3,16 @@
 Each scenario writes synthetic images to disk, then runs them through the real
 `soma run <config.yaml>` entry point: tiling, feature extraction, caching, training and
 evaluation. Nothing is mocked except the encoder, which is weight-free: it returns
-the mean RGB of each tile or 8x8 patch (`tests/dense_literal_encoder.py`, or
-`soma.testing.FakeEncoder` as the frozen encoder stage of the live grid path). The
+the mean normalised RGB of each tile or 8x8 patch (`soma.testing`'s `fake` encoder, or
+`soma.testing.FakeEncoder`, the same pooling, as the frozen encoder stage of the live grid
+path). The whole-slide cohort is `soma.testing.synthetic_cohort`. The
 synthetic labels are a function of tissue colour, so the model can only score well
 if the correct pixels, features and labels reach it.
 
 | Scenario | Covers |
 | --- | --- |
 | `slide_mil_binary_classification` | WSI tiling → extraction → cache → ABMIL → evaluation; a second run is a full cache hit (zero images encoded) with byte-identical predictions |
-| `slide_mil_{multiclass,ordinal,regression,survival_nll,survival_cox}` | every slide task head on one cohort; the feature cache is shared across tasks |
+| `slide_mil_{multiclass_classification,ordinal_classification,regression,survival_nll,survival_cox}` | every slide task head on one cohort; the feature cache is shared across tasks |
 | `slide_mil_flat_png` | flat PNG slides with `spacing_at_level_0` in the manifest: tiling, both default previews, on-the-fly extraction and training |
 | `slide_mil_supplied_coordinates` | a `coordinates_path` manifest column (one hand-written hs2p tiling artifact per slide) replaces tiling: every bag holds exactly the supplied tiles, a second run is a full cache hit, and editing one slide's artifact re-encodes only that slide |
 | `slide_mil_cv_leaderboard` | 2-fold cross-validation for two aggregators, then `soma leaderboard` ranks them |
@@ -20,6 +21,7 @@ if the correct pixels, features and labels reach it.
 | `tile_binary_classification` | `dataset_type: tile` (no bag, no aggregator) |
 | `dense_segmentation` | ROI → dense token grid → decoder → Dice / IoU; the label maps of tune and test land in `predictions_tune/` / `predictions_test/` |
 | `dense_detection` | ROI → dense token grid → heatmap decoder → F1 at a matching distance; the points land in `predictions_test.parquet` and no `detection_thresholds.json` is written |
+| `dense_preset_{segmentation,detection}` | `soma run --preset segmentation\|detection` with only the preset's own flags (`--num-classes`, `--match-distance`) on ROIs at the encoder's recommended tile size: the plan's head carries the flags, the run trains (loss falls) and is scored on test |
 | `dense_live_segmentation` | `feature_mode: live` through the CLI, with the run's encoder stage replaced by `FakeEncoder`: one stage built, zero ROIs extracted to the cache, the train split augmented through an `augmentation: {name: segmentation, params}` leaf → Dice |
 | `dense_live_detection` | `feature_mode: live` detection through the CLI with `FakeEncoder` (no augmentation) → F1 at a matching distance |
 | `grid_live_segmentation` | the verbs over pixels: `TileImageSource` + `FakeEncoder` + `LabelMapSource` → `soma.learn.loaders` (with `SegmentationAugment`) → `soma.fit` → `soma.predict` (`LabelMapPredictions`) → `soma.evaluate`; a `save` / `load` round trip scores the same |

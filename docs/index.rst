@@ -23,7 +23,7 @@ foundation-model encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec
        </a>
        <a class="soma-route" href="getting-started.html">
          <strong>Get started</strong>
-         <span>Install soma and run one experiment through the modular API, pipeline, or CLI.</span>
+         <span>Run one experiment on synthetic slides: a preset, its plan, the verbs, a custom learner.</span>
        </a>
        <a class="soma-route" href="benchmarking.html">
          <strong>Benchmarking</strong>
@@ -40,6 +40,7 @@ foundation-model encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec
    :hidden:
 
    how-soma-works
+   installation
    getting-started
    data
    components
@@ -47,7 +48,6 @@ foundation-model encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec
    training
    evaluation
    extending
-   tutorials/index
    benchmarking
    reference
    system

@@ -1,6 +1,6 @@
 """Dense prediction: ROIs -> dense token grids -> decoder -> segmentation / detection.
 
-The cached scenarios extract the grids once (through the weight-free literal encoder);
+The cached scenarios extract the grids once (through the weight-free ``fake`` encoder);
 the live scenarios re-encode the ROIs every step through the run's frozen encoder stage,
 here ``soma.testing.FakeEncoder`` standing in for slide2vec's kit, so augmentation and the
 encoder stage ride inside the model.
@@ -8,16 +8,22 @@ encoder stage ride inside the model.
 
 from __future__ import annotations
 
-import pytest
+import json
 
+import pytest
+import yaml
+
+import soma
+from soma.cli import main as soma_main
 from soma.evaluation import LabelMapPredictions, PointPredictions
 from soma.testing import FakeEncoder
-from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
+from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, Run, learner_section, run_soma, trainer_section
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset
 
-#: The dense grid cache keys of the cached scenarios (pinned in slice 6c).
-PINNED_SEGMENTATION_CACHE_KEYS = ["dense_image/3906c7b95e5c888c"]
-PINNED_DETECTION_CACHE_KEYS = ["dense_image/3906c7b95e5c888c"]
+#: The dense grid cache keys of the cached scenarios (pinned in slice 6c; moved once in
+#: slice 8, when the scenarios took soma.testing's ``fake`` encoder).
+PINNED_SEGMENTATION_CACHE_KEYS = ["dense_image/37fe3481540fca89"]
+PINNED_DETECTION_CACHE_KEYS = ["dense_image/37fe3481540fca89"]
 
 
 def _config(
@@ -261,3 +267,48 @@ def test_augmentation_refuses_supplied_cached_grids(tmp_path, encoder_name, fake
     with pytest.raises(ValueError, match="loaders.augment needs pixels"):
         Pipeline(ExperimentConfig.from_yaml(tmp_path / "config.yaml"), source=CachedGridSource(grid_dir)).run()
     assert fake_live_encoder == []
+
+
+@pytest.mark.parametrize(
+    ("kind", "flags", "head_params", "metrics"),
+    [
+        (
+            "segmentation",
+            ["--num-classes", "3"],
+            {"num_classes": 3},
+            ["test/mean_dice", "test/mean_iou"],
+        ),
+        (
+            "detection",
+            ["--num-classes", "2", "--match-distance", "4.5"],
+            {"num_classes": 2, "match_distance": 4.5},
+            ["test/mean_f1"],
+        ),
+    ],
+)
+def test_a_dense_preset_runs_from_the_command_line(
+    kind, flags, head_params, metrics, tmp_path, encoder_name, new_artifact
+):
+    """``soma run --preset segmentation|detection`` with the preset's own flags only: the
+    head's class scheme (and the matching distance) are preset arguments, so the run
+    builds its head, trains and is scored. ROIs are the encoder's recommended tile size."""
+    artifact = new_artifact(f"dense_preset_{kind}")
+    tile_px = {entry["name"]: entry for entry in soma.components("encoders")}[encoder_name]["input_size"]
+    dataset_csv, splits_csv = make_dense_dataset(tmp_path / "data", kind, size=tile_px)
+    soma_main(
+        [
+            "run", "--preset", kind, "--encoder", encoder_name, "--decoder", "lightweight_conv", *flags,
+            "--cohort", str(dataset_csv), "--splits", str(splits_csv), "--out", str(tmp_path / "runs"),
+        ]
+    )
+    (summary,) = (tmp_path / "runs").glob("experiments/*/runs/*/summary.json")
+    run = Run(run_dir=summary.parent, summary=json.loads(summary.read_text()), config_path=summary.parent / "config.yaml")
+
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    plan = yaml.safe_load((run.run_dir / "plan.yaml").read_text())
+    head = plan["learner"]["params"]["head"]["params"]
+    artifact.check_equal("plan/head", {key: head[key] for key in head_params}, head_params)
+    artifact.check_equal("metrics/scored", sorted(set(metrics) - set(run.summary)), [])
+    artifact.check_equal("predictions_test/written", any(run.run_dir.glob("predictions_test*")), True)
+    artifact.assert_passed()

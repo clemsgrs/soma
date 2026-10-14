@@ -209,8 +209,7 @@ def _init_yaml(name: str, args: argparse.Namespace, config: ExperimentConfig) ->
     header = (
         f"# soma init {name} {flags}".rstrip() + "\n"
         "# Every field at the preset's value or its default. A null field is unset: the run\n"
-        "# fills in what the cohort or the machine decides (a segmentation or detection head's\n"
-        "# classes and match distance are yours to state). Point cohort.records and\n"
+        "# fills in what the cohort or the machine decides. Point cohort.records and\n"
         "# cohort.splits at your files, edit what you need, then: soma run <this file>\n"
     )
     return header + yaml.safe_dump(data, sort_keys=False, default_flow_style=False)

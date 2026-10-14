@@ -590,9 +590,8 @@ def test_pooled_slide_extracts_through_the_same_public_interface(
     tifffile = pytest.importorskip("tifffile")
 
     from soma.config import CacheOptions
-    from tests.dense_literal_encoder import register_literal_encoder
 
-    encoder_name = register_literal_encoder()
+    encoder_name = "fake"  # soma.testing's weight-free encoder
     image = np.zeros((256, 256, 3), dtype=np.uint8)
     image[..., 0] = 8
     image[..., 1] = 16
