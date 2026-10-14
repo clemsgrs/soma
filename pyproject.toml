@@ -152,6 +152,7 @@ source_modules = ["soma.benchmark"]
 forbidden_modules = [
     "soma._internal",
     "soma.extract.cache._types",
+    "soma.testing._cohort",
     "soma.testing._encoder",
     "soma.testing._errors",
     "soma.testing._learner",
@@ -185,6 +186,7 @@ source_modules = ["tests"]
 forbidden_modules = [
     "soma._internal",
     "soma.extract.cache._types",
+    "soma.testing._cohort",
     "soma.testing._encoder",
     "soma.testing._errors",
     "soma.testing._learner",
