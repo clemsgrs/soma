@@ -370,9 +370,9 @@ def test_croma_reference_provenance_pins_release_producer_protocol_and_sources()
     provenance = json.loads(path.read_text(encoding="utf-8"))
 
     assert provenance == {
-        "source_release": "Croma 0.3.0",
-        "artifact_producer": {"croma_version": "0.2.0"},
-        "exported": "2026-08-10",
+        "source_release": "Croma 1.0.1",
+        "artifact_producer": {"croma_version": "1.0.0"},
+        "exported": "2026-10-05",
         "protocol": {
             "name": "median-k",
             "m": 5,
@@ -380,9 +380,9 @@ def test_croma_reference_provenance_pins_release_producer_protocol_and_sources()
             "evaluation_design": "all",
         },
         "files": {
-            "results/camelyon.csv": "bb0a0dd0e62db64cd6d240fc98cfc4ae06794d46b06d5eae80e9bd3b6535d4d7",
-            "results/tcga-4x4.csv": "d30c1ae9305a83fe5bd0a9e4afa90cfbf7b09663cb41e66571b1abb18eaa231b",
-            "results/tolkach-esca.csv": "43fb47f602c35a3a12cd473b3ef08336739763972dd42e8fd0b8778a89b4cd3a",
+            "results/camelyon.csv": "2c205add73b43d71dda265a83eba8fc5e8a826e85c68cb991fe0d96517d73308",
+            "results/tcga-4x4.csv": "d1b95313961f4a23fb1da7e209323c19ad30517eec82efb66d41ffd67bca4944",
+            "results/tolkach-esca.csv": "a97b9748a5fda23db5bb8902022e89ccf29174ebfc425113abc1c2cb04e3fd4c",
         },
         "paper": "https://arxiv.org/abs/2607.25497",
     }

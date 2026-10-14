@@ -112,9 +112,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.174 (0.174)
    * - camelyon
      - ``dinov2-vitb14``
-     - 0.050 (0.050)
-     - -0.184 (-0.184)
-     - 0.345 (0.345)
+     - 0.028 (0.028)
+     - -0.178 (-0.178)
+     - 0.401 (0.401)
    * - camelyon
      - ``h0-mini``
      - 0.167 (0.167)
@@ -124,7 +124,7 @@ soma value with the published value in parentheses. A soma value more than
      - ``uni``
      - -0.034 (-0.034)
      - -0.217 (-0.217)
-     - 0.652 (0.651)
+     - 0.651 (0.651)
    * - tcga-4x4
      - ``conchv15``
      - 0.153 (0.153)
@@ -132,9 +132,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.193 (0.193)
    * - tcga-4x4
      - ``dinov2-vitb14``
-     - 0.006 (0.006)
-     - -0.122 (-0.122)
-     - 0.469 (0.468)
+     - 0.014 (0.014)
+     - -0.109 (-0.109)
+     - 0.418 (0.419)
    * - tcga-4x4
      - ``h0-mini``
      - 0.121 (0.121)
@@ -144,7 +144,7 @@ soma value with the published value in parentheses. A soma value more than
      - ``uni``
      - 0.047 (0.047)
      - -0.120 (-0.120)
-     - 0.320 (0.320)
+     - 0.319 (0.320)
    * - tolkach-esca
      - ``conchv15``
      - 0.392 (0.392)
@@ -152,9 +152,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.043 (0.043)
    * - tolkach-esca
      - ``dinov2-vitb14``
-     - 0.176 (0.175)
-     - -0.069 (-0.069)
-     - 0.099 (0.099)
+     - 0.152 (0.152)
+     - -0.073 (-0.073)
+     - 0.109 (0.109)
    * - tolkach-esca
      - ``h0-mini``
      - 0.380 (0.380)
