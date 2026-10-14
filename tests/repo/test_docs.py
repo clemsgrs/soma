@@ -521,6 +521,7 @@ def _snippet_offences(path: Path, text: str) -> list[str]:
     for line, source, strict in _python_snippets(text):
         try:
             tree = compile(source, f"{path}:{line}", "exec", ast.PyCF_ONLY_AST, dont_inherit=True)
+            compile(tree, f"{path}:{line}", "exec", dont_inherit=True)  # parsing alone accepts a stray ``return``
         except SyntaxError as error:
             if strict:
                 offences.append(f"{path}:{line + (error.lineno or 1) - 1}: does not compile ({error.msg})")
@@ -558,6 +559,10 @@ def test_the_snippet_guard_reports_a_missing_name_a_private_name_and_a_broken_bl
             ".. code-block:: python",
             "",
             "   def broken(:",
+            "",
+            ".. code-block:: python",
+            "",
+            "   return 1",
         ]
     )
     assert _snippet_offences(Path("page.rst"), page) == [
@@ -565,6 +570,7 @@ def test_the_snippet_guard_reports_a_missing_name_a_private_name_and_a_broken_bl
         "page.rst:13: soma.extract._facade (private name _facade)",
         "page.rst:13: soma.models.NoSuchAggregator (no NoSuchAggregator in soma.models)",
         "page.rst:22: does not compile (invalid syntax)",
+        "page.rst:26: does not compile ('return' outside function)",
     ]
 
 
