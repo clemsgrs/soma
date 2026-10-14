@@ -721,10 +721,18 @@ def _encoder_label(cfg: ExperimentConfig) -> str:
 
 
 def _score_fold(
-    dataset: str, cfg: ExperimentConfig, folder: Path, out_dir: Path, *, replicate: int, axis: str
+    dataset: str,
+    cfg: ExperimentConfig,
+    cohort,
+    fold: int,
+    folder: Path,
+    out_dir: Path,
+    *,
+    replicate: int,
+    axis: str,
 ) -> dict[str, float]:
     """Score one fold's persisted predictions; write ``predictions.json`` + ``metrics.json``."""
-    from soma.data import AnnotationManifest, Cohort, PointSource
+    from soma.data import AnnotationManifest, PointSource
     from soma.data.targets import resolve_point_classes
     from soma.evaluation import PointPredictions
 
@@ -735,8 +743,18 @@ def _score_fold(
             f"no predictions_tune.parquet in {folder}; detection scoring reads the run's "
             "persisted point predictions"
         )
-    # The tile origins stitching folds back to ROIs are the cohort's record metadata.
-    cohort = Cohort.from_csv(cfg.cohort.records, cfg.cohort.splits, allow_missing_test=True)
+    test_names = cohort.folds[fold].test_split_names
+    if not test_names:
+        raise ValueError(
+            f"fold {fold} of {folder} declares no test split; a tune-only run cannot be scored"
+        )
+    test_paths = [folder / f"predictions_{name}.parquet" for name in test_names]
+    missing = [path.name for path in test_paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(
+            f"missing test predictions {missing} in {folder}; detection scoring reads every "
+            "declared test split's persisted point predictions"
+        )
     _, _, class_remap, dropped = resolve_point_classes(cfg.learner.params["head"].params)
     targets = PointSource.from_manifest(
         AnnotationManifest.from_csv(cfg.cohort.records), class_remap=class_remap, drop=dropped
@@ -746,13 +764,12 @@ def _score_fold(
     thresholds = _freeze_thresholds(tune, targets, cohort, frame, spec)
     tune_samples = _decode_split(tune, targets, cohort, frame, threshold=thresholds)
     test_samples: list[SamplePrediction] = []
-    for path in sorted(folder.glob("predictions_*.parquet")):
-        if path != tune_path:
-            test_samples.extend(
-                _decode_split(
-                    PointPredictions.from_parquet(path), targets, cohort, frame, threshold=thresholds
-                )
+    for path in test_paths:
+        test_samples.extend(
+            _decode_split(
+                PointPredictions.from_parquet(path), targets, cohort, frame, threshold=thresholds
             )
+        )
 
     test_metrics = score_dataset_points(dataset, test_samples)
     tune_metrics = score_dataset_points(dataset, tune_samples) if tune_samples else {}
@@ -786,10 +803,11 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
 
-def _fold_dirs(run_dir: Path) -> list[Path]:
-    """A multi-fold run's ``fold_<k>/`` children, in fold order (``[]`` for a single fold)."""
-    folds = [p for p in run_dir.glob("fold_*") if p.is_dir() and p.name[5:].isdigit()]
-    return sorted(folds, key=lambda p: int(p.name[5:]))
+def _expected_fold_dirs(run: Path, cohort) -> list[Path]:
+    """The fold dirs ``cohort``'s splits declare, in fold order (``[run]`` for a single fold)."""
+    from soma.pipeline.layout import fold_dir
+
+    return [fold_dir(run, k, cohort.num_folds) for k in range(cohort.num_folds)]
 
 
 def _aggregate_folds(per_fold: Sequence[dict[str, float]]) -> tuple[dict[str, float], dict[str, float]]:
@@ -805,26 +823,42 @@ def score_run(dataset: str, run_dir: str | Path) -> dict[str, float]:
 
     ``run_dir`` is the run directory or an output root above it (the newest run there is
     scored). Per fold, the run's ``predictions_tune.parquet`` freezes per-class thresholds
-    (on the stitched per-ROI tune predictions for a tiled dataset), every other
-    ``predictions_<split>.parquet`` is decoded at those thresholds and stitched back to
-    ROIs, and ``predictions.json`` (the per-sample cache) plus ``metrics.json`` land in
-    ``<run>/detection_score/`` (``fold_<k>/`` per fold for a multi-fold run, with the
-    fold mean and std in ``detection_score/metrics.json``). No model is loaded.
+    (on the stitched per-ROI tune predictions for a tiled dataset), the
+    ``predictions_<split>.parquet`` of each declared test split is decoded at those
+    thresholds and stitched back to ROIs, and ``predictions.json`` (the per-sample cache)
+    plus ``metrics.json`` land in ``<run>/detection_score/`` (``fold_<k>/`` per fold for a
+    multi-fold run, with the fold mean and std in ``detection_score/metrics.json``). No
+    model is loaded.
+
+    Every fold the splits declare must be present with its test predictions; otherwise
+    ``FileNotFoundError`` is raised before anything is written.
 
     Returns the native test metrics; for a multi-fold run, their mean over folds.
     """
     from soma.benchmark.registry import locate_run_config
+    from soma.data import Cohort
 
     config_path = locate_run_config(run_dir)
     run = config_path.parent
     cfg = ExperimentConfig.from_yaml(config_path)
     out = run / SCORE_DIRNAME
-    folds = _fold_dirs(run)
-    if not folds:
-        return _score_fold(dataset, cfg, run, out, replicate=int(cfg.run.seed), axis="seeds")
+    # The tile origins stitching folds back to ROIs are the cohort's record metadata.
+    cohort = Cohort.from_csv(cfg.cohort.records, cfg.cohort.splits, allow_missing_test=True)
+    folds = _expected_fold_dirs(run, cohort)
+    # A pending or dead fold launch must not turn into the mean of fewer folds.
+    missing = [str(folder) for folder in folds if not folder.is_dir()]
+    if missing:
+        raise FileNotFoundError(
+            f"run {run} declares {len(folds)} folds but has no fold dir {missing}; "
+            "score it once every fold has trained"
+        )
+    if len(folds) == 1:
+        return _score_fold(dataset, cfg, cohort, 0, run, out, replicate=int(cfg.run.seed), axis="seeds")
     per_fold = [
-        _score_fold(dataset, cfg, folder, out / folder.name, replicate=int(folder.name[5:]), axis="folds")
-        for folder in folds
+        _score_fold(
+            dataset, cfg, cohort, k, folder, out / folder.name, replicate=k, axis="folds"
+        )
+        for k, folder in enumerate(folds)
     ]
     mean, std = _aggregate_folds(per_fold)
     spec = dataset_spec(dataset)
@@ -853,21 +887,26 @@ def persisted_predictions(run_dir: str | Path) -> list[Path]:
     (all of them, or the run counts as unscored).
     """
     from soma.benchmark.registry import locate_run_config
+    from soma.data import Cohort
 
     run_dir = Path(run_dir)
     if (run_dir / "predictions.json").is_file():
         return [run_dir / "predictions.json"]
     try:
-        run = locate_run_config(run_dir).parent
+        config_path = locate_run_config(run_dir)
     except FileNotFoundError:
         return []
+    run = config_path.parent
     score_dir = run / SCORE_DIRNAME
-    folds = _fold_dirs(run)
-    if not folds:
+    cfg = ExperimentConfig.from_yaml(config_path)
+    cohort = Cohort.from_csv(cfg.cohort.records, cfg.cohort.splits, allow_missing_test=True)
+    folds = _expected_fold_dirs(run, cohort)
+    if len(folds) == 1:
         cached = score_dir / "predictions.json"
         return [cached] if cached.is_file() else []
     cached = [score_dir / fold.name / "predictions.json" for fold in folds]
-    # A partly scored run (interrupted mid-folds) is unscored: never average fewer folds.
+    # A partly scored run (interrupted mid-folds, or fewer folds than the splits
+    # declare) is unscored: never average fewer folds.
     return cached if all(path.is_file() for path in cached) else []
 
 # --- cell aggregation ----------------------------------------------------------------

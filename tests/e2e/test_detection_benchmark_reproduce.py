@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from pathlib import Path
 
 import numpy as np
@@ -131,6 +132,17 @@ def reproduce_from_run_dir(seed_root: Path, capsys) -> tuple[int, float]:
     return code, float(match.group(1))
 
 
+def reproduce_failure(seed_root: Path) -> str | None:
+    """The exception type ``soma reproduce detection/midog --from-run-dir`` raised, if any."""
+    try:
+        soma_main(["reproduce", "detection/midog", "--from-run-dir", str(seed_root)])
+    except (FileNotFoundError, ValueError) as exc:
+        return type(exc).__name__
+    except SystemExit as exc:
+        return f"exit {exc.code}" if exc.code else None
+    return None
+
+
 @pytest.mark.parametrize("num_folds", [1, 3])
 def test_reproduce_detection_midog_scores_its_own_run(
     num_folds, tmp_path, capsys, encoder_name, new_artifact
@@ -170,6 +182,16 @@ def test_reproduce_detection_midog_scores_its_own_run(
     expected = float(np.mean(per_fold)) if per_fold else float("nan")
     artifact.check_equal("reported_f1_is_the_native_score", round(reported, 4), round(expected, 4))
     artifact.check_at_least("reported_f1", reported, 0.5)
+    # A fold without its test predictions (an interrupted launch, ``holdout_test``) is
+    # refused before any score file is written: it never caches an empty-test score.
+    test_parquet = (run.run_dir if num_folds == 1 else run.run_dir / "fold_0") / "predictions_test.parquet"
+    test_parquet.rename(test_parquet.with_suffix(".bak"))
+    score_dir.rename(score_dir.with_name("detection_score.bak"))
+    artifact.check_equal("missing_test/raises", reproduce_failure(tmp_path / "seed_0"), "FileNotFoundError")
+    artifact.check_equal("missing_test/no_cache", (score_dir / "predictions.json").exists(), False)
+    shutil.rmtree(score_dir, ignore_errors=True)
+    score_dir.with_name("detection_score.bak").rename(score_dir)
+    test_parquet.with_suffix(".bak").rename(test_parquet)
     # A scored run re-aggregates off its predictions.json cache: the parquet files are no
     # longer read.
     for parquet in run.run_dir.glob("**/predictions_*.parquet"):
@@ -182,4 +204,11 @@ def test_reproduce_detection_midog_scores_its_own_run(
         artifact.check_equal("aggregate/n_folds", summary["n_replicates"], num_folds)
         artifact.check_equal("aggregate/mean_f1", round(summary["mean"]["f1"], 4), round(expected, 4))
         artifact.check_equal("aggregate/std_f1", round(summary["std"]["f1"], 6), round(float(np.std(per_fold)), 6))
+        # A run missing one of its declared folds (still training, or a dead launch) is
+        # refused: it never reports the mean of fewer folds.
+        shutil.rmtree(score_dir)
+        last = run.run_dir / f"fold_{num_folds - 1}"
+        last.rename(last.with_name("pending_fold"))
+        artifact.check_equal("missing_fold/raises", reproduce_failure(tmp_path / "seed_0"), "FileNotFoundError")
+        artifact.check_equal("missing_fold/no_score_dir", score_dir.exists(), False)
     artifact.assert_passed()
