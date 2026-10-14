@@ -30,6 +30,7 @@ __all__ = [
     "ClassMatch",
     "match_assignment",
     "match_points",
+    "match_single_class",
     "detection_counts",
     "reduce_f1",
     "sweep_score_thresholds",
@@ -73,7 +74,7 @@ class ClassMatch:
         return self.tp, self.fp, self.fn
 
 
-def _match_single_class(
+def match_single_class(
     pred_xy: np.ndarray,
     pred_score: np.ndarray,
     gt_xy: np.ndarray,
@@ -84,7 +85,8 @@ def _match_single_class(
     """Match one class's predictions to its GT; return the :class:`ClassMatch`.
 
     ``pairs`` hold indices **local** to the passed (already class-filtered) arrays;
-    :func:`match_assignment` lifts them to global indices.
+    :func:`match_assignment` lifts them to global indices. ``pred_score`` orders the
+    ``greedy`` claims; ``hungarian`` ignores it.
     """
     n_pred = int(pred_xy.shape[0])
     n_gt = int(gt_xy.shape[0])
@@ -169,7 +171,7 @@ def match_assignment(
     for c in range(int(num_classes)):
         p = np.nonzero(pred_class == c)[0]  # global predicted indices for this class
         g = np.nonzero(gt_class == c)[0]  # global GT indices for this class
-        local = _match_single_class(
+        local = match_single_class(
             pred_xy[p], pred_score[p], gt_xy[g], delta=float(delta), method=method
         )
         if local.pairs.shape[0]:
@@ -385,7 +387,7 @@ def sweep_score_thresholds(
                 keep = (cls_i == c) & (score_i >= thr)
                 gcls = np.asarray(per_image_gt_class[i]).reshape(-1).astype(np.int64)
                 gxy = np.asarray(per_image_gt_xy[i], dtype=np.float64).reshape(-1, 2)
-                m = _match_single_class(
+                m = match_single_class(
                     xy_i[keep], score_i[keep], gxy[gcls == c],
                     delta=float(delta), method=method,
                 )

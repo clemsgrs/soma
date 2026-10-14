@@ -119,14 +119,12 @@ class RidgePCAProbe:
 def gene_pearson(index: int, name: str):
     """A frame metric: Pearson of output ``value_<index>`` pooled over the samples, named
     ``pearson_gene<index:02d>_<name>`` (a constant column scores ``0.0``)."""
-    from soma.evaluation.metrics import _pearson
+    from soma.evaluation.metrics import pearson
 
     column = f"value_{index}"
 
     def metric(predictions: pd.DataFrame, targets: pd.DataFrame) -> float:
-        return _pearson(
-            targets[column].to_numpy(dtype=float), predictions[column].to_numpy(dtype=float), None
-        )
+        return pearson(targets[column].to_numpy(dtype=float), predictions[column].to_numpy(dtype=float))
 
     metric.__name__ = f"pearson_gene{index:02d}_{name}"
     return metric
