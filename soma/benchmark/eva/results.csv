@@ -29,3 +29,25 @@ patch_camelyon,uni2,test/balanced_accuracy,0.949442125196,0.00134777415152,5,202
 patch_camelyon,uni2,tune/balanced_accuracy,0.94399125687,0.000580411648003,5,2026-10-10,06946dc,7.0.0,soma reproduce --record (same 5-seed runs as the test row; tune split read from each seed's metrics.json)
 patch_camelyon,virchow2,test/balanced_accuracy,0.934979115479,0.00268180070287,5,2026-10-10,06946dc,7.0.0,soma reproduce --record
 patch_camelyon,virchow2,tune/balanced_accuracy,0.931614698519,0.00119141170153,5,2026-10-10,06946dc,7.0.0,soma reproduce --record (same 5-seed runs as the test row; tune split read from each seed's metrics.json)
+bach,uni2,test/balanced_accuracy,0.913958333333,0.00795358715368,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+bach,virchow2,test/balanced_accuracy,0.869501227209,0.0115623158354,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+breakhis,uni2,test/balanced_accuracy,0.854835884795,0.00654211104502,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+breakhis,virchow2,test/balanced_accuracy,0.811157548126,0.00846714322176,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+camelyon16_small,uni2,test/balanced_accuracy,0.856505102041,0.0141247695035,20,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+camelyon16_small,virchow2,test/balanced_accuracy,0.860191326531,0.0110846166633,20,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+consep,uni2,test/foreground_mean_dice,0.630742442608,0.00263975091578,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+consep,virchow2,test/foreground_mean_dice,0.643265593052,0.00233167305312,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+crc,uni2,test/balanced_accuracy,0.965789336729,0.000993175917958,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+crc,virchow2,test/balanced_accuracy,0.966043692788,0.00141984665828,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+gleason_arvaniti,uni2,test/balanced_accuracy,0.778813357839,0.00482563476427,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+gleason_arvaniti,virchow2,test/balanced_accuracy,0.777767736173,0.0100669669096,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+mhist,uni2,test/balanced_accuracy,0.823805150369,0.00292244723923,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+mhist,virchow2,test/balanced_accuracy,0.86100441203,0.00128176122484,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+monusac,uni2,test/foreground_mean_dice,0.644954359531,0.00298700873745,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+monusac,virchow2,test/foreground_mean_dice,0.665515875816,0.0109503152653,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+panda_small,uni2,test/balanced_accuracy,0.652039239355,0.0159758196042,20,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+panda_small,virchow2,test/balanced_accuracy,0.650567018766,0.0176802590792,20,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+patch_camelyon,uni2,test/balanced_accuracy,0.949442125196,0.00134777415152,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+patch_camelyon,uni2,tune/balanced_accuracy,0.94399125687,0.000580411648003,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record (same 5-seed runs as the test row; tune split read from each seed's metrics.json)
+patch_camelyon,virchow2,test/balanced_accuracy,0.934979115479,0.00268180070287,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record
+patch_camelyon,virchow2,tune/balanced_accuracy,0.931614698519,0.00119141170153,5,2026-10-14,8e1f1f6,7.1.1,soma reproduce --record (same 5-seed runs as the test row; tune split read from each seed's metrics.json)

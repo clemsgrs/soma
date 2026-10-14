@@ -39,8 +39,9 @@ def test_load_results_parses_eva_seed_rows():
     # The ledger is append-only, so a re-recorded cell holds several rows; file order is
     # oldest-first and the latest reproduction of a cell is the last match.
     bach_uni2 = [r for r in rows if r.key == {"dataset": "bach", "encoder": "uni2"}]
-    assert len(bach_uni2) == 2  # historical epoch-mapping row + fixed-step re-record
-    historical, rerecorded = bach_uni2
+    # historical epoch-mapping row + fixed-step re-record + the soma 2.0 re-record
+    assert len(bach_uni2) == 3
+    historical, rerecorded, latest = bach_uni2
     assert historical.metric == "test/balanced_accuracy"
     assert historical.measured == pytest.approx(0.914)
     assert historical.std == pytest.approx(0.007)
@@ -52,6 +53,10 @@ def test_load_results_parses_eva_seed_rows():
     assert rerecorded.measured == pytest.approx(0.914, abs=1e-3)
     assert rerecorded.n_seeds == 5
     assert rerecorded.slide2vec_version == "5.8.2"
+    assert latest.measured == pytest.approx(0.914, abs=1e-3)
+    assert latest.n_seeds == 5
+    assert latest.soma_commit == "8e1f1f6"
+    assert latest.slide2vec_version == "7.1.1"
 
 
 def test_load_results_requires_metric_and_measured(tmp_path, monkeypatch):
@@ -67,7 +72,8 @@ def test_load_results_requires_metric_and_measured(tmp_path, monkeypatch):
 
 def test_reproduced_rows_filters_by_axes_and_metric():
     rows = reproduced_rows("eva", dataset="crc", encoder="virchow2", metric="test/balanced_accuracy")
-    assert len(rows) == 2  # historical epoch-mapping row + fixed-step re-record
+    # historical epoch-mapping row + fixed-step re-record + the soma 2.0 re-record
+    assert len(rows) == 3
     assert all(row.key == {"dataset": "crc", "encoder": "virchow2"} for row in rows)
     assert all(row.measured == pytest.approx(0.966, abs=1e-3) for row in rows)
     # A non-existent cell selects nothing (rather than erroring).
