@@ -141,15 +141,16 @@ def survival(encoder: str, aggregator: str) -> ExperimentConfig:
 
 
 @_register
-def segmentation(encoder: str, decoder: str) -> ExperimentConfig:
+def segmentation(encoder: str, decoder: str, num_classes: int = 2) -> ExperimentConfig:
     """Segment tissue: a decoder over a frozen encoder's dense token grid.
 
     Each tile (at the encoder's recommended size and spacing) is encoded once into a
-    token grid and cached; ``decoder`` upsamples it to per-pixel ``segmentation`` logits.
-    Before a run, state the class scheme in the head's params: ``classes`` (class name ->
-    raw mask values) with ``ignore``, or ``num_classes`` when the masks already hold class
-    indices. Batches of 8, AdamW (lr 1e-4) with a cosine schedule, 50 epochs, selection
-    and early stopping on the tune loss.
+    token grid and cached; ``decoder`` upsamples it to per-pixel ``segmentation`` logits
+    for ``num_classes`` classes, whose indices the label masks hold (background 0 and one
+    foreground class by default). For masks holding raw values, replace the head's params
+    with a ``classes`` mapping (class name -> raw mask values) and ``ignore``. Batches of 8,
+    AdamW (lr 1e-4) with a cosine schedule, 50 epochs, selection and early stopping on the
+    tune loss.
     """
     return ExperimentConfig(
         cohort=_cohort(),
@@ -159,7 +160,7 @@ def segmentation(encoder: str, decoder: str) -> ExperimentConfig:
             "dense",
             {
                 "decoder": Component(decoder),
-                "head": Component("segmentation"),
+                "head": Component("segmentation", {"num_classes": num_classes}),
                 "optimizer": Component("adamw", {"lr": 1e-4}),
                 "scheduler": [Component("cosine")],
             },
@@ -168,15 +169,16 @@ def segmentation(encoder: str, decoder: str) -> ExperimentConfig:
 
 
 @_register
-def detection(encoder: str, decoder: str) -> ExperimentConfig:
+def detection(encoder: str, decoder: str, num_classes: int = 1, match_distance: float = 3.0) -> ExperimentConfig:
     """Detect cells: a decoder over a frozen encoder's dense token grid, one heatmap per class.
 
     Each image is encoded once into a token grid and cached; ``decoder`` predicts a peak
-    heatmap per class, scored by F1 at a matching distance. Before a run, state the head's
-    ``match_distance`` (µm) and its class scheme: ``classes`` (class name -> raw point
-    classes) with ``drop``, or ``num_classes`` when the points already hold class indices.
-    One image per batch, AdamW (lr 1e-4) with a cosine schedule, 50 epochs, selection and
-    early stopping on the tune loss.
+    heatmap for each of ``num_classes`` classes, whose indices the point annotations hold
+    (one cell class by default), scored by F1 at ``match_distance`` µm (3 µm, about a
+    nucleus radius, by default). For points holding raw classes, replace the head's params
+    with a ``classes`` mapping (class name -> raw point classes) and ``drop``. One image
+    per batch, AdamW (lr 1e-4) with a cosine schedule, 50 epochs, selection and early
+    stopping on the tune loss.
     """
     return ExperimentConfig(
         cohort=_cohort(),
@@ -186,7 +188,7 @@ def detection(encoder: str, decoder: str) -> ExperimentConfig:
             "dense",
             {
                 "decoder": Component(decoder),
-                "head": Component("detection"),
+                "head": Component("detection", {"num_classes": num_classes, "match_distance": match_distance}),
                 "optimizer": Component("adamw", {"lr": 1e-4}),
                 "scheduler": [Component("cosine")],
             },

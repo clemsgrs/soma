@@ -21,6 +21,7 @@ if the correct pixels, features and labels reach it.
 | `tile_binary_classification` | `dataset_type: tile` (no bag, no aggregator) |
 | `dense_segmentation` | ROI → dense token grid → decoder → Dice / IoU; the label maps of tune and test land in `predictions_tune/` / `predictions_test/` |
 | `dense_detection` | ROI → dense token grid → heatmap decoder → F1 at a matching distance; the points land in `predictions_test.parquet` and no `detection_thresholds.json` is written |
+| `dense_preset_{segmentation,detection}` | `soma run --preset segmentation\|detection` with only the preset's own flags (`--num-classes`, `--match-distance`) on ROIs at the encoder's recommended tile size: the plan's head carries the flags, the run trains (loss falls) and is scored on test |
 | `dense_live_segmentation` | `feature_mode: live` through the CLI, with the run's encoder stage replaced by `FakeEncoder`: one stage built, zero ROIs extracted to the cache, the train split augmented through an `augmentation: {name: segmentation, params}` leaf → Dice |
 | `dense_live_detection` | `feature_mode: live` detection through the CLI with `FakeEncoder` (no augmentation) → F1 at a matching distance |
 | `grid_live_segmentation` | the verbs over pixels: `TileImageSource` + `FakeEncoder` + `LabelMapSource` → `soma.learn.loaders` (with `SegmentationAugment`) → `soma.fit` → `soma.predict` (`LabelMapPredictions`) → `soma.evaluate`; a `save` / `load` round trip scores the same |

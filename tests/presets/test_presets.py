@@ -43,7 +43,11 @@ def test_components_lists_the_five_presets_with_their_arguments():
     assert entries["tile_classification"]["params"] == {"encoder": None}
     assert entries["survival"]["required"] == ["encoder", "aggregator"]
     assert entries["segmentation"]["required"] == ["encoder", "decoder"]
-    assert entries["detection"]["params"] == {"encoder": None, "decoder": None}
+    assert entries["segmentation"]["params"] == {"encoder": None, "decoder": None, "num_classes": 2}
+    assert entries["detection"]["required"] == ["encoder", "decoder"]
+    assert entries["detection"]["params"] == {
+        "encoder": None, "decoder": None, "num_classes": 1, "match_distance": 3.0,
+    }
     assert all(entry["description"] for entry in entries.values())
 
 
