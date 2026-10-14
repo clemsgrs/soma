@@ -80,8 +80,8 @@ without a source extracts through it too. It is also the namespace of
    :members: children, label_maps, pixels, subset
 
 The source can be reused across experiments as long as the upstream dataset,
-preprocessing, and encoder settings do not change (see :doc:`getting-started`
-for the result fields).
+preprocessing, and encoder settings do not change; :doc:`caching` gives the
+rules.
 
 Evaluation settings and attention heatmaps
 ------------------------------------------
@@ -289,7 +289,8 @@ other-confounder neighbours for ``m=5``; CRoMa raises if any selected sample
 lacks them.
 
 Representation runs return metrics in ``result.summary`` with an empty
-``fold_results`` list. They fit no task head and write no task report. Provenance
+``fold_results`` list. They fit no task head, so they write no predictions and no
+bundle. Provenance
 records the installed CRoMa version and encoder configuration, including output
 variant. It does not include checkpoint hashes or an upstream fingerprint, so
 these records alone cannot establish byte-identical weights or preprocessing.

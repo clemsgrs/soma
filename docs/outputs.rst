@@ -1,8 +1,8 @@
 Run outputs
 ===========
 
-Each pipeline run writes a run bundle beneath ``run.output_dir``.
-The bundle captures the configuration as given and as resolved, per-fold
+Each pipeline run writes a run directory beneath ``run.output_dir``.
+It holds the configuration as given and as resolved, per-fold
 artifacts, and the metrics needed to compare experiments reproducibly.
 
 The shared cache, which stores reusable upstream artifacts such as tiling and
@@ -77,7 +77,7 @@ cohort suggests; a contradiction (an explicit class count the cohort does not
 match) is refused. Feature dimensions are not in the plan: they come from the
 features at build time and are recorded in the bundle's ``model.json``.
 
-``plan.yaml`` is the plan as YAML. It loads as a config, so ``soma
+``plan.yaml`` is the plan as YAML. It loads as a config, so ``soma run
 plan.yaml`` replays the run with every value pinned. A component named by a
 dotted import path keeps that path in the plan, and the bundle's
 ``provenance.json`` records the installed version of each top-level package such
@@ -126,8 +126,9 @@ refused; another minor or patch version loads with a warning::
 
 ``soma.save`` writes the bundle atomically: a reader sees the previous bundle
 or the new one, never a partial one. A model built by hand in a notebook can be
-saved too, but ``soma.load`` cannot rebuild it, because ``model.json`` records
-no builder; load its ``weights.safetensors`` into the same model instead.
+saved too; ``soma.load`` rebuilds it only when ``soma.learn.record_builder``
+recorded the function that builds it, and otherwise refuses: load its
+``weights.safetensors`` into the same model instead.
 
 Resume is per fold. A fold is complete when its ``metrics.json`` and its
 ``bundle/`` exist. A relaunch into the same run directory (``run.resume`` or

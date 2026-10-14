@@ -2,10 +2,10 @@ Tasks
 =====
 
 Select a task with the learner's ``head`` leaf (``learner.params.head.name``). The
-head maps a representation to predictions
-and defines the loss and compatible metrics. The representation comes directly
-from a frozen encoder or from a trained :doc:`aggregator <aggregators>` or
-:doc:`decoder <decoders>`; see :doc:`modeling` for the paths that produce it.
+head maps a representation to predictions and defines the loss and the compatible
+metrics. The representation comes directly from a frozen encoder or from a trained
+:doc:`aggregator <aggregators>` or :doc:`decoder <decoders>`; see :doc:`modeling`
+for the paths that produce it.
 
 Task Zoo
 --------
@@ -26,6 +26,11 @@ Task Zoo
      - ``auroc_macro``, ``balanced_accuracy``, ``f1_macro``
      - | Two or more classes; see :doc:`classification`
        | Use ``binary_classification`` when the problem is strictly binary
+   * - ``branch_aware_classification``
+     - Cross-entropy
+     - ``auroc_macro``, ``balanced_accuracy``, ``f1_macro``
+     - The multiclass head over ``clam_mb``'s per-class branches; soma uses it in
+       place of ``multiclass_classification`` when the aggregator is ``clam_mb``
    * - ``ordinal_classification``
      - MSE
      - ``qwk``, ``balanced_accuracy``
@@ -35,9 +40,13 @@ Task Zoo
      - ``mae``, ``r2``
      - Continuous targets; see :ref:`regression-task`
    * - ``survival``
-     - NLL or CoxPH
+     - Discrete-time hazard NLL
      - ``c_index``
-     - Time-to-event with right censoring; see :doc:`survival`
+     - Time-to-event with right censoring, over time bins; see :doc:`survival`
+   * - ``cox_survival``
+     - Cox partial likelihood
+     - ``c_index``
+     - Time-to-event with right censoring, one risk score; see :doc:`survival`
    * - ``segmentation``
      - CE + soft-Dice
      - ``mean_dice``, ``mean_iou``
@@ -89,14 +98,12 @@ with the same columns and metric.
 Task-head interface
 -------------------
 
+``soma.components("heads")`` lists the registered task heads with their params and
+defaults. To bring a custom loss, metric reduction or post-processing, subclass a
+built-in head and register it; see :ref:`registering-components`.
+
 .. autoclass:: soma.models.heads.base.TaskHead
    :members:
-
-``soma.components("heads")`` lists the registered task heads with their params
-and defaults.
-
-To bring a custom loss, metric reduction or post-processing, subclass a
-built-in head and register it; see :doc:`extending`.
 
 .. toctree::
    :maxdepth: 1

@@ -24,21 +24,21 @@ Two heads model time-to-event with right censoring; the head selects the loss:
 
 Both losses rank with Harrell's C-index via scikit-survival.
 
-Survival datasets reuse the ``label`` column for the **time-to-event /
-time-to-last-follow-up** and add two columns:
+Survival datasets carry these target columns; the head's ``targets`` param maps
+a target to a differently named column, for example ``targets: {time: label}``:
 
 .. list-table::
    :header-rows: 1
 
    * - Column
      - Meaning
-   * - ``label``
+   * - ``time``
      - Continuous time-to-event (uncensored) or time-to-last-follow-up
        (censored).
    * - ``event``
      - ``1`` if the event was observed, ``0`` if right-censored.
    * - ``bin``
-     - Index of the discrete time bin containing ``label``, for every sample
+     - Index of the discrete time bin containing ``time``, for every sample
        including censored ones. Required for the ``survival`` head only.
 
 Compute the bins yourself (e.g. ``qcut`` on the uncensored times). Set the

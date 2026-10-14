@@ -1,390 +1,429 @@
 Extending soma
 ==============
 
-soma's trainable components are classes held in registries. To change how one
-of them behaves, subclass the built-in class, override the methods that should
-differ, and reference the subclass from the config, by its import path or by a
-name you register. soma validates a config by the component's *family*, not by
-its name. Subclasses inherit family validation and must also support the
-representations produced by the other components in the config.
+Any step of a soma run can run your own code instead: a feature source, a learner,
+a registered component, an encoder stage, a callback. Each extension is an ordinary
+Python object that you pass to a verb or name in a config, and a check in
+:mod:`soma.testing` proves it meets its contract before a run depends on it. The
+sections below follow the order in which the pipeline runs the steps.
+
+Where to cut in
+---------------
+
+:class:`soma.Pipeline` calls the public verbs in a fixed order: it builds the
+features once, then runs the same steps for every fold. Random numbers are drawn in
+this order, so a run composed by hand in the same order, with the plan's values,
+gives byte-identical predictions and weights; soma's test suite checks this for a
+MIL, a segmentation and a detection run.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 22 38 40
+
+   * - Step
+     - What runs
+     - Your code
+   * - Features, once per run
+     - :func:`soma.extract` returns a source
+     - A source of your own (:ref:`bring-your-own-features`); an encoder stage or
+       an image source on the live path (:ref:`custom-encoder-stage`)
+   * - 1. Seed
+     - ``soma.seed_everything(seed, fold=fold)``
+     -
+   * - 2. Feature adaptor
+     - Normalization and projection, fitted on the train split only
+     - Configured, not replaced (see :doc:`training`)
+   * - 3. Model
+     - The aggregator or decoder and the head; weight initialisation draws here
+     - Registered components (:ref:`registering-components`)
+   * - 4. Loaders
+     - :func:`soma.learn.loaders`
+     - An ``augment`` callable on the live grid path; a ``sampler`` leaf for
+       cached segmentation
+   * - 5. Baseline
+     - ``Baseline.fit`` on the train targets, for samples without features
+     -
+   * - 6. Fit
+     - :func:`soma.fit` with ``Checkpoint`` and ``EarlyStopping``
+     - A learner (:ref:`custom-learner`); fit callbacks (:ref:`custom-callbacks`)
+   * - 7. Tune step
+     - Detection sweeps its score threshold on tune
+     -
+   * - 8. Predict and evaluate
+     - :func:`soma.predict` (plus baseline rows), then :func:`soma.evaluate`, per
+       split
+     - The learner's ``predict_step``; predict callbacks; metric callables
+   * - 9. Save
+     - :func:`soma.save` writes the fold's bundle
+     - ``soma.learn.record_builder``, so that :func:`soma.load` can rebuild a model
+       you built by hand
+
+Section 3 of the getting-started notebook, :ref:`the same run from the verbs
+</getting-started.ipynb#3.-The-same-run-from-the-verbs>`, runs these steps one cell
+each and compares the result with the pipeline's run.
+
+.. _bring-your-own-features:
+
+Bring your own features
+-----------------------
+
+Features enter a run as a *source*, an object that serves one tensor per sample
+id. A set source (:class:`soma.SetSource`) serves ``(D,)``, ``(N, D)`` or
+``(M, K, D)`` features of one declared ``rank``, with optional level-0 tile
+coordinates. A grid source (:class:`soma.GridSource`) serves ``(D, H, W)`` token
+grids with their ``geometry`` and ``spacing``. Two adapters cover the common cases:
+:func:`soma.data.from_arrays` wraps a mapping from sample id to tensor or array, and
+:func:`soma.data.from_directory` reads ``<id>.pt``, ``.npy``, ``.npz`` or ``.h5``
+files, with optional ``<id>.coords.*`` siblings. Ids are never guessed from the
+directory structure; ``ids=`` maps sample ids to file stems.
+
+Any object with the protocol's members is a source, with nothing to subclass or
+register:
+
+.. code-block:: python
+
+   import h5py
+   import torch
+
+   import soma
+
+
+   class H5Bags:
+       """One (N, D) bag per sample, read from one HDF5 file."""
+
+       rank = 2
+
+       def __init__(self, path):
+           self.file = h5py.File(path, "r")
+           self.sample_ids = list(self.file)
+           self.feature_dim = self.file[self.sample_ids[0]].shape[-1]
+
+       def load(self, sample_id):
+           return torch.from_numpy(self.file[sample_id][()])
+
+       def coords(self, sample_id):
+           return None
+
+
+   source = H5Bags("features.h5")
+   soma.testing.check_set_source(source)
+
+:func:`soma.testing.check_set_source` and :func:`soma.testing.check_grid_source`
+load the samples (``limit=`` bounds how many) and raise a
+:class:`~soma.testing.ConformanceError` that names the method and the sample id
+breaking the contract. A source that passes trains like an extracted one: pass it
+to :func:`soma.learn.loaders`, or run ``soma.Pipeline(config, source=source)``,
+which then extracts nothing. From the command line, ``soma run config.yaml
+--feature-dir DIR`` attaches a directory of cached features (see :doc:`cli`). The
+pipeline refuses a supplied source for annotation-sampled whole slides, whose
+regions are drawn during extraction.
+
+In the notebook, the Source cell of :ref:`section 3
+</getting-started.ipynb#3.-The-same-run-from-the-verbs>` wraps extracted features
+with ``from_arrays`` and checks them.
+
+.. _custom-learner:
+
+A custom learner
+----------------
+
+A learner owns the model and the step logic. soma ships one per shape,
+:class:`soma.learn.MILLearner` for sets and :class:`soma.learn.DenseLearner` for
+grids, and the generic :class:`soma.learn.Trainer` knows nothing about tasks or
+heads. Subclass the learner of your shape and override the steps that should
+differ:
+
+- ``training_step(batch)`` returns the loss, or a dict holding ``"loss"``. An extra
+  loss term is one override that calls ``forward_batch`` and ``compute_loss`` and
+  adds the term.
+- ``validation_step(batch)`` and ``validation_summary(outputs)`` reduce a split. The
+  summary must contain ``loss``; its keys are what ``Checkpoint`` and
+  ``EarlyStopping`` can monitor.
+- ``predict_step(batch)`` returns a :class:`soma.learn.PredictOutput`. A column it
+  adds lands in ``predictions_<split>.parquet`` next to the head's columns.
+- ``configure_optimizers(budget)`` builds the optimizer and schedulers, for
+  parameter groups or unfreezing.
+- ``transfer_batch`` places a batch on the device. ``trainable_state_dict`` is what
+  a checkpoint keeps in memory: the model's state by default, so a learner that owns
+  trainable modules of its own must widen it. The bundle holds the bare model's
+  state either way.
+
+.. code-block:: python
+
+   class EntropyMIL(soma.learn.MILLearner):
+       """MIL plus a penalty on the entropy of each bag's attention."""
+
+       def __init__(self, model, *, weight=0.01, **kwargs):
+           super().__init__(model, **kwargs)
+           self.weight = weight
+
+       def training_step(self, batch):
+           output = self.forward_batch(batch)
+           attention = output.tile_attention.masked_fill(~batch.mask, float("-inf")).softmax(-1)
+           entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1).mean()
+           return self.compute_loss(output, batch) + self.weight * entropy
+
+       def predict_step(self, batch):  # adds an attention_entropy column
+           step = super().predict_step(batch)
+           attention = step.raw.tile_attention.softmax(-1)
+           entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1)
+           return soma.learn.PredictOutput(columns={**step.columns, "attention_entropy": entropy}, raw=step.raw)
+
+:func:`soma.testing.check_learner` runs one batch through every method soma calls
+and names the one that breaks the contract: every trainable parameter in an
+optimizer group, a finite loss with gradients, a validation summary of finite floats
+that includes ``loss``, and a ``trainable_state_dict`` that round-trips. A grid
+learner subclasses ``DenseLearner`` the same way; its batches are
+:class:`soma.learn.GridBatch` objects holding cached ``features`` or live ``pixels``
+and the raw supervision in ``targets``.
+
+A config names the learner by its dotted import path, or by a name registered under
+``learners``. Its params hold the model's leaves, the ``optimizer`` and
+``scheduler`` leaves, and the learner's own keywords, which go to its constructor:
+
+.. code-block:: yaml
+
+   learner:
+     name: my_package.learners.EntropyMIL
+     params:
+       aggregator: {name: abmil}
+       head: {name: binary_classification}
+       weight: 0.01
+
+The run's ``plan.yaml`` keeps the import path as written and spells out every
+param, and the bundle's ``provenance.json`` records the installed version of the
+package the path imports from. In the notebook, :ref:`section 4
+</getting-started.ipynb#4.-Change-a-step>` writes and checks this learner, and
+:ref:`section 5 </getting-started.ipynb#5.-Hand-it-back-to-the-pipeline>` runs it
+through the pipeline by its dotted path.
 
 .. _registering-components:
 
-Registering components
-----------------------
-
-Every swappable component kind has a registry: aggregators, heads, decoders,
-learners, optimizers, schedulers, callbacks, samplers, augmentations and
-benchmarks. Encoders are listed too, but they belong to slide2vec and are
-registered there. :func:`soma.components` names the kinds, and
-``soma.components(kind)`` lists the components of one kind with their params
-and defaults; ``soma list [KIND]`` prints the same.
-
-A config can name a component in two ways:
-
-* **By import path**, such as ``mylab.models.FancyMIL``. There is nothing to
-  register: soma imports the class and passes the ``params`` to its
-  constructor as they are. soma does not validate them, does not list the
-  class, and emits a one-line warning the first time it resolves the path.
-* **By a registered name.** Register the class once, when your module is
-  imported, together with a *params dataclass*: one field for each constructor
-  keyword a user sets, with its default. soma then lists the component with its
-  defaults, accepts the short name, and checks the params when it builds the
-  component::
-
-      from dataclasses import dataclass
-
-      import soma
-
-
-      @dataclass
-      class FancyMILParams:
-          hidden_dim: int = 128
-          dropout: float = 0.25
-
-          def __post_init__(self):
-              if not 0.0 <= self.dropout <= 1.0:
-                  raise ValueError(f"dropout must be in [0, 1], got {self.dropout}")
-
-
-      soma.register("aggregators", "fancy_mil", FancyMIL, params=FancyMILParams)
-
-  Validation goes in ``__post_init__``: an unknown param, or a value it
-  rejects, fails the run before training starts. The params of every
-  component kind are checked this way, heads included. Values the run supplies
-  are not fields: the feature width ``input_dim``, a head's ``metrics``, a
-  dense head's ``geometry``. soma reads only the dataclass passed to
-  ``register``; a ``Params`` attribute on the class is ignored.
-
-A head can also register an ``infer(cohort, params)`` hook. It returns the
-params the cohort decides, such as the class count and label map of a
-classification head or the bin count of a survival head; values set in the
-config take precedence. A registration does not inherit anything from the
-registration of its base class, so a subclass of a built-in head names the
-params and the hook it reuses. Both are public::
-
-    from soma.models.heads import ClassificationParams, infer_label_map
-
-    soma.register(
-        "heads",
-        "label_smoothing_classification",
-        LabelSmoothingHead,
-        params=ClassificationParams,
-        infer=infer_label_map,
-    )
-
-A head named by import path gets no ``infer`` hook, so its config sets the
-values a hook would infer (``num_classes``, ``label_map``).
-
-Custom task head
-----------------
-
-A task head owns the loss, the metrics and the post-processing of one task
-family. The family is the ``task_family`` class attribute, which a subclass
-inherits. Every head receives its leaf's ``params`` as constructor keyword
-arguments.
-
-The example below trains a segmentation decoder with a pure Dice loss instead
-of the default cross-entropy plus Dice::
-
-    import soma
-    from soma.models.heads import SegmentationParams
-    from soma.models.heads.dense_metrics import soft_dice_loss
-    from soma.models.heads.segmentation import SegmentationHead
-
-
-    class DiceOnlySegmentationHead(SegmentationHead):
-        def compute_loss(self, predictions, targets):
-            return soft_dice_loss(
-                predictions,
-                targets["mask"],
-                num_classes=self.num_classes,
-                ignore_index=self.ignore_index,
-            )
-
-
-    soma.register(
-        "heads", "dice_only_segmentation", DiceOnlySegmentationHead, params=SegmentationParams
-    )
-
-Then select it in the config::
-
-    learner:
-      name: dense
-      params:
-        decoder: {name: lightweight_conv}
-        head:
-          name: dice_only_segmentation
-          params:
-            num_classes: 3
-
-The methods worth overriding are:
-
-* ``compute_loss(predictions, targets)`` for a custom training objective.
-* ``compute_metrics`` for classification, regression and survival metrics.
-  Segmentation and detection heads instead return per-image statistics from
-  ``dense_stats`` and reduce them with ``finalize_eval_metrics(counts)``; the
-  learner uses these for the validation metrics computed during training. Split
-  evaluation scores the saved predictions through :func:`soma.evaluate`.
-  Metric *names* are validated against the family's list in
-  :mod:`soma.evaluation.metrics`, so a new name must be added
-  there before a config can request it.
-* ``postprocess(raw_output)`` for a custom prediction format. The segmentation
-  head returns one label map per sample; the detection head returns every peak
-  above ``min_score`` in level-0 pixels. Whole-slide sliding-window
-  segmentation inference bypasses it: the predictor blends the folds' softmaxes
-  across tiles and takes the argmax itself.
-* ``prediction_columns`` and ``to_columns(processed)`` for what
-  :func:`soma.predict` writes. The base implementation covers the
-  classification, ordinal, regression and survival families; a head of a new
-  family overrides both. Segmentation and detection heads also implement
-  ``assemble_predictions(sample_ids, columns)``, which builds the
-  :class:`~soma.evaluation.LabelMapPredictions` or
-  :class:`~soma.evaluation.PointPredictions` that ``predict`` returns.
-  :func:`soma.testing.check_task_head` checks a set-shape
-  head on one batch: the declared columns match ``to_columns``, every column is
-  numeric, the family :class:`~soma.evaluation.Baseline` yields the same
-  columns, and :func:`soma.evaluate` on a parquet round-trip agrees with
-  ``compute_metrics``.
-
-Every head family can be subclassed this way: classification, regression,
-survival, segmentation and detection.
-
-With ``clam_mb``, custom multiclass heads must support per-class branch
-representations. Subclass :class:`~soma.models.heads.classification.BranchAwareClassificationHead`
-to preserve custom loss and metric behavior. soma automatically adapts the
-built-in ordinary multiclass head, but rejects registered ordinary multiclass
-subclasses instead of replacing them.
-
-Survival subclasses retain the objective of their base class and inherit its
-Cox or discrete-time NLL config constraints: a subclass of
-:class:`~soma.models.heads.survival.CoxSurvivalHead` trains the Cox objective, any other
-survival head the discrete-time NLL.
-
-Custom decoder
---------------
-
-A decoder maps a dense feature grid ``(B, d, h, w)`` to class logits. Subclass
-:class:`soma.models.decoders.base.Decoder`, implement ``forward`` and the
-``num_classes`` property, and register it::
-
-    from dataclasses import dataclass
-
-    from torch import nn
-
-    import soma
-    from soma.models.decoders.base import Decoder
-
-
-    @dataclass
-    class TwoStageConvParams:
-        hidden_dim: int = 64
-
-
-    class TwoStageConvDecoder(Decoder):
-        def __init__(self, *, input_dim, num_classes, hidden_dim=64):
-            super().__init__()
-            self._num_classes = num_classes
-            self.layers = nn.Sequential(
-                nn.Upsample(scale_factor=2),
-                nn.Conv2d(input_dim, hidden_dim, kernel_size=3, padding=1),
-                nn.Upsample(scale_factor=2),
-                nn.Conv2d(hidden_dim, num_classes, kernel_size=3, padding=1),
-            )
-
-        def forward(self, X):
-            return self.layers(X)
-
-        @property
-        def num_classes(self):
-            return self._num_classes
-
-
-    soma.register("decoders", "two_stage_conv", TwoStageConvDecoder, params=TwoStageConvParams)
-
-The constructor always receives ``input_dim`` and ``num_classes``; everything
-under ``decoder.params`` is checked against the params dataclass and passed as
-keyword arguments. If the constructor accepts ``num_upsample_blocks``, soma
-derives it from the grid geometry unless the config pins it. The head resizes the decoder's logits to
-the mask size, so a decoder may output any spatial resolution.
-
-Custom learner
---------------
-
-A learner owns the model and the step logic: how a batch is forwarded, how the
-loss is composed, how a validation split is reduced, and which optimizer and
-schedulers train it. soma ships one per shape: :class:`soma.learn.MILLearner`
-for bags and single embeddings, :class:`soma.learn.DenseLearner` for feature
-grids. The generic :class:`soma.learn.Trainer` knows nothing about tasks or
-heads, so an intermediate loss is one override of ``training_step``::
-
-    from soma.learn import MILLearner
-
-
-    class AttentionEntropyLearner(MILLearner):
-        def __init__(self, model, *, weight=0.01, **kwargs):
-            super().__init__(model, **kwargs)
-            self.weight = weight
-
-        def training_step(self, batch):
-            output = self.forward_batch(batch)
-            attention = output.tile_attention.softmax(-1)
-            entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1).mean()
-            return self.compute_loss(output, batch) + self.weight * entropy
-
-Select it as the ``learner`` by import path (no registration needed) or by a
-name registered with ``soma.register("learners", ...)``. Its params hold the
-model's leaves, the ``optimizer`` / ``scheduler`` leaves and the learner's own
-keywords, which go to the constructor. The run's ``plan.yaml`` keeps the import
-path as written and spells out every param, and the bundle's ``provenance.json``
-records the installed version of the package the path imports from::
-
-    learner:
-      name: my_package.learners.AttentionEntropyLearner
-      params:
-        aggregator: {name: abmil}
-        head: {name: binary_classification}
-        weight: 0.01
-
-The methods worth overriding are ``training_step`` (the loss), ``validation_step``
-and ``validation_summary`` (how a split is reduced; the summary must contain
-``loss``), ``configure_optimizers(budget)`` (parameter groups, unfreezing),
-``transfer_batch`` (device placement), ``trainable_state_dict`` (what a
-checkpoint restores in memory: the model's state by default, so a learner that owns
-trainable modules of its own must widen it to cover them; the fold's bundle holds the
-bare model's state either way) and ``predict_step`` (the prediction columns of
-a batch). A ``predict_step`` override can add a column; it lands in
-``predictions_<split>.parquet`` next to the head's columns::
-
-    from soma.learn import MILLearner, PredictOutput
-
-
-    class EntropyReportingLearner(MILLearner):
-        def predict_step(self, batch):
-            step = super().predict_step(batch)
-            attention = step.raw.tile_attention.softmax(-1)
-            entropy = -(attention * attention.clamp_min(1e-8).log()).sum(-1)
-            return PredictOutput(columns={**step.columns, "attention_entropy": entropy}, raw=step.raw)
-
-A grid learner is a :class:`soma.learn.DenseLearner` subclass, named the same
-way in ``learner.name``. Its batches are :class:`soma.learn.GridBatch`
-objects holding cached ``features`` or live ``pixels`` and the raw supervision
-in ``targets``.
-
-:func:`soma.testing.check_learner`
-checks a learner against the contract on one batch. From Python, :func:`soma.fit`
-trains a learner, or a bare model wrapped in its shape's learner, with
-``Checkpoint``, ``EarlyStopping`` and ``Progress`` installed.
-
-.. _hand-composition:
-
-A run composed by hand
-----------------------
-
-:class:`soma.Pipeline` is the public verbs called in a fixed order, so the same
-fold can be written by hand, for example to change one step. Each fold runs:
-
-1. ``soma.seed_everything(seed, fold=fold)``
-2. fit the feature adaptor on the train split only
-3. build the model (weight initialisation draws random numbers here)
-4. build the loaders
-5. ``Baseline.fit`` on the train targets, for samples without features
-6. ``soma.fit`` with ``Checkpoint`` and ``EarlyStopping``
-7. a tune-time step: detection sweeps its score threshold on tune
-8. per split: ``soma.predict`` (plus baseline rows), then ``soma.evaluate``
-9. ``soma.save`` the fold's bundle
-
-The order matters because random numbers are drawn in it: a hand composition
-that follows it, with the config's values, gives byte-identical predictions and
-weights. soma's own test suite checks this for a MIL, a segmentation and a
-detection run. A set-shape fold over cached features looks like this::
-
-    import soma
-    from soma.models.aggregators import ABMIL
-    from soma.data import CachedSetSource, Cohort
-    from soma.evaluation import Baseline, Predictions
-    from soma.learn import Checkpoint, EarlyStopping, MILLearner, loaders
-    from soma.models.heads.classification import BinaryClassificationHead
-    from soma.learn.feature_adaptor import FeatureAdaptor
-    from soma.models import MILModel
-
-    cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
-    source = CachedSetSource("features/")
-    split = cohort.folds[0]
-
-    soma.seed_everything(0, fold=0)
-    adaptor = FeatureAdaptor(method="zscore", num_features=source.feature_dim)
-    adaptor.fit([source.load(sid) for sid in split.train])
-    aggregator = ABMIL(input_dim=source.feature_dim)
-    head = BinaryClassificationHead(
-        input_dim=aggregator.output_dim, num_classes=2, label_map={"normal": 0, "tumor": 1}
-    )
-    learner = MILLearner(
-        MILModel(aggregator, head, feature_adaptor=adaptor),
-        optimizer={"name": "adam", "params": {"lr": 1e-4, "weight_decay": 1e-5}},
-        schedulers=("cosine",),
-    )
-    fold = loaders(source, cohort, head=head, batch_size=1)
-    baseline = Baseline.fit(
-        cohort.targets("train"), task_family=head.task_family, classes=head.classes,
-        target_keys=head.target_keys,
-    )
-    result = soma.fit(
-        learner, fold.train, fold.tune,
-        callbacks=[Checkpoint(monitor="loss", mode="min"), EarlyStopping(patience=10)],
-        max_epochs=50,
-    )
-    predictions = Predictions.concat([soma.predict(result.learner, fold.tests["test"]), baseline.predict([])])
-    evaluation = soma.evaluate(predictions, cohort.targets("test"), metrics=["auroc"])
-    soma.save(result, "runs/by-hand/bundle")
-
-A ``Checkpoint`` or ``EarlyStopping`` passed in ``callbacks`` replaces the one
-``soma.fit`` would build from ``monitor``, ``mode`` and ``patience``. A model
-built this way saves, but :func:`soma.load` cannot rebuild it (see
+A custom component through the registry
+---------------------------------------
+
+Every swappable component kind has a registry: ``aggregators``, ``heads``,
+``decoders``, ``learners``, ``optimizers``, ``schedulers``, ``callbacks``,
+``samplers`` and ``augmentations``, plus ``benchmarks`` once :mod:`soma.benchmark`
+is imported. Encoders are listed too, but they belong to slide2vec and are
+registered there (see :doc:`benchmark-in-house-encoder`). ``soma.components()``
+names the kinds and ``soma.components(kind)`` lists one kind's entries, built-in or
+not, with their params and defaults; ``soma list [KIND]`` prints the same.
+
+A config names a component in one of two ways:
+
+- **By dotted import path**, such as ``my_package.models.FancyMIL``. Nothing is
+  registered: soma imports the class and passes the ``params`` to its constructor
+  as they are. It does not validate or list the class, and warns once when it
+  resolves the path.
+- **By a registered name.** Register the class when your module is imported,
+  together with a *params dataclass*: one field per constructor keyword a user
+  sets, with its default. soma then lists the component with its defaults, accepts
+  the short name, and checks the params before the run starts.
+
+The worked example is a task head. A head owns the loss, the metrics and the
+post-processing of one task family. The family is the ``task_family`` class
+attribute, which a subclass inherits, and soma validates a config by family, not by
+name; a subclass must still accept the representations the other components
+produce. This head trains a binary classifier with label-smoothed cross-entropy:
+
+.. code-block:: python
+
+   import torch
+   import torch.nn.functional as F
+
+   import soma
+   from soma.learn.sample_dataset import SampleBatch
+   from soma.models.heads import ClassificationParams, infer_label_map
+
+
+   class LabelSmoothingHead(soma.models.BinaryClassificationHead):
+       def compute_loss(self, predictions, targets):
+           return F.cross_entropy(predictions, targets["label"], label_smoothing=0.1)
+
+
+   soma.register(
+       "heads", "label_smoothing_classification", LabelSmoothingHead,
+       params=ClassificationParams, infer=infer_label_map,
+   )
+
+   soma.testing.check_task_head(
+       LabelSmoothingHead(input_dim=8, num_classes=2),
+       SampleBatch(
+           features=torch.randn(8, 8),
+           targets={"label": torch.tensor([0, 1] * 4)},
+           sample_ids=tuple(f"s{i}" for i in range(8)),
+       ),
+   )
+
+``params`` is the dataclass soma checks a leaf's params against. Validation goes in
+its ``__post_init__``, so an unknown param or a rejected value fails before
+training. Values the run supplies are not fields: the feature width ``input_dim``,
+a head's ``metrics``, a grid head's ``geometry``. soma reads only the dataclass
+passed to ``register``; a ``Params`` attribute on the class is ignored. A head can
+also register an ``infer(cohort, params)`` hook that returns the params the cohort
+decides, such as a classification head's class count and label map or a survival
+head's bin count; a value set in the config wins. A registration inherits nothing
+from the registration of its base class, so a subclass names the params and the
+hook it reuses; both are public. A head named by dotted path gets no hook, so its
+config sets ``num_classes`` and ``label_map`` itself.
+
+:func:`soma.testing.check_task_head` checks a head on one batch: its declared
+``prediction_columns``, the columns of the family's
+:class:`~soma.evaluation.Baseline`, and that :func:`soma.evaluate` on a disk round
+trip agrees with ``compute_metrics`` (for a grid head, also the logits' size and
+the prediction type it assembles). The end-to-end scenario
+``extension_custom_learner`` trains this head through the CLI.
+
+The head methods worth overriding are:
+
+- ``compute_loss(predictions, targets)``, the training objective.
+- ``compute_metrics``, the training-time validation metrics of a set head. A grid
+  head returns per-image statistics from ``dense_stats`` and reduces them with
+  ``finalize_eval_metrics(counts)``. Split evaluation always scores the saved
+  predictions through :func:`soma.evaluate`.
+- ``postprocess(raw_output)``, the prediction format. The segmentation head returns
+  one label map per sample and the detection head every peak above ``min_score``,
+  in level-0 pixels. Whole-slide sliding-window segmentation bypasses it: the
+  predictor blends the folds' softmaxes across tiles and takes the argmax itself.
+- ``prediction_columns`` and ``to_columns(processed)``, what :func:`soma.predict`
+  writes. The base class covers the classification, ordinal, regression and
+  survival families; a head of a new family overrides both. A grid head also
+  implements ``assemble_predictions(sample_ids, columns)``.
+
+Two families constrain their subclasses. With ``clam_mb``, a custom multiclass head
+must handle per-class branch representations: subclass
+:class:`~soma.models.heads.classification.BranchAwareClassificationHead`. soma swaps
+the built-in multiclass head for it, but refuses a registered ordinary multiclass
+subclass. A survival subclass keeps its base class's objective: a subclass of
+:class:`~soma.models.heads.survival.CoxSurvivalHead` trains the Cox objective, any
+other survival head the discrete-time NLL.
+
+The other kinds follow the same pattern:
+
+- **Aggregators** subclass :class:`soma.models.aggregators.base.Aggregator`. The
+  constructor receives ``input_dim`` and the leaf's params; ``forward(X, mask)``
+  maps a ``(B, N, D)`` bag to an
+  :class:`~soma.models.aggregators.base.AggregatorOutput`, and the ``output_dim``
+  property gives the representation width the head receives.
+- **Decoders** subclass :class:`soma.models.decoders.base.Decoder`. The constructor
+  receives ``input_dim``, ``num_classes`` and the leaf's params, plus
+  ``num_upsample_blocks`` derived from the grid geometry when it accepts one and the
+  config leaves it unset. ``forward`` maps a ``(B, D, h, w)`` grid to class logits
+  at any resolution, since the head resizes them to the mask, and ``num_classes``
+  is a property. The end-to-end scenario ``extension_custom_head_decoder`` trains a
+  registered decoder and segmentation head through the CLI.
+- **Metrics** are ``(predictions, targets) -> float`` callables, passed to
+  :func:`soma.evaluate` or by dotted path to ``soma evaluate --metrics``; a config's
+  ``evaluation.metrics`` takes the built-in names only (see :doc:`evaluation`).
+- **Augmentations** are ``(pixels, target) -> (pixels, target)`` callables applied
+  to the train split of the live grid path. soma passes ``ignore_index`` and
+  ``target_size`` to the constructor when it accepts them and the params leave them
+  unset.
+
+.. _custom-encoder-stage:
+
+A custom encoder stage or image source
+--------------------------------------
+
+On the live grid path (see :ref:`live-mode`), the frozen encoder runs inside the
+model, as the ``encoder`` stage of :class:`soma.models.DenseModel`, and an image
+source serves the pixels it re-encodes. Either can be your own:
+
+- An **encoder stage** is a parameter-free ``nn.Module`` like
+  :class:`soma.extract.FrozenEncoder`: a ``geometry``, a ``feature_dim``, an
+  ``input_device``, a ``preprocessor()`` that maps a ``(3, H, W)`` uint8 tile to the
+  encoder's input, and a deterministic ``forward`` from a preprocessed or a raw
+  uint8 batch to ``(B, D, h, w)`` grids. Having no parameters keeps it out of every
+  checkpoint and optimizer. :func:`soma.testing.check_encoder_stage` checks a stage,
+  and :class:`soma.testing.FakeEncoder` is a weight-free example.
+- An **image source** serves ``(3, H, W)`` uint8 pixels by sample id, with a
+  ``geometry`` and a ``spacing``, like :class:`soma.data.TileImageSource`.
+  :func:`soma.testing.check_image_source` checks one.
+
+.. code-block:: python
+
+   soma.testing.check_encoder_stage(stage)
+   soma.testing.check_image_source(images)
+   model = soma.models.DenseModel(decoder, head, encoder=stage)
+   fold = soma.learn.loaders(images, cohort, head=head, targets=labels, preprocess=stage.preprocessor())
+
+A config cannot name a stage: a managed run builds its stage from
+``features.encoder``. ``soma.Pipeline(config, source=images)`` accepts your image
+source and re-encodes it with that stage. To bring a new foundation model to a
+managed run, register it with slide2vec (see :doc:`benchmark-in-house-encoder`).
+
+.. _custom-callbacks:
+
+Callbacks on fit and on predict
+-------------------------------
+
+Callbacks carry run-management side effects, such as logging, timing or extra
+artefacts, and never change the loss. A **fit callback** implements any of
+``on_fit_start(trainer, learner)``, ``on_epoch_start(trainer, learner)``,
+``on_train_batch_end(trainer, learner, step_output)``,
+``on_validation_end(trainer, learner, summary)``, ``on_epoch_end(trainer, learner)``,
+``on_fit_end(trainer, learner)`` and ``on_exception(trainer, learner, exception)``.
+It stops the run by setting ``trainer.should_stop = True``.
+
+.. code-block:: python
+
+   class PrintTuneLoss:
+       def on_validation_end(self, trainer, learner, summary):
+           print(trainer.epoch, summary["loss"])
+
+
+   result = soma.fit(learner, fold.train, fold.tune, callbacks=[PrintTuneLoss()])
+
+:func:`soma.fit` installs a ``Checkpoint``, an ``EarlyStopping`` and a ``Progress``
+itself; one of those passed in ``callbacks`` replaces the one it would build, so a
+run can state its whole selection policy with plain constructors. In a config,
+``trainer.callbacks`` lists ``{name, params}`` leaves, by registered name or dotted
+path.
+
+A **predict callback** implements any of ``on_predict_start(learner)``,
+``on_predict_batch(batch, output)`` and ``on_predict_end()``, where ``output`` is the
+learner's ``PredictOutput``. Pass it to ``soma.predict(learner, loader,
+callbacks=[...])``. soma's own predict callbacks, which write attention, overlays,
+probabilities and heatmaps, are listed in :doc:`evaluation`. The pipeline installs
+them from the ``evaluation`` save settings, so a predict callback of your own runs
+from Python.
+
+Making it a package
+-------------------
+
+Registration is a Python side effect. The module that registers your components
+must be imported before soma reads a config that names them, and again whenever a
+saved run is reopened from Python, because its plan names them and soma resolves
+their family through the registry. Two ways keep this reliable:
+
+- **Name the classes by dotted path.** soma imports the module itself when it reads
+  the config, wherever the run starts, and the bundle records the package's
+  version. In exchange, the params are not validated or listed, and a head gets no
+  ``infer`` hook.
+- **Register at import.** Put the ``soma.register`` calls in your package, import
+  it before building the :class:`~soma.Pipeline`, and on the command line start
+  soma from a short script that imports it first:
+
+  .. code-block:: python
+
+     import my_package  # registers its heads, decoders and learners
+
+     from soma.cli import main
+
+     main(["run", "config.yaml"])
+
+A model you build by hand saves like any other, but :func:`soma.load` can only
+rebuild it when ``soma.learn.record_builder(model, builder, **params)`` recorded an
+importable function that builds it, as the notebook's Model cell does; otherwise,
+load ``weights.safetensors`` into the same model yourself (see
 :ref:`model-bundle`).
 
-Custom encoder stage or image source
-------------------------------------
-
-The live path (see :ref:`live-mode`) re-encodes pixels through an encoder
-stage inside :class:`soma.models.DenseModel`. Any parameter-free
-``nn.Module`` with the stage contract can replace
-:class:`soma.extract.FrozenEncoder`: a ``geometry``, a ``feature_dim``, an
-``input_device``, a ``preprocessor()`` and a deterministic ``forward`` over
-preprocessed or raw uint8 pixel batches.
-:func:`soma.testing.check_encoder_stage` checks a stage, and
-:class:`soma.testing.FakeEncoder` is a weight-free example. An image source
-serves ``(3, H, W)`` uint8 pixels by sample id with a ``geometry`` and a
-``spacing``, like :class:`soma.data.TileImageSource`;
-:func:`soma.testing.check_image_source` checks one.
-
-Registering before the run
---------------------------
-
-Registration is a Python side effect, so the module that registers a component
-must be imported before the config is loaded. With the Python API, import it
-before building the :class:`~soma.pipeline.Pipeline`. From the command line,
-run soma from a small script that imports your module and then calls
-``soma.cli.main``::
-
-    import my_components  # registers the head and decoder
-
-    from soma.cli import main
-
-    main(["run", "config.yaml"])
-
-``soma list heads`` and ``soma list decoders`` print every registered
-component, built-in or not, with its params.
-
-The same import is needed when reopening the run from Python: the persisted
-config names the custom head, and soma resolves its family through the
-registry.
-
-Components that ship with soma's benchmarks (for example the EVA segmentation
-head ``eva_segmentation``, decoder ``eva_conv_ms`` and aggregator ``eva_abmil``)
-follow the same rule: :mod:`soma.benchmark` registers them, and the benchmarks
-themselves, when it is imported. ``import soma`` does not import it; the
-``soma`` command does at startup. From Python, ``import soma.benchmark``
-before loading a saved benchmark config, or name the component by its dotted
-path. Until then, ``soma.components("benchmarks")`` and a lookup of one of
-those names fail with an error that says so.
+soma's own benchmarks follow the same rule. :mod:`soma.benchmark` registers its
+components (for example the EVA segmentation head ``eva_segmentation``, decoder
+``eva_conv_ms`` and aggregator ``eva_abmil``) and the benchmarks themselves when it
+is imported. ``import soma`` does not import it; the ``soma`` command does, at
+startup. From Python, ``import soma.benchmark`` before loading a saved benchmark
+config, or name the component by its dotted path. Until then,
+``soma.components("benchmarks")`` and a lookup of one of those names fail with an
+error that says so.

@@ -413,3 +413,176 @@ def test_no_committed_notebook_carries_outputs_or_execution_counts() -> None:
             if cell["cell_type"] == "code" and (cell.get("outputs") or cell.get("execution_count") is not None):
                 dirty.append(f"{path.relative_to(root)} cell {index}")
     assert dirty == [], "strip outputs and execution counts before committing: " + ", ".join(dirty)
+
+
+# The snippet guard. Prose pages carry concept-sized Python fragments, and every ``soma``
+# name they spell must still exist. A block is Python when it is a ``code-block`` (or
+# ``code`` / ``sourcecode``) directive whose language is ``python``, ``python3`` or ``py``;
+# such a block must compile. A bare ``::`` literal block takes the page's highlight
+# language, which is Sphinx's lenient ``default`` (Python, plain text when it does not
+# lex) unless a ``.. highlight::`` directive sets one; the guard reads it as Python only
+# when it compiles, so shell commands, YAML and file trees written as ``::`` blocks are
+# left alone. Write a Python snippet as ``.. code-block:: python`` so a syntax error fails.
+_SNIPPET_DIRECTIVE = re.compile(r"^(\s*)\.\. (?:code-block|code|sourcecode)::\s*(\S*)\s*$")
+_HIGHLIGHT_DIRECTIVE = re.compile(r"^\s*\.\. highlight::\s*(\S+)\s*$")
+_ANY_DIRECTIVE = re.compile(r"^\s*\.\. [\w:-]+::")
+_PYTHON_LANGUAGES = {"python", "python3", "py"}
+_SOMA_DOTTED_PATH = re.compile(r"soma(?:\.[A-Za-z_]\w*)+")
+
+
+def _indent(line: str) -> int:
+    return len(line) - len(line.lstrip())
+
+
+def _block_after(lines: list[str], start: int, parent_indent: int) -> tuple[int, str, int]:
+    """The body indented under ``lines[start - 1]``: its first line number, its dedented text, the index after it."""
+    end = start
+    while end < len(lines) and lines[end].strip().startswith(":") and _indent(lines[end]) > parent_indent:
+        end += 1  # directive options
+    while end < len(lines) and not lines[end].strip():
+        end += 1
+    first = end
+    while end < len(lines) and (not lines[end].strip() or _indent(lines[end]) > parent_indent):
+        end += 1
+    body = lines[first:end]
+    width = min((_indent(line) for line in body if line.strip()), default=0)
+    return first + 1, "\n".join(line[width:] for line in body).rstrip("\n"), end
+
+
+def _python_snippets(text: str) -> list[tuple[int, str, bool]]:
+    """``(line, source, strict)`` for each Python block of an rst page; ``strict`` blocks must compile."""
+    lines = text.splitlines()
+    snippets: list[tuple[int, str, bool]] = []
+    highlight = "default"
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if match := _HIGHLIGHT_DIRECTIVE.match(line):
+            highlight = match.group(1)
+        elif match := _SNIPPET_DIRECTIVE.match(line):
+            first, source, end = _block_after(lines, index + 1, len(match.group(1)))
+            if match.group(2) in _PYTHON_LANGUAGES:
+                snippets.append((first, source, True))
+            index = end
+            continue
+        elif line.rstrip().endswith("::") and not _ANY_DIRECTIVE.match(line):
+            first, source, end = _block_after(lines, index + 1, _indent(line))
+            if highlight in _PYTHON_LANGUAGES:
+                snippets.append((first, source, True))
+            elif highlight == "default":
+                snippets.append((first, source, False))
+            index = end
+            continue
+        index += 1
+    return snippets
+
+
+def _soma_names(tree: ast.AST) -> set[str]:
+    """Every dotted ``soma`` name a snippet imports, reads or spells as a dotted-path string."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names |= {alias.name for alias in node.names if alias.name.split(".")[0] == "soma"}
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and (node.module or "").split(".")[0] == "soma":
+            names |= {f"{node.module}.{alias.name}" for alias in node.names if alias.name != "*"}
+        elif isinstance(node, ast.Attribute):
+            parts = [node.attr]
+            value = node.value
+            while isinstance(value, ast.Attribute):
+                parts.append(value.attr)
+                value = value.value
+            if isinstance(value, ast.Name) and value.id == "soma":
+                names.add(".".join(["soma", *reversed(parts)]))
+        elif isinstance(node, ast.Constant) and isinstance(node.value, str) and _SOMA_DOTTED_PATH.fullmatch(node.value):
+            names.add(node.value)
+    return names
+
+
+def _unresolved(dotted: str) -> str | None:
+    """Why ``dotted`` is not a public object of the installed package, or ``None``."""
+    parts = dotted.split(".")
+    private = [part for part in parts if part.startswith("_") and not (part.startswith("__") and part.endswith("__"))]
+    if private:
+        return f"private name {private[0]}"
+    obj = importlib.import_module(parts[0])
+    for depth, part in enumerate(parts[1:], start=2):
+        try:
+            obj = getattr(obj, part)
+        except AttributeError:
+            try:  # a submodule that ``import soma`` does not load, such as soma.benchmark
+                obj = importlib.import_module(".".join(parts[:depth]))
+            except ImportError:
+                return f"no {part} in {'.'.join(parts[:depth - 1])}"
+    return None
+
+
+def _snippet_offences(path: Path, text: str) -> list[str]:
+    offences: list[str] = []
+    for line, source, strict in _python_snippets(text):
+        try:
+            tree = compile(source, f"{path}:{line}", "exec", ast.PyCF_ONLY_AST, dont_inherit=True)
+            compile(tree, f"{path}:{line}", "exec", dont_inherit=True)  # parsing alone accepts a stray ``return``
+        except SyntaxError as error:
+            if strict:
+                offences.append(f"{path}:{line + (error.lineno or 1) - 1}: does not compile ({error.msg})")
+            continue
+        offences += [
+            f"{path}:{line}: {name} ({reason})"
+            for name in sorted(_soma_names(tree))
+            if (reason := _unresolved(name)) is not None
+        ]
+    return offences
+
+
+def test_the_snippet_guard_reports_a_missing_name_a_private_name_and_a_broken_block() -> None:
+    page = "\n".join(
+        [
+            "Text with a literal block::",
+            "",
+            "    import soma",
+            "    soma.learn.NoSuchLearner",
+            "",
+            "A shell block is not Python::",
+            "",
+            "    soma run config.yaml",
+            "",
+            ".. code-block:: python",
+            "   :caption: options are skipped",
+            "",
+            "   from soma.extract import live_encoder, _facade",
+            "   name = {'name': 'soma.models.NoSuchAggregator'}",
+            "",
+            ".. code-block:: yaml",
+            "",
+            "   learner: {name: soma.models.NoSuchHead}",
+            "",
+            ".. code-block:: python",
+            "",
+            "   def broken(:",
+            "",
+            ".. code-block:: python",
+            "",
+            "   return 1",
+        ]
+    )
+    assert _snippet_offences(Path("page.rst"), page) == [
+        "page.rst:3: soma.learn.NoSuchLearner (no NoSuchLearner in soma.learn)",
+        "page.rst:13: soma.extract._facade (private name _facade)",
+        "page.rst:13: soma.models.NoSuchAggregator (no NoSuchAggregator in soma.models)",
+        "page.rst:22: does not compile (invalid syntax)",
+        "page.rst:26: does not compile ('return' outside function)",
+    ]
+
+
+def test_every_python_snippet_in_the_docs_compiles_and_names_public_soma_objects() -> None:
+    docs_dir = Path(__file__).resolve().parents[2] / "docs"
+    pages = sorted(path for path in docs_dir.rglob("*.rst") if "_build" not in path.parts)
+    snippets = 0
+    offences: list[str] = []
+    for path in pages:
+        text = path.read_text(encoding="utf-8")
+        snippets += len(_python_snippets(text))
+        offences += _snippet_offences(path.relative_to(docs_dir), text)
+
+    assert snippets > 20
+    assert offences == []
