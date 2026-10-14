@@ -9,9 +9,8 @@ per-task starting points (for example `slide_binary_classification.yaml`,
 
 ## External benchmark API scripts
 
-Four self-contained scripts demonstrate the external benchmark API introduced
-in soma 1.12.0. Each runs with no arguments on synthetic data, from a clean
-`pip install soma-pathology`:
+Four self-contained scripts demonstrate the external benchmark API. Each runs
+with no arguments on synthetic data, from a clean `pip install soma-pathology`:
 
 | Script | Shows |
 | --- | --- |
@@ -25,8 +24,5 @@ in soma 1.12.0. Each runs with no arguments on synthetic data, from a clean
 (tiny) extraction and training loop; the other three run in seconds with no
 model download.
 
-## Benchmark curation
-
-`eva/`, `ocelot/`, `beetle/`, and `detection_benchmark/` hold the curation and
-protocol assets of the built-in benchmarks, and `make_beetle_manifest.py`
-builds the BEETLE slide manifest.
+The built-in benchmarks (EVA, OCELOT, MIDOG, Monkey, HEST, CRoMa) keep their
+curation and protocol code under `soma/benchmark/`; see the benchmarking docs.

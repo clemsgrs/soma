@@ -151,7 +151,7 @@ OCELOT 2023 cell detection
 The OCELOT curator targets soma's detection path. It converts
 the unzipped `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_ release
 (``ocelot2023_v1.0.1.zip``) into soma's detection manifests. Download and unzip
-it first (see ``examples/ocelot/README.md``).
+it first.
 
 Curate from Python::
 
@@ -165,7 +165,7 @@ or from the command line::
         --raw-root <raw>/ocelot2023_v1.0.1 \
         --output-dir <out>/curated
 
-OCELOT ships paired *cell* and *tissue* patches; detection-v1 uses the **cell**
+OCELOT ships paired *cell* and *tissue* patches; the detection benchmark uses the **cell**
 patches only (1024×1024 JPEGs at ~0.2 µm/px). Each is paired with a headerless
 ``x,y,label`` point CSV whose 1-based cell label (``1`` = background cell, ``2`` =
 tumor cell) is remapped to soma's 0-based class ids (BC→0, TC→1). The curator
@@ -197,7 +197,7 @@ at the pinned commits:
 
 Then write the enriched annotation file next to the images::
 
-    python examples/detection_benchmark/prepare_midog_metadata.py \
+    python -m soma.benchmark.midog.prepare_metadata \
         --raw-json <raw_root>/MIDOG2022_training_png.json \
         --midogpp-json <MIDOG++.json> \
         --midogpp-xval-csv <datasets_xvalidation.csv> \

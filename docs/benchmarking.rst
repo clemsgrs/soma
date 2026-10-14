@@ -77,9 +77,6 @@ Included benchmarks
 * :doc:`EVA <eva-patch-classification-benchmark>`: patch classification, patch
   segmentation, and slide classification with frozen tile encoders.
 * :doc:`OCELOT <ocelot-detection-benchmark>`: cell detection with dense encoders.
-* :doc:`Detection annotation efficiency <detection-annotation-efficiency>`: how
-  many annotated images each encoder needs for cell detection, on OCELOT and
-  MIDOG 2022.
 * :doc:`HEST <hest-gene-expression-benchmark>`: spatial gene-expression prediction
   with frozen encoders.
 * :doc:`CRoMa <croma-robustness-benchmark>`: representation robustness across
@@ -91,7 +88,6 @@ Included benchmarks
 
    eva-patch-classification-benchmark
    ocelot-detection-benchmark
-   detection-annotation-efficiency
    hest-gene-expression-benchmark
    croma-robustness-benchmark
    benchmark-in-house-encoder

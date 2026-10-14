@@ -1,8 +1,0 @@
-# Uniform training-batch sampling arm. Merged with base.yaml by launch.py.
-run:
-  output_dir: data/beetle/runs/uniform
-  mirror_root: data/beetle/recovery/uniform
-
-loaders:
-  sampler:
-    name: uniform

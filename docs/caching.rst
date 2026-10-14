@@ -158,8 +158,8 @@ reuses the cache or adds samples to it:
     ``features.cache.on_identity_mismatch: reextract`` to delete the cache and extract it
     again instead.
 
-A pooled cache that holds features but records no feature identity, such as a
-cache written by soma 1.17.0 or earlier, cannot be verified. soma logs a warning,
+A pooled cache that holds features but records no feature identity cannot be
+verified. soma logs a warning,
 deletes the cache directory and extracts it again. soma never takes an identity
 from existing sidecars to approve such a cache. A cache without features starts
 a new record.
@@ -169,10 +169,6 @@ is ``null``). The next run with the same slide2vec version keeps the cache and
 hands its unsigned features to slide2vec. If the slide2vec version changed, soma
 extracts the cache again. If slide2vec writes features without a feature
 identity, soma raises ``MissingFeatureIdentity`` and does not commit them.
-
-The settings ``commit_every`` and ``on_unrecorded_identity`` were removed from
-the cache options. soma rejects them as unknown keys, so delete them from your
-configs.
 
 ``reextract`` deletes the whole cache directory, including the features of
 samples that the current dataset does not use. Do not use it while another job
