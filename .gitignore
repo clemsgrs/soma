@@ -249,3 +249,9 @@ e2e-artifacts/
 
 # import-linter cache (lint-imports)
 .import_linter_cache/
+
+# kept locally, out of the 2.0 tree (restore from git history if needed)
+CONTEXT.md
+examples/beetle/
+examples/detection_benchmark/
+docs/detection-annotation-efficiency.rst

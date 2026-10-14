@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
-import tomllib
 from pathlib import Path
 from types import ModuleType
 
@@ -312,14 +311,3 @@ def test_every_test_directory_is_a_package():
     directories = {path.parent for path in TESTS.rglob("test_*.py") if "fixtures" not in path.relative_to(TESTS).parts}
 
     assert [str(d.relative_to(REPO)) for d in sorted(directories) if not (d / "__init__.py").is_file()] == []
-
-
-def test_project_protocol_tests_run_beside_their_protocol_outside_the_suite():
-    # BEETLE tests a project protocol (ADR 0010): ``python -m pytest examples/beetle/tests``.
-    testpaths = tomllib.loads((REPO / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"][
-        "testpaths"
-    ]
-
-    assert testpaths == ["tests"]
-    assert list(TESTS.rglob("test_beetle*.py")) == []
-    assert sorted((REPO / "examples" / "beetle" / "tests").glob("test_*.py"))

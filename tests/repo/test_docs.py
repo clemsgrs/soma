@@ -198,10 +198,7 @@ def test_documented_yaml_examples_load_through_public_config_interface() -> None
     repo_root = Path(__file__).resolve().parents[2]
     example_paths = (
         sorted((repo_root / "examples").glob("*.yaml"))
-        + sorted((repo_root / "examples" / "eva").glob("*.yaml"))
-        + sorted((repo_root / "examples" / "ocelot").glob("*.yaml"))
-        + sorted((repo_root / "examples" / "detection_benchmark").glob("*.yaml"))
-        + sorted((repo_root / "soma" / "benchmarks" / "configs").rglob("*.yaml"))
+        + sorted((repo_root / "soma" / "benchmark").glob("*/configs/*.yaml"))
     )
 
     assert example_paths
@@ -309,7 +306,6 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         "benchmarking.rst": (
             "eva-patch-classification-benchmark",
             "ocelot-detection-benchmark",
-            "detection-annotation-efficiency",
             "hest-gene-expression-benchmark",
             "croma-robustness-benchmark",
             "benchmark-in-house-encoder",
