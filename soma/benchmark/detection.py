@@ -868,6 +868,9 @@ def score_run(dataset: str, run_dir: str | Path) -> dict[str, float]:
             "metric_name": spec.metric_name,
             "replicate_axis": "folds",
             "n_replicates": len(per_fold),
+            # Written last, so it lists every fold: the cache is complete and
+            # self-describing (``persisted_predictions`` needs no cohort manifests).
+            "folds": [folder.name for folder in folds],
             "per_replicate": per_fold,
             "mean": mean,
             "std": std,
@@ -883,11 +886,12 @@ def persisted_predictions(run_dir: str | Path) -> list[Path]:
 
     A ``predictions.json`` directly in ``run_dir`` is the whole cache; otherwise the run
     under ``run_dir`` (see :func:`score_run`) is looked up and its ``detection_score/``
-    directory read: one file for a single fold, one per run fold ``fold_<k>/`` otherwise
-    (all of them, or the run counts as unscored).
+    directory read: its ``predictions.json`` for a single fold, else one
+    ``<fold>/predictions.json`` per fold the aggregate ``metrics.json`` lists (all of
+    them, or the run counts as unscored). Only the run dir is read, not the run's cohort
+    manifests, so an archived or copied run re-aggregates.
     """
     from soma.benchmark.registry import locate_run_config
-    from soma.data import Cohort
 
     run_dir = Path(run_dir)
     if (run_dir / "predictions.json").is_file():
@@ -896,18 +900,17 @@ def persisted_predictions(run_dir: str | Path) -> list[Path]:
         config_path = locate_run_config(run_dir)
     except FileNotFoundError:
         return []
-    run = config_path.parent
-    score_dir = run / SCORE_DIRNAME
-    cfg = ExperimentConfig.from_yaml(config_path)
-    cohort = Cohort.from_csv(cfg.cohort.records, cfg.cohort.splits, allow_missing_test=True)
-    folds = _expected_fold_dirs(run, cohort)
-    if len(folds) == 1:
-        cached = score_dir / "predictions.json"
-        return [cached] if cached.is_file() else []
-    cached = [score_dir / fold.name / "predictions.json" for fold in folds]
-    # A partly scored run (interrupted mid-folds, or fewer folds than the splits
-    # declare) is unscored: never average fewer folds.
-    return cached if all(path.is_file() for path in cached) else []
+    score_dir = config_path.parent / SCORE_DIRNAME
+    if (score_dir / "predictions.json").is_file():
+        return [score_dir / "predictions.json"]
+    summary = score_dir / "metrics.json"
+    # The multi-fold aggregate is written after every fold scored: without it the run
+    # is unscored or partly scored (interrupted mid-folds), and never averages fewer folds.
+    if not summary.is_file():
+        return []
+    folds = json.loads(summary.read_text(encoding="utf-8")).get("folds") or []
+    cached = [score_dir / fold / "predictions.json" for fold in folds]
+    return cached if cached and all(path.is_file() for path in cached) else []
 
 # --- cell aggregation ----------------------------------------------------------------
 

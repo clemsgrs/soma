@@ -199,6 +199,15 @@ def test_reproduce_detection_midog_scores_its_own_run(
     code, rescored = reproduce_from_run_dir(tmp_path / "seed_0", capsys)
     artifact.check_equal("rescore/exit_code", code, 0)
     artifact.check_equal("rescore/reported_f1", rescored, reported)
+    # The cache is self-describing: an archived or copied run re-aggregates without the
+    # cohort manifests its config points to.
+    for manifest in (tiled / "dataset.csv", tiled / "splits.csv"):
+        manifest.rename(manifest.with_suffix(".bak"))
+    code, archived = reproduce_from_run_dir(tmp_path / "seed_0", capsys)
+    artifact.check_equal("archived/exit_code", code, 0)
+    artifact.check_equal("archived/reported_f1", archived, reported)
+    for manifest in (tiled / "dataset.csv", tiled / "splits.csv"):
+        manifest.with_suffix(".bak").rename(manifest)
     if num_folds > 1:
         summary = json.loads((score_dir / "metrics.json").read_text())
         artifact.check_equal("aggregate/n_folds", summary["n_replicates"], num_folds)
