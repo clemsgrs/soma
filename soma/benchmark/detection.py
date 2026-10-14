@@ -22,11 +22,12 @@ at import (:func:`register_dataset`) carrying its recipe knobs, its committed co
 curator and its native ``score`` callable, and the per-dataset views it registers as
 benchmarks.
 
-Everything in this module is pure, GPU-free logic over records the driver produces, so the
-whole harness unit-tests cold on synthetic fixtures (no real data, no model downloads). The
-GPU orchestration — extract dense grids, train the decoder, run inference — lives in the
-thin driver (``examples/detection_benchmark/campaign.py``); this module owns the recipe
-registry, the replicate abstraction, the native-metric dispatch, the aggregation + ranking +
+Everything in this module is pure, GPU-free logic over the artifacts a pipeline run
+persists, so the whole harness tests cold on synthetic fixtures (no real data, no model
+downloads). Training and inference are an ordinary pipeline run; this module owns the recipe
+registry, the replicate abstraction, the run scoring (:func:`score_run`: thresholds frozen on
+the stitched tune split, test decoded at them and stitched back to ROIs, from the run's
+persisted point predictions), the native-metric dispatch, the aggregation + ranking +
 rank-consistency + bootstrap-stability math, the frozen subset selections, and the
 per-sample-prediction cache that makes the deferred robustness stratification (#248) and the
 stability bootstrap pure later re-aggregations.
@@ -84,6 +85,9 @@ __all__ = [
     "write_cell_predictions",
     "read_cell_predictions",
     "score_dataset_points",
+    "SCORE_DIRNAME",
+    "score_run",
+    "persisted_predictions",
     "Cell",
     "aggregate_cell",
     "rank_encoders",
@@ -569,6 +573,302 @@ def score_dataset_points(
     registered = dataset_spec(dataset)
     return registered.score(samples, spec or registered)
 
+
+# --- run scoring (persisted point predictions -> native metric) ----------------------
+
+#: Where :func:`score_run` writes a run's ``predictions.json`` / ``metrics.json``: a
+#: directory inside the pipeline run dir, mirroring its fold layout (a single fold owns
+#: it directly; a multi-fold run gets ``fold_<k>/`` children plus the fold aggregate).
+SCORE_DIRNAME = "detection_score"
+
+
+@dataclass(frozen=True)
+class _PointFrame:
+    """A run's point frame for scoring: class count, matcher, radii, spacings, tile size.
+
+    ``delta_px`` / ``nms_distance_px`` are the head's µm radii in pixels at the run's dense
+    read spacing (the frame :func:`stitch_tiles_to_rois` expects); ``spacing`` maps them to
+    the level-0 frame the persisted points live in.
+    """
+
+    num_classes: int
+    delta_px: float
+    nms_distance_px: float
+    matching: str
+    spacing: Any
+    tile_px: int
+
+    def spacing_for_sample(self, sample_id: str):
+        return self.spacing
+
+    @property
+    def level0_delta_px(self) -> float:
+        return self.delta_px * self.spacing.effective_spacing_um / self.spacing.source_spacing_um
+
+
+def _point_frame(cfg: ExperimentConfig, spec: DatasetSpec, predictions) -> _PointFrame:
+    from soma.extract.dense import DenseSampleSpacing
+    from soma.pipeline.extraction import resolve_pipeline_dense
+
+    params = dict(cfg.learner.params["head"].params)
+    match_um = float(params["match_distance"])
+    # ``None`` means δ, as in DetectionHead.
+    nms_um = params.get("nms_distance")
+    dense = resolve_pipeline_dense(cfg)
+    effective = float(dense.spacing_um)
+    spacing = DenseSampleSpacing(
+        # The level-0 spacing follows from the predictions' level-0 tolerance.
+        source_spacing_um=match_um / float(predictions.match_distance_px),
+        effective_spacing_um=effective,
+    )
+    return _PointFrame(
+        num_classes=predictions.num_classes,
+        delta_px=match_um / effective,
+        nms_distance_px=(match_um if nms_um is None else float(nms_um)) / effective,
+        matching=spec.match_method,
+        spacing=spacing,
+        tile_px=int(dense.target_size),
+    )
+
+
+def _decode_split(predictions, targets, cohort, frame: _PointFrame, *, threshold=None) -> list[SamplePrediction]:
+    """Per-sample :class:`SamplePrediction` (level-0 points + matched flags) of one split.
+
+    ``predictions`` are the run's persisted :class:`~soma.evaluation.PointPredictions`
+    (every peak above the head's ``min_score``, level-0 pixels); ``threshold`` (one score
+    per class, ``None`` keeps every peak) is applied first. Each sample is matched once
+    within the level-0 tolerance; under an ignore mask the points on ignored pixels are
+    dropped and the area covers the valid pixels only. Tiled datasets fold back to per-ROI
+    samples (:func:`stitch_tiles_to_rois`).
+    """
+    from soma.models.detection_targets import points_on_valid
+
+    samples: list[SamplePrediction] = []
+    for sid in predictions.sample_ids:
+        pred_xy, pred_cls, pred_score = predictions.points(sid)
+        if threshold is not None and pred_xy.shape[0]:
+            keep = pred_score >= np.asarray(threshold, dtype=np.float64)[pred_cls]
+            pred_xy, pred_cls, pred_score = pred_xy[keep], pred_cls[keep], pred_score[keep]
+        points = targets.load(sid)
+        gt_xy = points.xy.numpy().astype(np.float64).reshape(-1, 2)
+        gt_cls = points.classes.numpy().astype(np.int64).reshape(-1)
+        valid_fraction = 1.0
+        if points.ignore_mask is not None:
+            ignored = np.asarray(points.ignore_mask) == 255
+            valid_fraction = float((~ignored).mean())
+            if pred_xy.shape[0]:
+                keep = ~points_on_valid(pred_xy, ignored)
+                pred_xy, pred_cls, pred_score = pred_xy[keep], pred_cls[keep], pred_score[keep]
+            if gt_xy.shape[0]:
+                keep = ~points_on_valid(gt_xy, ignored)
+                gt_xy, gt_cls = gt_xy[keep], gt_cls[keep]
+        matched = np.zeros(pred_xy.shape[0], dtype=bool)
+        for m in match_assignment(
+            pred_xy, pred_cls, pred_score, gt_xy, gt_cls,
+            num_classes=frame.num_classes, delta=frame.level0_delta_px, method=frame.matching,
+        ):
+            if m.pairs.shape[0]:
+                matched[m.pairs[:, 0]] = True
+        samples.append(
+            SamplePrediction(
+                sample_id=str(sid),
+                pred_xy=pred_xy.tolist(),
+                pred_score=[float(s) for s in pred_score],
+                pred_class=[int(c) for c in pred_cls],
+                gt_xy=gt_xy.tolist(),
+                gt_class=[int(c) for c in gt_cls],
+                matched=matched.tolist(),
+                area_mm2=patch_area_mm2(frame.tile_px, frame.tile_px, frame.spacing.effective_spacing_um)
+                * valid_fraction,
+            )
+        )
+    return stitch_tiles_to_rois(samples, cohort, frame)
+
+
+def _freeze_thresholds(tune, targets, cohort, frame: _PointFrame, spec: DatasetSpec) -> list[float]:
+    """Per-class detection thresholds frozen on the tune split.
+
+    A stitched dataset sweeps on the STITCHED per-ROI tune predictions: tile overlaps
+    double-count both GT and predictions, so a per-tile sweep optimizes a surrogate of the
+    per-ROI metric the cell is scored by. Checkpoint selection still monitors the per-tile
+    tune F1 during training (``checkpoint_selection_frame='tile_proxy'``). An untiled
+    dataset sweeps its samples directly with :func:`~soma.evaluation.sweep_threshold`.
+    """
+    from soma.evaluation import sweep_threshold
+    from soma.evaluation.detection.matching import sweep_score_thresholds
+
+    if not spec.stitch_to_roi:
+        swept, _ = sweep_threshold(
+            tune, targets.subset(tune.sample_ids), per_class=True, matching=spec.match_method
+        )
+        return [float(swept[c]) for c in range(tune.num_classes)]
+    rois = _decode_split(tune, targets, cohort, frame, threshold=None)
+    pred_xy, pred_score, pred_class, gt_xy, gt_class, _area = per_image_arrays(rois)
+    return sweep_score_thresholds(
+        pred_xy, pred_class, pred_score, gt_xy, gt_class,
+        num_classes=frame.num_classes, delta=frame.level0_delta_px, method=frame.matching,
+    )
+
+
+def _encoder_label(cfg: ExperimentConfig) -> str:
+    """The run's encoder name: a composite is labelled by its members joined with ``+``."""
+    from soma.models.encoders import CompositeParams
+
+    encoder = cfg.features.encoder
+    if cfg.features.is_composite:
+        return CompositeParams(**encoder.params).label
+    return encoder.name
+
+
+def _score_fold(
+    dataset: str, cfg: ExperimentConfig, folder: Path, out_dir: Path, *, replicate: int, axis: str
+) -> dict[str, float]:
+    """Score one fold's persisted predictions; write ``predictions.json`` + ``metrics.json``."""
+    from soma.data import AnnotationManifest, Cohort, PointSource
+    from soma.data.targets import resolve_point_classes
+    from soma.evaluation import PointPredictions
+
+    spec = dataset_spec(dataset)
+    tune_path = folder / "predictions_tune.parquet"
+    if not tune_path.is_file():
+        raise FileNotFoundError(
+            f"no predictions_tune.parquet in {folder}; detection scoring reads the run's "
+            "persisted point predictions"
+        )
+    # The tile origins stitching folds back to ROIs are the cohort's record metadata.
+    cohort = Cohort.from_csv(cfg.cohort.records, cfg.cohort.splits, allow_missing_test=True)
+    _, _, class_remap, dropped = resolve_point_classes(cfg.learner.params["head"].params)
+    targets = PointSource.from_manifest(
+        AnnotationManifest.from_csv(cfg.cohort.records), class_remap=class_remap, drop=dropped
+    )
+    tune = PointPredictions.from_parquet(tune_path)
+    frame = _point_frame(cfg, spec, tune)
+    thresholds = _freeze_thresholds(tune, targets, cohort, frame, spec)
+    tune_samples = _decode_split(tune, targets, cohort, frame, threshold=thresholds)
+    test_samples: list[SamplePrediction] = []
+    for path in sorted(folder.glob("predictions_*.parquet")):
+        if path != tune_path:
+            test_samples.extend(
+                _decode_split(
+                    PointPredictions.from_parquet(path), targets, cohort, frame, threshold=thresholds
+                )
+            )
+
+    test_metrics = score_dataset_points(dataset, test_samples)
+    tune_metrics = score_dataset_points(dataset, tune_samples) if tune_samples else {}
+    write_cell_predictions(
+        out_dir / "predictions.json",
+        CellPredictions(
+            encoder=_encoder_label(cfg), dataset=dataset, replicate=replicate,
+            metric_name=spec.metric_name, spacing_um=spec.spacing_um, samples=test_samples,
+        ),
+    )
+    selection_frame = "stitched_roi" if spec.stitch_to_roi else "sample_native"
+    checkpoint_frame = "tile_proxy" if spec.stitch_to_roi else "sample_native"
+    _write_json(
+        out_dir / "metrics.json",
+        {
+            "test": test_metrics,
+            "tune": tune_metrics,
+            "replicate_axis": axis,
+            "test_source": spec.test_source,
+            "metric_name": spec.metric_name,
+            "score_threshold_per_class": thresholds,
+            "score_threshold_selection_frame": selection_frame,
+            "checkpoint_selection_frame": checkpoint_frame,
+        },
+    )
+    return test_metrics
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _fold_dirs(run_dir: Path) -> list[Path]:
+    """A multi-fold run's ``fold_<k>/`` children, in fold order (``[]`` for a single fold)."""
+    folds = [p for p in run_dir.glob("fold_*") if p.is_dir() and p.name[5:].isdigit()]
+    return sorted(folds, key=lambda p: int(p.name[5:]))
+
+
+def _aggregate_folds(per_fold: Sequence[dict[str, float]]) -> tuple[dict[str, float], dict[str, float]]:
+    """``(mean, std)`` of each metric over folds (population std, as :func:`aggregate_cell`)."""
+    keys = [k for k in per_fold[0] if all(k in m for m in per_fold)]
+    mean = {k: float(np.mean([m[k] for m in per_fold])) for k in keys}
+    std = {k: float(np.std([m[k] for m in per_fold])) for k in keys}
+    return mean, std
+
+
+def score_run(dataset: str, run_dir: str | Path) -> dict[str, float]:
+    """Score a pipeline run with ``dataset``'s native protocol, off its persisted predictions.
+
+    ``run_dir`` is the run directory or an output root above it (the newest run there is
+    scored). Per fold, the run's ``predictions_tune.parquet`` freezes per-class thresholds
+    (on the stitched per-ROI tune predictions for a tiled dataset), every other
+    ``predictions_<split>.parquet`` is decoded at those thresholds and stitched back to
+    ROIs, and ``predictions.json`` (the per-sample cache) plus ``metrics.json`` land in
+    ``<run>/detection_score/`` (``fold_<k>/`` per fold for a multi-fold run, with the
+    fold mean and std in ``detection_score/metrics.json``). No model is loaded.
+
+    Returns the native test metrics; for a multi-fold run, their mean over folds.
+    """
+    from soma.benchmark.registry import locate_run_config
+
+    config_path = locate_run_config(run_dir)
+    run = config_path.parent
+    cfg = ExperimentConfig.from_yaml(config_path)
+    out = run / SCORE_DIRNAME
+    folds = _fold_dirs(run)
+    if not folds:
+        return _score_fold(dataset, cfg, run, out, replicate=int(cfg.run.seed), axis="seeds")
+    per_fold = [
+        _score_fold(dataset, cfg, folder, out / folder.name, replicate=int(folder.name[5:]), axis="folds")
+        for folder in folds
+    ]
+    mean, std = _aggregate_folds(per_fold)
+    spec = dataset_spec(dataset)
+    _write_json(
+        out / "metrics.json",
+        {
+            "metric_name": spec.metric_name,
+            "replicate_axis": "folds",
+            "n_replicates": len(per_fold),
+            "per_replicate": per_fold,
+            "mean": mean,
+            "std": std,
+            "test_source": spec.test_source,
+        },
+    )
+    return mean
+
+
+
+def persisted_predictions(run_dir: str | Path) -> list[Path]:
+    """The ``predictions.json`` caches of a run, in fold order (``[]`` when unscored).
+
+    A ``predictions.json`` directly in ``run_dir`` is the whole cache; otherwise the run
+    under ``run_dir`` (see :func:`score_run`) is looked up and its ``detection_score/``
+    directory read: one file for a single fold, one per run fold ``fold_<k>/`` otherwise
+    (all of them, or the run counts as unscored).
+    """
+    from soma.benchmark.registry import locate_run_config
+
+    run_dir = Path(run_dir)
+    if (run_dir / "predictions.json").is_file():
+        return [run_dir / "predictions.json"]
+    try:
+        run = locate_run_config(run_dir).parent
+    except FileNotFoundError:
+        return []
+    score_dir = run / SCORE_DIRNAME
+    folds = _fold_dirs(run)
+    if not folds:
+        cached = score_dir / "predictions.json"
+        return [cached] if cached.is_file() else []
+    cached = [score_dir / fold.name / "predictions.json" for fold in folds]
+    # A partly scored run (interrupted mid-folds) is unscored: never average fewer folds.
+    return cached if all(path.is_file() for path in cached) else []
 
 # --- cell aggregation ----------------------------------------------------------------
 
@@ -1204,23 +1504,23 @@ class DetectionBenchmark:
         return [r for r in rows if r.matches(axes)]
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
-        """Re-aggregate a cell's native metric off its persisted per-sample prediction cache.
+        """Re-aggregate a run's native metric off its persisted per-sample prediction cache.
 
-        Reads ``predictions.json`` under ``run_dir`` (written by the driver at score time)
-        and re-runs the dataset's native scorer — the pure, no-training path that the
-        stability bootstrap and the deferred robustness stratification also travel.
+        Reads the ``predictions.json`` that :func:`score_run` wrote (directly in
+        ``run_dir``, or in the run's ``detection_score/`` directory, one per fold) and
+        re-runs the dataset's native scorer: the pure, no-training path that the stability
+        bootstrap and the deferred robustness stratification also travel. A multi-fold run
+        returns the mean over folds. Raises :class:`FileNotFoundError` when the run has no
+        cache; :meth:`DetectionDatasetBenchmark.score` scores such a run first.
         """
-        run_dir = Path(run_dir)
-        direct = run_dir / "predictions.json"
-        if direct.is_file():
-            pred_path = direct
-        else:
-            candidates = sorted(run_dir.glob("**/predictions.json"))
-            if not candidates:
-                raise FileNotFoundError(f"no predictions.json under {run_dir}")
-            pred_path = candidates[-1]
-        predictions = read_cell_predictions(pred_path)
-        return score_dataset_points(predictions.dataset, predictions.samples)
+        paths = persisted_predictions(run_dir)
+        if not paths:
+            raise FileNotFoundError(f"no predictions.json under {run_dir}")
+        per_fold = []
+        for path in paths:
+            predictions = read_cell_predictions(path)
+            per_fold.append(score_dataset_points(predictions.dataset, predictions.samples))
+        return per_fold[0] if len(per_fold) == 1 else _aggregate_folds(per_fold)[0]
 
 
 DETECTION_BENCHMARK = DetectionBenchmark()
@@ -1291,5 +1591,12 @@ class DetectionDatasetBenchmark:
         return self._harness.expected(dataset=self.dataset, **merged)
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
-        """Native re-aggregation off the run's persisted per-sample predictions (delegates)."""
-        return self._harness.score(run_dir)
+        """The run's native test metric (MIDOG ``f1``, MONKEY ``froc_*``), fold mean.
+
+        A run already scored (its ``predictions.json`` cache exists) is re-aggregated off
+        that cache; otherwise :func:`score_run` scores the run's persisted point
+        predictions with this dataset's protocol and writes the cache.
+        """
+        if persisted_predictions(run_dir):
+            return self._harness.score(run_dir)
+        return score_run(self.dataset, run_dir)
