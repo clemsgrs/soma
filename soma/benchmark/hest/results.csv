@@ -11,3 +11,12 @@ LUNG,h-optimus-1,test/mean_pearson_mean,0.5768,0.0000,1,2026-07-10,e9fb89c,5.3.0
 PAAD,virchow2,test/mean_pearson_mean,0.471707365952,0,1,2026-10-08,2934740,6.3.4,soma reproduce --record
 COAD,virchow2,test/mean_pearson_mean,0.261554051188,0,1,2026-10-08,2934740,6.3.4,soma reproduce --record
 LUNG,virchow2,test/mean_pearson_mean,0.569232436966,0,1,2026-10-08,2934740,6.3.4,soma reproduce --record
+COAD,h-optimus-1,test/mean_pearson_mean,0.319010620665,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
+COAD,uni2,test/mean_pearson_mean,0.310461488929,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
+COAD,virchow2,test/mean_pearson_mean,0.261773964643,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
+LUNG,h-optimus-1,test/mean_pearson_mean,0.576809239623,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
+LUNG,uni2,test/mean_pearson_mean,0.559307576213,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
+LUNG,virchow2,test/mean_pearson_mean,0.569282112623,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
+PAAD,h-optimus-1,test/mean_pearson_mean,0.491617212517,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
+PAAD,uni2,test/mean_pearson_mean,0.500643793363,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
+PAAD,virchow2,test/mean_pearson_mean,0.47168273762,0,1,2026-10-14,8e1f1f6,7.1.1,,soma reproduce --record
