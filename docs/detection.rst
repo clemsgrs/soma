@@ -212,7 +212,8 @@ The head's other parameters are:
 - ``classes`` / ``drop``: the class scheme; see :ref:`detection-classes`.
 
 Detection also runs with ``features.kind: live``, which re-encodes the tiles
-at every step; see :ref:`live-mode`. Detection cannot be augmented yet.
+at every step, and can then augment them with ``loaders.augment``; see
+:ref:`live-mode`.
 
 The default feature kind is ``patch_features``. To probe attention maps with
 the same head, loss, and evaluator, use an attention-capable encoder and set:

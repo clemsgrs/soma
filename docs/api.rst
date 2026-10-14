@@ -236,7 +236,7 @@ complete run; these are the parts:
      - The grid learner and its batch (cached ``features`` or live ``pixels``,
        plus raw ``targets``)
    * - :class:`soma.learn.SegmentationAugment`
-     - Joint image and label-mask augmentation for the live path
+     - Joint image and label-mask or point augmentation for the live path
    * - :class:`soma.evaluation.LabelMapPredictions`,
        :class:`soma.evaluation.PointPredictions`
      - What ``soma.predict`` returns for a segmentation or detection head

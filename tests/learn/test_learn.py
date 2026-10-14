@@ -10,6 +10,7 @@ import functools
 import math
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -899,3 +900,120 @@ class TestSegmentationAugment:
             out_pixels, out_mask = augment(pixels, mask)
             assert out_pixels.dtype == torch.uint8 and out_mask.dtype == torch.long
             assert torch.equal(out_pixels, pixels) and torch.equal(out_mask, mask)
+
+
+def _marked_canvas(size=64, ignored=None):
+    """A blue canvas with one 7x7 marker per point; marker ``i`` has red = blue = ``30 (i + 1)``.
+
+    A bilinear blend of a marker with the background (red 0, blue 255) never reads as
+    another marker, so a marker's colour identifies it after any transform.
+
+    ``ignored`` (top, left, bottom, right) paints green into the pixels and 255 into the
+    returned ignore raster, so the two can be compared after a transform.
+    """
+    centres = [(8, 8), (55, 9), (32, 32), (12, 50), (50, 52), (32, 5), (58, 33)]
+    pixels = torch.zeros(3, size, size, dtype=torch.uint8)
+    pixels[2] = 255
+    for i, (x, y) in enumerate(centres):
+        pixels[0, y - 3 : y + 4, x - 3 : x + 4] = 30 * (i + 1)
+        pixels[2, y - 3 : y + 4, x - 3 : x + 4] = 30 * (i + 1)
+    ignore = np.zeros((size, size), dtype=np.uint8)
+    if ignored is not None:
+        top, left, bottom, right = ignored
+        pixels[1, top:bottom, left:right] = 255
+        ignore[top:bottom, left:right] = 255
+    xy = torch.tensor(centres, dtype=torch.float32)
+    return pixels, xy, torch.arange(len(centres)), ignore
+
+
+_GEOMETRIC = dict(
+    crop_scale=(0.3, 1.0),
+    target_size=64,
+    horizontal_flip=0.5,
+    vertical_flip=0.5,
+    rotation_degrees=40.0,
+    translate=0.3,
+    scale=0.3,
+)
+
+
+class TestSegmentationAugmentPoints:
+    """``SegmentationAugment`` moves ``Points`` (in the pixel frame) with the pixels."""
+
+    def test_points_move_with_the_pixels_and_leave_with_them(self):
+        from soma.data import Points
+        from soma.learn import SegmentationAugment
+
+        pixels, xy, classes, _ = _marked_canvas()
+        augment = SegmentationAugment(**_GEOMETRIC)
+        dropped = kept = 0
+        for seed in range(40):
+            torch.manual_seed(seed)
+            out_pixels, out = augment(pixels, Points(xy=xy, classes=classes))
+            assert isinstance(out, Points) and out.xy.dtype == torch.float32
+            assert out.classes.dtype == torch.long
+            height, width = out_pixels.shape[1:]
+            inside = (out.xy[:, 0] >= 0) & (out.xy[:, 0] < width) & (out.xy[:, 1] >= 0) & (out.xy[:, 1] < height)
+            assert bool(inside.all()), f"seed {seed}: a returned point left the frame"
+            for (x, y), cls in zip(out.xy.tolist(), out.classes.tolist()):
+                col, row = min(round(x), width - 1), min(round(y), height - 1)
+                red, blue = int(out_pixels[0, row, col]), int(out_pixels[2, row, col])
+                assert abs(red - 30 * (cls + 1)) <= 8 and abs(blue - 30 * (cls + 1)) <= 8, (
+                    f"seed {seed}: point of class {cls} sits on red {red} / blue {blue}"
+                )
+            returned = set(out.classes.tolist())
+            fill = out_pixels[2] <= 5  # pixels the transform synthesised
+            for cls in range(len(classes)):
+                region = ((out_pixels[0].int() - 30 * (cls + 1)).abs() <= 4) & (
+                    (out_pixels[2].int() - 30 * (cls + 1)).abs() <= 4
+                )
+                rows, cols = region.nonzero(as_tuple=True)
+                near = torch.nn.functional.max_pool2d(region[None, None].float(), 5, 1, 2)[0, 0] > 0
+                # A marker clear of the edge and of synthesised fill survived whole: its
+                # centre (the point) is still on the canvas.
+                whole = (
+                    rows.numel() > 0
+                    and min(rows.min(), cols.min()) > 0
+                    and rows.max() < height - 1
+                    and cols.max() < width - 1
+                    and not bool((near & fill).any())
+                )
+                if whole:
+                    assert cls in returned, f"seed {seed}: marker {cls} is in the crop but its point was dropped"
+            dropped += len(classes) - len(returned)
+            kept += len(returned)
+        assert dropped > 0 and kept > 0
+
+    def test_the_ignore_mask_moves_with_the_pixels_and_covers_synthesised_borders(self):
+        from soma.data import Points
+        from soma.learn import SegmentationAugment
+
+        pixels, xy, classes, ignore = _marked_canvas(ignored=(10, 5, 30, 40))
+        augment = SegmentationAugment(**_GEOMETRIC)
+        for seed in range(20):
+            torch.manual_seed(seed)
+            out_pixels, out = augment(pixels, Points(xy=xy, classes=classes, ignore_mask=ignore))
+            moved = np.asarray(out.ignore_mask)
+            assert moved.shape == tuple(out_pixels.shape[1:]) and moved.dtype == np.uint8
+            green, blue = out_pixels[1].numpy(), out_pixels[2].numpy()
+            for name, where, expected in (
+                ("ignored tissue", (blue >= 250) & (green >= 250), 255),
+                ("supervised tissue", (blue >= 250) & (green <= 5), 0),
+                ("synthesised border", blue <= 5, 255),
+            ):
+                if where.sum() >= 50:
+                    agreement = float((moved[where] == expected).mean())
+                    assert agreement >= 0.97, f"seed {seed}: {name} agrees {agreement:.3f}"
+
+    def test_points_without_an_ignore_mask_get_one_over_synthesised_borders(self):
+        from soma.data import Points
+        from soma.learn import SegmentationAugment
+
+        pixels, xy, classes, _ = _marked_canvas()
+        torch.manual_seed(0)
+        out_pixels, out = SegmentationAugment(rotation_degrees=30.0, translate=0.4)(pixels, Points(xy=xy, classes=classes))
+        border = out_pixels[2].numpy() <= 5
+        assert border.sum() > 0
+        assert out.ignore_mask is not None
+        assert float((np.asarray(out.ignore_mask)[border] == 255).mean()) >= 0.97
+        assert float((np.asarray(out.ignore_mask)[~border] == 0).mean()) >= 0.97

@@ -61,8 +61,8 @@ def loaders(
         targets: The :class:`~soma.data.TargetSource` serving each sample's label map or
             points; it must match the head's ``target_kind``. Required for the grid.
         augment: ``(pixels, target) -> (pixels, target)`` applied to the **train** split
-            only (e.g. :class:`~soma.learn.SegmentationAugment`). Refused for cached grids
-            and, until torchvision 0.23 (soma#586), for point targets.
+            only (e.g. :class:`~soma.learn.SegmentationAugment`). Refused for cached grids.
+            Point targets reach it in the pixel frame and return to level-0.
         preprocess: The encoder stage's itemwise CPU preprocessor
             (``FrozenEncoder.preprocessor()``), run after augmentation inside the loader
             workers. Without it the batch carries raw uint8 pixels and the stage

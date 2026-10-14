@@ -28,7 +28,7 @@ dependencies = [
     "Pillow",
     "h5py",
     "torch",
-    "torchvision",
+    "torchvision>=0.23",  # tv_tensors.KeyPoints: joint pixel + point augmentation
     "scikit-image",
     "scikit-learn",
     "scikit-survival",

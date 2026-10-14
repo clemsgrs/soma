@@ -184,13 +184,14 @@ nearest-neighbour resampling); photometric operations change the image only.
 Pixels that a rotation or translation brings into the tile get ``ignore_index``
 in the mask, so they carry no supervision. ``crop_scale`` takes a random crop of
 that area fraction and resizes it to the tile size before the other operations.
+For detection, the points move with the image: a point that leaves the tile is
+dropped, and the ignore mask moves like a label mask, so the pixels brought into
+the tile are ignored.
 
 Live mode has these limits:
 
 - ``loaders.augment`` requires ``features.kind: live``; cached grids cannot be
   augmented.
-- Detection can run with ``features.kind: live`` but cannot be augmented yet:
-  joint image and point augmentation waits for torchvision 0.23.
 - Live mode reads pre-cropped tiles only. It does not support annotation-sampled
   whole slides, composite encoders, an active ``normalization`` or
   ``projection``, or a ``loaders.sampler``.
@@ -238,7 +239,7 @@ The same verbs train a decoder over feature grids, with three differences:
 :class:`soma.extract.FrozenEncoder` stage, so the foundation model never enters a
 checkpoint or an optimizer. ``preprocess=stage.preprocessor()`` runs the encoder's
 preprocessing in the loader workers, after augmentation; ``augment`` is refused
-for cached grids and for point targets:
+for cached grids:
 
 .. code-block:: python
 
