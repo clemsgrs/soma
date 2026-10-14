@@ -50,7 +50,6 @@ extensions = [
 
 # Notebooks ship without outputs as code listings. Never execute them during a
 # docs build, which needs neither GPUs, model access tokens, nor slide data.
-# Smoke-test their execution separately via scripts/execute_tutorials.sh.
 nbsphinx_execute = "never"
 nbsphinx_allow_errors = False
 

@@ -41,5 +41,5 @@ when an aggregator, decoder, or task head is replaced.
 Explore a path
 --------------
 
-The :doc:`tutorials <tutorials/index>` run each path end to end on a small
-synthetic dataset.
+The :ref:`use-case table <use-cases>` names the end-to-end scenarios that run each
+path on a small synthetic dataset.

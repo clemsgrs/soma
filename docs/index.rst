@@ -47,7 +47,6 @@ foundation-model encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec
    training
    evaluation
    extending
-   tutorials/index
    benchmarking
    reference
    system

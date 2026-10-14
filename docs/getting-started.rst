@@ -358,5 +358,5 @@ To change the output:
    soma_logger.handlers.clear()            # remove soma's default handler
    soma_logger.propagate = False           # keep soma out of your root handlers
 
-Next, follow the :doc:`slide-level tutorial <tutorials/index>` or build
-custom orchestration with the :doc:`API reference <api>`.
+Next, see the :ref:`use cases <use-cases>` or build custom orchestration with
+the :doc:`API reference <api>`.

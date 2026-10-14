@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 import importlib.util
 from html.parser import HTMLParser
-import json
 import os
 from pathlib import Path
 import re
@@ -15,16 +14,6 @@ import yaml
 
 from soma.config import ExperimentConfig
 from soma.plan import check
-
-TUTORIALS = [
-    "walkthrough-tile-level.ipynb",
-    "walkthrough-slide-mil.ipynb",
-    "walkthrough-slide-encoder.ipynb",
-    "walkthrough-segmentation.ipynb",
-    "walkthrough-detection.ipynb",
-    "walkthrough-composite.ipynb",
-]
-
 
 def test_documentation_always_spells_soma_lowercase() -> None:
     docs_dir = Path(__file__).resolve().parents[2] / "docs"
@@ -296,7 +285,6 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         "training",
         "evaluation",
         "extending",
-        "tutorials/index",
         "benchmarking",
         "reference",
         "system",
@@ -310,14 +298,6 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
             "survival",
             "segmentation",
             "detection",
-        ),
-        "tutorials/index.rst": (
-            "walkthrough-tile-level",
-            "walkthrough-slide-mil",
-            "walkthrough-slide-encoder",
-            "walkthrough-detection",
-            "walkthrough-segmentation",
-            "walkthrough-composite",
         ),
         "benchmarking.rst": (
             "eva-patch-classification-benchmark",
@@ -495,26 +475,3 @@ def test_sphinx_docs_build(tmp_path: Path) -> None:
     assert "@pradyunsg" not in index_html
     assert (out_dir / "index.html").exists()
     assert (out_dir / "cli.html").exists()
-
-
-@pytest.mark.parametrize("name", TUTORIALS)
-def test_tutorial_notebook_ships_without_outputs(name: str) -> None:
-    """Tutorials ship as clean code listings — valid JSON, code cells, no outputs.
-
-    The committed notebooks deliberately carry **no** stored outputs (the docs
-    build never executes them — nbsphinx_execute = "never" — and rendering empty
-    cells keeps the pages uncluttered). This guards that policy: each notebook is
-    valid JSON with code cells, and no code cell carries stored outputs. Smoke-test
-    that the code still runs via ``scripts/execute_tutorials.sh``.
-    """
-    path = Path(__file__).resolve().parents[2] / "docs" / "tutorials" / name
-    nb = json.loads(path.read_text(encoding="utf-8"))
-
-    code_cells = [c for c in nb["cells"] if c["cell_type"] == "code"]
-    assert code_cells, f"{name} has no code cells"
-
-    for i, cell in enumerate(code_cells):
-        assert not cell.get("outputs"), (
-            f"{name} code cell {i} carries stored outputs; strip them "
-            f"(committed tutorials ship without outputs)"
-        )

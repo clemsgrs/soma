@@ -11,8 +11,7 @@ Precision and batch size are execution settings (slide2vec's
 
 - **Single encoder** — pick one preset from the model zoo below (the common case).
 - **Composite (multi-encoder)** — concatenate several presets into one richer
-  per-position vector: :doc:`details <encoders/composite>` ·
-  :doc:`tutorial <tutorials/walkthrough-composite>`.
+  per-position vector: :doc:`details <encoders/composite>`.
 
 The run's features are configured by :class:`soma.config.FeaturesConfig`, which holds
 the encoder leaf (:class:`soma.config.EncoderLeaf`) next to slide2vec's
