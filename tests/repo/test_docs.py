@@ -3,9 +3,11 @@ from __future__ import annotations
 import ast
 import importlib.util
 from html.parser import HTMLParser
+import json
 import os
 from pathlib import Path
 import re
+import subprocess
 import tomllib
 
 from jinja2 import Environment
@@ -265,7 +267,11 @@ def test_home_page_links_its_primary_routes_to_pages_that_exist() -> None:
     routes = re.findall(r'<a class="soma-route" href="([^"#]+)(?:#[^"]*)?">', page)
 
     assert routes
-    assert [route for route in routes if not (docs_dir / route).with_suffix(".rst").exists()] == []
+    assert [
+        route
+        for route in routes
+        if not any((docs_dir / route).with_suffix(suffix).exists() for suffix in (".rst", ".ipynb"))
+    ] == []
 
 
 def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None:
@@ -278,6 +284,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         ":maxdepth: 2",
         ":hidden:",
         "how-soma-works",
+        "installation",
         "getting-started",
         "data",
         "components",
@@ -344,105 +351,6 @@ def test_the_use_case_table_names_scenarios_the_e2e_suite_runs() -> None:
     assert named and named <= _e2e_scenarios()
 
 
-def test_getting_started_pipeline_example_constructs_public_config() -> None:
-    docs_dir = Path(__file__).resolve().parents[2] / "docs"
-    rst = (docs_dir / "getting-started.rst").read_text(encoding="utf-8")
-
-    blocks = [
-        block
-        for block in _extract_code_blocks(rst, "python")
-        if "ExperimentConfig(" in block
-    ]
-    assert blocks
-
-    for block in blocks:
-        namespace: dict[str, object] = {}
-        exec(_without_pipeline_run(block), namespace)
-        assert isinstance(namespace["config"], ExperimentConfig)
-        check(namespace["config"])
-
-
-def test_getting_started_yaml_is_the_pipeline_example(tmp_path: Path) -> None:
-    docs_dir = Path(__file__).resolve().parents[2] / "docs"
-    rst = (docs_dir / "getting-started.rst").read_text(encoding="utf-8")
-    (python,) = [
-        block
-        for block in _extract_code_blocks(rst, "python")
-        if "ExperimentConfig(" in block and "features=FeaturesConfig(" in block
-    ]
-    (config_yaml,) = [
-        block for block in _extract_code_blocks(rst, "yaml") if block.startswith("run:")
-    ]
-    namespace: dict[str, object] = {}
-    exec(_without_pipeline_run(python), namespace)
-    path = tmp_path / "config.yaml"
-    path.write_text(config_yaml, encoding="utf-8")
-
-    assert ExperimentConfig.from_yaml(path) == namespace["config"]
-
-
-def test_getting_started_python_examples_are_syntactically_valid() -> None:
-    page = (
-        Path(__file__).resolve().parents[2] / "docs" / "getting-started.rst"
-    ).read_text(encoding="utf-8")
-    blocks = _extract_code_blocks(page, "python")
-
-    assert blocks
-    for block in blocks:
-        ast.parse(block)
-
-
-def test_getting_started_preset_example_edits_a_checked_config() -> None:
-    rst = (Path(__file__).resolve().parents[2] / "docs" / "getting-started.rst").read_text(encoding="utf-8")
-    (block,) = [block for block in _extract_code_blocks(rst, "python") if "presets." in block]
-    namespace: dict[str, object] = {}
-    exec(_without_pipeline_run(block), namespace)
-
-    config = namespace["config"]
-    check(config)
-    assert (str(config.cohort.records), str(config.run.output_dir), config.trainer.max_epochs) == (
-        "dataset.csv",
-        "output",
-        20,
-    )
-
-
-def _without_pipeline_run(code: str) -> str:
-    return "\n".join(
-        line
-        for line in code.splitlines()
-        if not ("Pipeline(config" in line and ".run()" in line)
-    )
-
-
-def _extract_code_blocks(rst: str, language: str) -> list[str]:
-    lines = rst.splitlines()
-    blocks: list[str] = []
-    marker = f".. code-block:: {language}"
-    index = 0
-    while index < len(lines):
-        if lines[index] != marker:
-            index += 1
-            continue
-        index += 1
-        while index < len(lines) and not lines[index].strip():
-            index += 1
-        block: list[str] = []
-        while index < len(lines):
-            line = lines[index]
-            if line.startswith("   "):
-                block.append(line[3:])
-                index += 1
-                continue
-            if not line.strip():
-                block.append("")
-                index += 1
-                continue
-            break
-        blocks.append("\n".join(block))
-    return blocks
-
-
 def _extract_first_yaml_block(rst: str) -> str:
     lines = rst.splitlines()
     start = lines.index(".. code-block:: yaml") + 1
@@ -475,3 +383,33 @@ def test_sphinx_docs_build(tmp_path: Path) -> None:
     assert "@pradyunsg" not in index_html
     assert (out_dir / "index.html").exists()
     assert (out_dir / "cli.html").exists()
+    # The getting-started notebook ships without outputs: the build executed it, and the
+    # page offers the notebook itself for download.
+    notebook_html = (out_dir / "getting-started.html").read_text(encoding="utf-8")
+    assert notebook_html.count('class="output_area') > 10
+    assert re.search(r'href="_downloads/[0-9a-f]+/getting-started\.ipynb"', notebook_html)
+
+
+def _committed_notebooks(root: Path) -> list[Path]:
+    """Every ``.ipynb`` git tracks (or, outside a git checkout, every one under ``root``)."""
+    try:
+        listed = subprocess.run(
+            ["git", "ls-files", "*.ipynb"], cwd=root, check=True, capture_output=True, text=True
+        ).stdout.split()
+    except (OSError, subprocess.CalledProcessError):
+        return sorted(p for p in root.rglob("*.ipynb") if not {"_build", ".ipynb_checkpoints"} & set(p.parts))
+    return [root / name for name in listed]
+
+
+def test_no_committed_notebook_carries_outputs_or_execution_counts() -> None:
+    """Notebooks are committed clean; the docs build executes them (``nbsphinx_execute``)."""
+    root = Path(__file__).resolve().parents[2]
+    notebooks = _committed_notebooks(root)
+    assert root / "docs" / "getting-started.ipynb" in notebooks
+    dirty = []
+    for path in notebooks:
+        cells = json.loads(path.read_text(encoding="utf-8"))["cells"]
+        for index, cell in enumerate(cells):
+            if cell["cell_type"] == "code" and (cell.get("outputs") or cell.get("execution_count") is not None):
+                dirty.append(f"{path.relative_to(root)} cell {index}")
+    assert dirty == [], "strip outputs and execution counts before committing: " + ", ".join(dirty)

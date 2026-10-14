@@ -269,3 +269,43 @@ launch. While folds remain pending the run is recorded as ``partial`` and no
 the summary, so finish with one launch without ``run.folds`` if
 no fold launch ended last. Two launches given the same fold would both train
 it: the selection is not a lock.
+
+.. _log-output:
+
+Log output
+----------
+
+soma reports progress through Python's ``logging`` module, under the ``soma``
+logger. The ``soma`` command prints soma's INFO messages to stderr; other
+libraries print warnings and errors only.
+
+In a Python script, soma checks the logging setup when you create a
+``Pipeline`` or call ``soma.extract``:
+
+- If you have not configured logging (no handler on the root logger or on the
+  ``soma`` logger), soma adds one stderr handler to the ``soma`` logger and
+  sets that logger to INFO. You see messages such as the fold summary without
+  any setup. soma adds this handler only once. A level you set yourself is
+  kept: on the ``soma`` logger, or on the root logger when it is not Python's
+  default WARNING (``logging.getLogger().setLevel(logging.ERROR)`` keeps soma
+  quiet).
+- If you have configured logging, for example with ``logging.basicConfig``,
+  soma changes nothing and your configuration decides what is shown.
+- If you configure logging after you create a ``Pipeline``, soma's handler
+  stops writing as soon as the root logger or the ``soma`` logger has a handler
+  of yours, so each message prints once, through your handlers. The ``soma``
+  logger stays at INFO. If you set ``propagate = False`` on the ``soma`` logger,
+  its messages never reach your root handlers, so soma's handler keeps printing
+  them unless you add a handler to the ``soma`` logger.
+
+To change the output:
+
+.. code-block:: python
+
+   import logging
+
+   soma_logger = logging.getLogger("soma")
+   soma_logger.setLevel(logging.WARNING)   # hide soma's INFO messages
+   soma_logger.setLevel(logging.DEBUG)     # or show soma's DEBUG messages too
+   soma_logger.handlers.clear()            # remove soma's default handler
+   soma_logger.propagate = False           # keep soma out of your root handlers

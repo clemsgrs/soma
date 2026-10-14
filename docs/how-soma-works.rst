@@ -56,6 +56,7 @@ comparing encoders. Every run saves its resolved configuration, predictions,
 and metrics in a :doc:`run bundle <outputs>`.
 
 .. _use-cases:
+.. _presets:
 
 Use cases
 ---------
