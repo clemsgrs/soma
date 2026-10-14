@@ -36,7 +36,10 @@ def test_slide2vec_minimum_is_aligned_with_hs2p_6():
     # slide2vec 7.1.0 requires hs2p 6.1.0, the same floor soma declares. Its
     # ``PreprocessingConfig`` composes hs2p's tiling, segmentation, filter, mask and
     # preview dataclasses, and ``DenseOptions`` / ``ExecutionOptions`` carry the dense
-    # and execution fields; soma holds the three as given (ADR 0019). 7.0.0 resumes an
+    # and execution fields; soma holds the three as given (ADR 0019). 7.1.1 keeps the
+    # ``ExecutionOptions`` GPU and worker counts as given and resolves them where a run
+    # uses them (``resolved_num_gpus()``), so a plan reads the same on every machine.
+    # 7.0.0 resumes an
     # artifact only when its sidecar records the full feature identity, and
     # ``Model.pooled_identity_differences`` (6.3.2) reports a required field the record
     # lacks as ``MISSING_FIELD`` instead of accepting it, which soma's cache check relies
@@ -45,7 +48,7 @@ def test_slide2vec_minimum_is_aligned_with_hs2p_6():
     # segmentation benchmarks tap.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=7.1.0" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=7.1.1" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_provides_registered_roi_mask_reads():

@@ -92,7 +92,10 @@ def execution_options(
     the precision the cache key was derived at (``execution.precision``, else the
     encoder's recommendation), so the key and the computed features cannot disagree.
     An unset ``num_workers_per_gpu`` keeps soma's loader budget: the CPU budget split
-    across the GPUs, capped at 16 (slide2vec would give image routes no workers).
+    across the GPUs the call uses (``num_gpus``, else the count slide2vec resolves for
+    the machine), capped at 16 (slide2vec would give image routes no workers). The GPU
+    and tiling-worker counts are otherwise left as given: slide2vec resolves an unset one
+    where the call uses it.
     """
     values: dict[str, object] = {
         "output_dir": Path(output_dir),
@@ -105,7 +108,7 @@ def execution_options(
     if num_gpus is not None:
         values["num_gpus"] = int(num_gpus)
     if execution.num_workers_per_gpu is None:
-        gpus = max(1, int(values.get("num_gpus", execution.num_gpus)))
+        gpus = max(1, int(num_gpus)) if num_gpus is not None else execution.resolved_num_gpus()
         values["num_workers_per_gpu"] = min(16, max(1, slide2vec_api.cpu_worker_limit() // gpus))
     return replace(execution, **values)
 
