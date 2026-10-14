@@ -36,6 +36,8 @@ croma/camelyon@uni2:
         output_variant: default
     execution:
       batch_size: 32
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -167,6 +169,8 @@ croma/tcga-4x4@virchow2+knobs:
         output_variant: cls_patch_mean
     execution:
       batch_size: 16
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -295,6 +299,8 @@ eva/bach@uni2:
         output_variant: null
     execution:
       batch_size: 32
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -461,6 +467,8 @@ eva/bach@virchow2+knobs:
         output_variant: cls
     execution:
       batch_size: 8
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -627,6 +635,8 @@ eva/camelyon16_small@uni2:
         output_variant: null
     execution:
       batch_size: 32
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -818,6 +828,8 @@ eva/consep@uni2:
         output_variant: null
     execution:
       batch_size: 32
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -1014,6 +1026,8 @@ eva/monusac@virchow2+knobs:
         output_variant: null
     execution:
       batch_size: 4
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -1213,6 +1227,8 @@ eva/panda_small@virchow2+knobs:
         output_variant: cls
     execution:
       batch_size: 32
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -1391,6 +1407,8 @@ eva/patch_camelyon@virchow2:
         output_variant: cls
     execution:
       batch_size: 32
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -1554,6 +1572,8 @@ hest/IDC@uni2:
         output_variant: null
     execution:
       batch_size: 32
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
@@ -1693,6 +1713,8 @@ hest/LUNG@virchow2+knobs:
         output_variant: cls_patch_mean
     execution:
       batch_size: 32
+      num_gpus: null
+      num_preprocessing_workers: null
       num_workers_per_gpu: null
       on_image_mismatch: raise
       output_dir: null
