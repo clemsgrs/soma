@@ -92,9 +92,15 @@ claim of numerical identity with the published embeddings.
 Results
 -------
 
+.. raw:: html
+
+   <style>.red { color: #d32f2f; font-weight: 600; }</style>
+
+.. role:: red
+
 The recorded panel covers ``conchv15``, ``h0-mini``, ``uni``, and the ``dinov2-vitb14`` control across all three cohorts. Each cell shows the
 soma value with the published value in parentheses. A soma value more than
-0.005 from the published value is shown in red. All values are within that tolerance, and soma reproduces every published pair ordering.
+0.005 from the published value is shown in red.
 
 .. list-table::
    :header-rows: 1
@@ -112,9 +118,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.174 (0.174)
    * - camelyon
      - ``dinov2-vitb14``
-     - 0.050 (0.050)
-     - -0.184 (-0.184)
-     - 0.345 (0.345)
+     - :red:`0.028` (0.050)
+     - :red:`-0.178` (-0.184)
+     - :red:`0.401` (0.345)
    * - camelyon
      - ``h0-mini``
      - 0.167 (0.167)
@@ -124,7 +130,7 @@ soma value with the published value in parentheses. A soma value more than
      - ``uni``
      - -0.034 (-0.034)
      - -0.217 (-0.217)
-     - 0.652 (0.651)
+     - 0.651 (0.651)
    * - tcga-4x4
      - ``conchv15``
      - 0.153 (0.153)
@@ -132,9 +138,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.193 (0.193)
    * - tcga-4x4
      - ``dinov2-vitb14``
-     - 0.006 (0.006)
-     - -0.122 (-0.122)
-     - 0.469 (0.468)
+     - :red:`0.014` (0.006)
+     - :red:`-0.109` (-0.122)
+     - :red:`0.418` (0.468)
    * - tcga-4x4
      - ``h0-mini``
      - 0.121 (0.121)
@@ -144,7 +150,7 @@ soma value with the published value in parentheses. A soma value more than
      - ``uni``
      - 0.047 (0.047)
      - -0.120 (-0.120)
-     - 0.320 (0.320)
+     - 0.319 (0.320)
    * - tolkach-esca
      - ``conchv15``
      - 0.392 (0.392)
@@ -152,9 +158,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.043 (0.043)
    * - tolkach-esca
      - ``dinov2-vitb14``
-     - 0.176 (0.175)
-     - -0.069 (-0.069)
-     - 0.099 (0.099)
+     - :red:`0.152` (0.175)
+     - -0.073 (-0.069)
+     - :red:`0.109` (0.099)
    * - tolkach-esca
      - ``h0-mini``
      - 0.380 (0.380)
