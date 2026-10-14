@@ -12,7 +12,9 @@ Experiment identity
 -------------------
 
 Managed outputs group runs by experiment identity, with a timestamp/W&B suffix
-for each run. Identity version 9 hashes the ``train`` and ``tune`` manifest
+for each run. A run started in the same second as an earlier run of the same
+experiment gets ``-2``, ``-3``, … appended instead of reusing its directory.
+Identity version 9 hashes the ``train`` and ``tune`` manifest
 slices and the run's *plan* (see :ref:`plan-yaml`): the features section as
 extraction resolves it, the cohort options, the loaders' batch size, sampler and
 augmentation, the learner with every leaf's params, the trainer and the

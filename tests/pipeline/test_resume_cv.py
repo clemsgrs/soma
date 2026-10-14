@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -129,6 +130,36 @@ def test_explicit_run_id_arg_still_wins_over_config(tmp_path: Path):
         Plan(_make_config(tmp_path, resume=True)), run_id="2020-01-01_00-00-00__local"
     )
     assert layout.run_id == "2020-01-01_00-00-00__local"
+
+
+#: A launch second: two runs started within it would otherwise share one run id (#609).
+_SAME_SECOND = datetime(2026, 10, 13, 13, 27, 38, tzinfo=timezone.utc)
+
+
+def test_fresh_launches_in_the_same_second_get_their_own_run_dirs(tmp_path: Path):
+    plan = Plan(_make_config(tmp_path))
+    run_dirs = []
+    for _ in range(3):
+        layout = resolve_managed_output_paths(plan, when=_SAME_SECOND)
+        layout.run_dir.mkdir(parents=True)  # what the launch does next
+        run_dirs.append(layout.run_dir)
+
+    first = run_dirs[0].name
+    assert first.endswith("__local")
+    assert [path.name for path in run_dirs] == [first, f"{first}-2", f"{first}-3"]
+    assert len({path.parent for path in run_dirs}) == 1
+
+
+def test_a_bare_resume_picks_the_last_of_the_same_second_launches(tmp_path: Path):
+    cfg = _make_config(tmp_path)
+    launched = []
+    for _ in range(11):  # past -9, where the counters stop sorting as text
+        layout = resolve_managed_output_paths(Plan(cfg), when=_SAME_SECOND)
+        layout.run_dir.mkdir(parents=True)
+        launched.append(layout.run_id)
+
+    resumed = resolve_managed_output_paths(Plan(_with_run(cfg, resume=True)))
+    assert resumed.run_id == launched[-1] == f"{launched[0]}-11"
 
 
 def test_latest_existing_run_id_orders_lexically(tmp_path: Path):
