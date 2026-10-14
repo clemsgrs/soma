@@ -1,4 +1,5 @@
-"""``FakeEncoder`` and the conformance suites for the live grid path's stage and pixels."""
+"""``FakeEncoder``, the ``fake`` encoder, and the conformance suites for the live grid
+path's stage and pixels."""
 
 from __future__ import annotations
 
@@ -7,12 +8,20 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
+from slide2vec.encoders.base import TileEncoder
 from torch import Tensor, nn
 
 from soma.data.geometry import GridGeometry
 from soma.testing._errors import ConformanceError
 
-__all__ = ["FakeEncoder", "check_encoder_stage", "check_image_source"]
+__all__ = ["FAKE_ENCODER", "FakeEncoder", "check_encoder_stage", "check_image_source", "register_fake_encoder"]
+
+#: The slide2vec encoder name :func:`register_fake_encoder` gives :class:`FakeTileEncoder`.
+FAKE_ENCODER = "fake"
+#: How both fakes normalise pixels, as a real encoder normalises them: mean 0.5, std 0.25.
+_MEAN, _STD = 0.5, 0.25
+#: The side of the pixel block one token of the ``fake`` encoder averages.
+_FAKE_PATCH_SIZE = 8
 
 
 @dataclass(frozen=True)
@@ -30,7 +39,7 @@ class _FakePreprocessor:
             raise ValueError(f"FakeEncoder expects pixels at {self.target_size}, got {tuple(item.shape[-2:])}")
         pad_h = self.encoded_size[0] - self.target_size[0]
         pad_w = self.encoded_size[1] - self.target_size[1]
-        return F.pad((item.float() / 255.0 - 0.5) / 0.25, (0, pad_w, 0, pad_h))
+        return F.pad((item.float() / 255.0 - _MEAN) / _STD, (0, pad_w, 0, pad_h))
 
 
 class FakeEncoder(nn.Module):
@@ -64,6 +73,84 @@ class FakeEncoder(nn.Module):
             pixels = torch.stack([preprocess(item) for item in pixels])
         return F.avg_pool2d(pixels.float(), kernel_size=self._patch, stride=self._patch)
 
+
+
+class FakeTileEncoder(TileEncoder):
+    """:class:`FakeEncoder` as a slide2vec tile encoder, registered as ``fake``.
+
+    Its transform normalises pixels as :class:`FakeEncoder` does; a tile embeds as its mean
+    normalised RGB (``encode_tiles``) and its dense grid is the mean of each 8x8 block
+    (``encode_tiles_dense``, also the pre-norm tap), so the cached and the live paths see
+    one encoder. Tiles default to 32 px at 0.5 µm/px (:func:`soma.testing.synthetic_cohort`'s
+    spacing); any size divisible by 8 is accepted.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        self._device = torch.device("cpu")
+
+    @property
+    def encode_dim(self) -> int:
+        return 3
+
+    @property
+    def patch_size(self) -> tuple[int, int]:
+        return (_FAKE_PATCH_SIZE, _FAKE_PATCH_SIZE)
+
+    @property
+    def device(self) -> torch.device:
+        return self._device
+
+    def to(self, device) -> FakeTileEncoder:
+        self._device = torch.device(device)
+        return self
+
+    def get_transform(self):
+        from torchvision.transforms import v2
+
+        return v2.Compose(
+            [v2.ToImage(), v2.ToDtype(torch.float32, scale=True), v2.Normalize(mean=[_MEAN] * 3, std=[_STD] * 3)]
+        )
+
+    def get_normalization_transform(self):
+        return self.get_transform()
+
+    def encode_tiles(self, batch: Tensor) -> Tensor:
+        return batch.float().mean(dim=(-2, -1))
+
+    def encode_tiles_dense(self, batch: Tensor) -> Tensor:
+        return F.avg_pool2d(batch.float(), kernel_size=_FAKE_PATCH_SIZE, stride=_FAKE_PATCH_SIZE)
+
+    def encode_tiles_dense_prenorm(self, batch: Tensor) -> Tensor:
+        """The fake has no final norm to skip: the pre-norm grid is the same grid."""
+        return F.avg_pool2d(batch.float(), kernel_size=_FAKE_PATCH_SIZE, stride=_FAKE_PATCH_SIZE)
+
+
+def register_fake_encoder() -> str:
+    """Register :class:`FakeTileEncoder` with slide2vec as ``fake`` (once); return the name.
+
+    :mod:`soma.testing` calls it on import, so ``encoder="fake"`` works wherever soma does.
+    """
+    from slide2vec.encoders.registry import encoder_registry
+
+    try:
+        encoder_registry.register(
+            FAKE_ENCODER,
+            FakeTileEncoder,
+            metadata={
+                "level": "tile",
+                "input_size": 32,
+                "patch_size": _FAKE_PATCH_SIZE,
+                "supports_variable_input_size": True,
+                "output_variants": {"default": {"encode_dim": 3}},
+                "default_output_variant": "default",
+                "supported_spacing_um": [0.25, 0.5],
+                "default_spacing_um": 0.5,
+                "precision": "fp32",
+            },
+        )
+    except ValueError:  # registered already: this module was imported again
+        pass
+    return FAKE_ENCODER
 
 def _fail(method: str, message: str, sample_id: str | None = None) -> ConformanceError:
     return ConformanceError(method, message, sample_id=sample_id) if sample_id else ConformanceError(method, message)
