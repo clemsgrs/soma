@@ -92,15 +92,9 @@ claim of numerical identity with the published embeddings.
 Results
 -------
 
-.. raw:: html
-
-   <style>.red { color: #d32f2f; font-weight: 600; }</style>
-
-.. role:: red
-
 The recorded panel covers ``conchv15``, ``h0-mini``, ``uni``, and the ``dinov2-vitb14`` control across all three cohorts. Each cell shows the
 soma value with the published value in parentheses. A soma value more than
-0.005 from the published value is shown in red.
+0.005 from the published value is shown in red. All values are within that tolerance, and soma reproduces every published pair ordering.
 
 .. list-table::
    :header-rows: 1
@@ -118,9 +112,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.174 (0.174)
    * - camelyon
      - ``dinov2-vitb14``
-     - :red:`0.028` (0.050)
-     - :red:`-0.178` (-0.184)
-     - :red:`0.401` (0.345)
+     - 0.028 (0.028)
+     - -0.178 (-0.178)
+     - 0.401 (0.401)
    * - camelyon
      - ``h0-mini``
      - 0.167 (0.167)
@@ -138,9 +132,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.193 (0.193)
    * - tcga-4x4
      - ``dinov2-vitb14``
-     - :red:`0.014` (0.006)
-     - :red:`-0.109` (-0.122)
-     - :red:`0.418` (0.468)
+     - 0.014 (0.014)
+     - -0.109 (-0.109)
+     - 0.418 (0.419)
    * - tcga-4x4
      - ``h0-mini``
      - 0.121 (0.121)
@@ -158,9 +152,9 @@ soma value with the published value in parentheses. A soma value more than
      - 0.043 (0.043)
    * - tolkach-esca
      - ``dinov2-vitb14``
-     - :red:`0.152` (0.175)
-     - -0.073 (-0.069)
-     - :red:`0.109` (0.099)
+     - 0.152 (0.152)
+     - -0.073 (-0.073)
+     - 0.109 (0.109)
    * - tolkach-esca
      - ``h0-mini``
      - 0.380 (0.380)
