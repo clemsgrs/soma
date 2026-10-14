@@ -22,8 +22,9 @@ from tests.e2e.synthetic import (
 )
 
 TILE_PX = 32
-#: The tiling and pooled feature cache keys of the flagship scenario (pinned in slice 6c).
-PINNED_SLIDE_CACHE_KEYS = ["tile/c697067066e03831"]
+#: The tiling and pooled feature cache keys of the flagship scenario (pinned in slice 6c;
+#: moved once in slice 8, when the scenarios took soma.testing's ``fake`` encoder).
+PINNED_SLIDE_CACHE_KEYS = ["tile/58101741dabf2c06"]
 
 
 @pytest.fixture(scope="module")

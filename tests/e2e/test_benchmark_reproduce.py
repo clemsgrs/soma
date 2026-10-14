@@ -4,7 +4,7 @@
 and ``eva/panda_small`` (issue #535) on tiny pyramidal-TIFF cohorts.
 
 The CLI curates the raw root with the EVA geometry, trains the benchmark-private
-components with the weight-free literal encoder, and scores the primary metric from the
+components with the weight-free ``fake`` encoder, and scores the primary metric from the
 run's ``summary.json``. The protocol's training budget and patience are shrunk in-process
 so the scenarios stay CPU-sized; everything else is the registered benchmark's own config.
 """
@@ -154,7 +154,7 @@ def _single_run(output_root: Path) -> Run:
 
 
 @pytest.mark.parametrize(
-    ("dataset", "write_raw", "splits", "head", "epochs"),
+    ("dataset", "write_raw", "splits", "head", "epochs", "floor"),
     [
         (
             "camelyon16_small",
@@ -162,14 +162,17 @@ def _single_run(output_root: Path) -> Run:
             {"train": 7, "tune": 4, "test": 4},
             "eva_mil_binary",
             60,
+            0.75,
         ),
-        # Six grades from one training slide each: more steps to separate them.
+        # Six grades from one training slide each: more steps to separate them, and a
+        # lower floor on six test slides (chance is 1/6; neighbouring grades get confused).
         (
             "panda_small",
             write_fake_panda,
             {"train": 6, "tune": 6, "test": 6},
             "eva_mil_multiclass",
             300,
+            0.6,
         ),
     ],
 )
@@ -179,6 +182,7 @@ def test_reproduce_eva_slide_benchmark_curates_trains_and_scores(
     splits,
     head,
     epochs,
+    floor,
     tmp_path,
     monkeypatch,
     encoder_name,
@@ -215,7 +219,7 @@ def test_reproduce_eva_slide_benchmark_curates_trains_and_scores(
     run = _single_run(output_root)
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)
-    artifact.check_at_least("test/balanced_accuracy", run.summary["test/balanced_accuracy"], 0.75)
+    artifact.check_at_least("test/balanced_accuracy", run.summary["test/balanced_accuracy"], floor)
     text = run.config_path.read_text()
     artifact.check_equal("aggregator_is_eva_abmil", "eva_abmil" in text, True)
     artifact.check_equal(f"head_is_{head}", head in text, True)

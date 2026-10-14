@@ -6,7 +6,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from tests.dense_literal_encoder import LiteralPatchEncoder, register_literal_encoder
+from slide2vec.encoders.registry import encoder_registry
+
 from tests.e2e.harness import Artifact
 
 
@@ -36,22 +37,24 @@ def cpu_only(monkeypatch):
 
 @pytest.fixture(scope="session")
 def encoder_name() -> str:
-    """A weight-free encoder: the mean RGB of each tile / 8x8 patch it is given."""
-    return register_literal_encoder()
+    """soma.testing's weight-free ``fake`` encoder: the mean normalised RGB of each tile /
+    8x8 patch it is given (registered when soma is imported)."""
+    return "fake"
 
 
 @pytest.fixture
 def encoded_images(monkeypatch) -> list[int]:
     """Counts images the encoder sees, so a scenario can prove a cache hit encoded nothing."""
     seen: list[int] = []
+    fake = encoder_registry.require("fake")
     for method in ("encode_tiles", "encode_tiles_dense", "encode_tiles_dense_prenorm"):
-        original = getattr(LiteralPatchEncoder, method)
+        original = getattr(fake, method)
 
         def counting(self, batch, _original=original):
             seen.append(int(batch.shape[0]))
             return _original(self, batch)
 
-        monkeypatch.setattr(LiteralPatchEncoder, method, counting)
+        monkeypatch.setattr(fake, method, counting)
     return seen
 
 

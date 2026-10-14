@@ -1,10 +1,12 @@
 """Synthetic cohorts whose labels are a learnable function of tissue colour.
 
 Every scenario runs the real preprocessing and extraction stack over images written
-to disk, with a weight-free encoder that returns the mean RGB of what it reads (see
-``tests/dense_literal_encoder.py``). The generators therefore put the supervision
-signal in the colour: a model that learns nothing scores at chance, a pipeline that
-feeds the wrong pixels, labels or features to the model cannot score well.
+to disk, with soma.testing's weight-free ``fake`` encoder, which returns the mean
+normalised RGB of what it reads. The generators therefore put the supervision signal in
+the colour: a model that learns nothing scores at chance, a pipeline that feeds the wrong
+pixels, labels or features to the model cannot score well. The whole-slide cohort is
+:func:`soma.testing.synthetic_cohort`; the task manifests over it and the other cohorts
+are the scenarios' own.
 """
 
 from __future__ import annotations
@@ -15,6 +17,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from PIL import Image
+
+from soma.testing import synthetic_cohort
 
 SPACING_UM = 0.5
 _RESOLUTION = (1e4 / SPACING_UM, 1e4 / SPACING_UM)  # pixels per cm
@@ -118,36 +122,21 @@ class SlideCohort:
         return path
 
 
-def make_slide_cohort(root: Path, n: int = 32, size: int = 384, seed: int = 0) -> SlideCohort:
-    """``n`` tiled TIFF slides: a tissue disc whose colour darkens with severity.
+def make_slide_cohort(root: Path, n: int = 32, seed: int = 0) -> SlideCohort:
+    """``n`` tiled TIFF slides from :func:`soma.testing.synthetic_cohort`: a tissue disc
+    whose colour darkens with severity.
 
     Severities are evenly spread and interleaved across splits, so each split spans
     the whole range and every derived label is present in every split.
     """
-    rng = np.random.default_rng(seed)
-    slides = root / "slides"
-    slides.mkdir(parents=True)
-    severity = np.linspace(0.02, 0.98, n)
-    order = rng.permutation(n)
-    severity = severity[order]
-    sample_ids = [f"slide{i:02d}" for i in range(n)]
-
-    yy, xx = np.mgrid[0:size, 0:size]
-    disc = ((xx - size / 2) ** 2 + (yy - size / 2) ** 2) < (size * 0.4) ** 2
-    for sample_id, z in zip(sample_ids, severity):
-        image = np.empty((size, size, 3), dtype=np.int16)
-        image[:] = BACKGROUND
-        image[disc] = _tissue_colour(z)
-        write_tiff(slides / f"{sample_id}.tif", noisy(image, rng, 15))
-
-    # Deal the severity-ranked slides round-robin: 1/2 train, 1/4 tune, 1/4 test.
-    ranked = np.argsort(severity)
-    split = np.empty(n, dtype=object)
-    for rank, index in enumerate(ranked):
-        split[index] = ("train", "train", "tune", "test")[rank % 4]
-    splits_csv = root / "splits.csv"
-    pd.DataFrame({"sample_id": sample_ids, "split": split}).to_csv(splits_csv, index=False)
-    return SlideCohort(root=root, sample_ids=sample_ids, severity=severity, splits_csv=splits_csv)
+    records, splits_csv = synthetic_cohort(root, n=n, seed=seed)
+    frame = pd.read_csv(records)
+    return SlideCohort(
+        root=root,
+        sample_ids=list(frame["sample_id"]),
+        severity=frame["severity"].to_numpy(),
+        splits_csv=splits_csv,
+    )
 
 
 _MARKER_TILE_PX = 32
@@ -162,8 +151,8 @@ _MARKER = np.array([150, 215, 205])
 class MarkerCohort:
     """Slides whose label is "contains marker tiles", with rigged, noise-free features.
 
-    Every tile is one flat colour, so the literal encoder returns exactly that colour as
-    the tile's feature: ordinary tissue tiles are jittered shades of ``_LIGHT``, marker
+    Every tile is one flat colour, so the ``fake`` encoder returns exactly that colour
+    (normalised) as the tile's feature: ordinary tissue tiles are jittered shades of ``_LIGHT``, marker
     tiles jittered shades of ``_MARKER``. Slides come in pairs of equal bag size, one with
     markers and one without, so bag size, sample order and split carry no label signal.
     """
@@ -460,7 +449,7 @@ def write_cached_bags(
 def write_cached_grids(dataset_csv: Path, out_dir: Path, *, patch_size: int = 8) -> Path:
     """A dense grid cache over a :func:`make_dense_dataset` cohort, written without
     extraction: each ``(3, h, w)`` grid is the mean RGB of every ``patch_size`` patch (in
-    ``[0, 1]``), what the weight-free literal encoder returns. The sidecars record the
+    ``[0, 1]``), the ``fake`` encoder's pooling before its normalisation. The sidecars record the
     read spacing so the grids pass the same checks as extracted ones."""
     import tifffile
     import torch

@@ -98,7 +98,7 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
 
 
 def _twin_encoder(name: str) -> str:
-    """Register a second name for the literal encoder: an encoder axis value of its own."""
+    """Register a second name for the ``fake`` encoder: an encoder axis value of its own."""
     from slide2vec.encoders.registry import encoder_registry
 
     twin = f"{name}-twin"

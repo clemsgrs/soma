@@ -5,8 +5,9 @@ from __future__ import annotations
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
 from tests.e2e.synthetic import make_tile_dataset
 
-#: The tile feature cache key of the tile scenario (pinned in slice 6c).
-PINNED_TILE_CACHE_KEYS = ["image/84e4e51bb8b8651d"]
+#: The tile feature cache key of the tile scenario (pinned in slice 6c; moved once in
+#: slice 8, when the scenarios took soma.testing's ``fake`` encoder).
+PINNED_TILE_CACHE_KEYS = ["image/445e17ca75d972e4"]
 
 
 def test_tile_classification_is_learned(tmp_path, encoder_name, encoded_images, new_artifact):

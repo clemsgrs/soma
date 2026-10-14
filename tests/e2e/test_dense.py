@@ -1,6 +1,6 @@
 """Dense prediction: ROIs -> dense token grids -> decoder -> segmentation / detection.
 
-The cached scenarios extract the grids once (through the weight-free literal encoder);
+The cached scenarios extract the grids once (through the weight-free ``fake`` encoder);
 the live scenarios re-encode the ROIs every step through the run's frozen encoder stage,
 here ``soma.testing.FakeEncoder`` standing in for slide2vec's kit, so augmentation and the
 encoder stage ride inside the model.
@@ -15,9 +15,10 @@ from soma.testing import FakeEncoder
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset
 
-#: The dense grid cache keys of the cached scenarios (pinned in slice 6c).
-PINNED_SEGMENTATION_CACHE_KEYS = ["dense_image/3906c7b95e5c888c"]
-PINNED_DETECTION_CACHE_KEYS = ["dense_image/3906c7b95e5c888c"]
+#: The dense grid cache keys of the cached scenarios (pinned in slice 6c; moved once in
+#: slice 8, when the scenarios took soma.testing's ``fake`` encoder).
+PINNED_SEGMENTATION_CACHE_KEYS = ["dense_image/37fe3481540fca89"]
+PINNED_DETECTION_CACHE_KEYS = ["dense_image/37fe3481540fca89"]
 
 
 def _config(

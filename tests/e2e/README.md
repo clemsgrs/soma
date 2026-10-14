@@ -3,8 +3,9 @@
 Each scenario writes synthetic images to disk, then runs them through the real
 `soma run <config.yaml>` entry point: tiling, feature extraction, caching, training and
 evaluation. Nothing is mocked except the encoder, which is weight-free: it returns
-the mean RGB of each tile or 8x8 patch (`tests/dense_literal_encoder.py`, or
-`soma.testing.FakeEncoder` as the frozen encoder stage of the live grid path). The
+the mean normalised RGB of each tile or 8x8 patch (`soma.testing`'s `fake` encoder, or
+`soma.testing.FakeEncoder`, the same pooling, as the frozen encoder stage of the live grid
+path). The whole-slide cohort is `soma.testing.synthetic_cohort`. The
 synthetic labels are a function of tissue colour, so the model can only score well
 if the correct pixels, features and labels reach it.
 
