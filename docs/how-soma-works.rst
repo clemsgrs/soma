@@ -55,4 +55,48 @@ protocol fixed while varying one component. Registered :doc:`benchmarks
 comparing encoders. Every run saves its resolved configuration, predictions,
 and metrics in a :doc:`run bundle <outputs>`.
 
+.. _use-cases:
+
+Use cases
+---------
+
+Each use case is a preset (or a task head swapped into one) over one source shape.
+The end-to-end scenarios in the last column run it in soma's test suite, on synthetic
+images with a weight-free encoder; `tests/e2e/README.md
+<https://github.com/clemsgrs/soma/blob/main/tests/e2e/README.md>`_ lists what each
+scenario checks.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 34 22 26
+
+   * - Use case
+     - Preset or head
+     - Source
+     - End-to-end scenario
+   * - Slide classification
+     - ``mil_classification(encoder, aggregator="abmil")``
+     - Bags of tile features
+     - ``slide_mil_binary_classification``, ``slide_mil_multiclass_classification``
+   * - Survival
+     - ``survival(encoder, aggregator)``; the ``cox_survival`` head
+     - Bags of tile features
+     - ``slide_mil_survival_nll``, ``slide_mil_survival_cox``
+   * - Regression
+     - The ``regression`` head in ``mil_classification``
+     - Bags of tile features
+     - ``slide_mil_regression``
+   * - Tile-level classification
+     - ``tile_classification(encoder)``
+     - One embedding per image
+     - ``tile_binary_classification``
+   * - Segmentation
+     - ``segmentation(encoder, decoder, num_classes=2)``
+     - Dense token grids
+     - ``dense_segmentation``, ``dense_preset_segmentation``, ``grid_live_segmentation``
+   * - Detection
+     - ``detection(encoder, decoder, num_classes=1, match_distance=3.0)``
+     - Dense token grids
+     - ``dense_detection``, ``dense_preset_detection``, ``grid_live_detection``
+
 Next: :doc:`get started <getting-started>` or :doc:`choose a modeling path <modeling>`.

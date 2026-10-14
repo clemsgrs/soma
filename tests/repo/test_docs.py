@@ -341,6 +341,29 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         assert entries == list(children), filename
 
 
+def _e2e_scenarios() -> set[str]:
+    """The scenario names of ``tests/e2e/README.md``'s table, ``a_{b,c}`` spelled out."""
+    readme = (Path(__file__).resolve().parents[1] / "e2e" / "README.md").read_text(encoding="utf-8")
+    names: set[str] = set()
+    for pattern in re.findall(r"^\| `([^`]+)` \|", readme, flags=re.MULTILINE):
+        match = re.fullmatch(r"(.*)\{([^}]*)\}(.*)", pattern)
+        alternatives = match.group(2).split(",") if match else [""]
+        names |= {f"{match.group(1)}{alt}{match.group(3)}" if match else pattern for alt in alternatives}
+    return names
+
+
+def test_the_use_case_table_names_scenarios_the_e2e_suite_runs() -> None:
+    rst = (Path(__file__).resolve().parents[2] / "docs" / "how-soma-works.rst").read_text(encoding="utf-8")
+    table = rst.split(".. _use-cases:", 1)[1].split(".. list-table::", 1)[1]
+    rows = [row for row in table.split("   * - ")[2:]]
+    use_cases = [row.splitlines()[0].strip() for row in rows]
+    assert use_cases == [
+        "Slide classification", "Survival", "Regression", "Tile-level classification", "Segmentation", "Detection",
+    ]
+    named = {name for row in rows for name in re.findall(r"``(\w+)``", row.split("     - ")[-1])}
+    assert named and named <= _e2e_scenarios()
+
+
 def test_getting_started_pipeline_example_constructs_public_config() -> None:
     docs_dir = Path(__file__).resolve().parents[2] / "docs"
     rst = (docs_dir / "getting-started.rst").read_text(encoding="utf-8")
