@@ -862,11 +862,10 @@ def guard_resume_plan_drift(run_dir: Path, plan: Plan) -> None:
     ``plan.yaml`` is checked: a fresh run, or a pinned run id naming a not-yet-created
     dir, has nothing to compare against. The plans are compared without where and how a
     launch runs (``run.output_dir``, ``run.run_id``, ``run.resume``, ``run.mirror_root``,
-    and ``run.folds``, the folds this launch takes on) and the execution fields slide2vec
-    resolves for the machine (:meth:`Plan.comparable`), so an otherwise identical relaunch
-    passes while a changed seed, encoder, head or evaluation protocol is caught before it
-    mixes incompatible folds (issue #244). The manifest guard then checks the cohort
-    files' content."""
+    and ``run.folds``, the folds this launch takes on; :meth:`Plan.comparable`), so an
+    otherwise identical relaunch passes while a changed seed, encoder, head or evaluation
+    protocol is caught before it mixes incompatible folds (issue #244). The manifest guard
+    then checks the cohort files' content."""
     if not (plan.run.resume or plan.run.run_id):
         return
     saved_path = Path(run_dir) / PLAN_FILENAME

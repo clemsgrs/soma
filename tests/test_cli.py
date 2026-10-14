@@ -9,7 +9,7 @@ import yaml
 
 from soma import presets
 from soma.config import Component, ExperimentConfig, FeaturesConfig
-from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS, check, load_cohort, resolve
+from soma.plan import check, load_cohort, resolve
 from tests.experiment_configs import experiment
 
 
@@ -235,8 +235,27 @@ def test_init_prints_an_editable_yaml_with_every_default(capsys):
     assert model["head"]["params"]["num_classes"] is None and model["head"]["params"]["label_map"] is None
     assert model["optimizer"]["params"]["lr"] == 1e-4 and model["optimizer"]["params"]["eps"] == 1e-8
     assert data["trainer"]["callbacks"][1]["params"]["patience"] == 10
-    # slide2vec resolves these for the machine a run starts on.
-    assert all(data["features"]["execution"][name] is None for name in MACHINE_RESOLVED_EXECUTION_FIELDS)
+
+
+def test_init_output_does_not_depend_on_the_machine(monkeypatch, capsys):
+    """The GPU and tiling-worker counts are left unset: slide2vec resolves them on the
+    machine a run starts on, so the printed YAML is the same wherever ``soma init`` runs."""
+    import os
+
+    import torch
+
+    for env_name in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE", "SLURM_JOB_CPUS_PER_NODE"):
+        monkeypatch.delenv(env_name, raising=False)
+    outputs = []
+    for cpus, gpus in ((4, 1), (32, 8)):
+        monkeypatch.setattr(os, "cpu_count", lambda cpus=cpus: cpus)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "device_count", lambda gpus=gpus: gpus)
+        outputs.append(_init(["mil_classification", "--encoder", "uni2"], capsys))
+
+    assert outputs[0] == outputs[1]
+    execution = yaml.safe_load(outputs[0])["features"]["execution"]
+    assert (execution["num_gpus"], execution["num_preprocessing_workers"]) == (None, None)
 
 
 def test_init_output_resolves_to_the_preset_s_plan(tmp_path: Path, capsys):

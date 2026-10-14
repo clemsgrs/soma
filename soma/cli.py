@@ -202,11 +202,9 @@ def _build_run_parser(argv: Sequence[str] = ()) -> argparse.ArgumentParser:
 
 def _init_yaml(name: str, args: argparse.Namespace, config: ExperimentConfig) -> str:
     """``config`` with every default spelled out, as an editable YAML document."""
-    from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS, expand
+    from soma.plan import expand
 
     data = expand(config).to_dict()
-    for field in MACHINE_RESOLVED_EXECUTION_FIELDS:  # slide2vec resolves them where a run starts
-        data["features"]["execution"][field] = None
     flags = " ".join(f"{_flag(argument)} {value}" for argument, value in _given_preset_arguments(args).items())
     header = (
         f"# soma init {name} {flags}".rstrip() + "\n"

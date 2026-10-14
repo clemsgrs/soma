@@ -28,7 +28,6 @@ from soma.benchmark.eva import slide as eva_slide_bench
 from soma.benchmark import ocelot as ocelot_bench
 from soma.benchmark.hest.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 from soma.config import CohortConfig, ExperimentConfig, FeaturesConfig, LearnerConfig
-from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS
 
 REFERENCE_YAML = ROOT / "examples" / "reference.yaml"
 _REFERENCE_HEADER = """\
@@ -54,13 +53,8 @@ def reference_config() -> ExperimentConfig:
 
 
 def _reference_config_yaml() -> str:
-    """The reference experiment as YAML, with the execution fields slide2vec resolves for
-    the generating machine (GPU and preprocessing-worker counts) left ``null``, so the
-    checked-in reference reads the same wherever it is generated."""
-    data = reference_config().to_dict()
-    for name in MACHINE_RESOLVED_EXECUTION_FIELDS:
-        data["features"]["execution"][name] = None
-    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False)
+    """The reference experiment as YAML."""
+    return yaml.safe_dump(reference_config().to_dict(), sort_keys=False, default_flow_style=False)
 
 
 def build_reference_yaml() -> str:
