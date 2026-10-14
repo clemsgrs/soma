@@ -14,7 +14,7 @@ import pytest
 import yaml
 
 from soma.config import ExperimentConfig
-from soma.plan import MACHINE_RESOLVED_EXECUTION_FIELDS, check
+from soma.plan import check
 
 TUTORIALS = [
     "walkthrough-tile-level.ipynb",
@@ -227,8 +227,9 @@ def test_generated_cli_reference_yaml_is_the_reference_example() -> None:
 
 
 def test_reference_yaml_does_not_depend_on_the_generating_machine(monkeypatch) -> None:
-    # slide2vec resolves the GPU and preprocessing-worker counts for the machine it
-    # runs on; the checked-in reference must read the same wherever it is generated.
+    # slide2vec resolves the GPU and preprocessing-worker counts where a run uses them and
+    # leaves the fields unset; the checked-in reference reads the same wherever it is
+    # generated.
     import slide2vec.api
 
     generator, _ = _load_reference_generator()
@@ -242,9 +243,7 @@ def test_reference_yaml_does_not_depend_on_the_generating_machine(monkeypatch) -
 
     assert builds[0] == builds[1]
     execution = yaml.safe_load(builds[0][0])["features"]["execution"]
-    assert {name: execution[name] for name in MACHINE_RESOLVED_EXECUTION_FIELDS} == dict.fromkeys(
-        MACHINE_RESOLVED_EXECUTION_FIELDS
-    )
+    assert (execution["num_gpus"], execution["num_preprocessing_workers"]) == (None, None)
 
 
 def test_reference_example_yaml_spells_every_default() -> None:
@@ -257,15 +256,11 @@ def test_reference_example_yaml_spells_every_default() -> None:
 
     config = ExperimentConfig.from_yaml(example)
     check(config)
-    # The machine-resolved execution fields load from null as the dataclass defaults do,
-    # so the file reads back as the reference experiment.
+    # The file reads back as the reference experiment.
     assert config == generator.reference_config()
-    # Every field is spelled out (the machine-resolved ones as null), and every section
-    # beyond the experiment's own records, encoder and learner is the dataclass default.
-    spelled = config.to_dict()
-    for name in MACHINE_RESOLVED_EXECUTION_FIELDS:
-        spelled["features"]["execution"][name] = None
-    assert spelled == yaml.safe_load(text)
+    # Every field is spelled out, and every section beyond the experiment's own records,
+    # encoder and learner is the dataclass default.
+    assert config.to_dict() == yaml.safe_load(text)
     assert (config.run, config.loaders, config.trainer, config.evaluation) == (
         RunConfig(),
         LoadersConfig(),

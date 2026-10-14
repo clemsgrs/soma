@@ -14,7 +14,7 @@ spacing, see :func:`soma.benchmark.detection.patch_area_mm2`).
 
 Everything operates on plain numpy arrays per image so it unit-tests against hand-built
 point sets with known sensitivity / FP-per-mm². Matching reuses the greedy-by-confidence
-matcher (:func:`soma.evaluation.detection.matching._match_single_class`) — the canonical FROC
+matcher (:func:`soma.evaluation.detection.matching.match_single_class`) — the canonical FROC
 assignment (CAMELYON16 / LUNA16), where each prediction, in descending-score order,
 claims the nearest unclaimed ground-truth point within δ. A matched prediction is a true
 positive, an unmatched one a false positive; the labelling is threshold-independent
@@ -34,7 +34,7 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.spatial import cKDTree
 
-from soma.evaluation.detection.matching import _match_single_class
+from soma.evaluation.detection.matching import match_single_class
 
 __all__ = [
     "DEFAULT_FP_THRESHOLDS",
@@ -88,7 +88,7 @@ def label_detections(
     if pred_xy.shape[0] != pred_score.shape[0]:
         raise ValueError("pred_xy and pred_score must share length.")
 
-    match = _match_single_class(pred_xy, pred_score, gt_xy, delta=float(delta), method=method)
+    match = match_single_class(pred_xy, pred_score, gt_xy, delta=float(delta), method=method)
     matched = np.zeros(pred_xy.shape[0], dtype=bool)
     if match.pairs.shape[0]:
         matched[match.pairs[:, 0]] = True

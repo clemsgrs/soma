@@ -32,10 +32,12 @@ __all__ = [
     "reduce_confusion_matrices_dice",
     "reduce_confusion_matrix_dice",
     "reduce_dice_iou",
+    "validate_dense_shapes",
 ]
 
 
-def _validate_dense_shapes(logits: Tensor, mask: Tensor, num_classes: int) -> None:
+def validate_dense_shapes(logits: Tensor, mask: Tensor, num_classes: int) -> None:
+    """Refuse logits that are not ``(B, num_classes, H, W)`` over a ``(B, H, W)`` mask."""
     if logits.ndim != 4:
         raise ValueError(f"logits must be (B, C, H, W), got {tuple(logits.shape)}")
     if mask.ndim != 3:
@@ -65,7 +67,7 @@ def soft_dice_loss(
     pixels masked out of probs and one-hot targets. ``eps`` smooths the 0/0 case
     (an absent class contributes ~perfect Dice → ~0 loss).
     """
-    _validate_dense_shapes(logits, mask, num_classes)
+    validate_dense_shapes(logits, mask, num_classes)
     probs = logits.softmax(dim=1)  # (B, C, H, W)
     valid = (mask != ignore_index).unsqueeze(1).float()  # (B, 1, H, W)
     safe_mask = mask.clone()
@@ -101,7 +103,7 @@ def focal_tversky_loss(
     :func:`soft_dice_loss` up to an ``eps`` term (which is why the default loss path
     keeps calling ``soft_dice_loss`` directly — the parity anchor).
     """
-    _validate_dense_shapes(logits, mask, num_classes)
+    validate_dense_shapes(logits, mask, num_classes)
     probs = logits.softmax(dim=1)  # (B, C, H, W)
     valid = (mask != ignore_index).unsqueeze(1).float()
     safe_mask = mask.clone()
@@ -183,7 +185,7 @@ def segmentation_loss(
     returns ``nan``, silently poisoning training. Guard with a graph-connected zero so
     the step is a no-op rather than a poison.
     """
-    _validate_dense_shapes(logits, mask, num_classes)
+    validate_dense_shapes(logits, mask, num_classes)
     if not bool((mask != ignore_index).any()):
         return logits.sum() * 0.0
 
@@ -257,7 +259,7 @@ def dense_confusion_counts(
     evaluator compute either per-image-macro or dataset-global Dice/IoU exactly,
     without holding all logits in memory.
     """
-    _validate_dense_shapes(logits, mask, num_classes)
+    validate_dense_shapes(logits, mask, num_classes)
     pred = logits.argmax(dim=1)  # (B, H, W)
     valid = mask != ignore_index
     counts = torch.zeros(logits.shape[0], num_classes, 3, dtype=torch.long, device=logits.device)
@@ -282,7 +284,7 @@ def dense_confusion_matrices(
     Returns integer ``(B, C, C)`` matrices. They are additive across ROIs, slides,
     patients, and folds; ignored pixels contribute nowhere.
     """
-    _validate_dense_shapes(logits, mask, num_classes)
+    validate_dense_shapes(logits, mask, num_classes)
     pred = logits.argmax(dim=1)
     valid = mask != ignore_index
     matrices = torch.zeros(

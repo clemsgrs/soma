@@ -199,7 +199,7 @@ def test_comparable_leaves_out_where_and_which_folds_a_launch_runs_but_keeps_its
         experiment(*files, aggregator="abmil", seed=1, output_dir="elsewhere", run={"run_id": "x", "folds": (0,), "mirror_root": "/m"})
     )
     assert moved != base and moved.comparable() == base.comparable()
-    assert "num_gpus" not in base.comparable()["features"]["execution"]
+    assert base.comparable()["features"] == base.to_dict()["features"]
     reseeded = _resolve(experiment(*files, aggregator="abmil", seed=2, run={"run_id": "r", "folds": (0,)}))
     assert reseeded.comparable() != base.comparable()
     # Launches pinned to one run_id split its folds: each takes on its own.

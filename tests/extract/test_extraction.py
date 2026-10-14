@@ -106,10 +106,7 @@ register_test_encoders()
 
 @pytest.fixture(autouse=True)
 def _force_cpu_for_default_extraction_paths():
-    with patch("soma.extract.extractor.torch.cuda.is_available", return_value=False), patch(
-        "soma.extract.extractor.torch.cuda.device_count",
-        return_value=1,
-    ):
+    with patch("torch.cuda.is_available", return_value=False), patch("torch.cuda.device_count", return_value=1):
         yield
 
 
@@ -128,7 +125,8 @@ def _make_dataset(tmp_path: Path, *, with_mask: bool = False) -> ImageManifest:
 
 def test_execution_options_use_cpu_budget_for_workers(monkeypatch, tmp_path: Path):
     """An unset worker count keeps soma's loader budget: the CPU budget split across
-    GPUs, capped at 16; slide2vec caps the tiling workers at the CPU budget."""
+    GPUs, capped at 16; slide2vec caps the tiling workers at the CPU budget where the
+    run uses them, and the field keeps what was asked (unset)."""
     import slide2vec.api as slide2vec_api
     from soma.extract import slide2vec_adapter as adapter
 
@@ -144,7 +142,8 @@ def test_execution_options_use_cpu_budget_for_workers(monkeypatch, tmp_path: Pat
     )
 
     assert execution.num_workers_per_gpu == 16  # capped at 16
-    assert execution.num_preprocessing_workers == 24
+    assert execution.num_preprocessing_workers is None
+    assert execution.resolved_num_preprocessing_workers() == 24
     assert execution.prefetch_factor == 4
     assert execution.output_dir == tmp_path
     # The precision the cache key was derived at: the encoder's recommendation.
@@ -348,3 +347,25 @@ def test_execution_options_split_auto_workers_across_gpus(monkeypatch, tmp_path:
 
     assert execution.num_gpus == 2
     assert execution.num_workers_per_gpu == 10
+
+
+def test_execution_options_split_auto_workers_across_the_machine_s_gpus(monkeypatch, tmp_path: Path):
+    """An unset GPU count stays unset (slide2vec resolves it where the run uses it), and
+    soma's loader budget is split across the GPUs that resolution finds."""
+    import slide2vec.api as slide2vec_api
+    from soma.extract import slide2vec_adapter as adapter
+
+    monkeypatch.setattr(slide2vec_api, "cpu_worker_limit", lambda: 20)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 4)
+
+    execution = adapter.execution_options(
+        ExecutionOptions(),
+        encoder_name=TEST_TILE,
+        output_dir=tmp_path,
+        save_tile_embeddings=False,
+    )
+
+    assert execution.num_gpus is None
+    assert execution.resolved_num_gpus() == 4
+    assert execution.num_workers_per_gpu == 5

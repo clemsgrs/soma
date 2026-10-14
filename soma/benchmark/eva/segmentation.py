@@ -105,7 +105,7 @@ from soma.benchmark.curation import CuratedManifest
 from soma.models.decoders.base import Decoder
 from soma.models.decoders.registry import decoder_registry
 from soma.registry import NoParams
-from soma.models.heads.dense_metrics import _validate_dense_shapes
+from soma.models.heads.dense_metrics import validate_dense_shapes
 from soma.models.heads.registry import task_registry
 from soma.models.heads.segmentation import SegmentationHead, SegmentationParams
 
@@ -240,7 +240,7 @@ def eva_dice_loss(
     background; the two agree on every EVA training split, where the ignored class never
     occurs (MoNuSAC's ``Ambiguous`` is test-only).
     """
-    _validate_dense_shapes(logits, mask, num_classes)
+    validate_dense_shapes(logits, mask, num_classes)
     probs = logits.softmax(dim=1)
     valid = (mask != ignore_index).unsqueeze(1).to(probs.dtype)
     safe_mask = mask.clone()
@@ -268,7 +268,7 @@ def eva_confusion_counts(
     MoNuSAC Dice comparable with the leaderboard; without an ignored class the counts
     equal :func:`soma.models.heads.dense_metrics.dense_confusion_counts`.
     """
-    _validate_dense_shapes(logits, mask, num_classes)
+    validate_dense_shapes(logits, mask, num_classes)
     pred = logits.argmax(dim=1)
     counts = torch.zeros(logits.shape[0], num_classes, 3, dtype=torch.long, device=logits.device)
     for c in range(num_classes):

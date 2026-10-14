@@ -456,16 +456,26 @@ def make_run_id(*, when: datetime | None = None, wandb_id: str | None = None) ->
     return f"{current:%Y-%m-%d_%H-%M-%S}__{suffix}"
 
 
+def _launch_order(run_id: str) -> tuple[str, int]:
+    """Sort key of a run id: its stem, then the ``-<n>`` counter of a same-second launch
+    (a stem alone counts as 1), so ``…__local-10`` follows ``…__local-9``."""
+    stem, _, counter = run_id.rpartition("-")
+    if "__" in stem and counter.isdigit():
+        return stem, int(counter)
+    return run_id, 1
+
+
 def latest_existing_run_id(experiment_dir: Path) -> str | None:
     """Return the most recent run id under ``experiment_dir/runs``, or None.
 
-    Run ids are ``YYYY-MM-DD_HH-MM-SS__<suffix>`` so a lexical max is the newest
-    run — the one a bare ``resume`` reuses (issue #244).
+    Run ids are ``YYYY-MM-DD_HH-MM-SS__<suffix>``, with ``-<n>`` appended to the later
+    launches of one second, so the max by timestamp then counter is the newest run — the
+    one a bare ``resume`` reuses (issue #244).
     """
     runs_dir = experiment_dir / "runs"
     if not runs_dir.is_dir():
         return None
-    ids = sorted(child.name for child in runs_dir.iterdir() if child.is_dir())
+    ids = sorted((child.name for child in runs_dir.iterdir() if child.is_dir()), key=_launch_order)
     return ids[-1] if ids else None
 
 
@@ -477,7 +487,9 @@ def _resolve_run_id(
     Precedence: an explicit ``run_id`` pins that run (resume into it if present,
     else create it under that name); otherwise ``resume`` reuses the latest
     existing run for this experiment (error if none); otherwise a fresh
-    timestamped id — the unchanged default.
+    timestamped id — the unchanged default. A fresh id names a directory that does not
+    exist yet: a launch in the same second as an earlier one appends ``-2``, ``-3``, …
+    instead of resuming it.
     """
     if plan.run.run_id:
         return plan.run.run_id
@@ -489,7 +501,12 @@ def _resolve_run_id(
                 "nothing to resume. Launch without resume to start a fresh run."
             )
         return latest
-    return make_run_id(when=when)
+    run_id = make_run_id(when=when)
+    fresh, counter = run_id, 1
+    while (experiment_dir / "runs" / fresh).exists():
+        counter += 1
+        fresh = f"{run_id}-{counter}"
+    return fresh
 
 
 @dataclass(frozen=True)
@@ -862,11 +879,10 @@ def guard_resume_plan_drift(run_dir: Path, plan: Plan) -> None:
     ``plan.yaml`` is checked: a fresh run, or a pinned run id naming a not-yet-created
     dir, has nothing to compare against. The plans are compared without where and how a
     launch runs (``run.output_dir``, ``run.run_id``, ``run.resume``, ``run.mirror_root``,
-    and ``run.folds``, the folds this launch takes on) and the execution fields slide2vec
-    resolves for the machine (:meth:`Plan.comparable`), so an otherwise identical relaunch
-    passes while a changed seed, encoder, head or evaluation protocol is caught before it
-    mixes incompatible folds (issue #244). The manifest guard then checks the cohort
-    files' content."""
+    and ``run.folds``, the folds this launch takes on; :meth:`Plan.comparable`), so an
+    otherwise identical relaunch passes while a changed seed, encoder, head or evaluation
+    protocol is caught before it mixes incompatible folds (issue #244). The manifest guard
+    then checks the cohort files' content."""
     if not (plan.run.resume or plan.run.run_id):
         return
     saved_path = Path(run_dir) / PLAN_FILENAME

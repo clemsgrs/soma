@@ -52,8 +52,6 @@ SECTIONS = ("run", "cohort", "features", "loaders", "learner", "trainer", "evalu
 #: ``run`` fields a resume may change: where a launch writes and which of the run's folds
 #: it takes on (launches pinned to one ``run_id`` split the folds), not what it trains.
 RESUME_EXCLUDED_RUN_FIELDS = ("output_dir", "run_id", "resume", "mirror_root", "folds")
-#: ``ExecutionOptions`` fields slide2vec resolves for the machine (GPU and worker counts).
-MACHINE_RESOLVED_EXECUTION_FIELDS = ("num_gpus", "num_preprocessing_workers")
 #: The ``learner.params`` keys that build the model rather than the learner.
 MODEL_PARAMS = (*LEAF_PARAMS[:3], "normalization", "projection")
 #: The ``learner.params`` keys that are not the learner class's own keywords: the model's
@@ -122,8 +120,8 @@ class Plan(Mapping):
 
     def comparable(self) -> dict[str, Any]:
         """The plan a resume must match: without the launch-only ``run`` fields
-        (``output_dir``, ``run_id``, ``resume``, ``mirror_root``, ``folds``) and the
-        execution fields slide2vec resolves for the machine. ``run.seed`` stays."""
+        (``output_dir``, ``run_id``, ``resume``, ``mirror_root``, ``folds``). ``run.seed``
+        stays."""
         return comparable(self.to_dict())
 
     @property
@@ -149,10 +147,6 @@ def comparable(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(run, dict):
         for name in RESUME_EXCLUDED_RUN_FIELDS:
             run.pop(name, None)
-    execution = (payload.get("features") or {}).get("execution")
-    if isinstance(execution, dict):
-        for name in MACHINE_RESOLVED_EXECUTION_FIELDS:
-            execution.pop(name, None)
     return payload
 
 

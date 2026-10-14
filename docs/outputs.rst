@@ -12,7 +12,9 @@ Experiment identity
 -------------------
 
 Managed outputs group runs by experiment identity, with a timestamp/W&B suffix
-for each run. Identity version 9 hashes the ``train`` and ``tune`` manifest
+for each run. A run started in the same second as an earlier run of the same
+experiment gets ``-2``, ``-3``, … appended instead of reusing its directory.
+Identity version 9 hashes the ``train`` and ``tune`` manifest
 slices and the run's *plan* (see :ref:`plan-yaml`): the features section as
 extraction resolves it, the cohort options, the loaders' batch size, sampler and
 augmentation, the learner with every leaf's params, the trainer and the
@@ -84,10 +86,10 @@ a path imports from (``<package>_version``); versions are not part of the plan.
 A resume into an existing run directory (``run.resume`` or ``run.run_id``)
 compares the current plan with the saved ``plan.yaml`` and refuses on any
 difference, except where and how the launch runs: ``run.output_dir``,
-``run.run_id``, ``run.resume``, ``run.mirror_root``, ``run.folds`` and the
-execution resources slide2vec resolves for the machine (GPU and preprocessing
-worker counts). A changed ``run.seed`` is drift. The cohort files' content is
-then checked against the run's experiment identity.
+``run.run_id``, ``run.resume``, ``run.mirror_root`` and ``run.folds``. A changed
+``run.seed`` is drift. GPU and preprocessing worker counts the config leaves unset
+stay unset in the plan, so a run resumes on another machine. The cohort files'
+content is then checked against the run's experiment identity.
 
 .. _model-bundle:
 

@@ -3,7 +3,8 @@
 CI runs ``lint-imports`` before the suite. These tests keep the contracts' module lists in
 step with the package: a new protocol, private module or core namespace must be named.
 The tests are a second root package: like the benchmark package, they import no private
-module (contract 5) and, which import-linter cannot see, no private name (ADR 0023).
+module (contract 5). Neither imports a private core name either, which import-linter cannot
+see (ADR 0022, ADR 0023).
 """
 
 from __future__ import annotations
@@ -135,6 +136,52 @@ def test_no_test_imports_a_private_name():
         for path in sorted(TESTS.rglob("*.py"))
         if "fixtures" not in path.relative_to(TESTS).parts and (names := _private_imports(path))
     }
+
+    assert offenders == {}
+
+
+def _private_core_names(source: str, *, package: str) -> list[str]:
+    """Each ``_``-prefixed name ``source`` imports from a core module: a module of
+    ``soma`` outside ``soma.benchmark``. Relative imports resolve against ``package``."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        if node.level:
+            base = package.split(".")[: len(package.split(".")) - node.level + 1]
+            module = ".".join([*base, *([node.module] if node.module else [])])
+        else:
+            module = node.module or ""
+        parts = module.split(".")
+        if parts[0] == "soma" and parts[:2] != ["soma", "benchmark"]:
+            found += [f"{module}.{alias.name}" for alias in node.names if _is_private(alias.name)]
+    return found
+
+
+def test_a_private_core_name_imported_by_the_benchmark_package_is_caught():
+    source = (
+        "from soma.evaluation.metrics import _x, public\n"
+        "from ...evaluation import _y\n"
+        "from soma.benchmark.spec import _z\n"
+        "from .froc import _w\n"
+        "from soma import __version__\n"
+    )
+
+    assert _private_core_names(source, package="soma.benchmark.monkey") == [
+        "soma.evaluation.metrics._x",
+        "soma.evaluation._y",
+    ]
+
+
+def test_the_benchmark_package_imports_no_private_core_name():
+    # Contract 3 sees modules only; ``from soma.x import _y`` goes through a public
+    # module. A core gap the benchmark needs gets a public spelling (ADR 0022); the
+    # benchmark package's own private names are its own.
+    offenders = {}
+    for path in sorted((PACKAGE / "benchmark").rglob("*.py")):
+        package = _module(path) if path.name == "__init__.py" else _module(path).rpartition(".")[0]
+        if names := _private_core_names(path.read_text(encoding="utf-8"), package=package):
+            offenders[str(path.relative_to(ROOT))] = names
 
     assert offenders == {}
 

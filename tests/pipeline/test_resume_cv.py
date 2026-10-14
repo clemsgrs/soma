@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import shutil
 from dataclasses import replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -131,6 +132,36 @@ def test_explicit_run_id_arg_still_wins_over_config(tmp_path: Path):
     assert layout.run_id == "2020-01-01_00-00-00__local"
 
 
+#: A launch second: two runs started within it would otherwise share one run id (#609).
+_SAME_SECOND = datetime(2026, 10, 13, 13, 27, 38, tzinfo=timezone.utc)
+
+
+def test_fresh_launches_in_the_same_second_get_their_own_run_dirs(tmp_path: Path):
+    plan = Plan(_make_config(tmp_path))
+    run_dirs = []
+    for _ in range(3):
+        layout = resolve_managed_output_paths(plan, when=_SAME_SECOND)
+        layout.run_dir.mkdir(parents=True)  # what the launch does next
+        run_dirs.append(layout.run_dir)
+
+    first = run_dirs[0].name
+    assert first.endswith("__local")
+    assert [path.name for path in run_dirs] == [first, f"{first}-2", f"{first}-3"]
+    assert len({path.parent for path in run_dirs}) == 1
+
+
+def test_a_bare_resume_picks_the_last_of_the_same_second_launches(tmp_path: Path):
+    cfg = _make_config(tmp_path)
+    launched = []
+    for _ in range(11):  # past -9, where the counters stop sorting as text
+        layout = resolve_managed_output_paths(Plan(cfg), when=_SAME_SECOND)
+        layout.run_dir.mkdir(parents=True)
+        launched.append(layout.run_id)
+
+    resumed = resolve_managed_output_paths(Plan(_with_run(cfg, resume=True)))
+    assert resumed.run_id == launched[-1] == f"{launched[0]}-11"
+
+
 def test_latest_existing_run_id_orders_lexically(tmp_path: Path):
     runs = tmp_path / "runs"
     assert latest_existing_run_id(tmp_path) is None
@@ -227,25 +258,39 @@ def test_drift_guard_refuses_a_changed_head(tmp_path: Path):
         guard_resume_plan_drift(run_dir, _plan(changed))
 
 
-def test_drift_guard_ignores_the_machine_resolved_execution_resources(tmp_path: Path):
-    """slide2vec resolves the GPU count and the preprocessing worker count against the
-    machine when its ExecutionOptions are built, so the saved plan records what the
-    original machine had; resuming on another machine is not drift."""
+def test_a_run_resumes_on_a_machine_with_other_gpu_and_cpu_counts(tmp_path: Path, monkeypatch):
+    """The plan keeps the execution resources as given (unset: slide2vec resolves them
+    where the run uses them), so the saved plan does not record the first machine."""
+    import os
+
+    import torch
+
+    def machine(cpus: int, gpus: int) -> None:
+        monkeypatch.setattr(os, "cpu_count", lambda: cpus)
+        monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+        monkeypatch.setattr(torch.cuda, "device_count", lambda: gpus)
+
+    for env_name in ("SLURM_CPUS_PER_TASK", "SLURM_CPUS_ON_NODE", "SLURM_JOB_CPUS_PER_NODE"):
+        monkeypatch.delenv(env_name, raising=False)
+    run_dir = tmp_path / "run"
+    machine(cpus=32, gpus=4)
+    _record(run_dir, _make_config(tmp_path))
+    machine(cpus=8, gpus=1)
+    guard_resume_plan_drift(run_dir, _plan(_make_config(tmp_path, resume=True)))  # no raise
+
+
+def test_drift_guard_refuses_a_changed_gpu_count(tmp_path: Path):
+    # A count the config states is part of the plan, as the precision is.
     run_dir = tmp_path / "run"
     features = FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224))
-    _record(
-        run_dir,
-        _make_config(
-            tmp_path,
-            features=replace(features, execution=ExecutionOptions(num_gpus=4, num_preprocessing_workers=32)),
-        ),
-    )
-    resumed = _make_config(
+    _record(run_dir, _make_config(tmp_path, features=replace(features, execution=ExecutionOptions(num_gpus=4))))
+    changed = _make_config(
         tmp_path,
-        features=replace(features, execution=ExecutionOptions(num_gpus=1, num_preprocessing_workers=8)),
+        features=replace(features, execution=ExecutionOptions(num_gpus=1)),
         resume=True,
     )
-    guard_resume_plan_drift(run_dir, _plan(resumed))  # no raise
+    with pytest.raises(ValueError, match="Refusing to resume.*features"):
+        guard_resume_plan_drift(run_dir, _plan(changed))
 
 
 def test_drift_guard_refuses_a_changed_execution_precision(tmp_path: Path):

@@ -13,7 +13,6 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Iterator, Sequence
 
-import torch
 from slide2vec import ExecutionOptions, Pipeline, PreprocessingConfig
 from slide2vec.encoders.registry import (
     encoder_registry,
@@ -236,14 +235,6 @@ def _backend_provenance_from_mapping(
         "backend": unique_backends[0] if len(unique_backends) == 1 else None,
         "backend_by_sample_id": dict(backend_by_sample_id),
     }
-
-
-def _resolve_num_gpus(num_gpus: int | None) -> int:
-    if num_gpus is not None:
-        return int(num_gpus)
-    if torch.cuda.is_available():
-        return max(1, int(torch.cuda.device_count()))
-    return 1
 
 
 def _empty_sample_ids_from_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]) -> list[str]:
@@ -513,9 +504,7 @@ class _PooledFeatureExtractor:
             tiling_results=prepared_tilings,
         )
 
-        effective_num_gpus = _resolve_num_gpus(
-            num_gpus if num_gpus is not None else self._execution.num_gpus
-        )
+        effective_num_gpus = int(num_gpus) if num_gpus is not None else self._execution.resolved_num_gpus()
         with _suppress_logger_noise_ctx("cucim"):
             with _make_extraction_reporter_ctx(feature_dir):
                 if not self._cache.enabled:
@@ -1649,8 +1638,8 @@ class _PooledFeatureExtractor:
                 output_dtype=self._resolved_dtype(encoder_name=model_name),
             )
             slide_feature_dim: int | None = None
-            if slide_execution.num_gpus > 1 and len(selected_loaded) > 1:
-                num_workers = min(int(slide_execution.num_gpus), len(selected_loaded))
+            if slide_execution.resolved_num_gpus() > 1 and len(selected_loaded) > 1:
+                num_workers = min(slide_execution.resolved_num_gpus(), len(selected_loaded))
                 shard_payloads: list[list[dict[str, str]]] = [[] for _ in range(num_workers)]
                 for idx, loaded in enumerate(selected_loaded):
                     shard_payloads[idx % num_workers].append(

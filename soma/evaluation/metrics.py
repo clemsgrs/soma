@@ -211,7 +211,9 @@ def _r2(y_true, y_pred, y_prob) -> float:
     return float(r2_score(y_true, y_pred))
 
 
-def _pearson(y_true, y_pred, y_prob) -> float:
+def pearson(y_true, y_pred, y_prob=None) -> float:
+    """Pearson correlation of ``y_pred`` with ``y_true``: ``0.0`` for fewer than two
+    samples or a constant input. ``y_prob`` is unused (the catalogue's metric signature)."""
     if len(y_true) < 2:
         return 0.0
     result = pearsonr(y_true, y_pred)
@@ -251,10 +253,10 @@ _METRIC_FUNS: dict[str, dict[str, _Fn]] = {
         "rmse": _rmse,
         "mae": _mae,
         "r2": _r2,
-        "pearson": _pearson,
+        "pearson": pearson,
         "spearman": _spearman,
         # One output: the mean over outputs is that output's Pearson.
-        "mean_pearson": _pearson,
+        "mean_pearson": pearson,
     },
 }
 
@@ -494,13 +496,11 @@ def _mean_pearson(predictions: pd.DataFrame, targets: pd.DataFrame) -> float:
     """
     columns = _output_columns(predictions)
     if not columns:
-        return _pearson(
-            targets["value"].to_numpy(dtype=float), predictions["predicted_value"].to_numpy(dtype=float), None
-        )
+        return pearson(targets["value"].to_numpy(dtype=float), predictions["predicted_value"].to_numpy(dtype=float))
     return float(
         np.mean(
             [
-                _pearson(targets[c].to_numpy(dtype=float), predictions[c].to_numpy(dtype=float), None)
+                pearson(targets[c].to_numpy(dtype=float), predictions[c].to_numpy(dtype=float))
                 for c in columns
             ]
         )
