@@ -52,17 +52,18 @@ class GridBatch:
             raise ValueError("a GridBatch needs features (cached grids) or pixels (live)")
 
 
-def ignore_to_frame(ignore_mask: np.ndarray, geometry) -> Tensor:
+def ignore_to_frame(ignore_mask: np.ndarray, geometry, size: tuple[int, int] | None = None) -> Tensor:
     """Map a level-0 ignore raster (255 = ignored) onto the geometry's target frame.
 
     Target pixel ``(u, v)`` reads the nearest level-0 pixel under the geometry's level-0
     anchor; pixels that fall outside the raster are ignored. Returns ``(H, W)`` bool,
-    ``True`` where nothing is supervised.
+    ``True`` where nothing is supervised. ``size`` overrides the frame's ``(H, W)``
+    (default: the geometry's ``target_size``).
     """
     mask = np.asarray(ignore_mask)
     if mask.ndim != 2:
         raise ValueError(f"ignore mask must be 2-D, got shape {mask.shape}")
-    height, width = (int(v) for v in geometry.target_size)
+    height, width = (int(v) for v in (geometry.target_size if size is None else size))
     top, left = int(geometry.crop_box[0]), int(geometry.crop_box[1])
     scale = float(geometry.level0_px_per_token_px)
     origin_x, origin_y = (float(v) for v in geometry.origin_level0)
@@ -154,15 +155,16 @@ class GridDataset(Dataset):
         keep = torch.from_numpy(~points_on_valid(target.xy.detach().cpu().numpy(), ignored))
         return Points(xy=target.xy[keep], classes=target.classes[keep], ignore_mask=target.ignore_mask)
 
-    def _to_pixel_frame(self, target: Points) -> Points:
-        """Level-0 points and ignore raster -> the pixel frame an augmentation moves."""
+    def _to_pixel_frame(self, target: Points, size: tuple[int, int]) -> Points:
+        """Level-0 points and ignore raster -> the ``size`` pixel frame an augmentation
+        moves (the pixels' own size, which a crop may bring to the target size)."""
         target = self._supervised(target)
         origin = torch.tensor(self._geometry.origin_level0, dtype=torch.float64)
         scale = float(self._geometry.level0_px_per_token_px)
         xy = (target.xy.to(torch.float64) - origin) / scale
         ignore = None
         if target.ignore_mask is not None:
-            framed = ignore_to_frame(target.ignore_mask, self._geometry).numpy()
+            framed = ignore_to_frame(target.ignore_mask, self._geometry, size).numpy()
             ignore = np.where(framed, _IGNORED, 0).astype(np.uint8)
         return Points(xy=xy.to(torch.float32), classes=target.classes, ignore_mask=ignore)
 
@@ -235,7 +237,9 @@ class GridDataset(Dataset):
         if self._check is not None:
             self._check(sample_id, target)
         if self._augment is not None and isinstance(target, Points):
-            pixels, framed = self._augment(pixels, self._to_pixel_frame(target))
+            pixels, framed = self._augment(
+                pixels, self._to_pixel_frame(target, tuple(int(v) for v in pixels.shape[1:]))
+            )
             encoded = self._encode_framed(sample_id, framed)
         else:
             if self._augment is not None:

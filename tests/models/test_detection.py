@@ -757,6 +757,37 @@ def test_grid_dataset_augments_points_in_the_pixel_frame_and_returns_them_at_lev
     assert bool(encoded["ignore"][:, 27:].all()) and not bool(encoded["ignore"][:, :27].any())
 
 
+def test_grid_dataset_frames_the_ignore_raster_onto_an_image_larger_than_the_target():
+    from soma.data import GridGeometry, Points
+    from soma.learn import SegmentationAugment
+    from soma.learn.grid import GridDataset
+
+    # A 64x64 image under a 32-px head: the crop resizes it to the target size, so the
+    # ignore raster must start on the 64x64 pixels, not on the 32x32 target frame.
+    geometry = GridGeometry.from_sizes(target_size=32, patch_size=1, level0_px_per_token_px=1.0)
+    mask = np.zeros((64, 64), dtype=np.uint8)
+
+    class _Images:
+        def load(self, sample_id):
+            return torch.zeros(3, 64, 64, dtype=torch.uint8)
+
+    class _Targets:
+        def load(self, sample_id):
+            return Points(xy=torch.tensor([[40.0, 40.0]]), classes=torch.tensor([0]), ignore_mask=mask)
+
+    def dataset(augment):
+        return GridDataset(
+            ["s"], _Images(), _Targets(), inputs="pixels", geometry=geometry,
+            target_kind="points", augment=augment,
+        )
+
+    _, pixels, encoded, _ = dataset(SegmentationAugment(crop_scale=(0.5, 1.0), target_size=32))[0]
+    assert tuple(pixels.shape) == (3, 32, 32)
+    assert encoded["ignore"].shape == (32, 32)
+    _, _, plain, _ = dataset(None)[0]
+    assert plain["ignore"].shape == (32, 32)
+
+
 def test_head_drops_points_on_ignored_pixels_from_heatmap_and_ground_truth():
     head = _make_head()
     ignore = torch.zeros(1, 32, 32, dtype=torch.bool)
