@@ -119,7 +119,7 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - 0.915
    * - bach
      - virchow2
-     - 0.871 ± 0.011
+     - 0.870 ± 0.012
      - 0.883
    * - breakhis
      - uni2
@@ -127,7 +127,7 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - 0.859
    * - breakhis
      - virchow2
-     - 0.812 ± 0.008
+     - 0.811 ± 0.008
      - 0.821
    * - crc
      - uni2
@@ -176,19 +176,19 @@ Recorded foreground mean Dice scores alongside the packaged EVA references.
      - EVA reference
    * - consep
      - uni2
-     - 0.630 ± 0.003
+     - 0.631 ± 0.003
      - 0.630
    * - consep
      - virchow2
-     - 0.642 ± 0.001
+     - 0.643 ± 0.002
      - 0.640
    * - monusac
      - uni2
-     - 0.642 ± 0.004
+     - 0.645 ± 0.003
      - 0.642
    * - monusac
      - virchow2
-     - 0.673 ± 0.002
+     - 0.666 ± 0.011
      - 0.669
 
 Slide-level classification
@@ -205,19 +205,19 @@ Recorded balanced accuracy scores alongside the packaged EVA references.
      - EVA reference
    * - camelyon16_small
      - uni2
-     - 0.854 ± 0.013
+     - 0.857 ± 0.014
      - 0.849
    * - camelyon16_small
      - virchow2
-     - 0.858 ± 0.011
+     - 0.860 ± 0.011
      - 0.861
    * - panda_small
      - uni2
-     - 0.649 ± 0.017
+     - 0.652 ± 0.016
      - 0.657
    * - panda_small
      - virchow2
-     - 0.652 ± 0.017
+     - 0.651 ± 0.018
      - 0.646
 
 See the `kaiko-ai/eva pathology leaderboard <https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv>`__ for the official reference leaderboard.
