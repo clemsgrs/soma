@@ -2,7 +2,7 @@ soma
 ====
 
 ``soma`` runs computational pathology experiments from images and labels to
-predictions, metrics, and reports. Use a YAML pipeline for a complete run or the
+predictions and metrics. Use a YAML pipeline for a complete run or the
 Python API to compose preprocessing, frozen encoders, and downstream models.
 
 .. figure:: /_static/figures/pipeline-overview.svg

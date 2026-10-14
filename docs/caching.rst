@@ -2,7 +2,7 @@ Caching
 =======
 
 The shared cache reuses tiling and frozen features across compatible runs.
-Run-specific checkpoints, predictions, and reports live in :doc:`outputs`.
+Run-specific bundles, predictions, and metrics live in :doc:`outputs`.
 
 The cache configuration is ``features.cache``, a :class:`soma.config.CacheOptions`.
 
