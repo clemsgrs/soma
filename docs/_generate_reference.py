@@ -299,60 +299,17 @@ def _flag(value: float, text: str, gate) -> str:
     return text
 
 
-def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> tuple[str, bool]:
-    """A ``list-table`` of soma's recorded measurements next to the reference band.
-
-    Built from the packaged results ledger (``<name>/results.csv``); only cells that have
-    been run appear, latest row per cell. Returns the table and whether any cell is
-    flagged (the caller emits the ``:red:`` role definition once).
-    """
-    rows = _latest_rows(load_results(name))
-    if not rows:
-        return (
-            "No reproductions have been recorded yet. Run ``soma reproduce <name> --record`` "
-            "to append a measured number to the results ledger."
-        ), False
-    header = [c.capitalize() for c in key_columns] + [
-        "Metric",
-        "soma (mean ± std)",
-        "Seeds",
-        "Reference",
-    ]
-    lines = [".. list-table::", "   :header-rows: 1", ""]
-    lines.extend([f"   * - {header[0]}"] + [f"     - {col}" for col in header[1:]])
-    flagged = False
-    for row in rows:
-        measured = f"{row.measured:.3f}" + (f" ± {row.std:.3f}" if row.std is not None else "")
-        seeds = "" if row.n_seeds is None else str(row.n_seeds)
-        gates = [
-            g
-            for g in expected_rows(name, metric=row.metric, **row.key)
-            if not g.is_external
-        ]
-        gate = gates[0] if gates else None
-        if gate is not None and not gate.within_tolerance(row.measured):
-            flagged = True
-        measured = _flag(row.measured, measured, gate)
-        reference = f"{gate.expected:.3f} ± {gate.tolerance_band():.3f}" if gate else "—"
-        cells = [row.key.get(c, "") for c in key_columns] + [
-            f"``{row.metric}``",
-            measured,
-            seeds,
-            reference,
-        ]
-        lines.extend([f"   * - {cells[0]}"] + [f"     - {cell}" for cell in cells[1:]])
-    return "\n".join(lines), flagged
-
 def _results_table(
     name: str,
     key_columns: tuple[str, ...],
     key_labels: tuple[str, ...],
     metric_label: str,
 ) -> str:
-    """A ``list-table`` of soma's recorded scores next to the reference band, best first.
+    """A ``list-table`` of soma's recorded scores, best first.
 
     Built from the packaged results ledger (``<name>/results.csv``): only cells that have
-    been run appear, latest row per cell. A score outside its reference band is red.
+    been run appear, latest row per cell. A score outside its gate's band is red; the
+    gate itself is not a column, since these benchmarks are soma's own.
     """
     rows = _latest_rows(load_results(name))
     if not rows:
@@ -360,7 +317,7 @@ def _results_table(
             f"No reproductions have been recorded yet. ``soma reproduce {name} --record`` "
             "appends a measured score to the results ledger this table reads."
         )
-    header = list(key_labels) + [f"{metric_label} (mean ± std)", "Seeds", "Reference"]
+    header = list(key_labels) + [f"{metric_label} (mean ± std)", "Seeds"]
     lines = [".. list-table::", "   :header-rows: 1", ""]
     lines.extend([f"   * - {header[0]}"] + [f"     - {col}" for col in header[1:]])
     flagged = False
@@ -376,8 +333,7 @@ def _results_table(
         if gate is not None and not gate.within_tolerance(row.measured):
             flagged = True
         measured = _flag(row.measured, measured, gate)
-        reference = f"{gate.expected:.3f} ± {gate.tolerance_band():.3f}" if gate else "—"
-        cells = [row.key.get(c, "") for c in key_columns] + [measured, seeds, reference]
+        cells = [row.key.get(c, "") for c in key_columns] + [measured, seeds]
         lines.extend([f"   * - {cells[0]}"] + [f"     - {cell}" for cell in cells[1:]])
     table = "\n".join(lines)
     return _RED_ROLE + "\n\n" + table if flagged else table
@@ -493,7 +449,8 @@ def build_hest_results_rst() -> str:
     return _RED_ROLE + "\n\n" + table if flagged else table
 
 
-# CRoMa's three reported metrics: display label + whether the metric ranks encoders.
+# CRoMa's three reported metrics: display label + whether the metric ranks encoders
+# (F(0) is a diagnostic: its pair orderings are not checked).
 _CROMA_METRICS = (
     ("test/croma_median", "CRoMa median", True),
     ("test/croma_ltm10", "CRoMa LTM10", True),
@@ -559,8 +516,8 @@ def build_croma_results_rst() -> str:
         "   * - Cohort",
         "     - Encoder",
     ]
-    for _, label, ranks in _CROMA_METRICS:
-        lines.append(f"     - {label}" + ("" if ranks else " (diagnostic)"))
+    for _, label, _ in _CROMA_METRICS:
+        lines.append(f"     - {label}")
     for (dataset, encoder), per_metric in sorted(by_cell.items()):
         lines.extend([f"   * - {dataset}", f"     - ``{encoder}``"])
         for metric, _, _ in _CROMA_METRICS:
