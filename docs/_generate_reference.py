@@ -15,18 +15,10 @@ for sibling in (ROOT.parent / "slide2vec", ROOT.parent / "hs2p"):
         sys.path.insert(0, str(sibling))
 
 from soma import components
-from soma.benchmark import (
-    expected_rows,
-    get_benchmark,
-    load_results,
-    reproduction_report,
-)
-from soma.benchmark import croma as croma_bench
+from soma.benchmark import expected_rows, get_benchmark, load_results, reproduction_report
 from soma.benchmark import eva as eva_bench
 from soma.benchmark.eva import segmentation as eva_seg_bench
 from soma.benchmark.eva import slide as eva_slide_bench
-from soma.benchmark import ocelot as ocelot_bench
-from soma.benchmark.hest.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
 from soma.config import CohortConfig, ExperimentConfig, FeaturesConfig, LearnerConfig
 
 REFERENCE_YAML = ROOT / "examples" / "reference.yaml"
@@ -275,41 +267,10 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 # ``source`` column (no hand-typed numbers, no drift, no ``TBD``). A generator + a
 # checked-in file kept in sync by ``tests/repo/test_docs.py`` mirrors the ``cli.rst`` mechanism.
 
-# Maintainers: edit this file for prose, the ``soma/benchmark/<name>/`` package for a protocol, and
-# ``soma/benchmark/<name>/reference.csv`` for references. Regenerate the pages with
+# Maintainers: the benchmark pages (``docs/*-benchmark.rst``) are written by hand; only their
+# results tables are generated here, from ``soma/benchmark/<name>/results.csv`` (the ledger
+# ``soma reproduce --record`` appends to) and ``reference.csv``. Regenerate them with
 # ``python docs/_generate_reference.py``; ``tests/repo/test_docs.py`` checks parity.
-
-# Upstream provenance for each benchmark family's published reference band — the leaderboard
-# the numbers were captured from, rendered as one clickable link next to the reference
-# (replaces dumping the CSV's verbose ``source`` column on the page). A family absent here
-# has a self-referential reference (e.g. a soma seed-0 regression gate), so there is no
-# external source to link.
-_REFERENCE_SOURCE = {
-    "eva": (
-        "kaiko-ai/eva pathology leaderboard",
-        "https://github.com/kaiko-ai/eva/blob/main/tools/data/leaderboards/pathology.csv",
-    ),
-    "hest": (
-        "HEST-Benchmark leaderboard (mahmoodlab/HEST)",
-        "https://github.com/mahmoodlab/HEST#hest-benchmark",
-    ),
-}
-
-
-def _kv_table(col_a: str, col_b: str, rows: list[tuple[str, str]], *, widths: str = "30 70") -> str:
-    """A two-column ``list-table`` (header + ``rows``)."""
-    lines = [".. list-table::", "   :header-rows: 1", f"   :widths: {widths}", ""]
-    lines.extend([f"   * - {col_a}", f"     - {col_b}"])
-    for a, b in rows:
-        lines.extend([f"   * - {a}", f"     - {b}"])
-    return "\n".join(lines)
-
-
-def _reference_source_link(family: str) -> str:
-    """A single clickable ``label <url>`` for where a benchmark's reference band came from."""
-    label, url = _REFERENCE_SOURCE[family]
-    return f"`{label} <{url}>`__"
-
 
 def _latest_rows(rows):
     """The most recent ledger row per (key, metric) cell, in first-seen cell order.
@@ -382,500 +343,122 @@ def _reproduced_table(name: str, key_columns: tuple[str, ...]) -> tuple[str, boo
         lines.extend([f"   * - {cells[0]}"] + [f"     - {cell}" for cell in cells[1:]])
     return "\n".join(lines), flagged
 
+def _results_table(
+    name: str,
+    key_columns: tuple[str, ...],
+    key_labels: tuple[str, ...],
+    metric_label: str,
+) -> str:
+    """A ``list-table`` of soma's recorded scores next to the reference band, best first.
 
-_RAW_ROOT_SENTENCE = (
-    "Choose a compatible tile-level :doc:`encoder <encoders>` and pass the downloaded\n"
-    "dataset directory as ``--raw-root``; curated manifests are written under\n"
-    "``<raw-root>/curated``. For example"
-)
-
-
-def _eva_results_section() -> str:
-    """Render the public reproduced-versus-reference EVA comparison, one table per group.
-
-    Groups follow the dataset families, not the metric: patch and slide-level
-    classification both report balanced accuracy but are different protocols.
+    Built from the packaged results ledger (``<name>/results.csv``): only cells that have
+    been run appear, latest row per cell. A score outside its reference band is red.
     """
-    rows = _latest_rows(load_results("eva"))
-    sections = []
-    for title, datasets, metric, label, example in (
-        (
-            "Patch classification",
-            eva_bench.DATASETS,
-            "test/balanced_accuracy",
-            "balanced accuracy",
-            "eva/bach",
-        ),
-        (
-            "Segmentation",
-            eva_seg_bench.DATASETS,
-            "test/foreground_mean_dice",
-            "foreground mean Dice",
-            "eva/consep",
-        ),
-        (
-            "Slide-level classification",
-            eva_slide_bench.DATASETS,
-            "test/balanced_accuracy",
-            "balanced accuracy",
-            "eva/panda_small",
-        ),
-    ):
-        heading = f"{title}\n{'~' * len(title)}\n\n"
-        group_rows = [
-            r for r in rows if r.metric == metric and r.key.get("dataset") in datasets
+    rows = _latest_rows(load_results(name))
+    if not rows:
+        return (
+            f"No reproductions have been recorded yet. ``soma reproduce {name} --record`` "
+            "appends a measured score to the results ledger this table reads."
+        )
+    header = list(key_labels) + [f"{metric_label} (mean ± std)", "Seeds", "Reference"]
+    lines = [".. list-table::", "   :header-rows: 1", ""]
+    lines.extend([f"   * - {header[0]}"] + [f"     - {col}" for col in header[1:]])
+    flagged = False
+    for row in sorted(rows, key=lambda r: -r.measured):
+        measured = f"{row.measured:.3f}" + (f" ± {row.std:.3f}" if row.std is not None else "")
+        seeds = "" if row.n_seeds is None else str(row.n_seeds)
+        gates = [
+            g
+            for g in expected_rows(name, metric=row.metric, **row.key)
+            if not g.is_external
         ]
-        if not group_rows:
-            sections.append(
-                heading
-                + f"No {label} cells have been recorded yet. Run, for example::\n\n"
-                f"    soma reproduce {example} --encoder virchow2 "
-                f"--raw-root /path/to/{example} --record\n\n"
-                "to record a soma score next to the published EVA reference."
-            )
-        else:
-            sections.append(heading + _eva_results_table(group_rows, label))
-    return "\n\n".join(sections)
+        gate = gates[0] if gates else None
+        if gate is not None and not gate.within_tolerance(row.measured):
+            flagged = True
+        measured = _flag(row.measured, measured, gate)
+        reference = f"{gate.expected:.3f} ± {gate.tolerance_band():.3f}" if gate else "—"
+        cells = [row.key.get(c, "") for c in key_columns] + [measured, seeds, reference]
+        lines.extend([f"   * - {cells[0]}"] + [f"     - {cell}" for cell in cells[1:]])
+    table = "\n".join(lines)
+    return _RED_ROLE + "\n\n" + table if flagged else table
 
 
-def _eva_results_table(rows, label: str) -> str:
+def build_ocelot_results_rst() -> str:
+    """The OCELOT results table: one row per recorded encoder."""
+    return _results_table("ocelot", ("encoder",), ("Encoder",), "Mean F1")
+
+
+def _eva_results_table(datasets, metric: str, reference_label: str, example: str) -> str:
+    """One EVA group's table (dataset, encoder, soma, reference), or the fallback sentence."""
+    rows = [
+        r
+        for r in _latest_rows(load_results("eva"))
+        if r.metric == metric and r.key.get("dataset") in datasets
+    ]
+    if not rows:
+        return (
+            f"No scores have been recorded yet. ``soma reproduce {example} --encoder "
+            "virchow2 --raw-root /path/to/{example} --record`` records one next to the "
+            "published EVA reference."
+        )
     lines = [
-        f"Recorded {label} scores alongside the packaged EVA references.\n",
         ".. list-table::",
         "   :header-rows: 1",
         "",
         "   * - Dataset",
         "     - Encoder",
-        "     - soma (mean ± std)",
+        f"     - {reference_label} (mean ± std)",
         "     - EVA reference",
     ]
-    # Order the table by (dataset, encoder) so it never depends on the ledger's insertion
-    # order — otherwise a row recorded encoder-last (e.g. gleason_arvaniti) renders out of
-    # step with every other dataset's uni2-then-virchow2 layout.
-    ordered = sorted(rows, key=lambda r: (r.key.get("dataset", ""), r.key.get("encoder", "")))
-    for row in ordered:
-        measured = f"{row.measured:.3f}" + (
-            f" ± {row.std:.3f}" if row.std is not None else ""
-        )
+    flagged = False
+    # Order by (dataset, encoder) so the table never depends on the ledger's insertion order.
+    for row in sorted(rows, key=lambda r: (r.key.get("dataset", ""), r.key.get("encoder", ""))):
+        measured = f"{row.measured:.3f}" + (f" ± {row.std:.3f}" if row.std is not None else "")
         gates = [
             g
             for g in expected_rows("eva", metric=row.metric, **row.key)
             if not g.is_external
         ]
-        reference = f"{gates[0].expected:.3f}" if gates else "—"
+        gate = gates[0] if gates else None
+        if gate is not None and not gate.within_tolerance(row.measured):
+            flagged = True
         lines.extend(
             [
                 f"   * - {row.key.get('dataset', '')}",
                 f"     - {row.key.get('encoder', '')}",
-                f"     - {measured}",
-                f"     - {reference}",
+                f"     - {_flag(row.measured, measured, gate)}",
+                f"     - {gate.expected:.3f}" if gate else "     - —",
             ]
         )
+    table = "\n".join(lines)
+    return _RED_ROLE + "\n\n" + table if flagged else table
 
-    return "\n".join(lines)
+
+def build_eva_patch_results_rst() -> str:
+    return _eva_results_table(eva_bench.DATASETS, "test/balanced_accuracy", "Balanced accuracy", "eva/bach")
 
 
-def _ocelot_guidance_section(bench) -> str:
-    """The non-gating external/guidance anchors as a clickable, clearly-labelled section.
-
-    Generated from the registered benchmark's ``external`` reference rows (issue #226): each
-    renders as an anonymous RST hyperlink (``label <url>``__) so the docs page links the
-    snapshotted source, framed as context — never a target ``soma reproduce`` gates on.
-    """
-    external = [r for r in bench.expected() if r.is_external]
-    bullets = []
-    for row in external:
-        bullets.append(
-            f"* `{row.label} <{row.url}>`__ — ``{row.metric}`` ≈ {row.expected:.2f}"
-        )
-    return (
-        "Guidance anchors\n----------------\n\n"
-        "These snapshots come from fully supervised, end-to-end methods with a\n"
-        "trainable encoder. They give context for the frozen probe and never gate\n"
-        "``soma reproduce``:\n\n"
-        + "\n".join(bullets)
+def build_eva_segmentation_results_rst() -> str:
+    return _eva_results_table(
+        eva_seg_bench.DATASETS, "test/foreground_mean_dice", "Foreground mean Dice", "eva/consep"
     )
 
 
-def build_ocelot_benchmark_rst() -> str:
-    """Generate the OCELOT benchmark page from the registered ``ocelot`` benchmark."""
-    bench = get_benchmark("ocelot")
-    fixed = bench.facet.fixed
-    varied = ", ".join(f"``{v}``" for v in bench.facet.varied)
-    seeds = ", ".join(str(s) for s in bench.canonical_seeds)
-    anchor = f"``{ocelot_bench.ANCHOR_ENCODER}`` @ {ocelot_bench.ANCHOR_SPACING:g} µm/px"
-
-    protocol_rows = [(f"``{key}``", f"``{value}``") for key, value in fixed.items()]
-    protocol_rows += [
-        ("varied axes", varied),
-        ("primary metric", f"``{bench.primary_metric}``"),
-        ("canonical seeds", f"``{seeds}``"),
-        ("anchor", f"{anchor} (seed 0)"),
-    ]
-    axes_rows = [
-        (f"``{enc}``", f"{spacing:g}")
-        for enc, spacing in sorted(ocelot_bench._CONFIG_FILES)
-    ]
-    env = bench.reference_environment
-    environment = (
-        f"The anchor was measured with soma {env['soma']}, slide2vec "
-        f"{env['slide2vec']}, and torch {env['torch']} on one {env['gpu']}."
+def build_eva_slide_results_rst() -> str:
+    return _eva_results_table(
+        eva_slide_bench.DATASETS, "test/balanced_accuracy", "Balanced accuracy", "eva/panda_small"
     )
-    gate_rows = [
-        (f"``{row.metric}``", f"{row.expected:.3f} ± {row.tolerance:.3f}")
-        for row in bench.expected()
-        if not row.is_external
-    ]
-    results_table, flagged = _reproduced_table("ocelot", ("encoder",))
-
-    sections = [
-        "OCELOT\n======",
-        "Evaluate frozen encoders on the `OCELOT 2023\n"
-        "<https://ocelot2023.grand-challenge.org/>`_ cell-detection challenge. The data\n"
-        "contains paired cell and tissue patches from TCGA; this benchmark uses only\n"
-        "the cell patches.\n\n"
-        "A frozen encoder produces a dense token grid and a ``lightweight_conv``\n"
-        "decoder predicts per-class peak heatmaps. The score is class-aware\n"
-        "**mean F1 @ δ = 3 µm**, using greedy matching. Per-class score thresholds\n"
-        "are selected on ``tune``, frozen, and applied once to ``test``. See\n"
-        ":doc:`detection` for matching and pixel-to-micrometer definitions.",
-        "Run the benchmark\n-----------------\n\n"
-        "Prepare the raw data as described in :doc:`curation`, then run the default\n"
-        "Virchow2 encoder at 0.2 µm/px with canonical seed 0::\n\n"
-        "    soma reproduce ocelot --raw-root /path/to/ocelot\n\n"
-        "Select another compatible encoder with ``--encoder``, compare several with\n"
-        "``--encoders``, or rescore an existing run with ``--from-run-dir <dir>``.",
-        "Protocol\n--------\n\n"
-        "The recipe backbone is held fixed; ``soma reproduce`` varies only the ``encoder``\n"
-        "and fixes image spacing at the anchor.\n\n"
-        + _kv_table("Axis / setting", "Value", protocol_rows),
-        "Packaged spacing protocols\n--------------------------\n\n"
-        "``build_config`` also resolves a committed protocol per ``(encoder, spacing)``:\n"
-        "the 2×2 magnification-alignment ablation plus the native anchor. Use these for\n"
-        "a custom spacing sweep compared on a :doc:`leaderboard <benchmarking>`:\n\n"
-        + _kv_table("Encoder", "Spacing (µm/px)", axes_rows, widths="50 50"),
-        "Encoder results\n---------------\n\n"
-        + (_RED_ROLE + "\n\n" if flagged else "")
-        + "Recorded test ``mean_f1`` scores use the protocol above at 0.2 µm/px. The\n"
-        "reference band is soma's frozen-probe Virchow2 result at seed 0; a value\n"
-        "outside its band is shown in red.\n\n"
-        + _kv_table("Metric", "Reference band (expected ± tolerance)", gate_rows, widths="40 60")
-        + "\n\n"
-        + results_table
-        + "\n\n"
-        + environment
-        + "\n\nThese results accompany Grisi *et al.*, *Benchmarking foundation models for\n"
-        "cell detection* (in preparation).",
-        _ocelot_guidance_section(bench),
-        "References\n----------\n\n"
-        "* Ryu et al., *OCELOT: Overlapped Cell on Tissue Dataset for Histopathology*,\n"
-        "  CVPR 2023.\n"
-        "* *CellRegNet*, 2024 — a fully supervised point-detection baseline.\n"
-        "* `arXiv:2503.05678 <https://arxiv.org/abs/2503.05678>`__ — P2PNet-style\n"
-        "  point detection on frozen foundation-model features.",
-        ".. seealso::\n\n"
-        "   * :doc:`detection` — head, target encoding, loss, and F1@δ evaluator.\n"
-        "   * :doc:`benchmarking` — the shared benchmark workflow.\n"
-        "   * :doc:`curation` — the OCELOT curator and split policy.",
-    ]
-    return "\n\n".join(sections).rstrip() + "\n"
 
 
-def build_eva_benchmark_rst() -> str:
-    """Generate the EVA benchmark page from the registered ``eva/<dataset>`` family."""
-    members = _benchmark_family("eva")
-    family = [b for b in members if b.facet.fixed.get("protocol") == "eva-linear-probe"]
-    seg_family = [b for b in members if b.facet.fixed.get("protocol") == "eva-segmentation-decoder"]
-    slide_family = [b for b in members if b.facet.fixed.get("protocol") == "eva-slide-abmil"]
-    head = family[0]  # protocol constants are shared across the family
-    seeds = ", ".join(str(s) for s in head.canonical_seeds)
-    protocol_rows = [
-        ("head", "linear probe (``aggregation: null`` — each patch is its own bag)"),
-        (
-            "optimizer",
-            f"AdamW, lr ``{eva_bench.LEARNING_RATE:g}``, "
-            f"weight_decay ``{eva_bench.WEIGHT_DECAY:g}``",
-        ),
-        ("batch size", f"``{eva_bench.HEAD_BATCH_SIZE}``"),
-        ("budget", f"fixed step budget: ``max_steps={eva_bench.MAX_STEPS}`` optimizer updates"),
-        ("metric", "``balanced_accuracy``"),
-        ("varied axis", "``encoder``"),
-        ("primary metric", f"``{head.primary_metric}`` (from ``summary.json``)"),
-        ("canonical seeds", f"``{seeds}`` (averaged)"),
-    ]
-
-    dataset_names = [str(benchmark.facet.fixed["dataset"]) for benchmark in family]
-    dataset_list = ", ".join(dataset_names[:-1]) + f", and {dataset_names[-1]}"
-    raw_layout_rows = [
-        (
-            "`BACH <https://zenodo.org/records/3632035>`__ (``bach``)",
-            "``ICIAR2018_BACH_Challenge/Photos/<class>/*.tif``",
-        ),
-        (
-            "`BreaKHis <https://web.inf.ufpr.br/vri/databases/"
-            "breast-cancer-histopathological-database-breakhis/>`__ (``breakhis``)",
-            "``BreaKHis_v1/histology_slides/…/40X/*.png``; soma selects EVA classes",
-        ),
-        (
-            "`CRC <https://zenodo.org/records/1214456>`__ (``crc``)",
-            "``NCT-CRC-HE-100K/`` and ``CRC-VAL-HE-7K/``",
-        ),
-        (
-            "`Gleason Arvaniti <https://dataverse.harvard.edu/dataset.xhtml?"
-            "persistentId=doi:10.7910/DVN/OCYCMP>`__ (``gleason_arvaniti``)",
-            "the ``ZT{76_39,111_4,199_1,204_6}*.tar.gz`` TMA archives and "
-            "``Gleason_masks_train.tar.gz``",
-        ),
-        (
-            "`MHIST <https://bmirds.github.io/MHIST/#accessing-dataset>`__ (``mhist``)",
-            "``images/*.png`` and ``annotations.csv``",
-        ),
-        (
-            "`PatchCamelyon <https://zenodo.org/records/2546921>`__ "
-            "(``patch_camelyon``)",
-            "the six ``camelyonpatch_level_2_split_{train,valid,test}_{x,y}.h5`` files",
-        ),
-    ]
-
-    seg_names = [str(b.facet.fixed["dataset"]) for b in seg_family]
-    seg_list = " and ".join(seg_names)
-    seg_head = seg_family[0]
-    seg_protocol_rows = [
-        (
-            "samples",
-            "224 px tiles and class-index masks materialised by the curator "
-            "(MoNuSAC train: whole images)",
-        ),
-        (
-            "features",
-            "CoNSeP: cached dense grids. MoNuSAC: re-encoded every step "
-            "(``features.kind: live``) because its train crops are random",
-        ),
-        (
-            "augmentation",
-            "MoNuSAC train only: ``crop_scale: [0.08, 1.0]`` "
-            "(torchvision's ``RandomResizedCrop(224)`` defaults). CoNSeP: none",
-        ),
-        (
-            "decoder",
-            "``eva_conv_with_image`` (EVA's online ``ConvDecoderWithImage``, the leaderboard "
-            "decoder): nearest ×2 → 3x3 conv-BN-ReLU (64) → bilinear to the tile size → "
-            "concat the ImageNet-normalised RGB tile → 2 × 3x3 conv-BN-ReLU (32) → 1x1 conv "
-            "(classes). ``eva_conv_ms`` (the offline ``ConvDecoderMS``) stays registered for "
-            "reference",
-        ),
-        ("loss", "pure soft Dice over softmax, background included (``eva_segmentation`` head)"),
-        (
-            "optimizer",
-            f"AdamW, lr ``{eva_seg_bench.LEARNING_RATE:g}``, "
-            f"weight_decay ``{eva_seg_bench.WEIGHT_DECAY:g}``, EVA's default ``ConstantLR`` "
-            f"warm-up (lr/{round(1 / eva_seg_bench.WARMUP_FACTOR)} for the first "
-            f"{eva_seg_bench.WARMUP_EPOCHS} epochs)",
-        ),
-        ("batch size", f"``{eva_seg_bench.BATCH_SIZE}``"),
-        ("budget", f"fixed step budget: ``max_steps={eva_seg_bench.MAX_STEPS}`` optimizer updates"),
-        (
-            "metric",
-            "``foreground_mean_dice`` — per-image mean Dice over the foreground classes, "
-            "empty targets skipped (MONAI ``DiceMetric(include_background=False)``)",
-        ),
-        ("varied axis", "``encoder``"),
-        (
-            "primary metric",
-            f"``{seg_head.primary_metric}``. CoNSeP: from ``summary.json``. MoNuSAC: "
-            "re-scored from the run's saved ``predictions_test/`` label maps with EVA's "
-            "counting (``summary.json`` uses soma's standard counting, which drops "
-            "``Ambiguous`` pixels from the predicted area too)",
-        ),
-        ("canonical seeds", f"``{seeds}`` (averaged)"),
-    ]
-    seg_raw_layout_rows = [
-        (
-            "`CoNSeP <https://github.com/vqdang/hover_net/issues/267>`__ (``consep``)",
-            "``Train/Images/*.png``, ``Train/Labels/*.mat``, ``Test/Images``, ``Test/Labels`` "
-            "(HoVer-Net layout; the official Warwick download is login-walled and the linked "
-            "issue tracks that, so use a public mirror such as the Kaggle ``consep`` dataset)",
-        ),
-        (
-            "`MoNuSAC <https://monusac-2020.grand-challenge.org/Data/>`__ (``monusac``)",
-            "``MoNuSAC_images_and_annotations/`` and ``MoNuSAC Testing Data and Annotations/`` "
-            "(one ``.tif`` + ``.xml`` per image; CC BY-NC-SA 4.0)",
-        ),
-    ]
-
-    slide_names = [str(b.facet.fixed["dataset"]) for b in slide_family]
-    slide_list = " and ".join(slide_names)
-    slide_head = slide_family[0]
-    slide_seeds = f"``0``–``{slide_head.canonical_seeds[-1]}`` ({len(slide_head.canonical_seeds)} seeds, averaged)"
-    slide_specs = eva_slide_bench.DATASETS
-    slide_protocol_rows = [
-        (
-            "tiles",
-            "chosen by the curator with EVA's sampler: at most "
-            + ", ".join(
-                f"{spec.max_tiles} at {spec.target_mpp:g} µm/px ({name})"
-                for name, spec in slide_specs.items()
-            )
-            + "; read at level 0 and resized to 224 px by slide2vec",
-        ),
-        (
-            "aggregator",
-            "``eva_abmil`` (EVA's ``ABMIL``): ``Linear(D → 128)`` projection, then gated "
-            "attention pooling (``tanh`` × ``sigmoid``, hidden width 128). No dropout",
-        ),
-        (
-            "head",
-            "``eva_mil_binary`` (one logit, ``BCEWithLogitsLoss``, positive when the logit is "
-            "above 0) and ``eva_mil_multiclass`` (one logit per class, cross entropy): an MLP "
-            "128 → 128 → 64 → output with ReLU",
-        ),
-        (
-            "optimizer",
-            f"AdamW, lr ``{eva_slide_bench.LEARNING_RATE:g}``, "
-            f"weight_decay ``{eva_slide_bench.WEIGHT_DECAY:g}``, EVA's default ``ConstantLR`` "
-            f"warm-up (lr/{round(1 / eva_slide_bench.WARMUP_FACTOR)} for the first "
-            f"{eva_slide_bench.WARMUP_EPOCHS} epochs)",
-        ),
-        (
-            "batch size",
-            f"``{eva_slide_bench.BATCH_SIZE}`` bags, padded and masked, shuffled, last batch kept",
-        ),
-        (
-            "budget",
-            f"``{eva_slide_bench.EPOCHS}`` epochs, early-stopping patience "
-            f"``{eva_slide_bench.PATIENCE}`` counted as Lightning's ``EarlyStopping`` does "
-            "(an initial plateau counts too, ``hold_patience_until_monitor_moves: false``), "
-            "best checkpoint on the validation balanced accuracy",
-        ),
-        ("splits", "EVA's validation split is soma ``tune``; the reported split is ``test``"),
-        ("metric", "``balanced_accuracy``"),
-        ("varied axis", "``encoder``"),
-        ("primary metric", f"``{slide_head.primary_metric}`` (from ``summary.json``)"),
-        ("canonical seeds", slide_seeds),
-    ]
-    slide_raw_layout_rows = [
-        (
-            "`Camelyon16 <https://camelyon17.grand-challenge.org/Data/>`__ "
-            "(``camelyon16_small``)",
-            "``images/*.tif`` (the 399 slides of the official release) and "
-            "``evaluation/reference.csv``",
-        ),
-        (
-            "`PANDA <https://www.kaggle.com/c/prostate-cancer-grade-assessment/data>`__ "
-            "(``panda_small``)",
-            "``train_images/*.tiff`` and EVA's noisy-label table "
-            "``train_with_noisy_labels.csv`` (the ``train.csv`` of "
-            "``analokmaus/kaggle-panda-challenge-public``)",
-        ),
-    ]
-
-    sections = [
-        "EVA\n===",
-        "Reproduce the `kaiko-ai/eva <https://github.com/kaiko-ai/eva>`_\n"
-        "pathology leaderboard: patch classification with frozen tile encoders and\n"
-        "linear :doc:`classification` heads, patch :doc:`segmentation` with a\n"
-        "small convolutional decoder on the frozen dense feature grid, and slide\n"
-        "classification with an attention-MIL head over a fixed set of tiles per slide.\n\n"
-        f"EVA provides {len(family)} registered classification datasets: "
-        + dataset_list
-        + f", {len(seg_family)} segmentation datasets: "
-        + seg_list
-        + f", and {len(slide_family)} slide-level datasets: "
-        + slide_list
-        + ". Each group shares one protocol; see :doc:`benchmarking` for\n"
-        "the shared workflow.\n\n"
-        "**Pipeline (classification):** labelled patches → frozen encoder → linear head → "
-        "balanced accuracy\n\n"
-        "**Pipeline (segmentation):** 224 px tiles and masks → frozen dense grid + the "
-        "tile's pixels → ``eva_conv_with_image`` decoder → foreground mean Dice\n\n"
-        "**Pipeline (slide):** EVA's tiles per slide → frozen encoder → ``eva_abmil`` "
-        "attention pooling → MLP head → balanced accuracy",
-        "Prepare the data\n----------------\n\n"
-        "Download one EVA dataset from its official\n"
-        "source and unpack it in the directory you will pass as ``--raw-root``:\n\n"
-        + _kv_table("Dataset and source", "Raw-root contents", raw_layout_rows, widths="38 62")
-        + "\n\nThe segmentation datasets use the same ``--raw-root`` convention:\n\n"
-        + _kv_table("Dataset and source", "Raw-root contents", seg_raw_layout_rows, widths="38 62")
-        + "\n\nSo do the slide-level datasets. Their curators read the slides with OpenSlide\n"
-        "(``pip install openslide-python openslide-bin``):\n\n"
-        + _kv_table("Dataset and source", "Raw-root contents", slide_raw_layout_rows, widths="38 62"),
-        "Run the benchmark\n-----------------\n\n"
-        + _RAW_ROOT_SENTENCE
-        + "::\n\n"
-        "    soma reproduce eva/bach --encoder virchow2 --raw-root /path/to/eva/bach\n\n"
-        "To run the whole family, prepare one subdirectory per dataset under\n"
-        "``/path/to/eva``::\n\n"
-        "    soma reproduce eva --encoder virchow2 --raw-root /path/to/eva\n\n"
-        "A segmentation member runs the same way::\n\n"
-        "    soma reproduce eva/consep --encoder virchow2 --raw-root /path/to/eva/consep\n\n"
-        "Its curator writes the 224 px tiles and masks under ``--out-dir`` (default\n"
-        "``<raw-root>/curated``), so point ``--out-dir`` at a directory with room for them.\n\n"
-        "A slide-level member runs the same way::\n\n"
-        "    soma reproduce eva/panda_small --encoder virchow2 --raw-root /path/to/eva/panda_small\n\n"
-        "Its curator reads a low-resolution level of every slide, so it takes a while on\n"
-        "the full datasets. Reuse a finished curation with ``--curated-dir`` instead of\n"
-        "``--raw-root``. In a family run (``soma reproduce eva``), the raw roots are\n"
-        "``<raw-root>/camelyon16_small`` and ``<raw-root>/panda_small``.",
-        "Results\n-------\n\n"
-        + _eva_results_section()
-        + "\n\nSee the "
-        + _reference_source_link("eva")
-        + " for the official reference leaderboard.",
-        "Protocol details\n----------------\n\n"
-        + _kv_table("Setting", "Value", protocol_rows),
-        "Segmentation protocol\n---------------------\n\n"
-        "The curators reproduce EVA's sample geometry: CoNSeP is cut into 250 px grid\n"
-        "tiles at its native 0.25 µm/px (16 per image) and each tile is resized to 224 px.\n"
-        "MoNuSAC test images are resized on their short side to 224 px and centre-cropped;\n"
-        "MoNuSAC train images are kept whole, and each training step draws a new random\n"
-        "resized 224 px crop from them, as EVA's online config does. CoNSeP\n"
-        "merges HoVer-Net's seven nucleus types into background, other, inflammatory,\n"
-        "epithelial and spindle-shaped; MoNuSAC's test-only ``Ambiguous`` class is\n"
-        "excluded from the loss and from the metric's target area. As in EVA, the pixels\n"
-        "predicted there still count towards the predicted area. Both datasets report on\n"
-        "EVA's validation split, which is soma's ``test`` split (``tune_is_test``).\n\n"
-        + _kv_table("Setting", "Value", seg_protocol_rows)
-        + "\n\nThe decoder, loss and confusion counting exist only for this benchmark and are\n"
-        "registered under ``eva_`` names; they are not general soma components. The dense\n"
-        "grid is tapped where EVA taps it: the last block's patch tokens *before* the\n"
-        "backbone's final normalisation layer (``feature_kind: patch_features_prenorm``,\n"
-        "timm's ``features_only`` output), so the decoder sees the same token scale as the\n"
-        "leaderboard decoders.",
-        "Slide-level protocol\n--------------------\n\n"
-        "The curators choose the tiles EVA chooses and write them as one hs2p tiling\n"
-        "artifact per slide, named by the manifest's ``coordinates_path`` column (see\n"
-        ":ref:`bring your own coordinates <preprocessing-supplied-coordinates>`); soma skips its\n"
-        "own tiling. EVA lays a non-overlapping grid over level 0, with a cell side of\n"
-        "224 px at the target spacing, shuffles the cells with a fixed seed, and keeps the\n"
-        "first cells whose foreground fraction is at least 0.35. Foreground is HSV\n"
-        "saturation above 20 at a low-resolution level. The slide spacing is EVA's: the\n"
-        "OpenSlide ``mpp`` properties, else the TIFF resolution tags. The curator writes it\n"
-        "as ``spacing_at_level_0``.\n\n"
-        "Camelyon16Small uses the 399 slides of the official release. The 54 training slides\n"
-        "that EVA holds out for validation (the PatchCamelyon validation slides) are soma\n"
-        "``tune``, and the official test slides are ``test`` (216 / 54 / 129 slides).\n"
-        "PANDASmall keeps the 9555 PANDA slides that EVA does not filter as noisy and takes\n"
-        "EVA's stratified split by ISUP grade: 952 / 475 / 475 slides for train / tune / test.\n\n"
-        + _kv_table("Setting", "Value", slide_protocol_rows)
-        + "\n\nThe aggregator and heads exist only for this benchmark and are registered under\n"
-        "``eva_`` names; they are not general soma components. EVA resizes each tile with\n"
-        "bilinear, antialiased interpolation; slide2vec uses area interpolation. soma\n"
-        "accepts this difference and measures its effect when the benchmark is recorded.",
-    ]
-    return "\n\n".join(sections).rstrip() + "\n"
-
-
-def _hest_results_section() -> str:
-    """Render the public reproduced-versus-reference HEST comparison."""
+def build_hest_results_rst() -> str:
+    """The HEST results table: soma's mean Pearson next to the published value, per task."""
     report = reproduction_report("hest")
     if not report.cells:
         return (
-            "No reproduced cells have been recorded yet. Run, for example::\n\n"
-            "    soma reproduce hest/IDC --encoder uni2 "
-            "--raw-root /path/to/hest-bench/IDC --record\n\n"
-            "to record a soma score next to the published HEST reference."
+            "No scores have been recorded yet. ``soma reproduce hest/IDC --encoder uni2 "
+            "--raw-root /path/to/hest-bench/IDC --record`` records one next to the published "
+            "HEST reference."
         )
-
     lines = [
         ".. list-table::",
         "   :header-rows: 1",
@@ -883,14 +466,16 @@ def _hest_results_section() -> str:
         "",
         "   * - Task",
         "     - Encoder",
-        "     - soma",
+        "     - Mean Pearson",
         "     - HEST reference",
     ]
     flagged = False
     for cell in report.cells:
         gates = [
             g
-            for g in expected_rows("hest", metric=report.metric, dataset=cell.dataset, encoder=cell.encoder)
+            for g in expected_rows(
+                "hest", metric=report.metric, dataset=cell.dataset, encoder=cell.encoder
+            )
             if not g.is_external
         ]
         gate = gates[0] if gates else None
@@ -904,116 +489,8 @@ def _hest_results_section() -> str:
                 f"     - {cell.reference:.3f}",
             ]
         )
-    intro = "Recorded mean Pearson scores alongside the packaged HEST references."
     table = "\n".join(lines)
-    if flagged:
-        intro += " A value outside its reference band is shown in red."
-        return _RED_ROLE + "\n\n" + intro + "\n\n" + table
-    return intro + "\n\n" + table
-
-
-def build_hest_benchmark_rst() -> str:
-    """Generate the HEST benchmark page from the registered ``hest/<task>`` family.
-
-    Family-aware (like EVA): renders every registered ``hest/<task>`` sub-benchmark, so a
-    registered task appears automatically. The page documents the shared protocol, scoped
-    data download, reproduction commands, and recorded results.
-    """
-    family = _benchmark_family("hest")
-    head = family[0]  # protocol constants are shared across the family
-    seeds = ", ".join(str(s) for s in head.canonical_seeds)
-    alpha = ridge_alpha(50)  # 50 highly-variable genes per HEST task
-
-    def _section(title: str, body: str) -> str:
-        return f"{title}\n{'-' * len(title)}\n\n{body}"
-
-    protocol_rows = [
-        (
-            "predictor",
-            "``soma.benchmark.hest.probe.RidgePCAProbe``: a closed-form Ridge probe, "
-            "no trained head, no gradient loop",
-        ),
-        (
-            "features",
-            "``StandardScaler`` → ``PCA(n_components="
-            + f"{DEFAULT_PCA_COMPONENTS})`` fit on the fold's train spots (X only)",
-        ),
-        (
-            "estimator",
-            "``Ridge(solver='lsqr', fit_intercept=False)``, penalty "
-            + f"``alpha = {alpha:g}`` = 100 / ({DEFAULT_PCA_COMPONENTS}·50)",
-        ),
-        ("targets", "50-gene ``log1p(counts)`` vector per 112 µm spot (baked by the curator)"),
-        (
-            "metric",
-            "``mean_pearson`` — per gene, pooled over test spots → mean over 50 genes → mean "
-            "over folds; each gene's own Pearson is reported as ``pearson_geneNN_<symbol>``",
-        ),
-        ("task family", f"``{head.facet.fixed['task']}``"),
-        ("varied axis", "``encoder``"),
-        ("primary metric", f"``{head.primary_metric}`` (from ``summary.json``)"),
-        ("canonical seeds", f"``{seeds}`` (the probe is closed-form — one seed suffices)"),
-    ]
-
-    task_names = [str(benchmark.facet.fixed["dataset"]) for benchmark in family]
-    task_list = ", ".join(task_names[:-1]) + f", and {task_names[-1]}"
-
-    download_cmd = (
-        "    hf download MahmoodLab/hest-bench --include 'IDC/*' --exclude 'fm_v1/*' \\\n"
-        "        --repo-type dataset --local-dir /path/to/hest-bench"
-    )
-
-    sections = [
-        "HEST\n====",
-        "Predict a 50-gene expression vector from each 112 µm tile with a frozen encoder,\n"
-            "reproducing `HEST-Benchmark <https://github.com/mahmoodlab/HEST>`_ (Jaume et al.,\n"
-            "NeurIPS 2024).\n\n"
-            "HEST provides 9 registered datasets: "
-            + task_list
-            + ".\nAll share the same closed-form Ridge+PCA probe protocol; see\n"
-            ":doc:`benchmarking` for the shared workflow.\n\n"
-            "**Pipeline:** spot tiles → frozen encoder → Ridge+PCA probe → mean Pearson",
-        _section(
-            "Prepare the data",
-            "Install soma with the optional HEST readers::\n\n"
-            "    pip install 'soma-pathology[hest]'\n\n"
-            "Use the Hugging Face CLI to download one task while excluding HEST's\n"
-            "precomputed ``fm_v1`` features; soma re-extracts them locally::\n\n"
-            + download_cmd,
-        ),
-        _section(
-            "Run the benchmark",
-            _RAW_ROOT_SENTENCE
-            + "::\n\n"
-            "    soma reproduce hest/IDC --encoder virchow2 "
-            "--raw-root /path/to/hest-bench/IDC\n\n"
-            "Or run HEST's 9 datasets in one go::\n\n"
-            "    soma reproduce hest --encoder virchow2 --raw-root /path/to/hest-bench",
-        ),
-        _section(
-            "How the benchmark runs",
-            "The benchmark trains no model through the pipeline; it composes soma's\n"
-            "verbs itself. It extracts each spot's tile features once into the feature\n"
-            "cache, then, for each fold:\n\n"
-            "1. fits :class:`~soma.benchmark.hest.probe.RidgePCAProbe`\n"
-            "   (``StandardScaler`` → ``PCA`` → ``Ridge``) on the train spots;\n"
-            "2. predicts the test spots as :class:`~soma.evaluation.Predictions` with one\n"
-            "   ``value_<k>`` column per gene;\n"
-            "3. scores them with :func:`soma.evaluate`: ``mean_pearson`` plus one\n"
-            "   ``pearson_geneNN_<symbol>`` metric per gene.\n\n"
-            "Each fold writes ``metrics.json`` and ``predictions_<split>.parquet``; the run\n"
-            "writes ``summary.json``.",
-        ),
-        _section(
-            "Results",
-            _hest_results_section()
-            + "\n\nSee the "
-            + _reference_source_link("hest")
-            + " for the official reference leaderboard.",
-        ),
-        _section("Protocol details", _kv_table("Setting", "Value", protocol_rows)),
-    ]
-    return "\n\n".join(sections).rstrip() + "\n"
+    return _RED_ROLE + "\n\n" + table if flagged else table
 
 
 # CRoMa's three reported metrics: display label + whether the metric ranks encoders.
@@ -1026,18 +503,15 @@ _CROMA_METRICS = (
 _CROMA_CONTROL = "dinov2-vitb14"
 
 
-def _croma_results_section(tolerance: float) -> str:
-    """The measured campaign as one table, three decimals, one column per metric."""
-    reports = {
-        metric: reproduction_report("croma", metric=metric)
-        for metric, _, _ in _CROMA_METRICS
-    }
+def build_croma_results_rst() -> str:
+    """The CRoMa results: a one-sentence verdict and one table, three decimals, one column per metric."""
+    tolerance = _benchmark_family("croma")[0].resolvability.abs_floor
+    reports = {metric: reproduction_report("croma", metric=metric) for metric, _, _ in _CROMA_METRICS}
     if not any(report.cells for report in reports.values()):
         return (
-            "No reproduced cells have been recorded yet. Run, for example::\n\n"
-            "    soma reproduce croma --encoders conchv15 dinov2-vitb14 h0-mini uni "
-            "--raw-root /data/croma --record\n\n"
-            "to record soma scores next to the published CRoMa references."
+            "No scores have been recorded yet. ``soma reproduce croma --encoders conchv15 "
+            "dinov2-vitb14 h0-mini uni --raw-root /data/croma --record`` records them next to "
+            "the published CRoMa values."
         )
 
     cells = [cell for report in reports.values() for cell in report.cells]
@@ -1048,7 +522,7 @@ def _croma_results_section(tolerance: float) -> str:
     encoders = sorted({cell.encoder for cell in cells})
     panel = ", ".join(f"``{e}``" for e in encoders if e != _CROMA_CONTROL)
     if _CROMA_CONTROL in encoders:
-        panel += f", and the ``{_CROMA_CONTROL}`` control"
+        panel += f" and the ``{_CROMA_CONTROL}`` control"
     n_cohorts = len({cell.dataset for cell in cells})
     cohorts = "all three cohorts" if n_cohorts == 3 else f"{n_cohorts} cohorts"
 
@@ -1065,12 +539,12 @@ def _croma_results_section(tolerance: float) -> str:
                 )
 
     intro = (
-        f"The recorded panel covers {panel} across {cohorts}. Each cell shows the\n"
-        f"soma value with the published value in parentheses. A soma value more than\n"
-        f"{tolerance:g} from the published value is shown in red."
+        f"The recorded panel covers {panel} on {cohorts}. Each cell shows the soma value "
+        f"with the published value in parentheses; a soma value more than {tolerance:g} "
+        "from the published one is shown in red."
     )
     if not flagged:
-        intro += f" All values are within that tolerance"
+        intro += " Every value is within that tolerance"
         intro += (
             ", and soma reproduces every published pair ordering."
             if not flip_lines
@@ -1109,98 +583,37 @@ def _croma_results_section(tolerance: float) -> str:
     return "\n\n".join(parts)
 
 
-def build_croma_benchmark_rst() -> str:
-    """Generate the CRoMa benchmark page from the registered ``croma/<cohort>`` family.
+# The results fragments: one file per table, included by the hand-written benchmark pages
+# (``.. include:: _generated/<name>``). Prose lives in the pages; only ledger-derived
+# numbers are generated.
+RESULTS_FRAGMENTS: dict[str, "callable"] = {
+    "ocelot-results.rst": build_ocelot_results_rst,
+    "eva-patch-results.rst": build_eva_patch_results_rst,
+    "eva-segmentation-results.rst": build_eva_segmentation_results_rst,
+    "eva-slide-results.rst": build_eva_slide_results_rst,
+    "hest-results.rst": build_hest_results_rst,
+    "croma-results.rst": build_croma_results_rst,
+}
 
-    Every number on the page comes from the packaged reference and results CSVs (via
-    :func:`reproduction_report` / :func:`load_results`) or from the registered benchmark's
-    declared constants — no hand-typed values.
-    """
-    family = _benchmark_family("croma")
-    head = family[0]
-    policy = head.resolvability
-    cohort_list = ", ".join(f"``{b.name}``" for b in family[:-1]) + f", and ``{family[-1].name}``"
-
-    variant_rows = [
-        (model, f"``{spec.soma_encoder}``", f"``{spec.output_variant}``")
-        for model, spec in croma_bench.CROMA_0_3_ENCODER_PANEL.items()
-        if spec.output_variant != "default"
-    ]
-    variant_table_lines = [
-        ".. list-table::",
-        "   :header-rows: 1",
-        "",
-        "   * - Published model",
-        "     - soma encoder",
-        "     - Output variant",
-    ]
-    for model, encoder, variant in variant_rows:
-        variant_table_lines.extend(
-            [f"   * - {model}", f"     - {encoder}", f"     - {variant}"]
-        )
-
-    sections = [
-        "CRoMa\n=====",
-        "The ``croma`` family measures how robust a frozen tile encoder is to\n"
-        "non-biological variation across medical centers. It runs the CRoMa protocol\n"
-        "from the `croma library <https://clemsgrs.github.io/croma/>`_\n"
-        "(`paper <https://arxiv.org/abs/2607.25497>`_), which supersedes PathoROB's\n"
-        "Robustness Index with a distance-aware, tail-sensitive robustness margin.",
-        "The three tile cohorts come from the `PathoROB study\n"
-        "<https://arxiv.org/abs/2507.17845>`_: " + cohort_list + ".\n"
-        "The protocol is fixed and task-free; the encoder is the only varied axis.",
-        "Run it\n------\n\n"
-        "Install the preparation dependency and build the pinned raw tree once::\n\n"
-        "   pip install 'soma-pathology[croma]'\n"
-        "   soma prepare-croma /data/croma\n\n"
-        "Reproduce the whole family, or a single cohort::\n\n"
-        "   soma reproduce croma --raw-root /data/croma \\\n"
-        "     --output-root runs/croma --cache-root /fast/croma-cache --record\n\n"
-        "   soma reproduce croma/camelyon --encoder uni2 --raw-root /data/croma \\\n"
-        "     --output-root runs/croma/camelyon --cache-root /fast/croma-cache\n\n"
-        "Extraction is seed-independent, so repeat runs of the same cohort and encoder\n"
-        "reuse their cached tile features. One ``--cache-root`` may serve all three\n"
-        "cohorts.",
-        "Metrics\n-------\n\n"
-        "Each run reports three metrics:\n\n"
-        "* ``test/croma_median`` — the median robustness margin; the primary metric,\n"
-        "  higher is better.\n"
-        "* ``test/croma_ltm10`` — the mean of the worst ten-percent tail; higher is\n"
-        "  better.\n"
-        "* ``test/croma_f0`` — the fraction of confounder-dominant samples; a\n"
-        "  diagnostic, lower is better.\n\n"
-        "There is no composite score. DINOv2-B (``dinov2-vitb14``) is the natural-image\n"
-        "control: it is measured and shown, but never ranked. ``test/croma_median`` and\n"
-        "``test/croma_ltm10`` rank encoders; ``test/croma_f0`` is a diagnostic.",
-        "Encoder panel\n-------------\n\n"
-        f"The published panel covers {len(croma_bench.CROMA_0_3_ENCODER_PANEL)} encoders: "
-        f"{len(croma_bench.CROMA_0_3_ENCODER_PANEL) - 1} pathology foundation models and "
-        "the\nDINOv2-B control. The full panel, per-cohort detail, and margin "
-        "distributions\nare on the `CRoMa results page "
-        "<https://clemsgrs.github.io/croma/results/>`_.\n\n"
-        "In soma, every panel encoder resolves to its slide2vec registry default\n"
-        "output, except:\n\n" + "\n".join(variant_table_lines) + "\n\n"
-        "soma checks names, output variants, and feature dimensions against the\n"
-        "slide2vec registry at configuration time. It makes no\n"
-        "claim of numerical identity with the published embeddings.",
-        "Results\n-------\n\n" + _croma_results_section(policy.abs_floor),
-        "See :doc:`benchmarking` for the shared benchmark workflow.",
-    ]
-    return "\n\n".join(sections).rstrip() + "\n"
+_FRAGMENT_HEADER = (
+    ".. Generated by docs/_generate_reference.py from the benchmark's results ledger; do not\n"
+    "   edit by hand. ``tests/repo/test_docs.py`` checks parity.\n\n"
+)
 
 
-def write_benchmark_rst(directory: str | Path | None = None) -> list[Path]:
-    """Write the generated per-benchmark pages to disk."""
-    base = Path(directory) if directory is not None else Path(__file__).parent
+def build_results_fragment(filename: str) -> str:
+    """The checked-in text of one results fragment."""
+    return _FRAGMENT_HEADER + RESULTS_FRAGMENTS[filename]().rstrip() + "\n"
+
+
+def write_results_fragments(directory: str | Path | None = None) -> list[Path]:
+    """Write the results fragments under ``docs/_generated/``."""
+    base = Path(directory) if directory is not None else Path(__file__).parent / "_generated"
+    base.mkdir(parents=True, exist_ok=True)
     written = []
-    for filename, builder in (
-        ("ocelot-detection-benchmark.rst", build_ocelot_benchmark_rst),
-        ("eva-patch-classification-benchmark.rst", build_eva_benchmark_rst),
-        ("hest-gene-expression-benchmark.rst", build_hest_benchmark_rst),
-        ("croma-robustness-benchmark.rst", build_croma_benchmark_rst),
-    ):
+    for filename in RESULTS_FRAGMENTS:
         target = base / filename
-        target.write_text(builder(), encoding="utf-8")
+        target.write_text(build_results_fragment(filename), encoding="utf-8")
         written.append(target)
     return written
 
@@ -1208,7 +621,7 @@ def write_benchmark_rst(directory: str | Path | None = None) -> list[Path]:
 def main() -> None:
     write_reference_yaml()
     write_cli_rst()
-    write_benchmark_rst()
+    write_results_fragments()
 
 
 if __name__ == "__main__":

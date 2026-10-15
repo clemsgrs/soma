@@ -1,165 +1,112 @@
 OCELOT
 ======
 
-Evaluate frozen encoders on the `OCELOT 2023
-<https://ocelot2023.grand-challenge.org/>`_ cell-detection challenge. The data
-contains paired cell and tissue patches from TCGA; this benchmark uses only
-the cell patches.
+Cell detection on the `OCELOT 2023 <https://ocelot2023.grand-challenge.org/>`_
+challenge data with a frozen encoder. soma's :doc:`detection` path trains a small
+decoder on the encoder's dense features and scores the detected cells with the
+challenge's own metric, so encoders can be compared on one fixed protocol.
 
-A frozen encoder produces a dense token grid and a ``lightweight_conv``
-decoder predicts per-class peak heatmaps. The score is class-aware
-**mean F1 @ δ = 3 µm**, using greedy matching. Per-class score thresholds
-are selected on ``tune``, frozen, and applied once to ``test``. See
-:doc:`detection` for matching and pixel-to-micrometer definitions.
+Data and task
+-------------
 
-Run the benchmark
------------------
+OCELOT (Ryu *et al.*, CVPR 2023) pairs cell patches with tissue patches cropped from
+TCGA whole-slide images. The benchmark uses the cell patches only: 1024 × 1024
+pixel H&E crops at 0.2 µm/px, each with a point per cell.
 
-Prepare the raw data as described in :doc:`curation`, then run the default
-Virchow2 encoder at 0.2 µm/px with canonical seed 0::
+.. list-table::
+   :header-rows: 1
+   :widths: 24 76
 
-    soma reproduce ocelot --raw-root /path/to/ocelot
-
-Select another compatible encoder with ``--encoder``, compare several with
-``--encoders``, or rescore an existing run with ``--from-run-dir <dir>``.
+   * - Setting
+     - Value
+   * - Task
+     - Detect every cell as a point and classify it as a tumour cell or a
+       background (non-tumour) cell.
+   * - Splits
+     - The official train, validation and test split, as one fold. Validation is
+       soma's ``tune`` split, where the score thresholds are chosen.
+   * - Metric
+     - ``mean_f1``: F1 at a matching distance of 3 µm, averaged over the two
+       classes. Matching is greedy, as in the official evaluation.
 
 Protocol
 --------
 
-The recipe backbone is held fixed; ``soma reproduce`` varies only the ``encoder``
-and fixes image spacing at the anchor.
+The recipe is fixed and only the encoder varies.
 
 .. list-table::
    :header-rows: 1
-   :widths: 30 70
+   :widths: 24 76
 
-   * - Axis / setting
+   * - Setting
      - Value
-   * - ``task``
-     - ``detection``
-   * - ``decoder``
-     - ``lightweight_conv``
-   * - ``matcher``
-     - ``greedy_f1@delta=3um``
-   * - varied axes
-     - ``encoder``
-   * - primary metric
-     - ``mean_f1``
-   * - canonical seeds
-     - ``0``
-   * - anchor
-     - ``virchow2`` @ 0.2 µm/px (seed 0)
-
-Packaged spacing protocols
---------------------------
-
-``build_config`` also resolves a committed protocol per ``(encoder, spacing)``:
-the 2×2 magnification-alignment ablation plus the native anchor. Use these for
-a custom spacing sweep compared on a :doc:`leaderboard <benchmarking>`:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 50 50
-
+   * - Input
+     - The cell patches at their native 0.2 µm/px, tiled for the encoder.
    * - Encoder
-     - Spacing (µm/px)
-   * - ``uni2``
-     - 0.25
-   * - ``uni2``
-     - 0.5
-   * - ``virchow2``
-     - 0.2
-   * - ``virchow2``
-     - 0.25
-   * - ``virchow2``
-     - 0.5
+     - Any frozen tile encoder with dense outputs; the ``encoder`` axis of the
+       benchmark.
+   * - Decoder
+     - ``lightweight_conv`` on the frozen dense token grid, predicting one peak
+       heatmap per class.
+   * - Target and loss
+     - A peak Gaussian at every annotated cell and a foreground-weighted MSE; see
+       :doc:`detection`.
+   * - Thresholds
+     - One score threshold per class, chosen on ``tune`` and applied once to ``test``.
+   * - Seeds
+     - ``0``. The reference below is a seed-0 value, so the default run is seed 0.
 
-Encoder results
----------------
+The committed configs also hold a spacing ablation: ``uni2`` at 0.25 and 0.5 µm/px and
+``virchow2`` at 0.2, 0.25 and 0.5 µm/px. ``soma reproduce`` keeps spacing at 0.2 µm/px;
+the other configs serve a custom sweep ranked with ``soma leaderboard``.
 
-Recorded test ``mean_f1`` scores use the protocol above at 0.2 µm/px. The
-reference band is soma's frozen-probe Virchow2 result at seed 0; a value
-outside its band is shown in red.
+Results
+-------
 
-.. list-table::
-   :header-rows: 1
-   :widths: 40 60
+soma's ``mean_f1`` on the OCELOT test split, three seeds per encoder, best first.
 
-   * - Metric
-     - Reference band (expected ± tolerance)
-   * - ``mean_f1``
-     - 0.700 ± 0.020
+.. include:: _generated/ocelot-results.rst
 
-.. list-table::
-   :header-rows: 1
+The reference is soma's own Virchow2 anchor, measured at seed 0 with soma 1.5.1,
+slide2vec 5.1.1 and torch 2.7.1+cu128 on one NVIDIA GeForce RTX 2080 Ti. A later run
+is expected within ± 0.02 of it, the spread of cuDNN and GPU nondeterminism; a value
+outside that band is shown in red. Fully supervised, end-to-end methods with a trained
+encoder reach a mean F1 of about 0.70 (the `official baseline
+<https://wearewaiv.github.io/histoboard/>`__) to 0.73 (the `best reported
+<https://wearewaiv.github.io/histoboard/>`__); they frame the frozen probe and never
+gate ``soma reproduce``.
 
-   * - Encoder
-     - Metric
-     - soma (mean ± std)
-     - Seeds
-     - Reference
-   * - genbio-pathfm
-     - ``mean_f1``
-     - 0.733 ± 0.003
-     - 3
-     - —
-   * - h-optimus-1
-     - ``mean_f1``
-     - 0.719 ± 0.003
-     - 3
-     - —
-   * - h0-mini
-     - ``mean_f1``
-     - 0.720 ± 0.002
-     - 3
-     - —
-   * - conchv15
-     - ``mean_f1``
-     - 0.711 ± 0.003
-     - 3
-     - —
-   * - virchow2
-     - ``mean_f1``
-     - 0.700 ± 0.004
-     - 3
-     - 0.700 ± 0.020
-   * - midnight
-     - ``mean_f1``
-     - 0.656 ± 0.002
-     - 3
-     - —
-   * - dinov2-vitb14
-     - ``mean_f1``
-     - 0.655 ± 0.004
-     - 3
-     - —
+These results accompany Grisi *et al.*, *Benchmarking foundation models for cell
+detection* (in preparation).
 
-The anchor was measured with soma 1.5.1, slide2vec 5.1.1, and torch 2.7.1+cu128 on one NVIDIA GeForce RTX 2080 Ti.
+Reproduce
+---------
 
-These results accompany Grisi *et al.*, *Benchmarking foundation models for
-cell detection* (in preparation).
+**Prepare the data.** Download ``ocelot2023_v1.0.1.zip`` from `Zenodo record 8417503
+<https://zenodo.org/records/8417503>`__ and unzip it. The benchmark's curator reads the
+cell patches and their point files from that directory and writes soma's detection
+manifests; :doc:`curation` describes what it writes.
 
-Guidance anchors
-----------------
+**Run the benchmark** with its default encoder, Virchow2, or name another installed
+encoder::
 
-These snapshots come from fully supervised, end-to-end methods with a
-trainable encoder. They give context for the frozen probe and never gate
-``soma reproduce``:
+    soma reproduce ocelot --raw-root /path/to/ocelot2023_v1.0.1
+    soma reproduce ocelot --encoder uni2 --raw-root /path/to/ocelot2023_v1.0.1
 
-* `OCELOT official baseline (fully-supervised end-to-end) <https://wearewaiv.github.io/histoboard/>`__ — ``mean_f1`` ≈ 0.70
-* `best reported (fully-supervised end-to-end) <https://wearewaiv.github.io/histoboard/>`__ — ``mean_f1`` ≈ 0.73
+**Compare encoders** in one command, which also writes a leaderboard, or rescore a
+finished run::
+
+    soma reproduce ocelot --encoders virchow2 uni2 h-optimus-1 --raw-root /path/to/ocelot2023_v1.0.1
+    soma reproduce ocelot --from-run-dir runs/ocelot/virchow2
+
+``--record`` appends the measured score to the results ledger that the table above
+reads. :doc:`benchmarking` describes the options shared by every benchmark.
 
 References
 ----------
 
-* Ryu et al., *OCELOT: Overlapped Cell on Tissue Dataset for Histopathology*,
+* Ryu *et al.*, *OCELOT: Overlapped Cell on Tissue Dataset for Histopathology*,
   CVPR 2023.
-* *CellRegNet*, 2024 — a fully supervised point-detection baseline.
-* `arXiv:2503.05678 <https://arxiv.org/abs/2503.05678>`__ — P2PNet-style
-  point detection on frozen foundation-model features.
-
-.. seealso::
-
-   * :doc:`detection` — head, target encoding, loss, and F1@δ evaluator.
-   * :doc:`benchmarking` — the shared benchmark workflow.
-   * :doc:`curation` — the OCELOT curator and split policy.
+* *CellRegNet*, 2024: a fully supervised point-detection baseline.
+* `arXiv:2503.05678 <https://arxiv.org/abs/2503.05678>`__: P2PNet-style point
+  detection on frozen foundation-model features.

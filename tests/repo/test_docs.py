@@ -158,22 +158,79 @@ def test_cli_generator_matches_checked_in_file() -> None:
     assert generated == checked_in
 
 
-@pytest.mark.parametrize(
-    ("builder", "filename"),
-    [
-        ("build_ocelot_benchmark_rst", "ocelot-detection-benchmark.rst"),
-        ("build_eva_benchmark_rst", "eva-patch-classification-benchmark.rst"),
-        ("build_hest_benchmark_rst", "hest-gene-expression-benchmark.rst"),
-        ("build_croma_benchmark_rst", "croma-robustness-benchmark.rst"),
-    ],
-)
-def test_benchmark_page_matches_registry(builder: str, filename: str) -> None:
-    generator, docs_dir = _load_reference_generator()
-    generated = getattr(generator, builder)().strip()
-    checked_in = (docs_dir / filename).read_text(encoding="utf-8").strip()
+_BENCHMARK_PAGES = {
+    "ocelot-detection-benchmark.rst": ("ocelot-results.rst",),
+    "eva-patch-classification-benchmark.rst": (
+        "eva-patch-results.rst",
+        "eva-segmentation-results.rst",
+        "eva-slide-results.rst",
+    ),
+    "hest-gene-expression-benchmark.rst": ("hest-results.rst",),
+    "croma-robustness-benchmark.rst": ("croma-results.rst",),
+}
 
-    assert generated == checked_in
-    assert "TBD" not in generated
+
+def test_results_fragments_match_the_ledgers() -> None:
+    # The benchmark pages are written by hand; only their results tables are generated,
+    # from the packaged results and reference ledgers, into docs/_generated/.
+    generator, docs_dir = _load_reference_generator()
+    for filename in generator.RESULTS_FRAGMENTS:
+        generated = generator.build_results_fragment(filename).strip()
+        checked_in = (docs_dir / "_generated" / filename).read_text(encoding="utf-8").strip()
+        assert generated == checked_in, filename
+        assert "TBD" not in generated
+    assert set(generator.RESULTS_FRAGMENTS) == {f for fs in _BENCHMARK_PAGES.values() for f in fs}
+
+
+@pytest.mark.parametrize("filename", sorted(_BENCHMARK_PAGES))
+def test_benchmark_pages_share_one_structure_and_include_their_results(filename: str) -> None:
+    docs_dir = Path(__file__).resolve().parents[2] / "docs"
+    page = (docs_dir / filename).read_text(encoding="utf-8")
+    headings = re.findall(r"^(\S.*)\n-+\n", page, flags=re.MULTILINE)
+    assert headings[:4] == ["Data and task", "Protocol", "Results", "Reproduce"], filename
+    for fragment in _BENCHMARK_PAGES[filename]:
+        assert f".. include:: _generated/{fragment}" in page, (filename, fragment)
+
+
+def test_benchmark_pages_spell_the_protocol_constants_of_the_packages() -> None:
+    # The constants the pages quote are the ones the protocols run with.
+    from soma.benchmark import eva as eva_bench
+    from soma.benchmark import get_benchmark
+    from soma.benchmark.eva import segmentation as eva_seg_bench
+    from soma.benchmark.eva import slide as eva_slide_bench
+    from soma.benchmark.hest.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
+
+    docs_dir = Path(__file__).resolve().parents[2] / "docs"
+    eva_page = (docs_dir / "eva-patch-classification-benchmark.rst").read_text(encoding="utf-8")
+    for text in (
+        f"learning rate ``{eva_bench.LEARNING_RATE:g}``, weight decay ``{eva_bench.WEIGHT_DECAY:g}``, "
+        f"batch size ``{eva_bench.HEAD_BATCH_SIZE}``",
+        f"``{eva_bench.MAX_STEPS}`` optimizer steps",
+        f"learning rate ``{eva_seg_bench.LEARNING_RATE:g}``, weight decay ``{eva_seg_bench.WEIGHT_DECAY:g}``, "
+        f"batch size ``{eva_seg_bench.BATCH_SIZE}``",
+        f"``{eva_seg_bench.MAX_STEPS}`` optimizer steps",
+        f"learning rate ``{eva_slide_bench.LEARNING_RATE:g}``, weight decay ``{eva_slide_bench.WEIGHT_DECAY:g}``, "
+        f"batch size ``{eva_slide_bench.BATCH_SIZE}``",
+        f"``{eva_slide_bench.EPOCHS}`` epochs, early-stopping patience ``{eva_slide_bench.PATIENCE}``",
+        f"``0``–``{get_benchmark('eva/panda_small').canonical_seeds[-1]}``, averaged",
+    ):
+        assert text in eva_page, text
+    for name, spec in eva_slide_bench.DATASETS.items():
+        assert f"{spec.max_tiles} tiles at {spec.target_mpp:g} µm/px (``{name}``)" in eva_page, name
+
+    hest_page = (docs_dir / "hest-gene-expression-benchmark.rst").read_text(encoding="utf-8")
+    assert f"``PCA`` to {DEFAULT_PCA_COMPONENTS} components" in hest_page
+    assert f"``alpha = 100 / ({DEFAULT_PCA_COMPONENTS} · 50)``" in hest_page
+    assert abs(ridge_alpha(50) - 100 / (DEFAULT_PCA_COMPONENTS * 50)) < 1e-12
+
+    ocelot = get_benchmark("ocelot")
+    ocelot_page = (docs_dir / "ocelot-detection-benchmark.rst").read_text(encoding="utf-8")
+    assert f"``{ocelot.facet.fixed['decoder']}``" in ocelot_page
+    assert f"``{ocelot.primary_metric}``" in ocelot_page
+    env = ocelot.reference_environment
+    assert f"soma {env['soma']},\nslide2vec {env['slide2vec']} and torch {env['torch']} on one {env['gpu']}" in ocelot_page
+    gate = next(r for r in ocelot.expected() if not r.is_external)
+    assert f"within ± {gate.tolerance:g}" in ocelot_page
 
 
 def test_croma_benchmark_page_exceptions_table_matches_panel() -> None:

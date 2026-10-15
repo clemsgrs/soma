@@ -271,5 +271,8 @@ Task head
 Benchmarks
 ----------
 
-* :doc:`ocelot-detection-benchmark` — this path reproduced on the OCELOT 2023
-  cell-detection challenge, with the encoder × spacing ablation.
+* :doc:`ocelot-detection-benchmark`: this path on the OCELOT 2023 cell-detection
+  challenge, with recorded results for seven encoders.
+* ``detection/midog`` and ``detection/monkey``: the same path on MIDOG 2022 mitosis
+  detection and MONKEY inflammatory-cell detection; see :doc:`curation` for the data
+  preparation.
