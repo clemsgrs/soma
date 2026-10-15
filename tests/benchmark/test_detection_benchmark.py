@@ -587,7 +587,7 @@ def test_report_reference_bands_scaffolds():
 
 @pytest.mark.parametrize(
     "dataset,metrics,gated",
-    [("midog", ("f1",), True), ("monkey", ("froc_inflammatory", "froc_lymphocytes", "froc_monocytes", "mean_froc"), False)],
+    [("midog", ("f1",), True), ("monkey", ("froc_inflammatory", "froc_lymphocytes", "froc_monocytes", "mean_froc"), True)],
 )
 def test_reference_scaffold_shape(dataset, metrics, gated):
     with resources.files(f"soma.benchmark.{dataset}").joinpath("reference.csv").open(newline="") as fh:
