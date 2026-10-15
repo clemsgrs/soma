@@ -11,7 +11,7 @@ The recorded panel covers ``conchv15``, ``h0-mini``, ``uni`` and the ``dinov2-vi
      - Encoder
      - CRoMa median
      - CRoMa LTM10
-     - CRoMa F(0) (diagnostic)
+     - CRoMa F(0)
    * - camelyon
      - ``conchv15``
      - 0.187 (0.187)

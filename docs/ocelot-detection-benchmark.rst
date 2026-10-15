@@ -67,7 +67,7 @@ soma's ``mean_f1`` on the OCELOT test split, three seeds per encoder, best first
 
 .. include:: _generated/ocelot-results.rst
 
-The reference is soma's own Virchow2 anchor, measured at seed 0 with soma 1.5.1,
+The Virchow2 row is also soma's own anchor, measured at seed 0 with soma 1.5.1,
 slide2vec 5.1.1 and torch 2.7.1+cu128 on one NVIDIA GeForce RTX 2080 Ti. A later run
 is expected within ± 0.02 of it, the spread of cuDNN and GPU nondeterminism; a value
 outside that band is shown in red. Fully supervised, end-to-end methods with a trained
