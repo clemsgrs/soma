@@ -10,7 +10,6 @@ and the right supervision can score well.
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 
 import soma
@@ -160,22 +159,3 @@ def test_live_detection_through_the_verbs(tmp_path, new_artifact):
         "scores_above_floor", bool((test.frame["score"].to_numpy() >= head.min_score).all()), True
     )
     artifact.assert_passed()
-
-
-def test_point_augmentation_is_refused_until_keypoints_land(tmp_path):
-    cohort, images, annotations = _sources(tmp_path, "detection")
-    stage = FakeEncoder(target_size=ROI_PX, patch_size=8)
-    head = DetectionHead(num_classes=2, geometry=stage.geometry, spacing_um=SPACING_UM, match_distance=3.0)
-    try:
-        loaders(
-            images,
-            cohort,
-            head=head,
-            targets=PointSource.from_manifest(annotations),
-            augment=SegmentationAugment(horizontal_flip=0.5),
-        )
-    except ValueError as error:
-        assert "point targets cannot be augmented" in str(error)
-    else:  # pragma: no cover - the refusal is the behaviour under test
-        raise AssertionError("loaders accepted an augmentation over point targets")
-    _ = np  # keep numpy imported for the artifact helpers

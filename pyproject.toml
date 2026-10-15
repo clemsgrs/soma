@@ -28,7 +28,7 @@ dependencies = [
     "Pillow",
     "h5py",
     "torch",
-    "torchvision",
+    "torchvision>=0.23",  # tv_tensors.KeyPoints: joint pixel + point augmentation
     "scikit-image",
     "scikit-learn",
     "scikit-survival",
@@ -40,7 +40,7 @@ dependencies = [
     "safetensors",
     "transformers",
     "hs2p>=6.1.0",
-    "slide2vec[fm]>=7.1.1",
+    "slide2vec[fm]>=7.1.2",  # prism extra no longer caps torch<2.8, so torchvision>=0.23 resolves
     "matplotlib>=3.7",
     "croma>=1.0.0",
 ]

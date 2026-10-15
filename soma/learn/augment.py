@@ -2,16 +2,21 @@
 
 An augmentation is any callable ``(pixels, target) -> (pixels, target)``: ``pixels`` is
 one sample's ``(3, H, W)`` uint8 tensor, ``target`` its raw supervision (a ``(H, W)``
-long label map, or :class:`~soma.data.Points`). :func:`soma.learn.loaders` applies it to
-the train split only, before the encoder stage's ``preprocess``; cached grids cannot be
-augmented. ``augment_registry`` resolves the ``augmentation: {name, params}`` config leaf.
+long label map, or :class:`~soma.data.Points` in the pixel frame of ``pixels``: ``xy`` in
+pixels, with an optional ``(H, W)`` ignore raster on the same frame).
+:func:`soma.learn.loaders` applies it to the train split only, before the encoder stage's
+``preprocess``, and maps level-0 points into the pixel frame and back around it; cached
+grids cannot be augmented. ``augment_registry`` resolves the ``augmentation: {name,
+params}`` config leaf.
 """
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
 import torch
 from torch import Tensor
 
@@ -22,6 +27,92 @@ from soma.registry import Registry
 __all__ = ["SegmentationAugment", "SegmentationAugmentParams", "augment_registry"]
 
 augment_registry = Registry("augmentations")
+
+#: Ignore-raster value of a pixel that carries no supervision.
+_IGNORED = 255
+
+
+def _outside_to_nan(xy: Tensor, canvas_size: tuple[int, int]) -> Tensor:
+    """``(N, 2)`` points with every row outside ``[0, W) x [0, H)`` set to NaN."""
+    height, width = canvas_size
+    inside = (xy[:, 0] >= 0) & (xy[:, 0] < width) & (xy[:, 1] >= 0) & (xy[:, 1] < height)
+    return torch.where(inside.unsqueeze(1), xy, torch.full_like(xy, float("nan")))
+
+
+@functools.lru_cache(maxsize=None)
+def _unclamped_keypoints() -> type:
+    """A ``tv_tensors.KeyPoints`` whose geometric kernels let points leave the canvas.
+
+    torchvision 0.23 clamps keypoints onto the canvas edge after every geometric op, so a
+    point cropped or rotated out of the image would come back supervising the border.
+    This subclass registers its own kernels for the ops :class:`SegmentationAugment`
+    builds: they move a point exactly as the image kernels move the pixel under it (pixel
+    centres at integer coordinates) and never clamp. A point that leaves the canvas
+    becomes NaN, so a later op cannot bring it back onto pixels it no longer has.
+    """
+    from torchvision import tv_tensors
+    from torchvision.transforms.v2 import functional as F
+
+    class UnclampedKeyPoints(tv_tensors.KeyPoints):
+        pass
+
+    def wrap(xy: Tensor, like, canvas_size=None):
+        # Not ``tv_tensors.wrap``: it returns a plain ``KeyPoints``, whose kernels clamp.
+        canvas_size = canvas_size or like.canvas_size
+        return UnclampedKeyPoints(_outside_to_nan(xy, canvas_size), canvas_size=canvas_size)
+
+    @F.register_kernel(F.horizontal_flip, UnclampedKeyPoints)
+    def horizontal_flip(points, **kwargs):
+        xy = points.as_subclass(Tensor).clone()
+        xy[:, 0] = points.canvas_size[1] - 1 - xy[:, 0]
+        return wrap(xy, points)
+
+    @F.register_kernel(F.vertical_flip, UnclampedKeyPoints)
+    def vertical_flip(points, **kwargs):
+        xy = points.as_subclass(Tensor).clone()
+        xy[:, 1] = points.canvas_size[0] - 1 - xy[:, 1]
+        return wrap(xy, points)
+
+    @F.register_kernel(F.resized_crop, UnclampedKeyPoints)
+    def resized_crop(points, top, left, height, width, size, **kwargs):
+        out_h, out_w = (int(v) for v in size)
+        # A point leaves with its pixel: judge it against the source crop, where the
+        # pixel grid is exact. The half-pixel offset of a downsampling resize can carry a
+        # point just past the crop's edge to a coordinate below the output width but past
+        # the last pixel's centre, and the output-canvas check alone would keep it.
+        xy = points.as_subclass(Tensor)
+        xy = _outside_to_nan(xy - torch.tensor([left, top], dtype=xy.dtype), (height, width))
+        moved = torch.stack(
+            [
+                (xy[:, 0] + 0.5) * (out_w / width) - 0.5,
+                (xy[:, 1] + 0.5) * (out_h / height) - 0.5,
+            ],
+            dim=1,
+        )
+        return wrap(moved.to(xy.dtype), points, (out_h, out_w))
+
+    @F.register_kernel(F.affine, UnclampedKeyPoints)
+    def affine(points, angle, translate, scale, shear, center=None, **kwargs):
+        height, width = points.canvas_size
+        xy = points.as_subclass(Tensor).to(torch.float64)
+        if center is None:  # the image kernel rotates about the centre pixel
+            center = [(width - 1) * 0.5, (height - 1) * 0.5]
+        # torchvision's keypoint kernel clamps to its canvas: run it on one padded so wide
+        # that no point reaches the edge, then shift back (the map commutes with a shift).
+        reach = float(torch.nan_to_num(xy).abs().max()) if xy.numel() else 0.0
+        margin = 4 * int(reach + height + width + sum(abs(float(t)) for t in translate) + 1)
+        moved, _ = F.affine_keypoints(
+            xy + margin,
+            canvas_size=(height + 2 * margin, width + 2 * margin),
+            angle=angle,
+            translate=translate,
+            scale=scale,
+            shear=shear,
+            center=[float(center[0]) + margin, float(center[1]) + margin],
+        )
+        return wrap((moved - margin).to(points.dtype), points)
+
+    return UnclampedKeyPoints
 
 
 def _check_strengths(
@@ -115,8 +206,11 @@ class SegmentationAugment:
         ignore_index: Label-map fill for synthesised pixels.
         target_size: ``(H, W)`` output of ``crop_scale``.
 
-    Point targets are refused until torchvision 0.23 brings ``tv_tensors.KeyPoints``
-    (soma#586).
+    A :class:`~soma.data.Points` target (in the pixel frame) rides as
+    ``tv_tensors.KeyPoints``: its points move with the pixels, points that leave the
+    canvas are dropped (never clamped onto the edge), and its ignore raster moves like a
+    label map, filled with 255 outside the canvas. Points without an ignore raster get
+    one when the transform synthesises border pixels, so those carry no supervision.
     """
 
     def __init__(
@@ -165,9 +259,10 @@ class SegmentationAugment:
         if isinstance(target_size, int):
             target_size = (target_size, target_size)
         self.target_size = None if target_size is None else tuple(int(v) for v in target_size)
-        self._transform = self._build()
+        self._transform = self._build(mask_fill=self.ignore_index)
+        self._point_transform = self._build(mask_fill=_IGNORED)
 
-    def _build(self) -> Any:
+    def _build(self, *, mask_fill: int) -> Any:
         from torchvision import tv_tensors
         from torchvision.transforms import v2
 
@@ -184,7 +279,7 @@ class SegmentationAugment:
                     degrees=self.rotation_degrees,
                     translate=(self.translate, self.translate) if self.translate > 0.0 else None,
                     scale=(1.0 - self.scale, 1.0 + self.scale) if self.scale > 0.0 else None,
-                    fill={tv_tensors.Image: 0.0, tv_tensors.Mask: float(self.ignore_index)},
+                    fill={tv_tensors.Image: 0.0, tv_tensors.Mask: float(mask_fill)},
                 )
             )
         if any(v > 0.0 for v in (self.brightness, self.contrast, self.saturation, self.hue)):
@@ -203,16 +298,41 @@ class SegmentationAugment:
         from torchvision import tv_tensors
 
         if isinstance(target, Points):
-            raise ValueError(
-                "point targets cannot be augmented yet: joint point augmentation waits for "
-                "torchvision 0.23 tv_tensors.KeyPoints (soma#586)"
-            )
+            return self._augment_points(pixels, target)
         if not torch.is_tensor(target) or target.ndim != 2:
             raise ValueError(f"SegmentationAugment augments a (H, W) label map, got {type(target).__name__}")
         image, mask = self._transform(
             tv_tensors.Image(pixels), tv_tensors.Mask(target.to(torch.long))
         )
         return image.as_subclass(Tensor).to(torch.uint8), mask.as_subclass(Tensor).to(torch.long)
+
+    def _augment_points(self, pixels: Tensor, target: Points) -> tuple[Tensor, Points]:
+        from torchvision import tv_tensors
+
+        height, width = (int(v) for v in pixels.shape[1:])
+        if target.ignore_mask is None:
+            ignore = np.zeros((height, width), dtype=np.uint8)
+        else:
+            ignore = np.where(np.asarray(target.ignore_mask) == _IGNORED, _IGNORED, 0).astype(np.uint8)
+            if ignore.shape != (height, width):
+                raise ValueError(
+                    f"the points' ignore mask is {ignore.shape} but the pixels are "
+                    f"{(height, width)}; an augmentation takes the ignore raster on the pixel frame"
+                )
+        keypoints = _unclamped_keypoints()(
+            target.xy.to(torch.float32).reshape(-1, 2), canvas_size=(height, width)
+        )
+        image, mask, moved = self._point_transform(
+            tv_tensors.Image(pixels), tv_tensors.Mask(torch.from_numpy(ignore)), keypoints
+        )
+        xy = moved.as_subclass(Tensor).to(torch.float32).reshape(-1, 2)
+        inside = ~torch.isnan(_outside_to_nan(xy, tuple(image.shape[1:]))).any(dim=1)
+        ignore_out = mask.as_subclass(Tensor).numpy().astype(np.uint8)
+        if target.ignore_mask is None and not (ignore_out == _IGNORED).any():
+            ignore_out = None
+        return image.as_subclass(Tensor).to(torch.uint8), Points(
+            xy=xy[inside], classes=target.classes.to(torch.long)[inside], ignore_mask=ignore_out
+        )
 
     def __repr__(self) -> str:
         return f"SegmentationAugment({self._transform})"

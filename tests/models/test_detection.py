@@ -714,6 +714,80 @@ def test_grid_dataset_drops_points_on_ignored_level0_pixels_before_framing():
     assert float(heatmap[0, 0].max()) == 0.0
 
 
+def test_grid_dataset_augments_points_in_the_pixel_frame_and_returns_them_at_level0():
+    from soma.data import GridGeometry, Points
+    from soma.learn import SegmentationAugment
+    from soma.learn.grid import GridDataset
+
+    # The pixels start at level-0 (100, 40), two level-0 px per pixel. Level-0 (130, 50)
+    # is pixel (15, 5); a horizontal flip of the 32-px frame puts it at pixel (16, 5),
+    # level-0 (132, 50). Level-0 columns 100..109 are ignored: pixels 0..4, flipped to
+    # 27..31; the point at level-0 (102, 60) sits on them and is dropped.
+    geometry = GridGeometry.from_sizes(
+        target_size=32, patch_size=1, origin_level0=(100.0, 40.0), level0_px_per_token_px=2.0
+    )
+    mask = np.zeros((128, 200), dtype=np.uint8)
+    mask[:, 100:110] = 255
+
+    class _Images:
+        def load(self, sample_id):
+            return torch.zeros(3, 32, 32, dtype=torch.uint8)
+
+    class _Targets:
+        def load(self, sample_id):
+            return Points(
+                xy=torch.tensor([[130.0, 50.0], [102.0, 60.0]]),
+                classes=torch.tensor([1, 0]),
+                ignore_mask=mask,
+            )
+
+    dataset = GridDataset(
+        ["s"],
+        _Images(),
+        _Targets(),
+        inputs="pixels",
+        geometry=geometry,
+        target_kind="points",
+        augment=SegmentationAugment(horizontal_flip=1.0),
+    )
+    _, pixels, encoded, _ = dataset[0]
+    assert tuple(pixels.shape) == (3, 32, 32)
+    assert encoded["points"].tolist() == [[132.0, 50.0, 1.0]]
+    assert encoded["ignore"].shape == (32, 32)
+    assert bool(encoded["ignore"][:, 27:].all()) and not bool(encoded["ignore"][:, :27].any())
+
+
+def test_grid_dataset_frames_the_ignore_raster_onto_an_image_larger_than_the_target():
+    from soma.data import GridGeometry, Points
+    from soma.learn import SegmentationAugment
+    from soma.learn.grid import GridDataset
+
+    # A 64x64 image under a 32-px head: the crop resizes it to the target size, so the
+    # ignore raster must start on the 64x64 pixels, not on the 32x32 target frame.
+    geometry = GridGeometry.from_sizes(target_size=32, patch_size=1, level0_px_per_token_px=1.0)
+    mask = np.zeros((64, 64), dtype=np.uint8)
+
+    class _Images:
+        def load(self, sample_id):
+            return torch.zeros(3, 64, 64, dtype=torch.uint8)
+
+    class _Targets:
+        def load(self, sample_id):
+            return Points(xy=torch.tensor([[40.0, 40.0]]), classes=torch.tensor([0]), ignore_mask=mask)
+
+    def dataset(augment):
+        return GridDataset(
+            ["s"], _Images(), _Targets(), inputs="pixels", geometry=geometry,
+            target_kind="points", augment=augment,
+        )
+
+    _, pixels, encoded, _ = dataset(SegmentationAugment(crop_scale=(0.5, 1.0), target_size=32))[0]
+    assert tuple(pixels.shape) == (3, 32, 32)
+    assert encoded["ignore"].shape == (32, 32)
+    _, _, plain, _ = dataset(None)[0]
+    assert plain["ignore"].shape == (32, 32)
+
+
 def test_head_drops_points_on_ignored_pixels_from_heatmap_and_ground_truth():
     head = _make_head()
     ignore = torch.zeros(1, 32, 32, dtype=torch.bool)

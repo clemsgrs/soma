@@ -329,17 +329,16 @@ def test_live_features_and_augmentation_serve_the_grid_shape(files):
         check(experiment(*files, aggregator="abmil", features=FeaturesConfig(kind="live")))
     with pytest.raises(ValueError, match="requires features.kind='live'"):
         check(_grid(files, loaders={"augment": "segmentation"}))
-    with pytest.raises(ValueError, match="point targets cannot be augmented"):
-        check(
-            _grid(
-                files,
-                head="detection",
-                head_params={"num_classes": 1, "match_distance": 3.0},
-                features=FeaturesConfig(kind="live"),
-                loaders={"augment": "segmentation"},
-            )
-        )
     check(_grid(files, features=FeaturesConfig(kind="live"), loaders={"augment": "segmentation"}))
+    check(
+        _grid(
+            files,
+            head="detection",
+            head_params={"num_classes": 1, "match_distance": 3.0},
+            features=FeaturesConfig(kind="live"),
+            loaders={"augment": "segmentation"},
+        )
+    )
 
 
 def test_the_roi_sampler_is_a_cached_segmentation_contract(files):

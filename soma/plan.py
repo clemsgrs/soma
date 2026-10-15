@@ -442,11 +442,6 @@ def _check_loaders(config: ExperimentConfig, registries, *, family: str, shape: 
                 "loaders.augment requires features.kind='live': cached grids are frozen features "
                 "and cannot be augmented."
             )
-        if family == "detection":
-            raise ValueError(
-                "point targets cannot be augmented yet: joint point augmentation waits for "
-                "torchvision 0.23 tv_tensors.KeyPoints (soma#586). Clear loaders.augment."
-            )
         _validate_leaf(registries["augment"], loaders.augment, "augmentation")
     sampler = loaders.sampler
     if sampler is None:

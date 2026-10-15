@@ -52,17 +52,18 @@ class GridBatch:
             raise ValueError("a GridBatch needs features (cached grids) or pixels (live)")
 
 
-def ignore_to_frame(ignore_mask: np.ndarray, geometry) -> Tensor:
+def ignore_to_frame(ignore_mask: np.ndarray, geometry, size: tuple[int, int] | None = None) -> Tensor:
     """Map a level-0 ignore raster (255 = ignored) onto the geometry's target frame.
 
     Target pixel ``(u, v)`` reads the nearest level-0 pixel under the geometry's level-0
     anchor; pixels that fall outside the raster are ignored. Returns ``(H, W)`` bool,
-    ``True`` where nothing is supervised.
+    ``True`` where nothing is supervised. ``size`` overrides the frame's ``(H, W)``
+    (default: the geometry's ``target_size``).
     """
     mask = np.asarray(ignore_mask)
     if mask.ndim != 2:
         raise ValueError(f"ignore mask must be 2-D, got shape {mask.shape}")
-    height, width = (int(v) for v in geometry.target_size)
+    height, width = (int(v) for v in (geometry.target_size if size is None else size))
     top, left = int(geometry.crop_box[0]), int(geometry.crop_box[1])
     scale = float(geometry.level0_px_per_token_px)
     origin_x, origin_y = (float(v) for v in geometry.origin_level0)
@@ -106,6 +107,8 @@ class GridDataset(Dataset):
         images: An :class:`~soma.data.ImageSource` whose pixels ride along with cached
             features as an image-prior decoder's side input.
         augment: ``(pixels, target) -> (pixels, target)``, applied before ``preprocess``.
+            It sees :class:`~soma.data.Points` in the pixel frame (the level-0 points and
+            ignore raster mapped through ``geometry``); the moved points return to level-0.
         preprocess: The encoder stage's itemwise preprocessor, applied to the pixels.
         check: ``(sample_id, target)`` validation run on each raw target (the head's
             ``check_target``), so bad supervision fails naming its sample.
@@ -143,6 +146,50 @@ class GridDataset(Dataset):
     def __len__(self) -> int:
         return len(self._ids)
 
+    def _supervised(self, target: Points) -> Points:
+        """Drop points on an ignored level-0 pixel (the rule ``evaluate`` applies): the
+        framed map alone misses them once a frame pixel spans several level-0 pixels."""
+        if target.ignore_mask is None:
+            return target
+        ignored = np.asarray(target.ignore_mask) == _IGNORED
+        keep = torch.from_numpy(~points_on_valid(target.xy.detach().cpu().numpy(), ignored))
+        return Points(xy=target.xy[keep], classes=target.classes[keep], ignore_mask=target.ignore_mask)
+
+    def _to_pixel_frame(self, target: Points, size: tuple[int, int]) -> Points:
+        """Level-0 points and ignore raster -> the ``size`` pixel frame an augmentation
+        moves (the pixels' own size, which a crop may bring to the target size)."""
+        target = self._supervised(target)
+        origin = torch.tensor(self._geometry.origin_level0, dtype=torch.float64)
+        scale = float(self._geometry.level0_px_per_token_px)
+        xy = (target.xy.to(torch.float64) - origin) / scale
+        ignore = None
+        if target.ignore_mask is not None:
+            framed = ignore_to_frame(target.ignore_mask, self._geometry, size).numpy()
+            ignore = np.where(framed, _IGNORED, 0).astype(np.uint8)
+        return Points(xy=xy.to(torch.float32), classes=target.classes, ignore_mask=ignore)
+
+    def _encode_framed(self, sample_id: str, framed: Any) -> dict[str, Tensor]:
+        """The augmented pixel-frame points -> level-0 rows and the frame's ignore map."""
+        if not isinstance(framed, Points):
+            raise ValueError(
+                f"augmentation returned {type(framed).__name__} for '{sample_id}'; it must "
+                "return the Points it was given"
+            )
+        origin = torch.tensor(self._geometry.origin_level0, dtype=torch.float64)
+        xy = framed.xy.to(torch.float64) * float(self._geometry.level0_px_per_token_px) + origin
+        rows = torch.cat([xy.to(torch.float32), framed.classes.to(torch.float32).unsqueeze(1)], dim=1)
+        encoded = {"points": rows.reshape(-1, 3)}
+        if framed.ignore_mask is not None:
+            ignore = torch.from_numpy(np.asarray(framed.ignore_mask) == _IGNORED)
+            size = tuple(int(v) for v in self._geometry.target_size)
+            if tuple(ignore.shape) != size:
+                raise ValueError(
+                    f"augmentation returned a {tuple(ignore.shape)} ignore mask for "
+                    f"'{sample_id}' but the head's target size is {size}"
+                )
+            encoded["ignore"] = ignore
+        return encoded
+
     def _encode(self, sample_id: str, target: Any) -> dict[str, Tensor]:
         if self._target_kind == "label_map":
             if not torch.is_tensor(target) or target.ndim != 2:
@@ -162,16 +209,12 @@ class GridDataset(Dataset):
                 f"target source returned {type(target).__name__} for '{sample_id}'; "
                 "a detection head needs Points"
             )
+        target = self._supervised(target)
         rows = torch.cat(
             [target.xy.to(torch.float32), target.classes.to(torch.float32).unsqueeze(1)], dim=1
         )
         encoded = {"points": rows.reshape(-1, 3)}
         if target.ignore_mask is not None:
-            # Drop points on an ignored level-0 pixel (the rule ``evaluate`` applies): the
-            # framed map alone misses them once a frame pixel spans several level-0 pixels.
-            ignored = np.asarray(target.ignore_mask) == _IGNORED
-            on_ignored = points_on_valid(target.xy.detach().cpu().numpy(), ignored)
-            encoded["points"] = encoded["points"][torch.from_numpy(~on_ignored)]
             encoded["ignore"] = ignore_to_frame(target.ignore_mask, self._geometry)
         return encoded
 
@@ -193,11 +236,18 @@ class GridDataset(Dataset):
         target = self._targets.load(sample_id)
         if self._check is not None:
             self._check(sample_id, target)
-        if self._augment is not None:
-            pixels, target = self._augment(pixels, target)
+        if self._augment is not None and isinstance(target, Points):
+            pixels, framed = self._augment(
+                pixels, self._to_pixel_frame(target, tuple(int(v) for v in pixels.shape[1:]))
+            )
+            encoded = self._encode_framed(sample_id, framed)
+        else:
+            if self._augment is not None:
+                pixels, target = self._augment(pixels, target)
+            encoded = self._encode(sample_id, target)
         if self._preprocess is not None:
             pixels = self._preprocess(pixels.contiguous())
-        return features, pixels, self._encode(sample_id, target), sample_id
+        return features, pixels, encoded, sample_id
 
 
 def _stack(tensors: Sequence[Tensor], what: str) -> Tensor:
@@ -329,11 +379,6 @@ def grid_loaders(
             raise ValueError("preprocess= prepares pixels for an encoder stage; cached grids take none")
     elif images is not None:
         raise ValueError("images= rides along with cached grids; a live source already serves pixels")
-    if target_kind == "points" and augment is not None:
-        raise ValueError(
-            "point targets cannot be augmented yet: joint point augmentation waits for "
-            "torchvision 0.23 tv_tensors.KeyPoints (soma#586)"
-        )
     ids = list(dict.fromkeys([*train, *(tune or ()), *(sid for split in tests.values() for sid in split)]))
     require_coverage(source, ids, what="pixels" if inputs == "pixels" else "features")
     require_coverage(targets, ids, what="targets")

@@ -184,6 +184,44 @@ def test_live_detection_is_learned(tmp_path, encoder_name, encoded_images, fake_
     artifact.assert_passed()
 
 
+def test_live_detection_with_augmentation_is_learned(
+    tmp_path, encoder_name, encoded_images, fake_live_encoder, new_artifact
+):
+    """Live detection with ``loaders.augment``: the train points move with the augmented
+    pixels (points cropped out are dropped) and the run still learns."""
+    artifact = new_artifact("dense_live_detection_augmented")
+    config = _config(
+        tmp_path,
+        encoder_name,
+        "detection",
+        roi_px=96,
+        head={
+            "name": "detection",
+            "params": {"num_classes": 2, "match_distance": 3.0, "sigma": 1.5},
+        },
+        metrics=["mean_f1", "f1_per_class"],
+        epochs=30,
+        live=True,
+        augmentation={
+            "name": "segmentation",
+            "params": {
+                "crop_scale": [0.6, 1.0],
+                "horizontal_flip": 0.5,
+                "vertical_flip": 0.5,
+                "rotation_degrees": 15.0,
+            },
+        },
+    )
+    run = run_soma(config, tmp_path / "config.yaml")
+
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_equal("encoder_stages_built", len(fake_live_encoder), 1)
+    artifact.check_equal("rois_extracted", sum(encoded_images), 0)
+    artifact.check_at_least("test/mean_f1", run.summary["test/mean_f1"], 0.6)
+    artifact.assert_passed()
+
+
 def test_live_run_re_encodes_a_supplied_image_source(tmp_path, encoder_name, encoded_images, fake_live_encoder):
     """A caller-supplied ``ImageSource`` under ``features.kind: live`` gets the run's frozen
     encoder stage, exactly like the image source the run would build itself."""
