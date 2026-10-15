@@ -76,11 +76,16 @@ def _unclamped_keypoints() -> type:
     @F.register_kernel(F.resized_crop, UnclampedKeyPoints)
     def resized_crop(points, top, left, height, width, size, **kwargs):
         out_h, out_w = (int(v) for v in size)
+        # A point leaves with its pixel: judge it against the source crop, where the
+        # pixel grid is exact. The half-pixel offset of a downsampling resize can carry a
+        # point just past the crop's edge to a coordinate below the output width but past
+        # the last pixel's centre, and the output-canvas check alone would keep it.
         xy = points.as_subclass(Tensor)
+        xy = _outside_to_nan(xy - torch.tensor([left, top], dtype=xy.dtype), (height, width))
         moved = torch.stack(
             [
-                (xy[:, 0] - left + 0.5) * (out_w / width) - 0.5,
-                (xy[:, 1] - top + 0.5) * (out_h / height) - 0.5,
+                (xy[:, 0] + 0.5) * (out_w / width) - 0.5,
+                (xy[:, 1] + 0.5) * (out_h / height) - 0.5,
             ],
             dim=1,
         )

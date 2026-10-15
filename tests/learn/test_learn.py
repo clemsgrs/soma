@@ -984,6 +984,37 @@ class TestSegmentationAugmentPoints:
             kept += len(returned)
         assert dropped > 0 and kept > 0
 
+    def test_a_point_whose_pixel_the_crop_removed_does_not_come_back_on_the_edge(self):
+        # A point just past the crop's right or bottom edge maps, with the half-pixel
+        # offset of a downsampling resize, to a coordinate below the output width but
+        # past the last pixel's centre; it must leave with its pixel, not round onto the
+        # frame's edge (or be carried back inside by a later op).
+        from soma.data import Points
+        from soma.learn import SegmentationAugment
+
+        size = 64
+        pixels = torch.zeros(3, size, size, dtype=torch.uint8)
+        ys, xs = torch.meshgrid(torch.arange(size), torch.arange(size), indexing="ij")
+        xy = torch.stack([xs.flatten(), ys.flatten()], dim=1).to(torch.float32)
+        classes = torch.zeros(len(xy), dtype=torch.long)
+        augment = SegmentationAugment(
+            crop_scale=(0.5, 1.0),
+            target_size=16,
+            horizontal_flip=0.0,
+            vertical_flip=0.0,
+            rotation_degrees=0.0,
+            translate=0.0,
+            scale=0.0,
+        )
+        for seed in range(20):
+            torch.manual_seed(seed)
+            out_pixels, out = augment(pixels, Points(xy=xy, classes=classes))
+            height, width = out_pixels.shape[1:]
+            nearest = torch.round(out.xy)
+            assert bool((nearest[:, 0] <= width - 1).all()), f"seed {seed}: a point rounds past the right edge"
+            assert bool((nearest[:, 1] <= height - 1).all()), f"seed {seed}: a point rounds past the bottom edge"
+            assert bool((nearest >= 0).all())
+
     def test_the_ignore_mask_moves_with_the_pixels_and_covers_synthesised_borders(self):
         from soma.data import Points
         from soma.learn import SegmentationAugment
