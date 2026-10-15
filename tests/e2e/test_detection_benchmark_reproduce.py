@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from soma.benchmark.detection import read_cell_predictions, score_dataset_points
+from soma.benchmark.detection import persisted_predictions, read_cell_predictions, score_dataset_points
 from soma.benchmark.tiles import tile_detection_manifest
 from soma.cli import main as soma_main
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
@@ -192,6 +192,24 @@ def test_reproduce_detection_midog_scores_its_own_run(
     shutil.rmtree(score_dir, ignore_errors=True)
     score_dir.with_name("detection_score.bak").rename(score_dir)
     test_parquet.with_suffix(".bak").rename(test_parquet)
+    if num_folds > 1:
+        # A re-score of a scored run that fails on a later fold (here fold_2 lost its test
+        # predictions after fold_0 was rewritten) leaves no aggregate behind: the half-
+        # refreshed cache never counts as complete, so stale and fresh folds never mix.
+        backup = score_dir.with_name("detection_score.bak")
+        shutil.copytree(score_dir, backup)
+        (score_dir / "fold_1" / "predictions.json").unlink()
+        late_parquet = run.run_dir / "fold_2" / "predictions_test.parquet"
+        late_parquet.rename(late_parquet.with_suffix(".bak"))
+        artifact.check_equal("failed_rescore/raises", reproduce_failure(tmp_path / "seed_0"), "FileNotFoundError")
+        artifact.check_equal(
+            "failed_rescore/unscored",
+            [path.relative_to(score_dir).as_posix() for path in persisted_predictions(run.run_dir)],
+            [],
+        )
+        late_parquet.with_suffix(".bak").rename(late_parquet)
+        shutil.rmtree(score_dir)
+        backup.rename(score_dir)
     # A scored run re-aggregates off its predictions.json cache: the parquet files are no
     # longer read.
     for parquet in run.run_dir.glob("**/predictions_*.parquet"):

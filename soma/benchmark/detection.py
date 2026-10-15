@@ -831,7 +831,8 @@ def score_run(dataset: str, run_dir: str | Path) -> dict[str, float]:
     model is loaded.
 
     Every fold the splits declare must be present with its test predictions; otherwise
-    ``FileNotFoundError`` is raised before anything is written.
+    ``FileNotFoundError`` is raised. A multi-fold re-score first removes the aggregate
+    ``metrics.json``, so a re-score that fails part-way never counts as a complete cache.
 
     Returns the native test metrics; for a multi-fold run, their mean over folds.
     """
@@ -854,6 +855,8 @@ def score_run(dataset: str, run_dir: str | Path) -> dict[str, float]:
         )
     if len(folds) == 1:
         return _score_fold(dataset, cfg, cohort, 0, run, out, replicate=int(cfg.run.seed), axis="seeds")
+    # The aggregate marks the cache complete: drop a stale one before refreshing any fold.
+    (out / "metrics.json").unlink(missing_ok=True)
     per_fold = [
         _score_fold(
             dataset, cfg, cohort, k, folder, out / folder.name, replicate=k, axis="folds"
