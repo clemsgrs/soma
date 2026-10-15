@@ -71,8 +71,8 @@ def scored_models(monkeypatch) -> list[SimpleNamespace]:
     scored: list[SimpleNamespace] = []
     original = soma.evaluation.predict
 
-    def spying(learner, loader, callbacks=()):
-        predictions = original(learner, loader, callbacks)
+    def spying(learner, loader, callbacks=(), **kwargs):
+        predictions = original(learner, loader, callbacks, **kwargs)
         scored.append(
             SimpleNamespace(learner=learner, model=learner.model, loader=loader, predictions=predictions)
         )

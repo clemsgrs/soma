@@ -9,6 +9,10 @@ predictions with the cohort's targets by ``sample_id`` and returns an
 come from :meth:`soma.data.Cohort.targets`, so predictions saved by a run, or made
 outside soma, are scored the same way.
 
+:func:`soma.predict` runs the model where its parameters live, or on the ``device`` it
+is given (``"auto"``, ``"cpu"``, ``"cuda:1"``). A model with no parameter runs on the
+GPU when there is one. A run predicts on its ``trainer.device``.
+
 Score predictions
 -----------------
 

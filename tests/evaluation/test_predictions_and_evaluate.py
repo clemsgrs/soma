@@ -20,7 +20,12 @@ from soma.evaluation.heatmaps import SaveAttention
 from soma.models.heads.classification import BinaryClassificationHead
 from soma.learn.bag_dataset import BagDataset
 from soma.learn.collate import bag_collate_fn
-from soma.models.model import MILModel
+from soma.data.geometry import compute_dense_geometry
+from soma.learn import learner_for
+from soma.learn.grid import GridBatch
+from soma.models.decoders.base import Decoder
+from soma.models.heads.detection import DetectionHead
+from soma.models.model import DenseModel, MILModel
 
 IDS = ["a", "b", "c", "d"]
 
@@ -420,6 +425,55 @@ def test_predict_wraps_a_bare_model_and_drives_the_callbacks(tmp_path):
         attention = np.load(tmp_path / "attn" / f"{sid}.npz")["attention"]
         assert attention.shape == (3 + i,)
         assert attention.sum() == pytest.approx(1.0, abs=1e-5)
+
+
+
+class _MeanDecoder(Decoder):
+    """A decoder with no parameter: the channel mean as one class's logits."""
+
+    def forward(self, X):
+        return X.mean(dim=1, keepdim=True)
+
+    @property
+    def num_classes(self) -> int:
+        return 1
+
+
+def _weightless_grid_model() -> tuple[DenseModel, list[GridBatch]]:
+    geometry = compute_dense_geometry(target_size=32, patch_size=4)
+    head = DetectionHead(num_classes=1, geometry=geometry, spacing_um=1.0, match_distance=5.0, sigma=2.0)
+    features = torch.arange(2 * 3 * 8 * 8, dtype=torch.float32).reshape(2, 3, 8, 8) / 384.0
+    batch = GridBatch(features=features, pixels=None, targets={}, sample_ids=("a", "b"))
+    return DenseModel(_MeanDecoder(), head), [batch]
+
+
+@pytest.mark.parametrize(("cuda", "expected"), [(True, "cuda"), (False, "cpu")])
+def test_predict_runs_a_model_without_parameters_on_the_gpu_when_there_is_one(monkeypatch, cuda, expected):
+    model, loader = _weightless_grid_model()
+    learner = learner_for(model)
+    moved_to: list[torch.device] = []
+    transferred_to: list[torch.device] = []
+    # Record where predict sends the learner and its batches, without moving anything.
+    learner.to = lambda device: moved_to.append(device) or learner
+    learner.transfer_batch = lambda batch, device: transferred_to.append(device) or batch
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda)
+
+    predictions = predict(learner, loader)
+
+    assert moved_to == transferred_to == [torch.device(expected)]
+    assert sorted(predictions.frame["sample_id"].unique()) == ["a", "b"]
+
+
+def test_predict_runs_on_the_device_it_is_given():
+    model, loader = _weightless_grid_model()
+    devices: list[str] = []
+
+    class Spy:
+        def on_predict_batch(self, batch, output) -> None:
+            devices.append(output.raw.logits.device.type)
+
+    predict(model, loader, callbacks=[Spy()], device="cpu")
+    assert devices == ["cpu"]
 
 
 # --- soma evaluate ----------------------------------------------------------------- #

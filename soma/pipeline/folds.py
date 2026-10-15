@@ -59,9 +59,8 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup) -> FoldResult:
     baseline = setup.fit_baseline(learner.head) if setup.fit_baseline is not None else None  # 5
     # The plan's callbacks are the whole policy: no implicit Checkpoint, EarlyStopping or
     # Progress, so a run without ``checkpoint`` keeps its final weights.
-    fit = learn.Trainer(callbacks=setup.callbacks(), **setup.trainer).fit(  # 6
-        learner, loaders.train, loaders.tune
-    )
+    trainer = learn.Trainer(callbacks=setup.callbacks(), **setup.trainer)
+    fit = trainer.fit(learner, loaders.train, loaders.tune)  # 6
     if loaders.after_fit is not None:
         loaders.after_fit(fold_dir)
     head = fit.learner.head
@@ -70,7 +69,9 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup) -> FoldResult:
     def predict(split: SplitPlan):
         # Each split is inferred once, so the tune-time step and scoring share it.
         if split.name not in predicted:
-            predictions = _verbs.predict(fit.learner, split.loader, list(split.callbacks))
+            predictions = _verbs.predict(
+                fit.learner, split.loader, list(split.callbacks), device=trainer.device
+            )
             if baseline is not None:
                 predictions = Predictions.concat([predictions, baseline.predict(list(split.placeholder_ids))])
             predicted[split.name] = predictions

@@ -58,12 +58,20 @@ def _predict_grid(learner, loader, callbacks: Sequence[Any], device):
     return head.assemble_predictions(sample_ids, collected)
 
 
-def predict(learner_or_model, loader, callbacks: Sequence[Any] = ()):
+def predict(
+    learner_or_model,
+    loader,
+    callbacks: Sequence[Any] = (),
+    *,
+    device: str | torch.device | None = None,
+):
     """Predict every sample of ``loader``.
 
     A bare model is wrapped in its shape's learner (:func:`soma.learn.learner_for`).
-    The learner runs in eval mode under ``torch.inference_mode`` on the device its
-    parameters live on; each batch goes through ``transfer_batch`` and
+    The learner runs in eval mode under ``torch.inference_mode`` on ``device``
+    (``"auto"``, ``"cpu"``, ``"cuda:1"``…), moved there first. Without one it runs where
+    its parameters live, and a learner with no parameter runs as ``"auto"``: on the GPU
+    when there is one. Each batch goes through ``transfer_batch`` and
     ``predict_step``. For the set shape the frame is built from the step's ``columns``
     only, in loader order, and the head's ``task_family``, ``prediction_columns`` and
     ``classes`` describe it: a :class:`Predictions`. A grid head (one declaring
@@ -72,10 +80,15 @@ def predict(learner_or_model, loader, callbacks: Sequence[Any] = ()):
     :class:`~soma.evaluation.PointPredictions`, covering every sample of the loader.
     """
     from soma.learn import Learner, learner_for
+    from soma.learn.trainer import _resolve_device
 
     learner = learner_or_model if isinstance(learner_or_model, Learner) else learner_for(learner_or_model)
     parameter = next(learner.parameters(), None)
-    device = parameter.device if parameter is not None else torch.device("cpu")
+    if device is None and parameter is not None:
+        device = parameter.device
+    else:
+        device = _resolve_device("auto" if device is None else device)
+        learner.to(device)
     head = learner.head
     if getattr(head, "target_kind", None) is not None:
         return _predict_grid(learner, loader, callbacks, device)
