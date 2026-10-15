@@ -1,96 +1,106 @@
-"""Attention-map detection — the decoder-free rung 0 of the complexity ladder.
+"""Rung 0 of the detection decoder ladder: the encoder's own attention as the heatmap.
 
-The analogue of arXiv:2602.18747's "attention-maps-as-features" idea, taken to its
-zero-parameter limit for detection: the frozen encoder's own CLS/rollout attention grid
-``(K, gh, gw)`` (``feature_kind="cls_attention"``) *is* the detection heatmap — no
-decoder is trained, so **no parameter touches the features**. A CLS-attention map
-highlights the tokens the encoder attends to; where objects are salient (single-class
-MIDOG mitoses), its peaks are the detections. This is deliberately class-agnostic
-(saliency), so it is **MIDOG-scoped** (design §2.4): strong on one rare class, weak where
-detection is multi-class (OCELOT/Monkey) — itself a benchmark finding.
+``attention_map`` is a decoder with no parameters. It reads a ``cls_attention`` grid
+``(B, K, h, w)`` (``features.dense.feature_kind: cls_attention``), reduces its ``K`` head
+maps (all of them, or the ``heads`` it is given) to one map per sample, min-max normalises
+that map to ``[0, 1]`` and returns its logit. The detection head's interpolation, crop and
+sigmoid then turn it back into a ``[0, 1]`` heatmap on the supervision frame, as they do
+for a trained decoder's logits. Every class channel gets the same map: attention says
+where the cells are, not which class they belong to.
 
-The map is turned into a heatmap purely geometrically: reduce the ``K`` attention
-channels to one saliency map, upsample it to the supervision frame with the run's
-:class:`~soma.data.geometry.DenseGridGeometry` (bilinear to ``encoded_size``, crop
-``crop_box`` to ``target_size`` — the same map a decoder's logits take), and min-max
-normalise to ``[0, 1]``. The existing detection back half (``extract_peaks`` ->
-``match_points`` -> F1@δ, or :class:`~soma.models.heads.detection.DetectionHead`) scores it
-unchanged, so the rung is swappable with no change to the peak/matching components.
+A run with this decoder trains nothing (:class:`~soma.learn.Trainer` returns a learner
+with no trainable parameter as built). Its tune split still freezes the detection
+thresholds, so the run is scored like every other rung of the ladder. The decoder
+registers when :mod:`soma.benchmark` is imported, which the soma CLI does.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
-import torch.nn.functional as F
 from torch import Tensor
 
-from soma.data.geometry import DenseGridGeometry
+from soma.models.decoders.base import Decoder
+from soma.models.decoders.registry import decoder_registry
+from soma.registry import check_choice, check_non_negative
 
-__all__ = ["attention_to_detection_heatmap"]
+__all__ = ["DECODER_NAME", "AttentionMapDecoder", "AttentionMapParams"]
 
-_VALID_REDUCTIONS = {"mean", "max"}
+DECODER_NAME = "attention_map"
+
+#: Bounds of the normalised map before the logit: a flat map (nothing salient) becomes
+#: ``EPS`` everywhere, below the detection head's ``min_score``, so it yields no peak.
+EPS = 1e-6
 
 
-def attention_to_detection_heatmap(
-    attention_grid: Tensor,
-    *,
-    geometry: DenseGridGeometry,
-    num_classes: int = 1,
-    reduction: str = "mean",
-    normalize: bool = True,
-) -> Tensor:
-    """Turn a ``(K, gh, gw)`` attention grid into a ``(num_classes, H, W)`` detection heatmap.
+@dataclass
+class AttentionMapParams:
+    """:class:`AttentionMapDecoder`'s params.
 
-    Zero trained parameters: the encoder's attention is used verbatim as saliency.
-
-    Args:
-        attention_grid: The cached ``cls_attention`` grid ``(K, gh, gw)`` — ``K``
-            attention channels (blocks x heads, optionally register rows) over the token
-            grid.
-        geometry: The sample's :class:`DenseGridGeometry` (supplies ``encoded_size`` and
-            ``crop_box``), so the saliency lands on the supervision pixel frame exactly
-            where a decoder's logits would.
-        num_classes: Heatmap channels ``C``. The saliency is class-agnostic, so it is
-            broadcast to every channel (MIDOG uses ``C = 1``); multi-class only makes
-            sense as the "attention is class-blind" control the design calls out.
-        reduction: How to collapse the ``K`` attention channels to one saliency map —
-            ``"mean"`` (default) or ``"max"``.
-        normalize: Min-max normalise the saliency to ``[0, 1]`` (matching the ``[0, 1]``
-            heatmap the peak extractor / tune-split threshold sweep expect). A constant
-            map collapses to all-zeros (no peaks), the correct "nothing salient" answer.
-
-    Returns:
-        ``(num_classes, H, W)`` heatmap in ``[0, 1]`` at the mask ``target_size``.
+    ``reduction`` collapses the head maps (``mean`` or ``max``); ``heads`` keeps only
+    those channels of the grid (``null``: every channel), so ``heads: [k]`` scores head
+    ``k`` alone.
     """
-    if attention_grid.ndim != 3:
-        raise ValueError(
-            f"attention_grid must be (K, gh, gw), got shape {tuple(attention_grid.shape)}"
-        )
-    if int(num_classes) < 1:
-        raise ValueError(f"num_classes must be >= 1, got {num_classes}")
-    if reduction not in _VALID_REDUCTIONS:
-        raise ValueError(f"reduction must be one of {sorted(_VALID_REDUCTIONS)}, got {reduction!r}")
 
-    grid = attention_grid.detach().float()
-    saliency = grid.mean(dim=0) if reduction == "mean" else grid.amax(dim=0)  # (gh, gw)
+    reduction: str = "mean"
+    heads: list[int] | None = None
 
-    # Upsample to the padded encoded frame, then crop to target_size — the head's geometry,
-    # so the attention saliency registers against GT points the same way logits would.
-    up = F.interpolate(
-        saliency[None, None], size=geometry.encoded_size, mode="bilinear", align_corners=False
+    def __post_init__(self) -> None:
+        check_choice("reduction", self.reduction, ("mean", "max"))
+        if self.heads is not None:
+            if not self.heads:
+                raise ValueError("heads must name at least one channel, or be null for every channel")
+            for head in self.heads:
+                check_non_negative("heads", head, integer=True)
+
+
+class AttentionMapDecoder(Decoder):
+    """``(B, K, h, w)`` attention grid -> ``(B, C, h, w)`` logits, with no parameters."""
+
+    def __init__(
+        self,
+        *,
+        input_dim: int,
+        num_classes: int,
+        reduction: str = "mean",
+        heads: list[int] | None = None,
+    ) -> None:
+        super().__init__()
+        params = AttentionMapParams(reduction=reduction, heads=heads)
+        if num_classes < 1:
+            raise ValueError(f"num_classes must be >= 1, got {num_classes}")
+        if params.heads is not None and max(params.heads) >= input_dim:
+            raise ValueError(f"heads {params.heads} out of range for a grid of {input_dim} channels")
+        self._num_classes = int(num_classes)
+        self.reduction = params.reduction
+        self.heads = None if params.heads is None else [int(head) for head in params.heads]
+
+    def forward(self, X: Tensor) -> Tensor:
+        if X.ndim != 4:
+            raise ValueError(f"decoder expects a (B, K, h, w) grid, got shape {tuple(X.shape)}")
+        grid = X if self.heads is None else X[:, self.heads]
+        saliency = grid.mean(dim=1) if self.reduction == "mean" else grid.amax(dim=1)  # (B, h, w)
+        low = saliency.amin(dim=(1, 2), keepdim=True)
+        spread = saliency.amax(dim=(1, 2), keepdim=True) - low
+        # A flat map, up to fp noise, has nothing salient: it normalises to all-zeros.
+        flat = spread <= 1e-6 * (saliency.abs().amax(dim=(1, 2), keepdim=True) + 1e-8)
+        normalised = torch.where(flat, torch.zeros_like(saliency), (saliency - low) / spread.clamp_min(1e-12))
+        logits = torch.logit(normalised.clamp(EPS, 1.0 - EPS))
+        return logits.unsqueeze(1).expand(-1, self._num_classes, -1, -1)
+
+    @property
+    def num_classes(self) -> int:
+        return self._num_classes
+
+
+if DECODER_NAME not in decoder_registry:
+    decoder_registry.register(
+        DECODER_NAME,
+        AttentionMapDecoder,
+        params=AttentionMapParams,
+        metadata={
+            "description": "CLS attention as the detection heatmap, no parameters "
+            "(rung 0 of the decoder ladder, benchmark-private)"
+        },
     )
-    top, left, height, width = geometry.crop_box
-    cropped = up[0, 0, top : top + height, left : left + width]  # (H, W)
-
-    if normalize:
-        lo = float(cropped.min())
-        hi = float(cropped.max())
-        # Flat map -> all-zeros (no salient peak). The tolerance is relative so bilinear
-        # fp noise on a constant grid is not stretched to [0, 1]; a real bump clears it.
-        spread = hi - lo
-        if spread > 1e-6 * (abs(hi) + abs(lo) + 1e-8):
-            cropped = (cropped - lo) / spread
-        else:
-            cropped = torch.zeros_like(cropped)
-
-    return cropped.unsqueeze(0).expand(int(num_classes), -1, -1).contiguous()

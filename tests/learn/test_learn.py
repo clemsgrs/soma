@@ -447,6 +447,18 @@ class TestTrainerBudget:
         Trainer(max_epochs=2, device="cpu").fit(_learner(), loader)
         assert Recording.epochs == [0, 1]
 
+    def test_a_learner_with_nothing_to_train_is_returned_as_built(self):
+        learner = _learner()
+        for parameter in learner.parameters():
+            parameter.requires_grad_(False)
+        before = {k: v.clone() for k, v in learner.state_dict().items()}
+        result = Trainer(max_epochs=3, callbacks=[Checkpoint()], device="cpu").fit(
+            learner, _bag_loader(), _bag_loader()
+        )
+        assert result.learner is learner and result.history.empty and result.optimizer_steps == 0
+        for key, value in learner.state_dict().items():
+            torch.testing.assert_close(value, before[key])
+
     def test_training_reduces_the_loss(self):
         learner = _learner(optimizer={"name": "adam", "params": {"lr": 1e-2}})
         result = Trainer(max_epochs=10, device="cpu").fit(learner, _bag_loader(), _bag_loader())
