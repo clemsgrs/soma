@@ -398,7 +398,7 @@ def _eva_results_table(datasets, metric: str, reference_label: str, example: str
     if not rows:
         return (
             f"No scores have been recorded yet. ``soma reproduce {example} --encoder "
-            "virchow2 --raw-root /path/to/{example} --record`` records one next to the "
+            f"virchow2 --raw-root /path/to/{example} --record`` records one next to the "
             "published EVA reference."
         )
     lines = [

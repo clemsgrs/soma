@@ -94,10 +94,10 @@ encoder::
     soma reproduce ocelot --encoder uni2 --raw-root /path/to/ocelot2023_v1.0.1
 
 **Compare encoders** in one command, which also writes a leaderboard, or rescore a
-finished run::
+finished run from its output root (by default ``soma_reproduce/ocelot/seed_<k>``)::
 
     soma reproduce ocelot --encoders virchow2 uni2 h-optimus-1 --raw-root /path/to/ocelot2023_v1.0.1
-    soma reproduce ocelot --from-run-dir runs/ocelot/virchow2
+    soma reproduce ocelot --from-run-dir soma_reproduce/ocelot/seed_0
 
 ``--record`` appends the measured score to the results ledger that the table above
 reads. :doc:`benchmarking` describes the options shared by every benchmark.
