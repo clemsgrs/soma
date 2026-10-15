@@ -55,7 +55,7 @@ scheduler the learning rate stays constant.
 
 A model with no trainable parameter, such as one with the ``attention_map``
 detection decoder, is not fitted: the trainer returns it as built, with an
-empty training history.
+empty training history. It still predicts on the trainer's device.
 
 Checkpoint selection and early stopping
 ---------------------------------------
