@@ -7,8 +7,8 @@ acceptance criteria state them:
 * **rung 4 — multi-FM ensemble**: a ``d->D``-projection decoder consumes the
   ``CompositeDenseFeatureStore``'s concatenated ``(Σdᵢ, h, w)`` grid, param-matched to a
   single-encoder decoder via the projection (the composite width is just a wider ``d``).
-* **rung 0 — attention-map (decoder-free)**: the frozen encoder's attention grid becomes a
-  MIDOG detection heatmap end-to-end (attention -> peak -> F1@δ) with zero trained params.
+* **rung 0 — attention map**: the ``attention_map`` decoder turns the frozen encoder's
+  attention grid into a detection heatmap with no parameter.
 """
 
 from __future__ import annotations
@@ -130,70 +130,57 @@ def test_ensemble_end_to_end_detection_fold_with_heavy_decoder(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------- #
-# Rung 0 — attention-map (decoder-free) MIDOG detection
+# Rung 0 — the attention_map decoder (the run itself: tests/e2e/test_attention_map.py)
 # --------------------------------------------------------------------------- #
 
 
-def test_attention_map_detection_heatmap_end_to_end():
-    """A frozen encoder's attention grid -> heatmap -> peak -> F1@δ, zero trained params.
-
-    MIDOG-shaped: single class. A synthetic attention grid attends to exactly the token
-    covering a mitosis; the decoder-free rung must recover that detection at F1 = 1.
-    """
-    from soma.benchmark.attention import attention_to_detection_heatmap
+def _attention_head(num_classes: int = 1):
     from soma.models.heads.detection import DetectionHead
 
-    patch = 4
-    geom = compute_dense_geometry(target_size=32, patch_size=patch)  # 8x8 token grid
-    grid_h, grid_w = geom.grid_shape
-
-    # One mitosis at target pixel (x=10, y=13) -> token cell (row=13//4=3, col=10//4=2).
-    gt_x, gt_y = 10.0, 13.0
-    hot_row, hot_col = int(gt_y) // patch, int(gt_x) // patch
-
-    K = 6  # attention channels (blocks x heads)
-    attn = torch.zeros(K, grid_h, grid_w)
-    attn[:, hot_row, hot_col] = 1.0  # the encoder attends here
-
-    heatmap = attention_to_detection_heatmap(attn, geometry=geom, num_classes=1)
-    assert tuple(heatmap.shape) == (1, 32, 32)
-    assert float(heatmap.max()) == pytest.approx(1.0)  # min-max normalised to [0, 1]
-
-    head = DetectionHead(
-        num_classes=1,
-        geometry=geom,
-        spacing_um=1.0,
-        match_distance=5.0,
-        sigma=2.0,
-        validation_threshold=0.5,
-        metrics=["mean_f1"],
+    geom = compute_dense_geometry(target_size=32, patch_size=4)  # 8x8 token grid
+    return DetectionHead(
+        num_classes=num_classes, geometry=geom, spacing_um=1.0, match_distance=5.0, sigma=2.0, metrics=["mean_f1"]
     )
-    gt = torch.tensor([[[gt_x, gt_y, 0.0]]])  # (1, K=1, 3) level-0 points
-    metrics = head.compute_metrics(heatmap.unsqueeze(0), {"points": gt})
-    assert metrics["mean_f1"] == pytest.approx(1.0)
 
 
-def test_attention_map_is_class_agnostic_saliency():
-    # The attention saliency is class-blind (design §2.4): broadcasting to C channels gives
-    # identical maps — why the rung is MIDOG-scoped (strong single-class, weak multi-class).
-    from soma.benchmark.attention import attention_to_detection_heatmap
+def test_attention_map_heatmap_is_the_normalised_attention_on_every_class():
+    from soma.benchmark.attention import AttentionMapDecoder
 
-    geom = compute_dense_geometry(target_size=16, patch_size=4)
-    attn = torch.rand(4, *geom.grid_shape)
-    hm = attention_to_detection_heatmap(attn, geometry=geom, num_classes=3)
-    assert hm.shape[0] == 3
-    torch.testing.assert_close(hm[0], hm[1])
-    torch.testing.assert_close(hm[1], hm[2])
+    head = _attention_head(num_classes=2)
+    attn = torch.zeros(1, 6, 8, 8)
+    attn[0, :, 3, 2] = 1.0  # every head attends to one token
+    decoder = AttentionMapDecoder(input_dim=6, num_classes=2)
+    heatmap = head(decoder(attn))[0]
+    assert list(decoder.parameters()) == []
+    # Normalised to [0, 1]; the head's bilinear upsampling samples between token centres.
+    assert float(heatmap.max()) > 0.99 and float(heatmap.min()) < 1e-3
+    torch.testing.assert_close(heatmap[0], heatmap[1])  # class-blind
+    points = head.postprocess(heatmap[None])["points"][0]  # (k, 4) x, y, class, score
+    # The one hot token (row 3, col 2: centre x=10, y=14), once per class channel.
+    assert sorted(points[:, 2].tolist()) == [0.0, 1.0]
+    np.testing.assert_allclose(points[:, :2], [[10, 14], [10, 14]], atol=1.0)
 
 
-def test_attention_map_constant_grid_yields_no_peaks():
-    # A flat attention map (nothing salient) normalises to all-zeros -> no detections, the
-    # correct empty answer rather than a peak everywhere.
-    from soma.benchmark.attention import attention_to_detection_heatmap
-    from soma.evaluation.detection.peaks import extract_peaks
+def test_attention_map_flat_grid_yields_no_peaks():
+    from soma.benchmark.attention import AttentionMapDecoder
 
-    geom = compute_dense_geometry(target_size=16, patch_size=4)
-    hm = attention_to_detection_heatmap(torch.full((4, *geom.grid_shape), 0.7), geometry=geom, num_classes=1)
-    assert float(hm.max()) == pytest.approx(0.0)
-    xy, cls, score = extract_peaks(hm, min_distance=3, score_threshold=0.0)
-    assert xy.shape == (0, 2)
+    head = _attention_head()
+    heatmap = head(AttentionMapDecoder(input_dim=4, num_classes=1)(torch.full((1, 4, 8, 8), 0.7)))
+    assert head.postprocess(heatmap)["points"][0].shape[0] == 0
+
+
+def test_attention_map_heads_select_channels_and_params_are_checked():
+    from soma.benchmark.attention import AttentionMapDecoder, AttentionMapParams
+    from soma.models.decoders.registry import decoder_registry
+
+    attn = torch.rand(2, 4, 8, 8)
+    picked = AttentionMapDecoder(input_dim=4, num_classes=1, heads=[2])(attn)
+    alone = AttentionMapDecoder(input_dim=1, num_classes=1)(attn[:, 2:3])
+    torch.testing.assert_close(picked, alone)
+    assert decoder_registry.resolve("attention_map") is AttentionMapDecoder
+    with pytest.raises(ValueError, match="reduction"):
+        AttentionMapParams(reduction="median")
+    with pytest.raises(ValueError, match="at least one"):
+        AttentionMapParams(heads=[])
+    with pytest.raises(ValueError, match="out of range"):
+        AttentionMapDecoder(input_dim=4, num_classes=1, heads=[4])

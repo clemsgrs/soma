@@ -42,6 +42,8 @@ class Trainer:
     a stop raised in ``on_epoch_end`` only prevents the next epoch, since the epoch
     is already closed (history row written, selection consulted). When the loop
     raises, ``on_exception(trainer, learner, exc)`` fires before the error propagates.
+    A learner with no trainable parameter is returned as built: no optimizer, no
+    epoch, no callback, and an empty history.
     """
 
     def __init__(
@@ -95,6 +97,15 @@ class Trainer:
             tune_loader = None
         self._tune_loader = tune_loader
         self.learner = learner.to(self.device)
+        if not any(p.requires_grad for p in learner.parameters()):
+            return FitResult(
+                learner=learner,
+                history=self.history.frame(),
+                selected_epoch=0,
+                selection_monitor=("loss", float("nan")),
+                checkpoint_path=None,
+                optimizer_steps=0,
+            )
         updates_per_epoch = max(-(-len(train_loader) // self.accumulate_grad_batches), 1)
         self.budget = Budget(self.max_epochs, self.max_steps, updates_per_epoch)
         self.total_epochs = self.budget.total_epochs

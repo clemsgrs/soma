@@ -226,8 +226,25 @@ the same head, loss, and evaluator, use an attention-capable encoder and set:
        attention_include_registers: false
 
 Attention maps retain the token-grid resolution; switching feature kind does
-not add spatial samples. Detection requires a neural decoder. See
-:doc:`decoders` for available architectures.
+not add spatial samples. See :doc:`decoders` for the trained decoders.
+
+To score the attention itself as the heatmap, with nothing trained, use the
+``attention_map`` decoder. It averages the attention heads (``reduction: max``
+takes their maximum), or only those listed in ``heads``, and min-max normalises
+the map of each tile. Every class gets the same map. The run trains nothing but
+still chooses its peak threshold on the tune split:
+
+.. code-block:: yaml
+
+   learner:
+     name: dense
+     params:
+       decoder:
+         name: attention_map
+         params: {heads: null}   # [k] scores head k alone
+
+``attention_map`` registers with the benchmark package (``soma.benchmark``),
+which the ``soma`` CLI imports.
 
 Metric — F1 at matching distance δ
 ----------------------------------

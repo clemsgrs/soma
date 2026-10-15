@@ -46,6 +46,8 @@ from soma.benchmark import ocelot as _ocelot  # noqa: F401
 from soma.benchmark import midog as _midog  # noqa: F401
 from soma.benchmark import monkey as _monkey  # noqa: F401
 from soma.benchmark import croma as _croma  # noqa: F401
+# The decoder ladder's rung 0 (``attention_map``), shared by the detection protocols.
+from soma.benchmark import attention as _attention  # noqa: F401
 
 # Reproduction report (joins <name>/results.csv to <name>/reference.csv; imported after
 # the benchmarks register so it can read their primary metrics).

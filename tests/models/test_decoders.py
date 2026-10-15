@@ -17,11 +17,12 @@ from soma.models.decoders import (  # noqa: E402
 
 
 def test_registry_lists_all_decoders():
-    # Benchmark-private decoders (soma.benchmark.eva.segmentation) register under an
-    # ``eva_`` prefix and are listed with soma's own.
+    # Benchmark-private decoders (soma.benchmark.eva.segmentation, soma.benchmark.attention)
+    # are listed with soma's own.
+    private = {"eva_conv_ms", "eva_conv_with_image", "attention_map"}
     names = [entry["name"] for entry in components("decoders")]
-    assert [name for name in names if not name.startswith("eva_")] == ["heavy_conv", "lightweight_conv", "linear"]
-    assert {"eva_conv_ms", "eva_conv_with_image"} <= set(names)
+    assert [name for name in names if name not in private] == ["heavy_conv", "lightweight_conv", "linear"]
+    assert private <= set(names)
 
 
 def test_linear_decoder_preserves_grid_resolution():
