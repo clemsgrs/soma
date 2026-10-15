@@ -1,86 +1,102 @@
 Benchmarking
 ============
 
-Compare encoders with registered benchmarks that fix data preparation, splits,
-downstream training, metrics, and seeds. ``soma reproduce`` curates the data,
-runs the protocol, and scores the result. ``soma leaderboard`` compares completed
-runs without retraining.
+A benchmark is a fixed protocol: the data, its splits, the downstream model, the
+metric and the seeds are all held constant, and only the encoder varies. ``soma
+reproduce`` prepares the data, runs the protocol and scores the result; ``soma
+leaderboard`` ranks completed runs without retraining. Each benchmark page states its
+data and task, its protocol, the results soma has recorded and how to reproduce them.
+
+Benchmarks
+----------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 30 36 20
+
+   * - Benchmark
+     - Task
+     - Data
+     - Metric
+   * - :doc:`EVA <eva-patch-classification-benchmark>`
+     - Patch classification, nucleus segmentation, slide classification
+     - Ten public datasets of the kaiko-ai/eva leaderboard
+     - Balanced accuracy, foreground mean Dice
+   * - :doc:`OCELOT <ocelot-detection-benchmark>`
+     - Cell detection
+     - OCELOT 2023 cell patches
+     - Mean F1 at 3 µm
+   * - :doc:`HEST <hest-gene-expression-benchmark>`
+     - Spatial gene-expression prediction
+     - Nine HEST-Benchmark tasks
+     - Mean Pearson
+   * - :doc:`CRoMa <croma-robustness-benchmark>`
+     - Robustness to the medical centre, task-free
+     - Three PathoROB tile cohorts
+     - CRoMa margin
+
+Two more detection benchmarks are registered, ``detection/midog`` (MIDOG 2022
+mitosis detection) and ``detection/monkey`` (MONKEY inflammatory-cell detection).
+Their data preparation is described in :doc:`curation`; their results pages follow
+once the rows are recorded on this release.
 
 Reproduce a benchmark
-------------------------
+---------------------
 
-List the available protocols with ``soma list benchmarks``, then follow the
-benchmark's data-preparation instructions below. Keep its default encoder or
-select a compatible installed preset with ``--encoder``::
+#. Prepare the raw data as the benchmark's page describes, in a directory you pass as
+   ``--raw-root``. ``soma list benchmarks`` prints every registered protocol.
+#. Run the protocol with its default encoder, or any compatible installed one::
 
-   soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
+      soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach
 
-``--seeds 1`` runs seed 0 for a quick smoke test; omit it to use the canonical
-seed set. Use ``--curated-dir`` to reuse prepared manifests or
-``--from-run-dir`` to rescore one existing run.
+#. Read the score. When a packaged reference exists for that encoder, soma prints the
+   measured value next to it. The comparison is informational: an encoder without a
+   reference still runs, and a gap never fails the command.
 
-A family prefix such as ``eva`` runs every registered member. EVA and HEST
-expect one raw-data subdirectory per member; CRoMa shares one prepared raw root.
-Each member remains a separate dataset-, splits-, and task-specific comparison.
+``--seeds 1`` runs seed 0 only, for a quick smoke test; omit it for the canonical seed
+set. ``--curated-dir`` reuses prepared manifests, ``--from-run-dir`` rescores one
+existing run, and ``--record`` appends the score to the benchmark's results ledger,
+which is what the results tables in these pages are built from.
 
-When a packaged reference matches the encoder, soma reports the measured value
-next to it. The comparison is informational and never determines command
-success; an encoder without a reference still runs.
+Compare encoders
+----------------
 
-Each benchmark protocol is one package under ``soma/benchmark/`` (``eva``,
-``hest``, ``ocelot``, ``midog``, ``monkey``, ``croma``) holding its curator,
-recipes, scorer, packaged reference rows (``reference.csv``) and the results
-ledger ``--record`` appends to (``results.csv``). The ``soma`` command imports
-:mod:`soma.benchmark` at startup; from Python, ``import soma.benchmark``
-registers the benchmarks (``import soma`` alone does not).
+``--encoders`` runs an ordered panel on one benchmark or on a family::
 
-Compare an encoder panel
-------------------------
+   soma reproduce eva/bach --encoders uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach
+   soma reproduce eva --encoders uni2 virchow2 --raw-root /path/to/eva --output-root runs/eva
 
-Use ``--encoders`` to run an ordered panel on one benchmark or a family::
+A family prefix such as ``eva`` runs every registered member; EVA and HEST expect one
+raw-data subdirectory per member, CRoMa shares one prepared root. soma checks every
+benchmark and encoder pairing against slide2vec's encoder registry before any run
+starts. Benchmarks then run in canonical order and encoders in the given order, with
+the raw data curated once per benchmark. Each benchmark writes a cross-encoder
+leaderboard under its output root, for example ``runs/eva/bach/leaderboards/eva/bach.*``;
+members of a family are never combined into one rank. If an encoder fails, the later
+ones still run, the leaderboard covers the completed runs, and the command reports
+``PARTIAL`` with a nonzero exit status.
 
-   soma reproduce eva/bach --encoders uni2 virchow2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --seeds 1
-   soma reproduce eva --encoders uni2 virchow2 --raw-root /path/to/eva --output-root runs/eva --seeds 1
+To add a private encoder to the panel, see :doc:`benchmark-in-house-encoder`.
 
-soma validates every benchmark–encoder pairing against slide2vec's encoder
-registry before any run starts, and reports incompatibilities in panel order.
-Benchmarks then run in canonical order and encoders in the supplied order, with
-raw data curated once per benchmark. ``--encoder`` and ``--encoders`` are
-mutually exclusive, and ``--from-run-dir`` accepts a single run.
+Compare other choices
+---------------------
 
-Each benchmark writes a cross-encoder leaderboard beneath its output root, for
-example ``runs/eva/bach/leaderboards/eva/bach.*``. Family members are never
-combined into a cross-dataset rank. If an encoder fails, later encoders still
-run, the leaderboard covers completed runs, and the command reports ``PARTIAL``
-with a nonzero exit status.
-
-To install and compare a private preset, follow
-:doc:`benchmark-in-house-encoder`.
-
-Compare other experiment choices
---------------------------------
-
-``soma leaderboard`` ranks completed runs along the axis passed to ``--vary``
-and writes CSV, JSON, and HTML tables, including any packaged reference. Runs
-sharing a ``(dataset, splits, task)`` triple form one comparison. To compare
-aggregators, decoders, spacing, or feature modes, run ordinary configs that
-differ only in that axis under one output root, then rank them::
+``soma leaderboard`` ranks completed runs along any axis and writes CSV, JSON and HTML
+tables, including any packaged reference. Runs that share a dataset, splits and task
+form one comparison. To compare aggregators, decoders, spacings or feature modes, run
+ordinary configs that differ only in that axis under one output root, then rank them::
 
    soma leaderboard --root runs/agg-sweep --vary aggregator
 
-See :doc:`cli` for command options, :doc:`outputs` for run artifacts, and
-:ref:`benchmark-api` for the equivalent Python workflow.
+Where a benchmark lives
+-----------------------
 
-Included benchmarks
--------------------
-
-* :doc:`EVA <eva-patch-classification-benchmark>`: patch classification, patch
-  segmentation, and slide classification with frozen tile encoders.
-* :doc:`OCELOT <ocelot-detection-benchmark>`: cell detection with dense encoders.
-* :doc:`HEST <hest-gene-expression-benchmark>`: spatial gene-expression prediction
-  with frozen encoders.
-* :doc:`CRoMa <croma-robustness-benchmark>`: representation robustness across
-  medical centers with frozen tile encoders.
+Each benchmark is one package under ``soma/benchmark/``: its curator, its recipes,
+its scorer, the packaged reference rows (``reference.csv``) and the results ledger
+``--record`` appends to (``results.csv``). The ``soma`` command imports
+:mod:`soma.benchmark` at startup; from Python, ``import soma.benchmark`` registers the
+benchmarks (``import soma`` alone does not). See :doc:`cli` for every option,
+:doc:`outputs` for the run artifacts and :ref:`benchmark-api` for the Python workflow.
 
 .. toctree::
    :maxdepth: 1

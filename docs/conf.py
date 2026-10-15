@@ -64,7 +64,7 @@ nbsphinx_prolog = r"""
 """
 
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
+exclude_patterns = ["_build", "_generated", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints"]
 autosummary_generate = True
 autodoc_member_order = "bysource"
 autodoc_default_options = {
