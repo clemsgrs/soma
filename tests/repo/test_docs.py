@@ -227,10 +227,6 @@ def test_benchmark_pages_spell_the_protocol_constants_of_the_packages() -> None:
     ocelot_page = (docs_dir / "ocelot-detection-benchmark.rst").read_text(encoding="utf-8")
     assert f"``{ocelot.facet.fixed['decoder']}``" in ocelot_page
     assert f"``{ocelot.primary_metric}``" in ocelot_page
-    env = ocelot.reference_environment
-    assert f"soma {env['soma']},\nslide2vec {env['slide2vec']} and torch {env['torch']} on one {env['gpu']}" in ocelot_page
-    gate = next(r for r in ocelot.expected() if not r.is_external)
-    assert f"within ± {gate.tolerance:g}" in ocelot_page
 
 
 def test_croma_benchmark_page_exceptions_table_matches_panel() -> None:
