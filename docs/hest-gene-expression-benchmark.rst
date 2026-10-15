@@ -62,8 +62,10 @@ Results
 -------
 
 soma's ``mean_pearson`` on each task next to the value HEST publishes for the same
-encoder. The reference band is 2 % of the published value; a soma value outside it is
-shown in red.
+encoder. HEST extracts its features with TRIDENT and soma with slide2vec, so the two
+are not expected to agree to the digit: the difference is shown as it is, without a
+tolerance band, and reproduction is judged by whether the encoders keep their
+published ranking.
 
 .. include:: _generated/hest-results.rst
 

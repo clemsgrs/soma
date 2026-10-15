@@ -2,7 +2,8 @@ CRoMa
 =====
 
 How robust is a frozen tile encoder to the medical centre a slide comes from? CRoMa
-measures it without any task or label, with the protocol of the `croma library
+measures it on the frozen embeddings alone, with no downstream model to train, using
+the protocol of the `croma library
 <https://clemsgrs.github.io/croma/>`_ (`paper <https://arxiv.org/abs/2607.25497>`_).
 CRoMa supersedes PathoROB's Robustness Index with a distance-aware, tail-sensitive
 robustness margin.
@@ -23,9 +24,10 @@ apart.
    * - Setting
      - Value
    * - Task
-     - None. Each tile is embedded once; the metrics compare distances in the
-       embedding space between tiles of the same biology from different centres and
-       tiles of different biology from the same centre.
+     - None is trained. Each tile is embedded once, and its biological class and
+       medical centre are known; the metrics compare distances in the embedding
+       space between tiles of the same biology from different centres and tiles of
+       different biology from the same centre.
    * - Metrics
      - ``croma_median``, the median robustness margin and the primary metric, and
        ``croma_ltm10``, the mean of the worst ten percent: for both, higher is better.
