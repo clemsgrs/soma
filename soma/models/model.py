@@ -177,14 +177,17 @@ class DenseModel(nn.Module):
         self.head = head
         self.encoder = encoder
         self.adaptor = adaptor
+        # Follows ``.to()`` so a decoder without parameters still runs where the model
+        # was moved, not where the encoder stage left the grid. Never saved.
+        self.register_buffer("_device_anchor", torch.empty(0), persistent=False)
 
     @property
     def consumes_image(self) -> bool:
         return bool(getattr(self.decoder, "consumes_image", False))
 
-    def _device(self, fallback: Tensor) -> torch.device:
+    def _device(self) -> torch.device:
         parameter = next(self.decoder.parameters(), None)
-        return fallback.device if parameter is None else parameter.device
+        return self._device_anchor.device if parameter is None else parameter.device
 
     def encode(self, pixels: Tensor) -> Tensor:
         """The encoder stage alone: pixels to a ``(B, d, h, w)`` grid."""
@@ -194,7 +197,7 @@ class DenseModel(nn.Module):
 
     def forward_from_grid(self, grid: Tensor, pixels: Tensor | None = None) -> DenseModelOutput:
         """Adaptor, decoder and head over an already encoded grid (the trainable half)."""
-        grid = grid.to(self._device(grid)).float()
+        grid = grid.to(self._device()).float()
         if self.adaptor is not None:
             grid = self.adaptor.forward_grid(grid)
         if self.consumes_image:
