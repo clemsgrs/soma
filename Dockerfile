@@ -84,8 +84,12 @@ COPY --chown=user:user soma /opt/app/soma
 COPY --chown=user:user pyproject.toml /opt/app/pyproject.toml
 COPY --chown=user:user README.md /opt/app/README.md
 COPY --chown=user:user LICENSE /opt/app/LICENSE
+# pin the torch minor: pip also sees PyPI through --extra-index-url and takes the highest
+# version, and PyPI's default torch wheels are built for CUDA 13 (the cu128 index stops
+# at 2.11). 2.8 is the lowest torch that torchvision>=0.23 accepts and the highest one
+# flash-attn ships prebuilt cu12 wheels for, so flash-attn is not compiled from source.
 RUN printf '%s\n' \
-    'torch' \
+    'torch==2.8.*' \
     > /opt/app/constraints-cu128.txt
 
 RUN python -m pip install \
@@ -103,7 +107,7 @@ RUN python -m pip install \
     --no-cache-dir \
     --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
     -c /opt/app/constraints-cu128.txt \
-    'flash-attn>=2.7.1,<=2.8.0' \
+    'flash-attn==2.8.3' \
     --no-build-isolation \
     && rm -rf /home/user/.cache/pip
 
