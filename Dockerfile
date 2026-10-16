@@ -107,7 +107,7 @@ RUN python -m pip install \
     --no-cache-dir \
     --extra-index-url "${PYTORCH_CUDA_INDEX_URL}" \
     -c /opt/app/constraints-cu128.txt \
-    'flash-attn==2.8.3' \
+    'flash-attn==2.8.3.post2' \
     --no-build-isolation \
     && rm -rf /home/user/.cache/pip
 
