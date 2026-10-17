@@ -1,0 +1,1391 @@
+{
+  "schema_version": 1,
+  "dataset": "midog",
+  "evidence": "historical_native_score_harvest",
+  "recorded_on": "2026-10-16",
+  "source_root": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog",
+  "native_score_artifact": "<cell_dir>/metrics.json",
+  "native_prediction_artifact": "<cell_dir>/predictions.json",
+  "training_artifacts": "<run_dir>/<artifact_subdir>/{best_model.pt,predictions_tune.csv,predictions_test.csv,training_history.json}",
+  "artifact_presence_checked": true,
+  "replicate_axis": "seeds",
+  "n_seeds_per_encoder": 3,
+  "replicates_per_encoder": 3,
+  "spread": {
+    "historical_report": "population SD, ddof=0",
+    "suggested_ledger_std": "population SD across seeds (historical convention)",
+    "reproduce_recorder": "sample SD, ddof=1, over seeds"
+  },
+  "scoring": {
+    "commit": null,
+    "reason": "Native scorer SHA was not recorded. Historical logs identify a mutable campaign.py source path; training SHAs are not substituted.",
+    "source_logs_root": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/logs",
+    "script_path_recorded_in_logs": "/data/pathology/projects/clement/code/soma/examples/detection_benchmark/campaign.py",
+    "scored_on": null,
+    "report_rebuilt_on": "2026-10-11"
+  },
+  "limitations": [
+    "Historical evidence only: these rows do not establish that the current distribution trained these models.",
+    "MIDOG selected training runs contain 18 dirty checkouts, two clean checkouts, and one missing git SHA/dirty flag; aggregate training commits are mixed.",
+    "MIDOG training Soma versions are 1.11.0 and 1.12.0. Runtime slide2vec/hs2p versions were not persisted in run.yaml and are left blank.",
+    "MIDOG scorer commit is not recorded. Logs show the mutable source path examples/detection_benchmark/campaign.py; do not infer a scorer SHA from training metadata or a later snapshot.",
+    "Copies of slide2vec/hs2p in backup describe copied source snapshots, not independently recorded per-run installed package versions."
+  ],
+  "source_report": {
+    "path": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/ranking_report.json",
+    "resolved_path": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/ranking_report.json",
+    "exists": true,
+    "bytes": 40640,
+    "sha256": "86f66d5716a5ae1d0dfb0e2d9be133000bd65ba33b746af1930d0526dd55d93f"
+  },
+  "runs": [
+    {
+      "encoder": "virchow2",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/virchow2/replicate_0",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/virchow2/replicate_0/experiments/dataset-virchow2-slide-detection_1d184e8618e2/runs/2026-08-21_12-11-18__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "240084d7917bb6b2e92c42f9b36470f6712cc5d9",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-21T12:11:18.470827+02:00",
+        "finished_at": "2026-08-22T13:42:09.943754+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 8,
+        "tune_loss": 0.00040978864229985557
+      },
+      "native": {
+        "test": {
+          "f1": 0.774174869716271
+        },
+        "tune": {
+          "f1": 0.7755979575382962
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7438427725787826
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "3c2401b8ce0f7feed6c700f6783d5077bf0282bf1f7b5e9d6df9ba55619eb826"
+    },
+    {
+      "encoder": "virchow2",
+      "replicate": 1,
+      "seed": 1,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/virchow2/replicate_1",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/virchow2/replicate_1/experiments/dataset-virchow2-slide-detection_1d184e8618e2/runs/2026-08-30_11-51-54__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-30T11:51:54.873591+02:00",
+        "finished_at": "2026-09-02T00:38:48.182340+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 48,
+        "tune_loss": 0.0004945614373420106,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.7637223441986151
+        }
+      },
+      "native": {
+        "test": {
+          "f1": 0.7531626949102678
+        },
+        "tune": {
+          "f1": 0.774468085106383
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7410765745658048
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "71523a6f4898301fb8cb48fcf261008544f105d4d0cc54a6f5a8e022f395d2a4"
+    },
+    {
+      "encoder": "virchow2",
+      "replicate": 2,
+      "seed": 2,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/virchow2/replicate_2",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/virchow2/replicate_2/experiments/dataset-virchow2-slide-detection_de7d5bf9838a/runs/2026-09-02_01-00-38__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "fa359216d1526fdeabb194973c00c3220a7fd915",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.12.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-09-02T01:00:38.729838+02:00",
+        "finished_at": "2026-09-04T13:27:39.292391+02:00",
+        "test_checksum": "43472912257752e0243d010cb251efb74e3066516c0f02a8cba067c4299c01e8",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 39,
+        "tune_loss": 0.0004889573467825822,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.7691778465772274
+        }
+      },
+      "native": {
+        "test": {
+          "f1": 0.7637931034482759
+        },
+        "tune": {
+          "f1": 0.779884149552396
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.6856292106807517
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "83062ce23096ee37c327c22d6e8ba2f742f0726f7d559e026e83bff8d5082bc3"
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/genbio-pathfm/replicate_0",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/genbio-pathfm/replicate_0/experiments/dataset-genbio-pathfm-slide-detection_68d050436923/runs/2026-08-22_16-07-52__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "240084d7917bb6b2e92c42f9b36470f6712cc5d9",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-22T16:07:52.220827+02:00",
+        "finished_at": "2026-08-25T09:10:38.101780+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 35,
+        "tune_loss": 0.0004726119187664077
+      },
+      "native": {
+        "test": {
+          "f1": 0.7849014709963918
+        },
+        "tune": {
+          "f1": 0.7894873796513141
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.5452164606172212
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "6f53f4defa3fd3d91dec5dfb5165942e1e0f6837b3233246f2f772216edab9fd"
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "replicate": 1,
+      "seed": 1,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/genbio-pathfm/replicate_1",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/genbio-pathfm/replicate_1/experiments/dataset-genbio-pathfm-slide-detection_68d050436923/runs/2026-08-27_09-34-10__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-27T09:34:10.168833+02:00",
+        "finished_at": "2026-08-27T21:27:01.063839+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 2,
+        "tune_loss": 0.00040210259720618814
+      },
+      "native": {
+        "test": {
+          "f1": 0.8033126293995859
+        },
+        "tune": {
+          "f1": 0.7917007917007917
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.6970246778515985
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "da91dfa7ded29d92b4ca426257744dfff4ffbb4b69c57adf1b81cb060771a102"
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "replicate": 2,
+      "seed": 2,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/genbio-pathfm/replicate_2",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/genbio-pathfm/replicate_2/experiments/dataset-genbio-pathfm-slide-detection_68d050436923/runs/2026-08-27_21-52-32__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-27T21:52:32.934893+02:00",
+        "finished_at": "2026-08-28T08:08:49.969086+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 0,
+        "tune_loss": 0.00036811460290410875
+      },
+      "native": {
+        "test": {
+          "f1": 0.7912739025047132
+        },
+        "tune": {
+          "f1": 0.7953964194373402
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.6654783654470966
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "57064273fa4186199a6df694a27804c45044bc976ecdd17d22fb67f8b2a47d62"
+    },
+    {
+      "encoder": "midnight",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/midnight/replicate_0",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/midnight/replicate_0/experiments/dataset-midnight-slide-detection_0d0248a448b7/runs/2026-08-25_15-10-27__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "4ab943e5395f1b8156e839b78ccdff3efb35c88c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-25T15:10:27.540426+02:00",
+        "finished_at": "2026-08-27T12:51:41.608518+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 26,
+        "tune_loss": 0.0005794272432330579
+      },
+      "native": {
+        "test": {
+          "f1": 0.7113669064748201
+        },
+        "tune": {
+          "f1": 0.7243723849372385
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.738651894237276
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "fbc1ab9a1c09eca434d4fd8f7c91b94d3c316d123b010143c2db3ea4b49a9795"
+    },
+    {
+      "encoder": "midnight",
+      "replicate": 1,
+      "seed": 1,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/midnight/replicate_1",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/midnight/replicate_1/experiments/dataset-midnight-slide-detection_7d30fbf86d6b/runs/2026-09-03_20-35-53__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "553175268e77931e818b49b9676b122fbdd25bca",
+        "git_dirty": false,
+        "environment": {
+          "soma": "1.12.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-09-03T20:35:53.070150+02:00",
+        "finished_at": "2026-09-04T16:14:44.922309+02:00",
+        "test_checksum": "43472912257752e0243d010cb251efb74e3066516c0f02a8cba067c4299c01e8",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 4,
+        "tune_loss": 0.0005586904957478772,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.7078346896441678
+        }
+      },
+      "native": {
+        "test": {
+          "f1": 0.724619683328159
+        },
+        "tune": {
+          "f1": 0.7387286474376925
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.726219117641449
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "1a1e4153537e8dd9347673752e6f6bdb9d298139b21832df2cbfdffa83dd053e"
+    },
+    {
+      "encoder": "midnight",
+      "replicate": 2,
+      "seed": 2,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/midnight/replicate_2",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/midnight/replicate_2/experiments/dataset-midnight-slide-detection_7d30fbf86d6b/runs/2026-09-04_16-35-52__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "748bfbb9439c9408762850830918374e9bb65545",
+        "git_dirty": false,
+        "environment": {
+          "soma": "1.12.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-09-04T16:35:52.746297+02:00",
+        "finished_at": "2026-09-05T16:55:49.999242+02:00",
+        "test_checksum": "43472912257752e0243d010cb251efb74e3066516c0f02a8cba067c4299c01e8",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 8,
+        "tune_loss": 0.0005423840582467322,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.7053824362606232
+        }
+      },
+      "native": {
+        "test": {
+          "f1": 0.7291421856639247
+        },
+        "tune": {
+          "f1": 0.7388434116715078
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.6829623675677089
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "7c6dcfa9bee77eb6dcf3d8b8ea2ae3fe26c0ad011abb4d77970ee079a9be3e0c"
+    },
+    {
+      "encoder": "conchv15",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/conchv15/replicate_0",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/conchv15/replicate_0/experiments/dataset-conchv15-slide-detection_c721a057ae50/runs/2026-08-25_15-11-09__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "4ab943e5395f1b8156e839b78ccdff3efb35c88c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-25T15:11:09.471987+02:00",
+        "finished_at": "2026-08-26T09:07:06.841244+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 12,
+        "tune_loss": 0.0005077042642582796
+      },
+      "native": {
+        "test": {
+          "f1": 0.7410071942446043
+        },
+        "tune": {
+          "f1": 0.7616694124107634
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7852293759517904
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "710da610198f83fbac5068f372882e835ad2999e4dc74409711fb5669471e6f1"
+    },
+    {
+      "encoder": "conchv15",
+      "replicate": 1,
+      "seed": 1,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/conchv15/replicate_1",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/conchv15/replicate_1/experiments/dataset-conchv15-slide-detection_c721a057ae50/runs/2026-08-28_08-54-42__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-28T08:54:42.208227+02:00",
+        "finished_at": "2026-08-29T00:43:46.603803+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 9,
+        "tune_loss": 0.0005024472319333716
+      },
+      "native": {
+        "test": {
+          "f1": 0.7400356930398573
+        },
+        "tune": {
+          "f1": 0.7559055118110236
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7852849135411741
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "43b133e8d54132bf8a580081c066bc81f3d4fa4cf5bac84e7d7684ab7360c1cb"
+    },
+    {
+      "encoder": "conchv15",
+      "replicate": 2,
+      "seed": 2,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/conchv15/replicate_2",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/conchv15/replicate_2/experiments/dataset-conchv15-slide-detection_c721a057ae50/runs/2026-08-29_01-01-00__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-29T01:01:00.607959+02:00",
+        "finished_at": "2026-08-29T22:29:02.297277+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 17,
+        "tune_loss": 0.0005216695972427608
+      },
+      "native": {
+        "test": {
+          "f1": 0.7449344457687723
+        },
+        "tune": {
+          "f1": 0.7540453074433657
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7673340781332868
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "bfbcbbd0f316785dc9c8746105f76153c3f06dc93acc84cd4acd6f6e8a4bb96f"
+    },
+    {
+      "encoder": "h0-mini",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h0-mini/replicate_0",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h0-mini/replicate_0/experiments/dataset-h0-mini-slide-detection_0c5e90afc63c/runs/2026-08-27_12-52-26__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-27T12:52:26.944207+02:00",
+        "finished_at": "2026-08-28T14:40:38.256060+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 7,
+        "tune_loss": 0.0004104606000008386
+      },
+      "native": {
+        "test": {
+          "f1": 0.7647875590113857
+        },
+        "tune": {
+          "f1": 0.7729022324865281
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7240797966262515
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "fe6a0b329bf89c713bd317060dbb4aed9d3ff13e7560a033429565d7e054350e"
+    },
+    {
+      "encoder": "h0-mini",
+      "replicate": 1,
+      "seed": 1,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h0-mini/replicate_1",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h0-mini/replicate_1/experiments/dataset-h0-mini-slide-detection_e9f05ee12b97/runs/2026-09-01_18-49-29__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "fa359216d1526fdeabb194973c00c3220a7fd915",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.12.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-09-01T18:49:29.010508+02:00",
+        "finished_at": "2026-09-02T09:28:06.462524+02:00",
+        "test_checksum": "43472912257752e0243d010cb251efb74e3066516c0f02a8cba067c4299c01e8",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 0,
+        "tune_loss": 0.0004883501994038077,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.7157862688384838
+        }
+      },
+      "native": {
+        "test": {
+          "f1": 0.7362792006754855
+        },
+        "tune": {
+          "f1": 0.733996429482275
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.5904830487406983
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "6801d64b3e1f5ba68ebae2dcbcf92ef2742e6af64918d6d47034a6d9d3270095"
+    },
+    {
+      "encoder": "h0-mini",
+      "replicate": 2,
+      "seed": 2,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h0-mini/replicate_2",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h0-mini/replicate_2/experiments/dataset-h0-mini-slide-detection_e9f05ee12b97/runs/2026-09-02_09-47-56__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "fa359216d1526fdeabb194973c00c3220a7fd915",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.12.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-09-02T09:47:56.211089+02:00",
+        "finished_at": "2026-09-03T19:15:51.737720+02:00",
+        "test_checksum": "43472912257752e0243d010cb251efb74e3066516c0f02a8cba067c4299c01e8",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 16,
+        "tune_loss": 0.00047110189945021085,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.7551690187069249
+        }
+      },
+      "native": {
+        "test": {
+          "f1": 0.7513559805880674
+        },
+        "tune": {
+          "f1": 0.7665720918235749
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7235460279221951
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "d8ffd52c2150885a419ec70a1567b93e95faf120698cb8233cbc4ec08a44600c"
+    },
+    {
+      "encoder": "h-optimus-1",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h-optimus-1/replicate_0",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h-optimus-1/replicate_0/experiments/dataset-h-optimus-1-slide-detection_74a4f697548e/runs/2026-08-26_09-07-28__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-26T09:07:28.339596+02:00",
+        "finished_at": "2026-08-27T05:15:44.696477+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 5,
+        "tune_loss": 0.0005472680503961977
+      },
+      "native": {
+        "test": {
+          "f1": 0.7756410256410257
+        },
+        "tune": {
+          "f1": 0.78390620836664
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.5853500413466055
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "ad589304ffb7052f9019a076438567e87f7d1ed1d110c4e4dfe431c27e50cac2"
+    },
+    {
+      "encoder": "h-optimus-1",
+      "replicate": 1,
+      "seed": 1,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h-optimus-1/replicate_1",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h-optimus-1/replicate_1/experiments/dataset-h-optimus-1-slide-detection_74a4f697548e/runs/2026-08-29_23-09-05__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-29T23:09:05.518157+02:00",
+        "finished_at": "2026-08-30T23:39:38.285736+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 8,
+        "tune_loss": 0.0004004779016489644
+      },
+      "native": {
+        "test": {
+          "f1": 0.7783112115221689
+        },
+        "tune": {
+          "f1": 0.7846314688970204
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7708660968548465
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "b9eabc8a9f9b394fc014dd1a86d1889a18099a15a6f085837dd60c58e67cf690"
+    },
+    {
+      "encoder": "h-optimus-1",
+      "replicate": 2,
+      "seed": 2,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h-optimus-1/replicate_2",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/h-optimus-1/replicate_2/experiments/dataset-h-optimus-1-slide-detection_74a4f697548e/runs/2026-08-31_00-01-38__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "aac004d2eb863061183e9db55c61df4d34c5b4fd",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-31T00:01:38.515417+02:00",
+        "finished_at": "2026-09-01T18:06:12.811470+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 23,
+        "tune_loss": 0.0005333473486931811,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.7679692951849267
+        }
+      },
+      "native": {
+        "test": {
+          "f1": 0.7513590844062947
+        },
+        "tune": {
+          "f1": 0.7765567765567766
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.6038277124967046
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "9260a0a285959501773ad28a5cda5fa584271e4ea37f9f56623eec304a4f5fbf"
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/dinov2-vitb14/replicate_0",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/dinov2-vitb14/replicate_0/experiments/dataset-dinov2-vitb14-slide-detection_1e24bcf2bb57/runs/2026-08-23_10-50-47__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "ffd4e42bc46de1dc0bdb75e5153e55dd99de2c29",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-23T10:50:47.742416+02:00",
+        "finished_at": "2026-08-24T09:22:25.152883+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 7,
+        "tune_loss": 0.0005324865356882457
+      },
+      "native": {
+        "test": {
+          "f1": 0.7164088565362451
+        },
+        "tune": {
+          "f1": 0.7354736004245158
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7191794478163427
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "cb3897d6c45c4c36a3ec83cc9328b23dc2940c6a70012d4444bf76f03c995fe8"
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "replicate": 1,
+      "seed": 1,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/dinov2-vitb14/replicate_1",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/dinov2-vitb14/replicate_1/experiments/dataset-dinov2-vitb14-slide-detection_1e24bcf2bb57/runs/2026-08-28_15-08-03__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-28T15:08:03.481696+02:00",
+        "finished_at": "2026-08-29T15:12:12.544449+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 8,
+        "tune_loss": 0.0005564095157659643
+      },
+      "native": {
+        "test": {
+          "f1": 0.7069431920649234
+        },
+        "tune": {
+          "f1": 0.7326519634211942
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.6434787600063624
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "5c37b9414a8a10c8a140472148bc2b7624e26b859218ada7148bee55fb4bc7f3"
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "replicate": 2,
+      "seed": 2,
+      "cell_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/dinov2-vitb14/replicate_2",
+      "run_dir": "/data/pathology/projects/clement/detection-benchmark-results/1_encoder-ranking/sweep_2026-09/midog/dinov2-vitb14/replicate_2/experiments/dataset-dinov2-vitb14-slide-detection_1e24bcf2bb57/runs/2026-08-29_15-37-49__local",
+      "artifact_subdir": ".",
+      "training": {
+        "git_sha": "97fb03be48a31ef46fb0e216a01c9bb7f9d12f0c",
+        "git_dirty": true,
+        "environment": {
+          "soma": "1.11.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "completed",
+        "started_at": "2026-08-29T15:37:49.211909+02:00",
+        "finished_at": "2026-08-30T11:05:54.180906+02:00",
+        "test_checksum": "8d762444caab0004b9627086195a2c4da1a9ad5f1e4a5f7efe5b638bfb567536",
+        "dataset_file_checksum": "3da8bf748ba567b2621adfd26db7659a181680d7ceaa6ad3c35c2086d4db8cdc",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+      },
+      "checkpoint": {
+        "epoch": 4,
+        "tune_loss": 0.00066510649784999
+      },
+      "native": {
+        "test": {
+          "f1": 0.7005277044854882
+        },
+        "tune": {
+          "f1": 0.7297605473204105
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.6336403720232904
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "63f324e657bab53f6a29a7af345efe437a31c0ceeb318bcf6fd4575c8fed8530"
+    }
+  ],
+  "aggregates": [
+    {
+      "encoder": "virchow2",
+      "metric": "f1",
+      "mean": 0.7637102226916049,
+      "population_std": 0.00857838463559736,
+      "sample_std": 0.010506332587272273,
+      "n_replicates": 3,
+      "n_seeds": 3
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "metric": "f1",
+      "mean": 0.7931626676335637,
+      "population_std": 0.007634058061120881,
+      "sample_std": 0.009349773458263417,
+      "n_replicates": 3,
+      "n_seeds": 3
+    },
+    {
+      "encoder": "midnight",
+      "metric": "f1",
+      "mean": 0.7217095918223012,
+      "population_std": 0.007542838192263462,
+      "sample_std": 0.00923805239171128,
+      "n_replicates": 3,
+      "n_seeds": 3
+    },
+    {
+      "encoder": "conchv15",
+      "metric": "f1",
+      "mean": 0.7419924443510779,
+      "population_std": 0.002117779167586172,
+      "sample_std": 0.0025937391742411127,
+      "n_replicates": 3,
+      "n_seeds": 3
+    },
+    {
+      "encoder": "h0-mini",
+      "metric": "f1",
+      "mean": 0.7508075800916462,
+      "population_std": 0.011644946860631004,
+      "sample_std": 0.014262088945185407,
+      "n_replicates": 3,
+      "n_seeds": 3
+    },
+    {
+      "encoder": "h-optimus-1",
+      "metric": "f1",
+      "mean": 0.7684371071898298,
+      "population_std": 0.012125087485764659,
+      "sample_std": 0.014850138713364602,
+      "n_replicates": 3,
+      "n_seeds": 3
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "metric": "f1",
+      "mean": 0.7079599176955522,
+      "population_std": 0.006523191747950705,
+      "sample_std": 0.007989245638406561,
+      "n_replicates": 3,
+      "n_seeds": 3
+    }
+  ],
+  "checkpoint_epoch_indexing": "zero_based_as_saved",
+  "reproductions": [
+    {
+      "encoder": "virchow2",
+      "run_dir": "/maindisk/clement/soma/runs/midog/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/2026-10-15_10-34-40__local",
+      "training": {
+        "git_sha": "8e1f1f6e95f9ae1d1cfab9f0bc8d1bd5e493073e",
+        "git_dirty": false,
+        "environment": {
+          "soma": "1.19.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "started_at": "2026-10-15T10:34:40.386182+02:00",
+        "finished_at": "2026-10-16T06:33:57.990516+02:00",
+        "dataset_file_checksum": "ecc1f4b400c96923f27cb295d944cffc20bccb5811e1a17fe67876ca321856c6",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530",
+        "test_checksum": "43472912257752e0243d010cb251efb74e3066516c0f02a8cba067c4299c01e8"
+      },
+      "bundles": [
+        {
+          "path": "/maindisk/clement/soma/runs/midog/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/2026-10-15_10-34-40__local/bundle/provenance.json",
+          "feature_source": {
+            "artifact_kind": "dense",
+            "cache_key": "f697b8745b4a602f",
+            "dtype": "fp16",
+            "encoder_name": "virchow2",
+            "feature_type": "dense_grid",
+            "type": "soma.extract.dense.store.CachedGridSource"
+          },
+          "fold": 0,
+          "hs2p_version": "6.1.0",
+          "num_folds": 1,
+          "run_id": "2026-10-15_10-34-40__local",
+          "selected_epoch": 6,
+          "selection_monitor": [
+            "mean_f1",
+            0.7249962286921104
+          ],
+          "slide2vec_version": "7.1.1",
+          "soma_version": "1.19.0"
+        }
+      ],
+      "scoring": {
+        "git_sha": "548e0bd434efa957964898ada1bc40eb461a6a77",
+        "git_dirty": false,
+        "soma_version": "2.0.0",
+        "slide2vec_version": "7.1.1",
+        "hs2p_version": "6.1.0",
+        "scored_on": "2026-10-16",
+        "checkout": "/maindisk/clement/soma-worktrees/issue-636"
+      },
+      "native_metrics_path": "/maindisk/clement/soma/runs/midog/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/2026-10-15_10-34-40__local/detection_score/metrics.json",
+      "native": {
+        "test": {
+          "f1": 0.7510891664246296
+        },
+        "tune": {
+          "f1": 0.764848159097017
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7097428631873763
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "recorder_ledger": "/maindisk/clement/soma/issue-636/ledgers/midog-s0/midog.csv",
+      "reference_check": {
+        "metric": "f1",
+        "measured": 0.7510891664246296,
+        "expected": 0.7742,
+        "absolute_tolerance": 0.02,
+        "delta": -0.02311083357537036,
+        "within_tolerance": false,
+        "replicates": 1,
+        "axis": "seed_0"
+      },
+      "ledger_status": "Included in the completed three-seed recorder aggregate; the seed-0 reference check remains separate and out of band.",
+      "investigation": {
+        "status": "open",
+        "findings": [
+          "Current native scorer reproduces all three historical Virchow2 native scores exactly.",
+          "Dataset rows and order match after filesystem-root replacement; split bytes and all 16992 annotation file hashes match.",
+          "Decoder, optimizer, loss parameters, scheduling and accumulation match the recorded historical recipe.",
+          "Historical checkpoint selected epoch 8; new run selected epoch 6. Initial train losses differ by 0.023 percent.",
+          "Historical and current CPU Gaussian targets are bitwise equal on four curated examples.",
+          "Current grids were extracted October 14; historical feature payloads are absent from the archive, so feature identity cannot be proved."
+        ],
+        "unresolved_candidates": [
+          "Embedding numerical differences",
+          "GPU target-render numerical differences",
+          "GPU/kernel numerical differences"
+        ],
+        "tolerance_changed": false,
+        "replay": "/maindisk/clement/soma/issue-636/check_midog_reference.py"
+      },
+      "seed": 0
+    },
+    {
+      "encoder": "virchow2",
+      "seed": 1,
+      "run_dir": "/maindisk/clement/soma/runs/midog/virchow2/seed_1/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s1",
+      "training": {
+        "git_sha": "548e0bd434efa957964898ada1bc40eb461a6a77",
+        "git_dirty": false,
+        "environment": {
+          "soma": "2.0.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "started_at": "2026-10-16T09:24:04.985687+02:00",
+        "finished_at": "2026-10-17T06:45:07.437134+02:00",
+        "dataset_file_checksum": "ecc1f4b400c96923f27cb295d944cffc20bccb5811e1a17fe67876ca321856c6",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530",
+        "test_checksum": "43472912257752e0243d010cb251efb74e3066516c0f02a8cba067c4299c01e8"
+      },
+      "bundles": [
+        {
+          "path": "/maindisk/clement/soma/runs/midog/virchow2/seed_1/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s1/bundle/provenance.json",
+          "feature_source": {
+            "artifact_kind": "dense",
+            "cache_key": "f697b8745b4a602f",
+            "dtype": "fp16",
+            "encoder_name": "virchow2",
+            "feature_type": "dense_grid",
+            "type": "soma.extract.dense.store.CachedGridSource"
+          },
+          "fold": 0,
+          "hs2p_version": "6.1.0",
+          "num_folds": 1,
+          "run_id": "issue-636-s1",
+          "selected_epoch": 7,
+          "selection_monitor": [
+            "mean_f1",
+            0.7541036892572729
+          ],
+          "slide2vec_version": "7.1.1",
+          "soma_version": "2.0.0"
+        }
+      ],
+      "scoring": {
+        "git_sha": "548e0bd434efa957964898ada1bc40eb461a6a77",
+        "git_dirty": false,
+        "soma_version": "2.0.0",
+        "slide2vec_version": "7.1.1",
+        "hs2p_version": "6.1.0",
+        "scored_on": "2026-10-17",
+        "checkout": "/maindisk/clement/soma-worktrees/issue-636"
+      },
+      "native_metrics_path": "/maindisk/clement/soma/runs/midog/virchow2/seed_1/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s1/detection_score/metrics.json",
+      "native": {
+        "test": {
+          "f1": 0.763323782234957
+        },
+        "tune": {
+          "f1": 0.778131634819533
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.6857711614052555
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "recorder_ledger": "/maindisk/clement/soma/issue-636/ledgers/midog-s1/midog.csv",
+      "reference_note": "The packaged individual-run target applies to seed 0; this seed contributes to the three-seed aggregate."
+    },
+    {
+      "encoder": "virchow2",
+      "seed": 2,
+      "run_dir": "/maindisk/clement/soma/runs/midog/virchow2/seed_2/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s2",
+      "training": {
+        "git_sha": "548e0bd434efa957964898ada1bc40eb461a6a77",
+        "git_dirty": false,
+        "environment": {
+          "soma": "2.0.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "started_at": "2026-10-16T09:24:04.952541+02:00",
+        "finished_at": "2026-10-17T07:40:52.744220+02:00",
+        "dataset_file_checksum": "ecc1f4b400c96923f27cb295d944cffc20bccb5811e1a17fe67876ca321856c6",
+        "splits_file_checksum": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530",
+        "test_checksum": "43472912257752e0243d010cb251efb74e3066516c0f02a8cba067c4299c01e8"
+      },
+      "bundles": [
+        {
+          "path": "/maindisk/clement/soma/runs/midog/virchow2/seed_2/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s2/bundle/provenance.json",
+          "feature_source": {
+            "artifact_kind": "dense",
+            "cache_key": "f697b8745b4a602f",
+            "dtype": "fp16",
+            "encoder_name": "virchow2",
+            "feature_type": "dense_grid",
+            "type": "soma.extract.dense.store.CachedGridSource"
+          },
+          "fold": 0,
+          "hs2p_version": "6.1.0",
+          "num_folds": 1,
+          "run_id": "issue-636-s2",
+          "selected_epoch": 8,
+          "selection_monitor": [
+            "mean_f1",
+            0.7332012799024836
+          ],
+          "slide2vec_version": "7.1.1",
+          "soma_version": "2.0.0"
+        }
+      ],
+      "scoring": {
+        "git_sha": "548e0bd434efa957964898ada1bc40eb461a6a77",
+        "git_dirty": false,
+        "soma_version": "2.0.0",
+        "slide2vec_version": "7.1.1",
+        "hs2p_version": "6.1.0",
+        "scored_on": "2026-10-17",
+        "checkout": "/maindisk/clement/soma-worktrees/issue-636"
+      },
+      "native_metrics_path": "/maindisk/clement/soma/runs/midog/virchow2/seed_2/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s2/detection_score/metrics.json",
+      "native": {
+        "test": {
+          "f1": 0.7652527600232423
+        },
+        "tune": {
+          "f1": 0.777364505844846
+        },
+        "replicate_axis": "seeds",
+        "test_source": "local_holdout",
+        "metric_name": "f1",
+        "score_threshold_per_class": [
+          0.7268249005915559
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "recorder_ledger": "/maindisk/clement/soma/issue-636/ledgers/midog-s2/midog.csv",
+      "reference_note": "The packaged individual-run target applies to seed 0; this seed contributes to the three-seed aggregate."
+    }
+  ],
+  "training_lanes": [
+    {
+      "seed": 1,
+      "config": "/maindisk/clement/soma/issue-636/configs/midog-virchow2-s1.yaml",
+      "state": "/maindisk/clement/soma/issue-636/state/midog-s1.json",
+      "log": "/maindisk/clement/soma/issue-636/logs/midog-s1.log",
+      "training_commit": "548e0bd434efa957964898ada1bc40eb461a6a77",
+      "soma_version": "2.0.0",
+      "feature_dir": "/maindisk/clement/soma/cache/midog/dense_image/f697b8745b4a602f",
+      "status": "completed",
+      "run_dir": "/maindisk/clement/soma/runs/midog/virchow2/seed_1/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s1",
+      "finished_at": "2026-10-17T04:45:45.908249+00:00",
+      "native_f1": 0.763323782234957
+    },
+    {
+      "seed": 2,
+      "config": "/maindisk/clement/soma/issue-636/configs/midog-virchow2-s2.yaml",
+      "state": "/maindisk/clement/soma/issue-636/state/midog-s2.json",
+      "log": "/maindisk/clement/soma/issue-636/logs/midog-s2.log",
+      "training_commit": "548e0bd434efa957964898ada1bc40eb461a6a77",
+      "soma_version": "2.0.0",
+      "feature_dir": "/maindisk/clement/soma/cache/midog/dense_image/f697b8745b4a602f",
+      "status": "completed",
+      "run_dir": "/maindisk/clement/soma/runs/midog/virchow2/seed_2/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s2",
+      "finished_at": "2026-10-17T05:41:29.217942+00:00",
+      "native_f1": 0.7652527600232423
+    }
+  ],
+  "updated_on": "2026-10-17",
+  "recorded_aggregates": [
+    {
+      "encoder": "virchow2",
+      "metric": "f1",
+      "seeds": [
+        0,
+        1,
+        2
+      ],
+      "n_seeds": 3,
+      "mean": 0.759888569560943,
+      "std": 0.007681299401367269,
+      "std_definition": "sample standard deviation across seeds (ddof=1), emitted by soma reproduce --record",
+      "population_std": 0.006271754698298564,
+      "per_seed": [
+        0.7510891664246296,
+        0.763323782234957,
+        0.7652527600232423
+      ],
+      "runs": [
+        "/maindisk/clement/soma/runs/midog/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/2026-10-15_10-34-40__local",
+        "/maindisk/clement/soma/runs/midog/virchow2/seed_1/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s1",
+        "/maindisk/clement/soma/runs/midog/virchow2/seed_2/experiments/dataset-virchow2-lightweight-conv-detection_904aa51ee4f8/runs/issue-636-s2"
+      ],
+      "recorder_ledger": "/maindisk/clement/soma/issue-636/ledgers/midog-aggregate/midog.csv",
+      "recorded_on": "2026-10-17",
+      "scoring": {
+        "git_sha": "548e0bd434efa957964898ada1bc40eb461a6a77",
+        "git_dirty": false,
+        "soma_version": "2.0.0",
+        "slide2vec_version": "7.1.1",
+        "hs2p_version": "6.1.0",
+        "scored_on": "2026-10-17",
+        "checkout": "/maindisk/clement/soma-worktrees/issue-636"
+      },
+      "reuse_adapter": {
+        "path": "/maindisk/clement/soma/issue-636/record_aggregate.py",
+        "sha256": "68c0977c6d7bc59772ed378ccaedbbf943c5a400c905a7aadda9e4336499dae6",
+        "method": "Normal soma reproduce --record seed loop and scorer; Pipeline adapter verifies complete saved artifacts and performs no training or extraction."
+      },
+      "recorder_key_normalization": "dataset=midog and spacing=0.25 added from the fixed run recipe; metric, measured, std, n_seeds, date and scoring commit are unchanged.",
+      "training_provenance": "See reproductions entries for each seed; seed 0 retains its original 1.19.0 version and 8e1f1f6 commit."
+    }
+  ]
+}

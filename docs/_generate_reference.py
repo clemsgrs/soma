@@ -272,16 +272,21 @@ def write_cli_rst(path: str | Path | None = None) -> Path:
 # ``soma reproduce --record`` appends to) and ``reference.csv``. Regenerate them with
 # ``python docs/_generate_reference.py``; ``tests/repo/test_docs.py`` checks parity.
 
-def _latest_rows(rows):
+def _latest_rows(rows, *, key_columns=None):
     """The most recent ledger row per (key, metric) cell, in first-seen cell order.
 
     The results ledger is append-only, so a cell reproduced at a new commit adds a row
     rather than rewriting history; the docs show the latest reproduction of each cell
-    (``reproduced_rows`` documents "take the last match").
+    (``reproduced_rows`` documents "take the last match"). ``key_columns`` selects
+    the displayed axes when fixed metadata differs between historical and recorder rows.
     """
     latest: dict[tuple, object] = {}
     for row in rows:
-        latest[(tuple(sorted(row.key.items())), row.metric)] = row
+        key = (
+            tuple(sorted(row.key.items())) if key_columns is None
+            else tuple((column, row.key.get(column, "")) for column in key_columns)
+        )
+        latest[(key, row.metric)] = row
     return list(latest.values())
 
 
@@ -304,6 +309,12 @@ def _results_table(
     key_columns: tuple[str, ...],
     key_labels: tuple[str, ...],
     metric_label: str,
+    *,
+    metric: str | None = None,
+    std_label: str = "std",
+    reproduce_command: str | None = None,
+    check_reference: bool = True,
+    reference_axes: dict[str, str] | None = None,
 ) -> str:
     """A ``list-table`` of soma's recorded scores, best first.
 
@@ -311,13 +322,16 @@ def _results_table(
     been run appear, latest row per cell. A score outside its gate's band is red; the
     gate itself is not a column, since these benchmarks are soma's own.
     """
-    rows = _latest_rows(load_results(name))
+    rows = [
+        row for row in _latest_rows(load_results(name), key_columns=key_columns)
+        if metric is None or row.metric == metric
+    ]
     if not rows:
         return (
-            f"No reproductions have been recorded yet. ``soma reproduce {name} --record`` "
+            f"No reproductions have been recorded yet. ``soma reproduce {reproduce_command or name} --record`` "
             "appends a measured score to the results ledger this table reads."
         )
-    header = list(key_labels) + [f"{metric_label} (mean ± std)", "Seeds"]
+    header = list(key_labels) + [f"{metric_label} (mean ± {std_label})", "Seeds"]
     lines = [".. list-table::", "   :header-rows: 1", ""]
     lines.extend([f"   * - {header[0]}"] + [f"     - {col}" for col in header[1:]])
     flagged = False
@@ -326,7 +340,10 @@ def _results_table(
         seeds = "" if row.n_seeds is None else str(row.n_seeds)
         gates = [
             g
-            for g in expected_rows(name, metric=row.metric, **row.key)
+            for g in (
+                expected_rows(name, metric=row.metric, **{**(reference_axes or {}), **row.key})
+                if check_reference else []
+            )
             if not g.is_external
         ]
         gate = gates[0] if gates else None
@@ -342,6 +359,26 @@ def _results_table(
 def build_ocelot_results_rst() -> str:
     """The OCELOT results table: one row per recorded encoder."""
     return _results_table("ocelot", ("encoder",), ("Encoder",), "Mean F1")
+
+
+def build_midog_results_rst() -> str:
+    """The MIDOG results table: one row per recorded encoder."""
+    # Its packaged target is seed 0; the aggregate table cannot evaluate that check.
+    return _results_table(
+        "midog", ("encoder",), ("Encoder",), "Stitched-ROI F1",
+        metric="f1", std_label="seed std", reproduce_command="detection/midog",
+        check_reference=False,
+    )
+
+
+def build_monkey_results_rst() -> str:
+    """The MONKEY results table: one row per recorded encoder."""
+    return _results_table(
+        "monkey", ("encoder",), ("Encoder",), "Inflammatory FROC",
+        metric="froc_inflammatory", std_label="seed std", reproduce_command="detection/monkey --seeds 1",
+        # The recorder emits only the varying encoder axis for this fixed recipe.
+        reference_axes={"dataset": "monkey", "spacing": "0.242"},
+    )
 
 
 def _eva_results_table(datasets, metric: str, reference_label: str, example: str) -> str:
@@ -545,6 +582,8 @@ def build_croma_results_rst() -> str:
 # numbers are generated.
 RESULTS_FRAGMENTS: dict[str, "callable"] = {
     "ocelot-results.rst": build_ocelot_results_rst,
+    "midog-results.rst": build_midog_results_rst,
+    "monkey-results.rst": build_monkey_results_rst,
     "eva-patch-results.rst": build_eva_patch_results_rst,
     "eva-segmentation-results.rst": build_eva_segmentation_results_rst,
     "eva-slide-results.rst": build_eva_slide_results_rst,

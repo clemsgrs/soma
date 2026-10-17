@@ -1,0 +1,2543 @@
+{
+  "schema_version": 1,
+  "dataset": "monkey",
+  "evidence": "historical_native_score_harvest",
+  "recorded_on": "2026-10-16",
+  "source_root": "/maindisk/clement/monkey/sweep/out/monkey",
+  "native_score_artifact": "<cell_dir>/metrics.json",
+  "native_prediction_artifact": "<cell_dir>/predictions.json",
+  "training_artifacts": "<run_dir>/<artifact_subdir>/{best_model.pt,predictions_tune.csv,predictions_test.csv,training_history.json}",
+  "artifact_presence_checked": true,
+  "replicate_axis": "patient_folds",
+  "n_seeds_per_encoder": 1,
+  "replicates_per_encoder": 5,
+  "spread": {
+    "historical_report": "population SD, ddof=0",
+    "suggested_ledger_std": "null; one seed, fold spread recorded in aggregates",
+    "reproduce_recorder": "sample SD, ddof=1, over seeds"
+  },
+  "scoring": {
+    "commit": "54ed7717296ecadf1f2726f7e19680c21309338b",
+    "snapshot_claim": "54ed771 + froc-headline.patch",
+    "patch_sha256": "83d0db272d92cf9f816af15c7b3acca7ba4caca9558deaa02ffbe868b12accec",
+    "snapshot_pyproject_soma": "1.18.1",
+    "snapshot_path": "/maindisk/clement/monkey/code/soma-54ed771-froc",
+    "pin_file": "/maindisk/clement/monkey/code/soma-54ed771-froc/PINNED.txt",
+    "launch_script": "/maindisk/clement/monkey/sweep/rescore_lane.sh",
+    "completion_log": "/maindisk/clement/monkey/sweep/logs/rescore_lanes.log",
+    "scored_on": "2026-10-12"
+  },
+  "limitations": [
+    "Historical evidence only: these rows do not establish that the current distribution trained these models.",
+    "All MONKEY run.yaml records remain partial because each invocation ran one fold of a five-fold config; trained decoder, tune/test CSV predictions, and native rescoring metrics exist in every cell.",
+    "All MONKEY run.yaml git_sha and git_dirty fields are empty; environment.soma is 1.17.0. Launch scripts identify a 54ed771 snapshot, whose copied pyproject.toml says 1.18.1. Preserve this discrepancy.",
+    "MONKEY scoring snapshot PINNED.txt identifies 54ed771 plus froc-headline.patch. This is separate evidence from unrecorded training SHA.",
+    "Copies of slide2vec/hs2p in backup describe copied source snapshots, not independently recorded per-run installed package versions."
+  ],
+  "source_report": {
+    "path": "/maindisk/clement/monkey/sweep/out/ranking_report.json",
+    "resolved_path": "/maindisk/clement/monkey/sweep/out/ranking_report.json",
+    "exists": true,
+    "bytes": 11420,
+    "sha256": "322a452b178b6580e81370752ec77f7fabfd03f40d5061c9579916a5ee4121fe"
+  },
+  "runs": [
+    {
+      "encoder": "virchow2",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_0",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_0/experiments/dataset-virchow2-slide-detection_718bcf0df263/runs/fold_0",
+      "artifact_subdir": "fold_0",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T10:41:47.490698+02:00",
+        "finished_at": "2026-10-10T14:48:17.313056+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 19,
+        "tune_loss": 0.024840042385347146,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5685201045867683
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.251945029674612,
+          "froc_lymphocytes": 0.29352210142702123,
+          "froc_monocytes": 0.20296071999327112,
+          "mean_froc": 0.24824141071014616
+        },
+        "tune": {
+          "froc_inflammatory": 0.23727315366020854,
+          "froc_lymphocytes": 0.2959270776172184,
+          "froc_monocytes": 0.20833333333333334,
+          "mean_froc": 0.25213020547527587
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7509209452350568,
+          0.6543724127904523
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "82e6a6b335aa8397f2dac48176a83e8862b53eea8a45b5a003328b68424e2b77",
+      "scorer_finished_at": "2026-10-12T05:18:12+02:00"
+    },
+    {
+      "encoder": "virchow2",
+      "replicate": 1,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_1",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_1/experiments/dataset-virchow2-slide-detection_718bcf0df263/runs/fold_1",
+      "artifact_subdir": "fold_1",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T14:53:50.227932+02:00",
+        "finished_at": "2026-10-10T17:58:14.443265+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 10,
+        "tune_loss": 0.021638557561953917,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5366770874256956
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.23718295630840278,
+          "froc_lymphocytes": 0.2862185901014512,
+          "froc_monocytes": 0.19788352774832096,
+          "mean_froc": 0.24205105892488607
+        },
+        "tune": {
+          "froc_inflammatory": 0.29093624936587564,
+          "froc_lymphocytes": 0.31060424169667866,
+          "froc_monocytes": 0.1951963400686237,
+          "mean_froc": 0.2529002908826512
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6376763588798764,
+          0.5539047267972207
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "c78969607f2cebbdfed599b2f096dda711dafc8ae3998db1db213d786ca73287",
+      "scorer_finished_at": "2026-10-12T05:22:12+02:00"
+    },
+    {
+      "encoder": "virchow2",
+      "replicate": 2,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_2",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_2/experiments/dataset-virchow2-slide-detection_718bcf0df263/runs/fold_2",
+      "artifact_subdir": "fold_2",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T18:02:33.317653+02:00",
+        "finished_at": "2026-10-10T22:25:37.650404+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 21,
+        "tune_loss": 0.017099751201585345,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5226323173254942
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2952708037137525,
+          "froc_lymphocytes": 0.3205949046285181,
+          "froc_monocytes": 0.18795272588638964,
+          "mean_froc": 0.25427381525745385
+        },
+        "tune": {
+          "froc_inflammatory": 0.272171465485419,
+          "froc_lymphocytes": 0.3155685441020191,
+          "froc_monocytes": 0.2099047240968638,
+          "mean_froc": 0.2627366340994415
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7471846889476387,
+          0.6040294453102563
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "8d0370c86e9a37a8ad35fe75806426ce1ea5fa92f053caa4086f92a15c221c49",
+      "scorer_finished_at": "2026-10-12T05:23:46+02:00"
+    },
+    {
+      "encoder": "virchow2",
+      "replicate": 3,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_3",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_3/experiments/dataset-virchow2-slide-detection_718bcf0df263/runs/fold_3",
+      "artifact_subdir": "fold_3",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T22:31:40.403252+02:00",
+        "finished_at": "2026-10-11T02:20:16.550450+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 17,
+        "tune_loss": 0.016755542216397277,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5349410143152857
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2746516242155777,
+          "froc_lymphocytes": 0.31785334750265676,
+          "froc_monocytes": 0.21791054651316663,
+          "mean_froc": 0.2678819470079117
+        },
+        "tune": {
+          "froc_inflammatory": 0.3182636809443215,
+          "froc_lymphocytes": 0.34769825268817206,
+          "froc_monocytes": 0.2239066519661889,
+          "mean_froc": 0.2858024523271805
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7475224307605198,
+          0.5045797493981549
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "125be50059ec50de26e646a8ed271d557dee6622ab62c13885b2e058b7c26b1c",
+      "scorer_finished_at": "2026-10-12T05:28:21+02:00"
+    },
+    {
+      "encoder": "virchow2",
+      "replicate": 4,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_4",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/virchow2/replicate_4/experiments/dataset-virchow2-slide-detection_718bcf0df263/runs/fold_4",
+      "artifact_subdir": "fold_4",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T02:26:09.154407+02:00",
+        "finished_at": "2026-10-11T05:31:19.139789+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 12,
+        "tune_loss": 0.021640088015408638,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5379728213267413
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.3164084537603611,
+          "froc_lymphocytes": 0.3419858870967742,
+          "froc_monocytes": 0.22794928335170894,
+          "mean_froc": 0.2849675852242416
+        },
+        "tune": {
+          "froc_inflammatory": 0.27464507511601327,
+          "froc_lymphocytes": 0.3087750547673157,
+          "froc_monocytes": 0.22525023130624944,
+          "mean_froc": 0.26701264303678257
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7400229164372182,
+          0.606905599300392
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "21de9f38ad7ee9d99dfa901d42c4411a7444042d5994cd278bee4b327db77586",
+      "scorer_finished_at": "2026-10-12T05:30:06+02:00"
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_0",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_0/experiments/dataset-genbio-pathfm-slide-detection_1f3efb60f6a6/runs/fold_0",
+      "artifact_subdir": "fold_0",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T10:41:45.680302+02:00",
+        "finished_at": "2026-10-10T17:10:14.687054+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 3,
+        "tune_loss": 0.024117754758720477,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.589451379526934
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.29446028008427316,
+          "froc_lymphocytes": 0.3191040681366828,
+          "froc_monocytes": 0.24203044831356715,
+          "mean_froc": 0.28056725822512496
+        },
+        "tune": {
+          "froc_inflammatory": 0.25092001298841865,
+          "froc_lymphocytes": 0.29819956687116034,
+          "froc_monocytes": 0.24080947331212443,
+          "mean_froc": 0.2695045200916424
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7131769354312624,
+          0.5269046849998817
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "c4044bb5ab309cc835a00472c492c9d8c10903607831a9a2e993b2e0a93c92fe",
+      "scorer_finished_at": "2026-10-12T04:39:40+02:00"
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "replicate": 1,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_1",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_1/experiments/dataset-genbio-pathfm-slide-detection_1f3efb60f6a6/runs/fold_1",
+      "artifact_subdir": "fold_1",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T17:15:04.750558+02:00",
+        "finished_at": "2026-10-10T19:40:02.299406+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 9,
+        "tune_loss": 0.022675137268897562,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5557328229045819
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2561590706980917,
+          "froc_lymphocytes": 0.3030607889762819,
+          "froc_monocytes": 0.2167506185931424,
+          "mean_froc": 0.25990570378471217
+        },
+        "tune": {
+          "froc_inflammatory": 0.2970614208143096,
+          "froc_lymphocytes": 0.3243564092303588,
+          "froc_monocytes": 0.20993773033422292,
+          "mean_froc": 0.26714706978229086
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6361030662659204,
+          0.5482417478853341
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "0af17c07672c7c25bef1acc89f825926acc40f33271a2efccadbc920ed4f918e",
+      "scorer_finished_at": "2026-10-12T04:38:54+02:00"
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "replicate": 2,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_2",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_2/experiments/dataset-genbio-pathfm-slide-detection_1f3efb60f6a6/runs/fold_2",
+      "artifact_subdir": "fold_2",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T19:44:08.944886+02:00",
+        "finished_at": "2026-10-10T22:10:51.756807+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 10,
+        "tune_loss": 0.017206872499883577,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5447208334109593
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.3050842680795896,
+          "froc_lymphocytes": 0.33497398959583835,
+          "froc_monocytes": 0.20831744821451262,
+          "mean_froc": 0.27164571890517547
+        },
+        "tune": {
+          "froc_inflammatory": 0.30203719084533037,
+          "froc_lymphocytes": 0.3521243569273374,
+          "froc_monocytes": 0.22369988090512108,
+          "mean_froc": 0.28791211891622925
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7472270812307085,
+          0.6652519277163914
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "7b49c849b6b991199a01a483618d46a42108aa610fec775130e919a478c2837c",
+      "scorer_finished_at": "2026-10-12T04:43:52+02:00"
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "replicate": 3,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_3",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_3/experiments/dataset-genbio-pathfm-slide-detection_1f3efb60f6a6/runs/fold_3",
+      "artifact_subdir": "fold_3",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T22:16:21.089341+02:00",
+        "finished_at": "2026-10-11T00:22:41.230633+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 7,
+        "tune_loss": 0.016975618610627862,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5576820400284158
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.319905869324474,
+          "froc_lymphocytes": 0.37511512575274536,
+          "froc_monocytes": 0.20881302104009528,
+          "mean_froc": 0.29196407339642033
+        },
+        "tune": {
+          "froc_inflammatory": 0.3432821247233433,
+          "froc_lymphocytes": 0.3766801075268817,
+          "froc_monocytes": 0.22476313021413719,
+          "mean_froc": 0.3007216188705094
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6288317330169719,
+          0.568315348362524
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "4ef6044870effe3dcdafc67b9a10b8e090bcc8f0159f1aea412b97fd380de09b",
+      "scorer_finished_at": "2026-10-12T04:45:38+02:00"
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "replicate": 4,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_4",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/genbio-pathfm/replicate_4/experiments/dataset-genbio-pathfm-slide-detection_1f3efb60f6a6/runs/fold_4",
+      "artifact_subdir": "fold_4",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T00:29:37.601846+02:00",
+        "finished_at": "2026-10-11T02:04:07.440794+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 2,
+        "tune_loss": 0.02134798763590535,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.567717463804435
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.3314889554311504,
+          "froc_lymphocytes": 0.3653147209496819,
+          "froc_monocytes": 0.25192943770672543,
+          "mean_froc": 0.3086220793282037
+        },
+        "tune": {
+          "froc_inflammatory": 0.29462552154335525,
+          "froc_lymphocytes": 0.33003705751079987,
+          "froc_monocytes": 0.2498738329548322,
+          "mean_froc": 0.289955445232816
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.5695031611854686,
+          0.5734926973070417
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "73122e20313d59039dc3d3b99182ffbdea3708d00c876cf4004f55d001d2d357",
+      "scorer_finished_at": "2026-10-12T04:50:22+02:00"
+    },
+    {
+      "encoder": "midnight",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_0",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_0/experiments/dataset-midnight-slide-detection_3a26ccf57d5d/runs/fold_0",
+      "artifact_subdir": "fold_0",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T10:41:43.364102+02:00",
+        "finished_at": "2026-10-10T13:09:29.597064+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 5,
+        "tune_loss": 0.029367096909231123,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.526367183814608
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.23063576651381834,
+          "froc_lymphocytes": 0.25876788895031017,
+          "froc_monocytes": 0.15484902010261586,
+          "mean_froc": 0.20680845452646301
+        },
+        "tune": {
+          "froc_inflammatory": 0.20348522567377422,
+          "froc_lymphocytes": 0.25754527162977864,
+          "froc_monocytes": 0.15692382467302934,
+          "mean_froc": 0.207234548151404
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6434491787637983,
+          0.5012335229893119
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "b6831bb0a9d711ca5e035bc79872e2849dd36979b9cb95f19b4481316be85e50",
+      "scorer_finished_at": "2026-10-12T05:06:53+02:00"
+    },
+    {
+      "encoder": "midnight",
+      "replicate": 1,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_1",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_1/experiments/dataset-midnight-slide-detection_3a26ccf57d5d/runs/fold_1",
+      "artifact_subdir": "fold_1",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T13:14:49.489621+02:00",
+        "finished_at": "2026-10-10T16:10:00.128744+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 9,
+        "tune_loss": 0.025178510205197742,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.4944694291470909
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.19037053072121804,
+          "froc_lymphocytes": 0.23711968782391316,
+          "froc_monocytes": 0.13827765995051255,
+          "mean_froc": 0.18769867388721284
+        },
+        "tune": {
+          "froc_inflammatory": 0.23908836405313494,
+          "froc_lymphocytes": 0.25870348139255706,
+          "froc_monocytes": 0.15109925022239168,
+          "mean_froc": 0.20490136580747437
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.5656503152627289,
+          0.5450378413103064
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "2c7aba262bb04be2d0d854f655eab36117ee3990789659fb74520fba6fc046f4",
+      "scorer_finished_at": "2026-10-12T05:06:48+02:00"
+    },
+    {
+      "encoder": "midnight",
+      "replicate": 2,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_2",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_2/experiments/dataset-midnight-slide-detection_3a26ccf57d5d/runs/fold_2",
+      "artifact_subdir": "fold_2",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T16:14:23.799272+02:00",
+        "finished_at": "2026-10-10T19:34:15.745737+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 13,
+        "tune_loss": 0.018743362261685017,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.47745704699102853
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.26274355072055317,
+          "froc_lymphocytes": 0.3034008232778583,
+          "froc_monocytes": 0.14601601219977126,
+          "mean_froc": 0.22470841773881478
+        },
+        "tune": {
+          "froc_inflammatory": 0.2534030084902178,
+          "froc_lymphocytes": 0.31563939071909314,
+          "froc_monocytes": 0.1617043800449914,
+          "mean_froc": 0.23867188538204226
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7135613502849045,
+          0.6117448485123792
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "94f23bf578cc1f7696534e5515e580c6b8f6444c7b61bda0af55fbd89a20a8ca",
+      "scorer_finished_at": "2026-10-12T05:12:01+02:00"
+    },
+    {
+      "encoder": "midnight",
+      "replicate": 3,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_3",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_3/experiments/dataset-midnight-slide-detection_3a26ccf57d5d/runs/fold_3",
+      "artifact_subdir": "fold_3",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T19:39:29.857345+02:00",
+        "finished_at": "2026-10-10T22:49:14.160468+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 12,
+        "tune_loss": 0.019091023647468924,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.4859948101985879
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.24831579918789218,
+          "froc_lymphocytes": 0.30308182784272053,
+          "froc_monocytes": 0.16150588858012438,
+          "mean_froc": 0.23229385821142245
+        },
+        "tune": {
+          "froc_inflammatory": 0.2637460400121512,
+          "froc_lymphocytes": 0.3188340053763441,
+          "froc_monocytes": 0.16112336150924902,
+          "mean_froc": 0.23997868344279655
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6443504119405941,
+          0.6363814272917807
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "586754525b6f76f9f8a8f0a6121f7033dd9bad7d1d5fa1c50c2d95459dd9f724",
+      "scorer_finished_at": "2026-10-12T05:13:04+02:00"
+    },
+    {
+      "encoder": "midnight",
+      "replicate": 4,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_4",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/midnight/replicate_4/experiments/dataset-midnight-slide-detection_3a26ccf57d5d/runs/fold_4",
+      "artifact_subdir": "fold_4",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T22:57:08.238475+02:00",
+        "finished_at": "2026-10-11T02:23:53.425797+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 15,
+        "tune_loss": 0.02541355729437037,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.4953440598775588
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.263821984984594,
+          "froc_lymphocytes": 0.30409946236559143,
+          "froc_monocytes": 0.14522846992527258,
+          "mean_froc": 0.224663966145432
+        },
+        "tune": {
+          "froc_inflammatory": 0.24178267994106392,
+          "froc_lymphocytes": 0.27586348094916363,
+          "froc_monocytes": 0.14298931785684246,
+          "mean_froc": 0.20942639940300306
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6985916914620285,
+          0.5778958797454834
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "b44f2f427540b7a23d7545b401ff56a2252bf0295c4b068f8ce13b5f4b32704c",
+      "scorer_finished_at": "2026-10-12T05:18:40+02:00"
+    },
+    {
+      "encoder": "conchv15",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_0",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_0/experiments/dataset-conchv15-slide-detection_20cac7572608/runs/fold_0",
+      "artifact_subdir": "fold_0",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T01:29:26.198249+02:00",
+        "finished_at": "2026-10-11T03:33:46.444437+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 8,
+        "tune_loss": 0.025115813093482053,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5659654031929525
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2606821718235772,
+          "froc_lymphocytes": 0.2908912228978564,
+          "froc_monocytes": 0.19385566490032802,
+          "mean_froc": 0.2423734438990922
+        },
+        "tune": {
+          "froc_inflammatory": 0.2259984846844897,
+          "froc_lymphocytes": 0.2736418511066398,
+          "froc_monocytes": 0.18860463061152352,
+          "mean_froc": 0.23112324085908165
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7025732252062583,
+          0.5250639003150317
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "abf546a279a7aeacc3af26503238780806f7fd872726215752e944a0ea9dc9df",
+      "scorer_finished_at": "2026-10-12T05:33:11+02:00"
+    },
+    {
+      "encoder": "conchv15",
+      "replicate": 1,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_1",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_1/experiments/dataset-conchv15-slide-detection_20cac7572608/runs/fold_1",
+      "artifact_subdir": "fold_1",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T03:39:29.972489+02:00",
+        "finished_at": "2026-10-11T06:12:12.969436+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 12,
+        "tune_loss": 0.022166455449039606,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5301528234298923
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2226431431973157,
+          "froc_lymphocytes": 0.2733827205658192,
+          "froc_monocytes": 0.1689422057264051,
+          "mean_froc": 0.22116246314611215
+        },
+        "tune": {
+          "froc_inflammatory": 0.27693854160795145,
+          "froc_lymphocytes": 0.2984393757503001,
+          "froc_monocytes": 0.18382259499301054,
+          "mean_froc": 0.24113098537165534
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6985991503057375,
+          0.5771016186597396
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "f8fbe7f84b3f1d0ada2fcf105a817205d5600e322d3da7031eae76e2e1d63c99",
+      "scorer_finished_at": "2026-10-12T05:33:38+02:00"
+    },
+    {
+      "encoder": "conchv15",
+      "replicate": 2,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_2",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_2/experiments/dataset-conchv15-slide-detection_20cac7572608/runs/fold_2",
+      "artifact_subdir": "fold_2",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T06:15:49.071081+02:00",
+        "finished_at": "2026-10-11T08:54:31.898404+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 14,
+        "tune_loss": 0.017330971912751673,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5169689064227365
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2914529432764031,
+          "froc_lymphocytes": 0.3145630511435001,
+          "froc_monocytes": 0.1715592832634388,
+          "mean_froc": 0.24306116720346943
+        },
+        "tune": {
+          "froc_inflammatory": 0.2723098929494278,
+          "froc_lymphocytes": 0.31716259298618493,
+          "froc_monocytes": 0.20527325658330028,
+          "mean_froc": 0.2612179247847426
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7353458173420965,
+          0.6044997059150922
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "d76caf212e962019d8a5eac6a1a9dbc266c2eedf58d97d351d36c24863930566",
+      "scorer_finished_at": "2026-10-12T05:37:36+02:00"
+    },
+    {
+      "encoder": "conchv15",
+      "replicate": 3,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_3",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_3/experiments/dataset-conchv15-slide-detection_20cac7572608/runs/fold_3",
+      "artifact_subdir": "fold_3",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T08:59:10.498236+02:00",
+        "finished_at": "2026-10-11T11:07:18.766453+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 9,
+        "tune_loss": 0.017157601031418987,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5322294850558386
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2836148025101513,
+          "froc_lymphocytes": 0.32782500885582716,
+          "froc_monocytes": 0.20232896652110624,
+          "mean_froc": 0.2650769876884667
+        },
+        "tune": {
+          "froc_inflammatory": 0.3187952957514213,
+          "froc_lymphocytes": 0.35216733870967737,
+          "froc_monocytes": 0.20543917677324516,
+          "mean_froc": 0.27880325774146125
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6899577768481507,
+          0.537415536830905
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "213000e750df8bfdf223ee26e177bd98ab91e2674f4bf4c9ce0d0bf8a600e2bd",
+      "scorer_finished_at": "2026-10-12T05:39:10+02:00"
+    },
+    {
+      "encoder": "conchv15",
+      "replicate": 4,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_4",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/conchv15/replicate_4/experiments/dataset-conchv15-slide-detection_20cac7572608/runs/fold_4",
+      "artifact_subdir": "fold_4",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T11:13:11.368989+02:00",
+        "finished_at": "2026-10-11T12:57:04.377382+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 5,
+        "tune_loss": 0.0227151964932425,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5356948148563784
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2905654645662457,
+          "froc_lymphocytes": 0.31927083333333334,
+          "froc_monocytes": 0.20029400955531054,
+          "mean_froc": 0.25978242144432195
+        },
+        "tune": {
+          "froc_inflammatory": 0.260985114498561,
+          "froc_lymphocytes": 0.294074893024589,
+          "froc_monocytes": 0.19335099671965683,
+          "mean_froc": 0.24371294487212292
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.606611430644989,
+          0.6082322517877957
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "76fcad222576c6947d67ae0469189aff5e3c9a60dccdd6fc9eb6122cbbcc2240",
+      "scorer_finished_at": "2026-10-12T05:43:12+02:00"
+    },
+    {
+      "encoder": "h0-mini",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_0",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_0/experiments/dataset-h0-mini-slide-detection_f8c350af7d52/runs/fold_0",
+      "artifact_subdir": "fold_0",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T02:11:11.046742+02:00",
+        "finished_at": "2026-10-11T05:01:50.838644+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 10,
+        "tune_loss": 0.025150498423847294,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5628344456511506
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.27418377604274247,
+          "froc_lymphocytes": 0.31238867391437874,
+          "froc_monocytes": 0.21641853814450332,
+          "mean_froc": 0.264403606029441
+        },
+        "tune": {
+          "froc_inflammatory": 0.24094418587870262,
+          "froc_lymphocytes": 0.2985488689714042,
+          "froc_monocytes": 0.20329621774478612,
+          "mean_froc": 0.25092254335809516
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7390764197524712,
+          0.6103798385153582
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "d088ffc5a6a9c3a4e456595e97668558864e2542a5f39b69e31993089ffa1b44",
+      "scorer_finished_at": "2026-10-12T05:43:46+02:00"
+    },
+    {
+      "encoder": "h0-mini",
+      "replicate": 1,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_1",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_1/experiments/dataset-h0-mini-slide-detection_f8c350af7d52/runs/fold_1",
+      "artifact_subdir": "fold_1",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T05:07:25.507516+02:00",
+        "finished_at": "2026-10-11T08:46:59.429144+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 15,
+        "tune_loss": 0.022595848736441285,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5362437269021814
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.23494606198362014,
+          "froc_lymphocytes": 0.28094323516858727,
+          "froc_monocytes": 0.17579091551785084,
+          "mean_froc": 0.22836707534321904
+        },
+        "tune": {
+          "froc_inflammatory": 0.2828738697952784,
+          "froc_lymphocytes": 0.30060024009603836,
+          "froc_monocytes": 0.1841720676070657,
+          "mean_froc": 0.24238615385155204
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.721227277934638,
+          0.6246361112108035
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "8bb749fb190c8a15f5c4065b2075005a267a2b676ae084a0600ba3595fb851e8",
+      "scorer_finished_at": "2026-10-12T05:44:54+02:00"
+    },
+    {
+      "encoder": "h0-mini",
+      "replicate": 2,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_2",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_2/experiments/dataset-h0-mini-slide-detection_f8c350af7d52/runs/fold_2",
+      "artifact_subdir": "fold_2",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T08:50:58.144767+02:00",
+        "finished_at": "2026-10-11T12:14:42.075354+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 14,
+        "tune_loss": 0.01745737983638084,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5203607086275597
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2915093098848242,
+          "froc_lymphocytes": 0.31339202347605705,
+          "froc_monocytes": 0.19440208412758928,
+          "mean_froc": 0.25389705380182315
+        },
+        "tune": {
+          "froc_inflammatory": 0.27544758213362863,
+          "froc_lymphocytes": 0.3157102373361672,
+          "froc_monocytes": 0.22102024612941643,
+          "mean_froc": 0.2683652417327918
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7332750483676174,
+          0.5744327478563979
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "ab3f73df87c1a8f5db05998a889d6fbc53be6674cfb2daded5baf573788a332d",
+      "scorer_finished_at": "2026-10-12T05:47:58+02:00"
+    },
+    {
+      "encoder": "h0-mini",
+      "replicate": 3,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_3",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_3/experiments/dataset-h0-mini-slide-detection_f8c350af7d52/runs/fold_3",
+      "artifact_subdir": "fold_3",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T12:19:59.505771+02:00",
+        "finished_at": "2026-10-11T15:25:25.160066+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 12,
+        "tune_loss": 0.01734516762105583,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5364602451827865
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.302141011443337,
+          "froc_lymphocytes": 0.345926319518243,
+          "froc_monocytes": 0.2184398570861453,
+          "mean_froc": 0.28218308830219413
+        },
+        "tune": {
+          "froc_inflammatory": 0.33443996007464305,
+          "froc_lymphocytes": 0.36241599462365587,
+          "froc_monocytes": 0.22608109763567316,
+          "mean_froc": 0.2942485461296645
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6415444211084016,
+          0.6019843828921415
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "036eb3f06c55e99c011be1c6de3008a9973d3b3ae59c02672d034f7aa8bd116a",
+      "scorer_finished_at": "2026-10-12T05:49:16+02:00"
+    },
+    {
+      "encoder": "h0-mini",
+      "replicate": 4,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_4",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h0-mini/replicate_4/experiments/dataset-h0-mini-slide-detection_f8c350af7d52/runs/fold_4",
+      "artifact_subdir": "fold_4",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T15:30:38.103553+02:00",
+        "finished_at": "2026-10-11T18:16:42.560022+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 10,
+        "tune_loss": 0.02248809834311401,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5415839051996307
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.30805450679165036,
+          "froc_lymphocytes": 0.32368951612903224,
+          "froc_monocytes": 0.22274286414308464,
+          "mean_froc": 0.27321619013605847
+        },
+        "tune": {
+          "froc_inflammatory": 0.26217623001611107,
+          "froc_lymphocytes": 0.2884138975902381,
+          "froc_monocytes": 0.20590461771385313,
+          "mean_froc": 0.2471592576520456
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6721082573824286,
+          0.6092047822894529
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "4040086e0a7e6932f81327b35694550a9bf5f0d7086b953787202015957c61d5",
+      "scorer_finished_at": "2026-10-12T05:51:00+02:00"
+    },
+    {
+      "encoder": "h-optimus-1",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_0",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_0/experiments/dataset-h-optimus-1-slide-detection_35344f35554a/runs/fold_0",
+      "artifact_subdir": "fold_0",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T10:41:41.375843+02:00",
+        "finished_at": "2026-10-10T13:10:35.691674+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 5,
+        "tune_loss": 0.023666199041782417,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5925663811567424
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.3041337905013701,
+          "froc_lymphocytes": 0.33903527629342994,
+          "froc_monocytes": 0.2630162334931449,
+          "mean_froc": 0.3010257548932874
+        },
+        "tune": {
+          "froc_inflammatory": 0.2707002922394199,
+          "froc_lymphocytes": 0.3286384976525822,
+          "froc_monocytes": 0.26199628844114525,
+          "mean_froc": 0.2953173930468637
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7052133973962295,
+          0.5734417024068534
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "2111145ec689b3318c6269995c7d59d2d83466c52f70bdcd4f179f4aab28bef8",
+      "scorer_finished_at": "2026-10-12T04:51:10+02:00"
+    },
+    {
+      "encoder": "h-optimus-1",
+      "replicate": 1,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_1",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_1/experiments/dataset-h-optimus-1-slide-detection_35344f35554a/runs/fold_1",
+      "artifact_subdir": "fold_1",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T13:16:06.611201+02:00",
+        "finished_at": "2026-10-10T16:12:53.767370+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 9,
+        "tune_loss": 0.02092672677742758,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5564201823121493
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.2681719495283766,
+          "froc_lymphocytes": 0.31943174196695323,
+          "froc_monocytes": 0.2308677978084129,
+          "mean_froc": 0.2751497698876831
+        },
+        "tune": {
+          "froc_inflammatory": 0.30922721379854573,
+          "froc_lymphocytes": 0.332999866613312,
+          "froc_monocytes": 0.2295081967213115,
+          "mean_froc": 0.2812540316673118
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7203766505375899,
+          0.6558338355044929
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "3a040ebb3966059f80b9e655559b18b138d20e70cdaee14765ecf8f2193bf364",
+      "scorer_finished_at": "2026-10-12T04:54:28+02:00"
+    },
+    {
+      "encoder": "h-optimus-1",
+      "replicate": 2,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_2",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_2/experiments/dataset-h-optimus-1-slide-detection_35344f35554a/runs/fold_2",
+      "artifact_subdir": "fold_2",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T16:17:14.664884+02:00",
+        "finished_at": "2026-10-10T19:30:55.454863+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 12,
+        "tune_loss": 0.017729161396381834,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5459196435987935
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.31220524961013096,
+          "froc_lymphocytes": 0.34128317993864216,
+          "froc_monocytes": 0.2031388994789681,
+          "mean_froc": 0.2722110397088051
+        },
+        "tune": {
+          "froc_inflammatory": 0.31037744555186414,
+          "froc_lymphocytes": 0.3578816861494863,
+          "froc_monocytes": 0.21093026333201007,
+          "mean_froc": 0.2844059747407482
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.7123670833451408,
+          0.6348059505832438
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "a2bccd6152c39898728b08cfee5a999201507adbe96d69e5e640f80f32596d6e",
+      "scorer_finished_at": "2026-10-12T04:56:24+02:00"
+    },
+    {
+      "encoder": "h-optimus-1",
+      "replicate": 3,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_3",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_3/experiments/dataset-h-optimus-1-slide-detection_35344f35554a/runs/fold_3",
+      "artifact_subdir": "fold_3",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T19:35:51.707793+02:00",
+        "finished_at": "2026-10-10T22:08:58.090367+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 7,
+        "tune_loss": 0.016047794923222683,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5584466398701649
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.3085432816537468,
+          "froc_lymphocytes": 0.3574034714842366,
+          "froc_monocytes": 0.24421066560804552,
+          "mean_froc": 0.3008070685461411
+        },
+        "tune": {
+          "froc_inflammatory": 0.3539144208653387,
+          "froc_lymphocytes": 0.38076276881720433,
+          "froc_monocytes": 0.2709481808158765,
+          "mean_froc": 0.3258554748165404
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6690998525389622,
+          0.6321567698400847
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "663907cc04a9e13afed6efd889135bd54469d95354ecb00a666aac49fd57e330",
+      "scorer_finished_at": "2026-10-12T05:00:49+02:00"
+    },
+    {
+      "encoder": "h-optimus-1",
+      "replicate": 4,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_4",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/h-optimus-1/replicate_4/experiments/dataset-h-optimus-1-slide-detection_35344f35554a/runs/fold_4",
+      "artifact_subdir": "fold_4",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-10T22:16:11.076979+02:00",
+        "finished_at": "2026-10-11T01:22:23.138241+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 12,
+        "tune_loss": 0.022960680152158894,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5685250444746663
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.3175910254741136,
+          "froc_lymphocytes": 0.34055779569892475,
+          "froc_monocytes": 0.23517701825309323,
+          "mean_froc": 0.287867406976009
+        },
+        "tune": {
+          "froc_inflammatory": 0.29252557800085377,
+          "froc_lymphocytes": 0.3297811354748889,
+          "froc_monocytes": 0.21187652451846242,
+          "mean_froc": 0.2708288299966757
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6936479815959334,
+          0.6601048274065501
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "8d327776db101f4630148d088a1a336a845c6f1c862096a18d395b06b5f6cf2a",
+      "scorer_finished_at": "2026-10-12T05:02:38+02:00"
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "replicate": 0,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_0",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_0/experiments/dataset-dinov2-vitb14-slide-detection_16903c530a34/runs/fold_0",
+      "artifact_subdir": "fold_0",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T02:31:33.561799+02:00",
+        "finished_at": "2026-10-11T06:21:41.596200+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 18,
+        "tune_loss": 0.030202975035987654,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.5125559990072714
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.22032883050357333,
+          "froc_lymphocytes": 0.25456053067993367,
+          "froc_monocytes": 0.13245436958533097,
+          "mean_froc": 0.19350745013263232
+        },
+        "tune": {
+          "froc_inflammatory": 0.1958545297110077,
+          "froc_lymphocytes": 0.2388116578257423,
+          "froc_monocytes": 0.13140685754683634,
+          "mean_froc": 0.18510925768628933
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6642473605214927,
+          0.5331634319558435
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "e2916c3b161e1864206da2208d5241d379d31c44d27bc6c1296773b9515b9e90",
+      "scorer_finished_at": "2026-10-12T05:53:06+02:00"
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "replicate": 1,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_1",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_1/experiments/dataset-dinov2-vitb14-slide-detection_16903c530a34/runs/fold_1",
+      "artifact_subdir": "fold_1",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T06:26:46.956241+02:00",
+        "finished_at": "2026-10-11T10:21:50.158349+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 17,
+        "tune_loss": 0.027229915373929044,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.49285188843683997
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.20414366634195621,
+          "froc_lymphocytes": 0.2545728918968356,
+          "froc_monocytes": 0.1310533757511488,
+          "mean_froc": 0.19281313382399218
+        },
+        "tune": {
+          "froc_inflammatory": 0.263025383762659,
+          "froc_lymphocytes": 0.2802454315059357,
+          "froc_monocytes": 0.14588893124920574,
+          "mean_froc": 0.21306718137757075
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.5773626821381705,
+          0.5082967378655258
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "8f0d803f2936cad264bf1563e310b16a4fbc1f53857221dc7629137889f32ea6",
+      "scorer_finished_at": "2026-10-12T05:53:17+02:00"
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "replicate": 2,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_2",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_2/experiments/dataset-dinov2-vitb14-slide-detection_16903c530a34/runs/fold_2",
+      "artifact_subdir": "fold_2",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T10:25:54.050247+02:00",
+        "finished_at": "2026-10-11T14:49:45.049075+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 22,
+        "tune_loss": 0.020434775738458238,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.4645015678756409
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.26016947560265297,
+          "froc_lymphocytes": 0.2840602907829799,
+          "froc_monocytes": 0.12701741009022746,
+          "mean_froc": 0.2055388504366037
+        },
+        "tune": {
+          "froc_inflammatory": 0.22676725729051309,
+          "froc_lymphocytes": 0.2630003542330854,
+          "froc_monocytes": 0.14863702527457986,
+          "mean_froc": 0.2058186897538326
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6458701089936859,
+          0.5053235234001329
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "4c4166661707246cd60e5755a3715335d71fd8b63b39ce875afaad5be8c14bdd",
+      "scorer_finished_at": "2026-10-12T05:55:55+02:00"
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "replicate": 3,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_3",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_3/experiments/dataset-dinov2-vitb14-slide-detection_16903c530a34/runs/fold_3",
+      "artifact_subdir": "fold_3",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T14:54:33.923687+02:00",
+        "finished_at": "2026-10-11T18:58:47.353394+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 20,
+        "tune_loss": 0.01988590698845898,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.4890628881171798
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.23679171280915468,
+          "froc_lymphocytes": 0.2763195182430039,
+          "froc_monocytes": 0.15710599444223897,
+          "mean_froc": 0.21671275634262144
+        },
+        "tune": {
+          "froc_inflammatory": 0.27635290543766006,
+          "froc_lymphocytes": 0.3041666666666667,
+          "froc_monocytes": 0.16727918657356367,
+          "mean_froc": 0.23572292662011518
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.5910843576726917,
+          0.5658712131636482
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "443f2e62576ca287387288ede5e7539a6b95e33260dca7cfba0cb6bd1140f514",
+      "scorer_finished_at": "2026-10-12T05:58:29+02:00"
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "replicate": 4,
+      "seed": 0,
+      "cell_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_4",
+      "run_dir": "/maindisk/clement/monkey/sweep/out/monkey/dinov2-vitb14/replicate_4/experiments/dataset-dinov2-vitb14-slide-detection_16903c530a34/runs/fold_4",
+      "artifact_subdir": "fold_4",
+      "training": {
+        "git_sha": null,
+        "git_dirty": null,
+        "environment": {
+          "soma": "1.17.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "status": "partial",
+        "started_at": "2026-10-11T10:24:58.047618+02:00",
+        "finished_at": "2026-10-11T14:25:12.833022+02:00",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+      },
+      "checkpoint": {
+        "epoch": 20,
+        "tune_loss": 0.0266289835841004,
+        "selection": {
+          "strategy": "best",
+          "monitor": "mean_f1",
+          "mode": "max",
+          "value": 0.49425977616790207
+        }
+      },
+      "native": {
+        "test": {
+          "froc_inflammatory": 0.27482315670702606,
+          "froc_lymphocytes": 0.3010920698924731,
+          "froc_monocytes": 0.16409408305769937,
+          "mean_froc": 0.23259307647508626
+        },
+        "tune": {
+          "froc_inflammatory": 0.23066330675699867,
+          "froc_lymphocytes": 0.2653706774768135,
+          "froc_monocytes": 0.13712255025653966,
+          "mean_froc": 0.20124661386667658
+        },
+        "replicate_axis": "folds",
+        "test_source": "local_holdout",
+        "metric_name": "froc_inflammatory",
+        "score_threshold_per_class": [
+          0.6331629947740204,
+          0.5598242684286467
+        ],
+        "score_threshold_selection_frame": "stitched_roi",
+        "checkpoint_selection_frame": "tile_proxy"
+      },
+      "native_metric_sha256": "cd002af3d6dfc56a697f7b1be4261e121f292e09bc25e24dd8f304cf1ff3ebfd",
+      "scorer_finished_at": "2026-10-12T05:59:17+02:00"
+    }
+  ],
+  "aggregates": [
+    {
+      "encoder": "virchow2",
+      "metric": "froc_inflammatory",
+      "mean": 0.27509177353454123,
+      "population_std": 0.028591275697600834,
+      "sample_std": 0.03196601801163659,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "virchow2",
+      "metric": "froc_lymphocytes",
+      "mean": 0.3120349661512843,
+      "population_std": 0.0200668642613253,
+      "sample_std": 0.022435436291792236,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "virchow2",
+      "metric": "froc_monocytes",
+      "mean": 0.2069313606985715,
+      "population_std": 0.014283651086784945,
+      "sample_std": 0.01596960739846994,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "virchow2",
+      "metric": "mean_froc",
+      "mean": 0.25948316342492783,
+      "population_std": 0.015345278751784076,
+      "sample_std": 0.01715654321133616,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "metric": "froc_inflammatory",
+      "mean": 0.30141968872351577,
+      "population_std": 0.025908630716633334,
+      "sample_std": 0.028966729743165612,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "metric": "froc_lymphocytes",
+      "mean": 0.3395137386822461,
+      "population_std": 0.027199746186755414,
+      "sample_std": 0.030410240722162897,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "metric": "froc_monocytes",
+      "mean": 0.22556819477360857,
+      "population_std": 0.01801107811308019,
+      "sample_std": 0.020136997504452976,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "genbio-pathfm",
+      "metric": "mean_froc",
+      "mean": 0.28254096672792733,
+      "population_std": 0.016756947530118926,
+      "sample_std": 0.01873483688637156,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "midnight",
+      "metric": "froc_inflammatory",
+      "mean": 0.23917752642561516,
+      "population_std": 0.027207717140151348,
+      "sample_std": 0.030419152518982293,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "midnight",
+      "metric": "froc_lymphocytes",
+      "mean": 0.2812939380520787,
+      "population_std": 0.028079550304394255,
+      "sample_std": 0.03139389162912523,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "midnight",
+      "metric": "froc_monocytes",
+      "mean": 0.1491754101516593,
+      "population_std": 0.0081061907227266,
+      "sample_std": 0.009062996747297413,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "midnight",
+      "metric": "mean_froc",
+      "mean": 0.215234674101869,
+      "population_std": 0.016117764197180147,
+      "sample_std": 0.018020208195103568,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "conchv15",
+      "metric": "froc_inflammatory",
+      "mean": 0.2697917050747386,
+      "population_std": 0.026068397839960684,
+      "sample_std": 0.029145354817330386,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "conchv15",
+      "metric": "froc_lymphocytes",
+      "mean": 0.30518656735926725,
+      "population_std": 0.020072994663023695,
+      "sample_std": 0.022442290289255734,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "conchv15",
+      "metric": "froc_monocytes",
+      "mean": 0.18739602599331776,
+      "population_std": 0.014299814896121945,
+      "sample_std": 0.01598767908669638,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "conchv15",
+      "metric": "mean_froc",
+      "mean": 0.24629129667629251,
+      "population_std": 0.015441206013093362,
+      "sample_std": 0.017263793149927632,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "h0-mini",
+      "metric": "froc_inflammatory",
+      "mean": 0.2821669332292348,
+      "population_std": 0.026267667376021847,
+      "sample_std": 0.02936814493156919,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "h0-mini",
+      "metric": "froc_lymphocytes",
+      "mean": 0.31526795364125965,
+      "population_std": 0.020980246790450276,
+      "sample_std": 0.023456629004084302,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "h0-mini",
+      "metric": "froc_monocytes",
+      "mean": 0.20555885180383465,
+      "population_std": 0.017831134906585288,
+      "sample_std": 0.019935814883547034,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "h0-mini",
+      "metric": "mean_froc",
+      "mean": 0.2604134027225472,
+      "population_std": 0.01856438633503567,
+      "sample_std": 0.02075561490285397,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "h-optimus-1",
+      "metric": "froc_inflammatory",
+      "mean": 0.3021290593535476,
+      "population_std": 0.017543366317617295,
+      "sample_std": 0.019614079820186217,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "h-optimus-1",
+      "metric": "froc_lymphocytes",
+      "mean": 0.33954229307643735,
+      "population_std": 0.012064617347466394,
+      "sample_std": 0.013488652255729029,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "h-optimus-1",
+      "metric": "froc_monocytes",
+      "mean": 0.23528212292833292,
+      "population_std": 0.0195017121821525,
+      "sample_std": 0.021803577058464373,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "h-optimus-1",
+      "metric": "mean_froc",
+      "mean": 0.28741220800238515,
+      "population_std": 0.012218028155555165,
+      "sample_std": 0.013660170753413862,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "metric": "froc_inflammatory",
+      "mean": 0.23925136839287267,
+      "population_std": 0.025688839686389926,
+      "sample_std": 0.028720995900931124,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "metric": "froc_lymphocytes",
+      "mean": 0.27412106029904526,
+      "population_std": 0.01786506135054788,
+      "sample_std": 0.01997374580101463,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "metric": "froc_monocytes",
+      "mean": 0.14234504658532912,
+      "population_std": 0.015173463226189636,
+      "sample_std": 0.016964447613926646,
+      "n_replicates": 5,
+      "n_seeds": 1
+    },
+    {
+      "encoder": "dinov2-vitb14",
+      "metric": "mean_froc",
+      "mean": 0.20823305344218718,
+      "population_std": 0.015014607068719914,
+      "sample_std": 0.016786841030553293,
+      "n_replicates": 5,
+      "n_seeds": 1
+    }
+  ],
+  "checkpoint_epoch_indexing": "zero_based_as_saved",
+  "reproductions": [
+    {
+      "encoder": "virchow2",
+      "run_dir": "/maindisk/clement/soma/runs/monkey/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_dc42fb79f7fa/runs/cv-folds",
+      "training": {
+        "git_sha": "8e1f1f6e95f9ae1d1cfab9f0bc8d1bd5e493073e",
+        "git_dirty": false,
+        "environment": {
+          "soma": "1.19.0",
+          "torch": "2.7.1+cu128",
+          "cuda": "12.8"
+        },
+        "started_at": "2026-10-15T09:59:11.516080+02:00",
+        "finished_at": "2026-10-15T14:27:52.568219+02:00",
+        "dataset_file_checksum": "f24d19015fa50dca31707fd7fae6a357d5775ff0c36b660df960bf00bce59eb1",
+        "splits_file_checksum": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319",
+        "test_checksum": "db3ae8497bf76733b76708ff14fdf04c4397f43ef4be50307f6d5ad5784f0a3d"
+      },
+      "bundles": [
+        {
+          "path": "/maindisk/clement/soma/runs/monkey/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_dc42fb79f7fa/runs/cv-folds/fold_0/bundle/provenance.json",
+          "feature_source": {
+            "artifact_kind": "dense",
+            "cache_key": "efc4ec785283cd9d",
+            "dtype": "fp16",
+            "encoder_name": "virchow2",
+            "feature_type": "dense_grid",
+            "type": "soma.extract.dense.store.CachedGridSource"
+          },
+          "fold": 0,
+          "hs2p_version": "6.1.0",
+          "num_folds": 5,
+          "run_id": "cv-folds",
+          "selected_epoch": 10,
+          "selection_monitor": [
+            "mean_f1",
+            0.5696726594530567
+          ],
+          "slide2vec_version": "7.1.1",
+          "soma_version": "1.19.0"
+        },
+        {
+          "path": "/maindisk/clement/soma/runs/monkey/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_dc42fb79f7fa/runs/cv-folds/fold_1/bundle/provenance.json",
+          "feature_source": {
+            "artifact_kind": "dense",
+            "cache_key": "efc4ec785283cd9d",
+            "dtype": "fp16",
+            "encoder_name": "virchow2",
+            "feature_type": "dense_grid",
+            "type": "soma.extract.dense.store.CachedGridSource"
+          },
+          "fold": 1,
+          "hs2p_version": "6.1.0",
+          "num_folds": 5,
+          "run_id": "cv-folds",
+          "selected_epoch": 10,
+          "selection_monitor": [
+            "mean_f1",
+            0.5359473392852093
+          ],
+          "slide2vec_version": "7.1.1",
+          "soma_version": "1.19.0"
+        },
+        {
+          "path": "/maindisk/clement/soma/runs/monkey/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_dc42fb79f7fa/runs/cv-folds/fold_2/bundle/provenance.json",
+          "feature_source": {
+            "artifact_kind": "dense",
+            "cache_key": "efc4ec785283cd9d",
+            "dtype": "fp16",
+            "encoder_name": "virchow2",
+            "feature_type": "dense_grid",
+            "type": "soma.extract.dense.store.CachedGridSource"
+          },
+          "fold": 2,
+          "hs2p_version": "6.1.0",
+          "num_folds": 5,
+          "run_id": "cv-folds",
+          "selected_epoch": 23,
+          "selection_monitor": [
+            "mean_f1",
+            0.5239277001883015
+          ],
+          "slide2vec_version": "7.1.1",
+          "soma_version": "1.19.0"
+        },
+        {
+          "path": "/maindisk/clement/soma/runs/monkey/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_dc42fb79f7fa/runs/cv-folds/fold_3/bundle/provenance.json",
+          "feature_source": {
+            "artifact_kind": "dense",
+            "cache_key": "efc4ec785283cd9d",
+            "dtype": "fp16",
+            "encoder_name": "virchow2",
+            "feature_type": "dense_grid",
+            "type": "soma.extract.dense.store.CachedGridSource"
+          },
+          "fold": 3,
+          "hs2p_version": "6.1.0",
+          "num_folds": 5,
+          "run_id": "cv-folds",
+          "selected_epoch": 23,
+          "selection_monitor": [
+            "mean_f1",
+            0.5358000492198554
+          ],
+          "slide2vec_version": "7.1.1",
+          "soma_version": "1.19.0"
+        },
+        {
+          "path": "/maindisk/clement/soma/runs/monkey/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_dc42fb79f7fa/runs/cv-folds/fold_4/bundle/provenance.json",
+          "feature_source": {
+            "artifact_kind": "dense",
+            "cache_key": "efc4ec785283cd9d",
+            "dtype": "fp16",
+            "encoder_name": "virchow2",
+            "feature_type": "dense_grid",
+            "type": "soma.extract.dense.store.CachedGridSource"
+          },
+          "fold": 4,
+          "hs2p_version": "6.1.0",
+          "num_folds": 5,
+          "run_id": "cv-folds",
+          "selected_epoch": 6,
+          "selection_monitor": [
+            "mean_f1",
+            0.5378967637928879
+          ],
+          "slide2vec_version": "7.1.1",
+          "soma_version": "1.19.0"
+        }
+      ],
+      "scoring": {
+        "git_sha": "548e0bd434efa957964898ada1bc40eb461a6a77",
+        "git_dirty": false,
+        "soma_version": "2.0.0",
+        "slide2vec_version": "7.1.1",
+        "hs2p_version": "6.1.0",
+        "scored_on": "2026-10-16",
+        "checkout": "/maindisk/clement/soma-worktrees/issue-636"
+      },
+      "native_metrics_path": "/maindisk/clement/soma/runs/monkey/virchow2/seed_0/experiments/dataset-virchow2-lightweight-conv-detection_dc42fb79f7fa/runs/cv-folds/detection_score/metrics.json",
+      "native": {
+        "metric_name": "froc_inflammatory",
+        "replicate_axis": "folds",
+        "n_replicates": 5,
+        "folds": [
+          "fold_0",
+          "fold_1",
+          "fold_2",
+          "fold_3",
+          "fold_4"
+        ],
+        "per_replicate": [
+          {
+            "froc_inflammatory": 0.2600762864736096,
+            "froc_lymphocytes": 0.29930593943860945,
+            "froc_monocytes": 0.20956346202371937,
+            "mean_froc": 0.2544347007311644
+          },
+          {
+            "froc_inflammatory": 0.23983475845149185,
+            "froc_lymphocytes": 0.29063776598987867,
+            "froc_monocytes": 0.19737539766702017,
+            "mean_froc": 0.24400658182844942
+          },
+          {
+            "froc_inflammatory": 0.2846325836574413,
+            "froc_lymphocytes": 0.31301854074963315,
+            "froc_monocytes": 0.18334604142838987,
+            "mean_froc": 0.24818229108901152
+          },
+          {
+            "froc_inflammatory": 0.2778700627537837,
+            "froc_lymphocytes": 0.31733970952887,
+            "froc_monocytes": 0.22164880243482865,
+            "mean_froc": 0.2694942559818493
+          },
+          {
+            "froc_inflammatory": 0.31503059497461267,
+            "froc_lymphocytes": 0.33455981182795697,
+            "froc_monocytes": 0.22332475805463678,
+            "mean_froc": 0.27894228494129686
+          }
+        ],
+        "mean": {
+          "froc_inflammatory": 0.27548885726218775,
+          "froc_lymphocytes": 0.3109723535069896,
+          "froc_monocytes": 0.20705169232171894,
+          "mean_froc": 0.25901202291435427
+        },
+        "std": {
+          "froc_inflammatory": 0.025145930062809248,
+          "froc_lymphocytes": 0.015170359004919086,
+          "froc_monocytes": 0.01509825050500188,
+          "mean_froc": 0.013194626076581333
+        },
+        "test_source": "local_holdout"
+      },
+      "recorder_ledger": "/maindisk/clement/soma/issue-636/ledgers/monkey-s0/monkey.csv",
+      "reference_check": {
+        "metric": "froc_inflammatory",
+        "measured": 0.27548885726218775,
+        "expected": 0.2751,
+        "absolute_tolerance": 0.02,
+        "delta": 0.0003888572621877362,
+        "within_tolerance": true,
+        "replicates": 5,
+        "axis": "patient_folds"
+      },
+      "previous_recorder_ledger": "/maindisk/clement/soma/ledgers/monkey-virchow2/monkey.csv",
+      "recorder_key_normalization": "dataset=monkey and spacing=0.242 added from actual fixed recipe to the recorder rows; metric, measured, std, n_seeds, date and commits are unchanged."
+    }
+  ]
+}

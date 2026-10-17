@@ -26,6 +26,14 @@ Benchmarks
      - Cell detection
      - OCELOT 2023 cell patches
      - Mean F1 at 3 µm
+   * - :doc:`MIDOG <midog-detection-benchmark>`
+     - Mitotic-figure detection
+     - MIDOG 2022 public training regions, local held-out split
+     - Stitched-ROI F1 at 7.5 µm
+   * - :doc:`MONKEY <monkey-detection-benchmark>`
+     - Inflammatory-cell detection
+     - MONKEY public training slides, five patient folds
+     - Merged inflammatory-cell FROC at 5 µm
    * - :doc:`HEST <hest-gene-expression-benchmark>`
      - Spatial gene-expression prediction
      - Nine HEST-Benchmark tasks
@@ -34,11 +42,6 @@ Benchmarks
      - Robustness to the medical centre, task-free
      - Three PathoROB tile cohorts
      - CRoMa margin
-
-Two more detection benchmarks are registered, ``detection/midog`` (MIDOG 2022
-mitosis detection) and ``detection/monkey`` (MONKEY inflammatory-cell detection).
-Their data preparation is described in :doc:`curation`; their results pages follow
-once the rows are recorded on this release.
 
 Reproduce a benchmark
 ---------------------
@@ -54,9 +57,11 @@ Reproduce a benchmark
    reference still runs, and a gap never fails the command.
 
 ``--seeds 1`` runs seed 0 only, for a quick smoke test; omit it for the canonical seed
-set. ``--curated-dir`` reuses prepared manifests, ``--from-run-dir`` rescores one
-existing run, and ``--record`` appends the score to the benchmark's results ledger,
-which is what the results tables in these pages are built from.
+set. MONKEY uses one seed across five patient folds, so its documented command
+sets ``--seeds 1`` explicitly. ``--curated-dir`` reuses prepared manifests,
+``--from-run-dir`` rescores one existing run, and ``--record`` appends the score to
+the benchmark's results ledger, which is what the results tables in these pages
+are built from.
 
 Compare encoders
 ----------------
@@ -104,6 +109,8 @@ benchmarks (``import soma`` alone does not). See :doc:`cli` for every option,
 
    eva-patch-classification-benchmark
    ocelot-detection-benchmark
+   midog-detection-benchmark
+   monkey-detection-benchmark
    hest-gene-expression-benchmark
    croma-robustness-benchmark
    benchmark-in-house-encoder
