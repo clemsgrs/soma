@@ -160,6 +160,8 @@ def test_cli_generator_matches_checked_in_file() -> None:
 
 _BENCHMARK_PAGES = {
     "ocelot-detection-benchmark.rst": ("ocelot-results.rst",),
+    "midog-detection-benchmark.rst": ("midog-results.rst",),
+    "monkey-detection-benchmark.rst": ("monkey-results.rst",),
     "eva-patch-classification-benchmark.rst": (
         "eva-patch-results.rst",
         "eva-segmentation-results.rst",
@@ -182,6 +184,139 @@ def test_results_fragments_match_the_ledgers() -> None:
     assert set(generator.RESULTS_FRAGMENTS) == {f for fs in _BENCHMARK_PAGES.values() for f in fs}
 
 
+@pytest.mark.parametrize(
+    ("builder", "metric", "label"),
+    [
+        ("build_midog_results_rst", "f1", "Stitched-ROI F1"),
+        ("build_monkey_results_rst", "froc_inflammatory", "Inflammatory FROC"),
+    ],
+)
+def test_detection_results_tables_select_the_native_headline_metric(
+    monkeypatch, builder: str, metric: str, label: str
+) -> None:
+    from soma.benchmark import MeasuredRow
+
+    generator, _ = _load_reference_generator()
+    rows = [
+        MeasuredRow(key={"encoder": "virchow2"}, metric=metric, measured=0.75, std=0.01, n_seeds=3),
+        MeasuredRow(key={"encoder": "virchow2"}, metric="precision", measured=0.95, n_seeds=3),
+    ]
+    monkeypatch.setattr(generator, "load_results", lambda name: rows)
+    monkeypatch.setattr(generator, "expected_rows", lambda *args, **kwargs: [])
+
+    assert getattr(generator, builder)() == (
+        ".. list-table::\n"
+        "   :header-rows: 1\n\n"
+        "   * - Encoder\n"
+        f"     - {label} (mean ± seed std)\n"
+        "     - Seeds\n"
+        "   * - virchow2\n"
+        "     - 0.750 ± 0.010\n"
+        "     - 3"
+    )
+
+
+def test_missing_monkey_results_request_one_seed_across_five_folds(monkeypatch) -> None:
+    generator, _ = _load_reference_generator()
+    monkeypatch.setattr(generator, "load_results", lambda name: [])
+
+    assert generator.build_monkey_results_rst() == (
+        "No reproductions have been recorded yet. "
+        "``soma reproduce detection/monkey --seeds 1 --record`` "
+        "appends a measured score to the results ledger this table reads."
+    )
+
+
+@pytest.mark.parametrize(
+    ("builder", "dataset", "metric", "label", "spacing"),
+    [
+        ("build_midog_results_rst", "midog", "f1", "Stitched-ROI F1", "0.25"),
+        ("build_monkey_results_rst", "monkey", "froc_inflammatory", "Inflammatory FROC", "0.242"),
+    ],
+)
+def test_detection_table_uses_the_latest_recorder_row_for_each_encoder(
+    monkeypatch, builder: str, dataset: str, metric: str, label: str, spacing: str
+) -> None:
+    from soma.benchmark import MeasuredRow
+
+    generator, _ = _load_reference_generator()
+    rows = [
+        MeasuredRow(
+            key={"dataset": dataset, "encoder": "virchow2", "spacing": spacing},
+            metric=metric, measured=0.6, std=0.02, n_seeds=3,
+        ),
+        MeasuredRow(
+            key={"encoder": "virchow2"},
+            metric=metric, measured=0.8, std=0.01, n_seeds=3,
+        ),
+    ]
+    monkeypatch.setattr(generator, "load_results", lambda name: rows)
+    monkeypatch.setattr(generator, "expected_rows", lambda *args, **kwargs: [])
+
+    assert getattr(generator, builder)() == (
+        ".. list-table::\n"
+        "   :header-rows: 1\n\n"
+        "   * - Encoder\n"
+        f"     - {label} (mean ± seed std)\n"
+        "     - Seeds\n"
+        "   * - virchow2\n"
+        "     - 0.800 ± 0.010\n"
+        "     - 3"
+    )
+
+
+def test_midog_aggregate_table_does_not_compare_a_seed_mean_with_the_seed_zero_reference(
+    monkeypatch,
+) -> None:
+    from soma.benchmark import MeasuredRow
+
+    generator, _ = _load_reference_generator()
+    rows = [
+        MeasuredRow(
+            key={"dataset": "midog", "encoder": "virchow2", "spacing": "0.25"},
+            metric="f1", measured=0.5, std=0.01, n_seeds=3,
+        ),
+    ]
+    monkeypatch.setattr(generator, "load_results", lambda name: rows)
+
+    assert generator.build_midog_results_rst() == (
+        ".. list-table::\n"
+        "   :header-rows: 1\n\n"
+        "   * - Encoder\n"
+        "     - Stitched-ROI F1 (mean ± seed std)\n"
+        "     - Seeds\n"
+        "   * - virchow2\n"
+        "     - 0.500 ± 0.010\n"
+        "     - 3"
+    )
+
+
+def test_monkey_encoder_only_recorder_row_is_checked_against_the_fixed_recipe(monkeypatch) -> None:
+    from soma.benchmark import MeasuredRow
+
+    generator, _ = _load_reference_generator()
+    monkeypatch.setattr(generator, "load_results", lambda name: [
+        MeasuredRow(
+            key={"encoder": "virchow2"}, metric="froc_inflammatory",
+            measured=0.8, n_seeds=1,
+        ),
+    ])
+
+    assert generator.build_monkey_results_rst() == (
+        ".. raw:: html\n\n"
+        "   <style>.red { color: #d32f2f; font-weight: 600; }</style>\n\n"
+        ".. role:: red\n\n"
+        ".. list-table::\n"
+        "   :header-rows: 1\n\n"
+        "   * - Encoder\n"
+        "     - Inflammatory FROC (mean ± seed std)\n"
+        "     - Seeds\n"
+        "   * - virchow2\n"
+        "     - :red:`0.800`\n"
+        "     - 1"
+    )
+
+
 @pytest.mark.parametrize("filename", sorted(_BENCHMARK_PAGES))
 def test_benchmark_pages_share_one_structure_and_include_their_results(filename: str) -> None:
     docs_dir = Path(__file__).resolve().parents[2] / "docs"
@@ -196,6 +331,7 @@ def test_benchmark_pages_spell_the_protocol_constants_of_the_packages() -> None:
     # The constants the pages quote are the ones the protocols run with.
     from soma.benchmark import eva as eva_bench
     from soma.benchmark import get_benchmark
+    from soma.benchmark.detection import dataset_spec
     from soma.benchmark.eva import segmentation as eva_seg_bench
     from soma.benchmark.eva import slide as eva_slide_bench
     from soma.benchmark.hest.probe import DEFAULT_PCA_COMPONENTS, ridge_alpha
@@ -227,6 +363,15 @@ def test_benchmark_pages_spell_the_protocol_constants_of_the_packages() -> None:
     ocelot_page = (docs_dir / "ocelot-detection-benchmark.rst").read_text(encoding="utf-8")
     assert f"``{ocelot.facet.fixed['decoder']}``" in ocelot_page
     assert f"``{ocelot.primary_metric}``" in ocelot_page
+
+    for dataset in ("midog", "monkey"):
+        benchmark = get_benchmark(f"detection/{dataset}")
+        page = (docs_dir / f"{dataset}-detection-benchmark.rst").read_text(encoding="utf-8")
+        assert f"``{benchmark.facet.fixed['decoder']}``" in page
+        assert f"``{benchmark.primary_metric}``" in page
+        assert f"{dataset_spec(dataset).spacing_um:.3g} µm/px" in page
+    monkey_page = (docs_dir / "monkey-detection-benchmark.rst").read_text(encoding="utf-8")
+    assert "--seeds 1" in monkey_page
 
 
 def test_croma_benchmark_page_exceptions_table_matches_panel() -> None:
@@ -359,6 +504,8 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         "benchmarking.rst": (
             "eva-patch-classification-benchmark",
             "ocelot-detection-benchmark",
+            "midog-detection-benchmark",
+            "monkey-detection-benchmark",
             "hest-gene-expression-benchmark",
             "croma-robustness-benchmark",
             "benchmark-in-house-encoder",

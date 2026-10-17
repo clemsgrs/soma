@@ -290,6 +290,7 @@ Benchmarks
 
 * :doc:`ocelot-detection-benchmark`: this path on the OCELOT 2023 cell-detection
   challenge, with recorded results for seven encoders.
-* ``detection/midog`` and ``detection/monkey``: the same path on MIDOG 2022 mitosis
-  detection and MONKEY inflammatory-cell detection; see :doc:`curation` for the data
-  preparation.
+* :doc:`midog-detection-benchmark`: mitotic-figure detection at 0.25 µm/px,
+  scored with native stitched-ROI F1 across three seeds.
+* :doc:`monkey-detection-benchmark`: inflammatory-cell detection at 0.242 µm/px,
+  scored with merged inflammatory-cell FROC across five patient folds.
