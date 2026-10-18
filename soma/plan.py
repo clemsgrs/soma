@@ -378,6 +378,8 @@ def _check(config: ExperimentConfig) -> None:
         raise ValueError("features.kind='live' re-encodes tiles for the grid shape (learner 'dense').")
     if features.is_composite and (shape != "grid" or features.kind != "cached"):
         raise ValueError("the composite encoder serves cached grid runs only (learner 'dense', features.kind 'cached').")
+    if shape == "set" and unit != "tile" and features.encoder is not None:
+        _check_pooled_tiling(config)
     normalization, projection = _adaptor_params(params)
     from soma.learn.feature_adaptor import validate_feature_adaptor_compatibility
 
@@ -415,6 +417,79 @@ def _adaptor_params(params: Mapping[str, Any]):
         build(NormalizationParams, params.get("normalization"), "normalization"),
         build(ProjectionParams, params.get("projection"), "projection"),
     )
+
+
+def _check_pooled_tiling(config: ExperimentConfig) -> None:
+    """Refuse the tiling a slide or patient run extracts at when its encoder does not
+    support it, as preprocessing would: a tile size the encoder cannot take, and a spacing,
+    tile size or precision off its recommendation unless ``allow_non_recommended_settings``
+    is set. An unset tiling takes the encoder's preset, which the encoder supports."""
+    from slide2vec.api import EncoderInputContract
+    from slide2vec.encoders import encoder_registry, resolve_preprocessing_requirements
+    from slide2vec.encoders.validation import validate_encoder_config
+
+    from soma.models.encoders import resolve_encoder_precision
+
+    features = config.features
+    encoder, tiling = features.encoder, features.extraction.tiling
+    requested = {
+        "spacing": None if tiling is None else float(tiling.requested_spacing_um),
+        "tile size": None if tiling is None else int(tiling.requested_tile_size_px),
+        "precision": resolve_encoder_precision(features.execution.precision, encoder_name=encoder.name),
+    }
+    if tiling is not None:
+        try:
+            # The capability alone, which the flag does not lift: the flag's permission for
+            # an off-preset size is the recommendation check below.
+            EncoderInputContract.declared_pooled(
+                encoder.name, requested_tile_size_px=requested["tile size"], allow_non_recommended_settings=True
+            )
+        except ValueError as error:
+            raise ValueError(
+                f"encoder '{encoder.name}' cannot take {requested['tile size']} px tiles "
+                f"(features.extraction.tiling): {error} "
+                "features.encoder.params.allow_non_recommended_settings does not lift this."
+            ) from None
+    if encoder.allow_non_recommended_settings:
+        return
+    try:
+        validate_encoder_config(
+            encoder.name,
+            requested_spacing_um=requested["spacing"],
+            requested_tile_size_px=requested["tile size"],
+            precision=requested["precision"],
+        )
+    except ValueError:
+        pass
+    else:
+        return
+    # slide2vec's message names its own settings; name soma's.
+    info = encoder_registry.info(encoder.name)
+    supported = {
+        "spacing": info.get("supported_spacing_um"),
+        "tile size": resolve_preprocessing_requirements(encoder.name, info)["tile_size_px"],
+        "precision": info.get("precision"),
+    }
+    known = [name for name, value in supported.items() if value is not None and requested[name] is not None]
+    raise ValueError(
+        f"encoder '{encoder.name}' supports {_settings(supported, known)}; this run extracts at "
+        f"{_settings(requested, known)} (features.extraction.tiling, features.execution.precision). Set "
+        "features.encoder.params.allow_non_recommended_settings: true to extract at other settings."
+    )
+
+
+def _settings(values: Mapping[str, Any], names: list[str]) -> str:
+    """``spacing 0.25 or 0.5 µm, tile size 224 px and precision fp16``."""
+
+    def alternatives(value: Any) -> str:
+        options = [f"{float(option):g}" for option in (value if isinstance(value, (list, tuple)) else [value])]
+        return options[0] if len(options) == 1 else f"{', '.join(options[:-1])} or {options[-1]}"
+
+    units = {"spacing": " µm", "tile size": " px", "precision": ""}
+    parts = [
+        f"{name} {alternatives(values[name]) if name == 'spacing' else values[name]}{units[name]}" for name in names
+    ]
+    return parts[0] if len(parts) == 1 else f"{', '.join(parts[:-1])} and {parts[-1]}"
 
 
 def _check_representation(config: ExperimentConfig) -> None:

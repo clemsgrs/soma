@@ -295,7 +295,9 @@ def test_drift_guard_refuses_a_changed_gpu_count(tmp_path: Path):
 
 def test_drift_guard_refuses_a_changed_execution_precision(tmp_path: Path):
     run_dir = tmp_path / "run"
-    features = FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224))
+    # uni2 recommends fp16: fp32 needs the opt-in.
+    uni2 = {"name": "uni2", "params": {"allow_non_recommended_settings": True}}
+    features = FeaturesConfig(encoder=uni2, extraction=extraction(0.5, 224))
     _record(run_dir, _make_config(tmp_path, features=replace(features, execution=ExecutionOptions(precision="fp16"))))
     changed = _make_config(
         tmp_path,

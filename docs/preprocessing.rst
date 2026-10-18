@@ -112,6 +112,21 @@ fixed spacing, changing this size changes the sampled physical extent.
 An explicit off-preset pooled size requires
 ``features.encoder.params.allow_non_recommended_settings: true`` and an encoder that supports
 variable input sizes; the flag cannot bypass that capability check.
+The same flag allows a spacing or a precision that the encoder does not recommend.
+
+:func:`soma.plan.check`, which a run calls at its start, applies these rules to a slide or
+patient run before anything is extracted. It refuses an unsupported spacing or tile size,
+and its error names the encoder's supported spacing, tile size and precision. To run at
+other settings, opt in on the encoder:
+
+.. code-block:: yaml
+
+   features:
+     encoder:
+       name: uni2
+       params:
+         allow_non_recommended_settings: true
+
 Pre-cropped classification images (a tile-level run) instead use the
 encoder's shipped image transform, including its resizing and cropping.
 

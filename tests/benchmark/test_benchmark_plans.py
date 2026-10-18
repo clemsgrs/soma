@@ -16,8 +16,9 @@ import pandas as pd
 import pytest
 import yaml
 
+from soma import components
 from soma.benchmark import get_benchmark
-from soma.plan import load_cohort, resolve
+from soma.plan import check, load_cohort, resolve
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "benchmark_plans.yaml"
 
@@ -105,6 +106,12 @@ def benchmark_plan(benchmark: str, kwargs: dict[str, Any], labels, tune_is_test:
 def test_a_benchmark_resolves_to_its_pinned_plan(tmp_path: Path, case, benchmark, kwargs, labels, tune_is_test):
     pinned = yaml.safe_load(FIXTURE.read_text(encoding="utf-8"))
     assert benchmark_plan(benchmark, kwargs, labels, tune_is_test, tmp_path) == pinned[case]
+
+
+@pytest.mark.parametrize("benchmark", [entry["name"] for entry in components("benchmarks")])
+@pytest.mark.parametrize("encoder", ["uni2", "virchow2"])
+def test_every_registered_benchmark_config_passes_check(benchmark, encoder):
+    check(get_benchmark(benchmark).build_config(encoder=encoder))
 
 
 @pytest.mark.parametrize(
