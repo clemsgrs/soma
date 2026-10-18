@@ -3,6 +3,7 @@ the cross-section rules a config must satisfy (``soma.plan.check``)."""
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 import textwrap
 from dataclasses import FrozenInstanceError
@@ -12,9 +13,10 @@ import pandas as pd
 import pytest
 import slide2vec
 import yaml
+from hs2p import TilingConfig
 
-from soma import ExperimentConfig, Plan, resolve
-from soma.config import Component, CRoMaOptions, FeaturesConfig
+from soma import ExperimentConfig, Plan, presets, resolve
+from soma.config import Component, CRoMaOptions, EncoderLeaf, FeaturesConfig
 from soma.plan import check, dotted_packages, load_cohort
 from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
@@ -445,6 +447,53 @@ def test_the_composite_encoder_serves_cached_grid_runs_only(files):
     check(_grid(files, features=composite))
     with pytest.raises(ValueError, match="composite encoder serves cached grid runs only"):
         check(experiment(*files, aggregator="abmil", features=composite))
+
+
+def _pooled(encoder: str, spacing_um: float, tile_size_px: int, **params) -> ExperimentConfig:
+    """A MIL preset over ``encoder`` that tiles slides at ``spacing_um`` and ``tile_size_px``."""
+    config = presets.mil_classification(encoder)
+    config.features.encoder = EncoderLeaf(encoder, params)
+    config.features.extraction = dataclasses.replace(
+        config.features.extraction,
+        tiling=TilingConfig(
+            requested_spacing_um=spacing_um, requested_tile_size_px=tile_size_px, tolerance=0.05, overlap=0.0
+        ),
+    )
+    return config
+
+
+def test_a_pooled_tiling_off_the_encoders_supported_spacing_needs_the_opt_in():
+    # uni2 supports 0.5 µm only: refused before anything runs, not when preprocessing starts.
+    with pytest.raises(ValueError) as refused:
+        check(_pooled("uni2", 1.0, 224))
+    message = str(refused.value)
+    assert "spacing 0.5 µm" in message
+    assert "features.encoder.params.allow_non_recommended_settings" in message
+    check(_pooled("uni2", 1.0, 224, allow_non_recommended_settings=True))
+
+
+def test_an_unset_tiling_is_left_to_the_encoder():
+    # ``soma init`` prints these with the tiling (and hipt's region geometry) null, for the
+    # user to fill in; virchow2 supports several spacings and names no default.
+    check(presets.mil_classification("virchow2"))
+    check(presets.mil_classification("uni2", aggregator="hipt"))
+
+
+def test_a_precision_off_the_encoders_recommendation_needs_the_opt_in():
+    config = presets.mil_classification("uni2")
+    config.features.execution = slide2vec.ExecutionOptions(precision="fp32")
+    with pytest.raises(ValueError, match="supports precision fp16; this run extracts at precision fp32"):
+        check(config)
+    config.features.encoder = EncoderLeaf("uni2", {"allow_non_recommended_settings": True})
+    check(config)
+
+
+@pytest.mark.parametrize("allowed", [False, True])
+def test_an_encoder_of_fixed_input_size_refuses_another_pooled_tile_size(allowed):
+    # musk takes 384 px tiles and no other size; the opt-in does not change that.
+    check(_pooled("musk", 0.5, 384))
+    with pytest.raises(ValueError, match="cannot take 224 px tiles"):
+        check(_pooled("musk", 0.5, 224, allow_non_recommended_settings=allowed))
 
 
 def test_a_representation_run_is_task_free_cached_and_seed_zero(files):
