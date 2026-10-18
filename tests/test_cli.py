@@ -168,6 +168,11 @@ def test_run_preset_builds_the_config_from_the_preset_and_the_cohort(tmp_path: P
     assert source is None
 
 
+def test_run_preset_takes_the_tiling_as_typed_flags(tmp_path: Path):
+    config, _ = _pipeline_call(_preset_args(tmp_path, "--encoder", "uni2", "--spacing", "0.5", "--tile-size", "224"))
+    assert config.features == presets.mil_classification("uni2", spacing=0.5, tile_size=224).features
+
+
 def test_run_preset_takes_the_preset_s_defaults(tmp_path: Path):
     config, _ = _pipeline_call(_preset_args(tmp_path, "--encoder", "uni2"))
     assert config.learner.params["aggregator"].name == "abmil"
@@ -287,6 +292,26 @@ def test_init_output_of_every_preset_passes_check(capsys, name):
     check(ExperimentConfig.from_dict(yaml.safe_load(_init([name, *flags], capsys))))
 
 
+def test_init_takes_the_tiling_as_typed_flags(capsys):
+    # The preset annotates them ``float | None`` and ``int | None``.
+    out = _init(["mil_classification", "--encoder", "uni2", "--spacing", "0.5"], capsys)
+    assert "requested_spacing_um: 0.5\n" in out
+    tiling = yaml.safe_load(out)["features"]["extraction"]["tiling"]
+    assert (tiling["requested_spacing_um"], tiling["requested_tile_size_px"]) == (0.5, 224)
+    out = _init(["survival", "--encoder", "uni2", "--aggregator", "abmil", "--tile-size", "224"], capsys)
+    tiling = yaml.safe_load(out)["features"]["extraction"]["tiling"]
+    assert (tiling["requested_spacing_um"], tiling["requested_tile_size_px"]) == (0.5, 224)
+
+
+def test_init_refuses_a_spacing_the_encoder_does_not_support(capsys):
+    from soma.cli import main
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["init", "mil_classification", "--encoder", "uni2", "--spacing", "1.0"])
+    assert exc_info.value.code == 2
+    assert "encoder 'uni2' supports spacing 0.5 µm" in capsys.readouterr().err
+
+
 def test_init_takes_the_preset_s_flags_before_its_name(capsys):
     data = yaml.safe_load(_init(["--encoder", "uni2", "--aggregator", "transmil", "mil_classification"], capsys))
     assert data["learner"]["params"]["aggregator"]["name"] == "transmil"
@@ -372,17 +397,25 @@ def _typed_preset(encoder: str, epochs: int = 50, lr: "float" = 1e-4) -> Experim
     return config
 
 
+def _unevaluable_preset(encoder: "NotAType", epochs: int = 50) -> ExperimentConfig:  # noqa: F821
+    """A user's preset with an annotation that does not evaluate."""
+    config = presets.mil_classification(encoder)
+    config.trainer.max_epochs = epochs
+    return config
+
+
 @pytest.fixture()
 def typed_presets():
     from soma import register
     from soma.registry import signature_params
 
-    for name, preset in (("seeded", _seeded_preset), ("typed", _typed_preset)):
+    typed = (("seeded", _seeded_preset), ("typed", _typed_preset), ("unevaluable", _unevaluable_preset))
+    for name, preset in typed:
         register("presets", name, preset, params=signature_params(preset, name=f"{name.title()}Params"))
     try:
         yield
     finally:
-        for name in ("seeded", "typed"):
+        for name, _ in typed:
             presets.preset_registry._entries.pop(name, None)
 
 
@@ -407,6 +440,12 @@ def test_preset_arguments_take_their_declared_types(tmp_path: Path, capsys, type
     assert config.trainer.max_epochs == 10 and config.learner.params["optimizer"].params["lr"] == 0.001
     code, err = _exit_code([*run, "--epochs", "ten"], capsys)
     assert code == 2 and "--epochs" in err
+
+
+def test_a_preset_annotation_that_does_not_evaluate_leaves_the_flags_working(capsys, typed_presets):
+    assert yaml.safe_load(_init(["unevaluable", "--encoder", "uni2", "--epochs", "10"], capsys))["trainer"]["max_epochs"] == 10
+    data = yaml.safe_load(_init(["mil_classification", "--encoder", "uni2", "--spacing", "0.5"], capsys))
+    assert data["features"]["extraction"]["tiling"]["requested_spacing_um"] == 0.5
 
 
 def _rows(out: str) -> list[list[str]]:

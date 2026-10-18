@@ -108,11 +108,11 @@ scenario checks.
      - Source
      - End-to-end scenario
    * - Slide classification
-     - ``mil_classification(encoder, aggregator="abmil")``
+     - ``mil_classification(encoder, aggregator="abmil", spacing=None, tile_size=None)``
      - Bags of tile features
      - ``slide_mil_binary_classification``, ``slide_mil_multiclass_classification``
    * - Survival
-     - ``survival(encoder, aggregator)``; the ``cox_survival`` head
+     - ``survival(encoder, aggregator, spacing=None, tile_size=None)``; the ``cox_survival`` head
      - Bags of tile features
      - ``slide_mil_survival_nll``, ``slide_mil_survival_cox``
    * - Regression
