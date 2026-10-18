@@ -132,6 +132,18 @@ Presets
 A preset returns a complete config for a common task (see :ref:`presets`);
 ``soma.components("presets")`` lists them with their arguments.
 
+The slide presets, ``mil_classification`` and ``survival``, take the tiling as
+arguments: ``spacing`` (µm per pixel) and ``tile_size`` (pixels). An argument you
+leave out takes the encoder's recommended value, and the preset keeps its tiles with
+at least 10% tissue:
+
+.. code-block:: python
+
+   config = presets.mil_classification("uni2", spacing=0.5, tile_size=224)
+
+On the command line, they are the ``--spacing`` and ``--tile-size`` flags of
+``soma init`` and ``soma run --preset``.
+
 .. autofunction:: soma.presets.mil_classification
 
 .. autofunction:: soma.presets.tile_classification

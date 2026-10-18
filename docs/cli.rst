@@ -58,9 +58,9 @@ Available commands
    defaults to 0. The registered presets:
 
    * ``detection(encoder, decoder, num_classes=1, match_distance=3.0)`` — Detect cells: a decoder over a frozen encoder's dense token grid, one heatmap per class.
-   * ``mil_classification(encoder, aggregator="abmil")`` — Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
+   * ``mil_classification(encoder, aggregator="abmil", spacing=None, tile_size=None)`` — Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
    * ``segmentation(encoder, decoder, num_classes=2)`` — Segment tissue: a decoder over a frozen encoder's dense token grid.
-   * ``survival(encoder, aggregator)`` — Predict survival from whole slides: a discrete-time hazard head over a MIL bag.
+   * ``survival(encoder, aggregator, spacing=None, tile_size=None)`` — Predict survival from whole slides: a discrete-time hazard head over a MIL bag.
    * ``tile_classification(encoder)`` — Classify tile images: a linear probe on a frozen tile encoder's embeddings.
 
 ``soma init NAME [PRESET ARGUMENTS]``

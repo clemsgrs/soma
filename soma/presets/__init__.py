@@ -17,8 +17,9 @@ from __future__ import annotations
 import inspect
 from collections.abc import Callable
 
-from hs2p import MaskSamplingConfig
+from hs2p import MaskSamplingConfig, TilingConfig
 from slide2vec import PreprocessingConfig
+from slide2vec.encoders.registry import resolve_preprocessing_fields
 
 from soma.config import (
     CohortConfig,
@@ -62,28 +63,52 @@ def _cohort() -> CohortConfig:
     return CohortConfig(records="dataset.csv", splits="splits.csv")
 
 
-def _tissue_tiles() -> PreprocessingConfig:
-    """Tiles holding at least 10% tissue (hs2p's binary tissue vocabulary); the tile size
-    and spacing come from the encoder's recommended settings."""
-    return PreprocessingConfig(
-        masks=MaskSamplingConfig(pixel_mapping={"background": 0, "tissue": 1}, min_coverage={"tissue": 0.1})
+def _tissue_tiles(encoder: str, spacing: float | None, tile_size: int | None) -> FeaturesConfig:
+    """``encoder`` over the tiles holding at least 10% tissue (hs2p's binary tissue
+    vocabulary). The tiling is left unset, for the run to take the encoder's recommended
+    tile size and spacing, unless ``spacing`` or ``tile_size`` is given: the one not given
+    then comes from the encoder, and the tolerance and overlap are slide2vec's defaults."""
+    masks = MaskSamplingConfig(pixel_mapping={"background": 0, "tissue": 1}, min_coverage={"tissue": 0.1})
+    features = FeaturesConfig(encoder=encoder, extraction=PreprocessingConfig(masks=masks))
+    if spacing is None and tile_size is None:
+        return features
+    try:  # FeaturesConfig checked the encoder name
+        fields = resolve_preprocessing_fields(encoder, requested_spacing_um=spacing, requested_tile_size_px=tile_size)
+    except ValueError:
+        if spacing is not None:
+            raise
+        # An encoder of several spacings names no default; slide2vec's message names its
+        # own settings, so name the preset's.
+        raise ValueError(f"encoder '{encoder}' has no default spacing: pass spacing as well as tile_size") from None
+    tiling = TilingConfig(
+        requested_spacing_um=fields["spacing_um"] if spacing is None else spacing,
+        requested_tile_size_px=fields["tile_size_px"] if tile_size is None else tile_size,
+        tolerance=0.05,
+        overlap=0.0,
     )
+    features.extraction = PreprocessingConfig(tiling=tiling, masks=masks)
+    return features
 
 
 @_register
-def mil_classification(encoder: str, aggregator: str = "abmil") -> ExperimentConfig:
+def mil_classification(
+    encoder: str, aggregator: str = "abmil", spacing: float | None = None, tile_size: int | None = None
+) -> ExperimentConfig:
     """Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
 
-    Each slide is tiled at the encoder's recommended size and spacing (tiles with at
-    least 10% tissue), its tiles are embedded once and cached, and ``aggregator`` pools
-    the bag for a ``multiclass_classification`` head (two classes or more; the classes
-    come from the cohort's ``label`` column). AdamW (lr 1e-4) with a cosine schedule,
-    50 epochs, the best tune-loss checkpoint and early stopping after 10 epochs without
-    improvement.
+    Each slide is tiled at ``spacing`` (µm per pixel) and ``tile_size`` (pixels), keeping
+    the tiles with at least 10% tissue. An argument left out takes the encoder's
+    recommended value; ``virchow2``, which supports several spacings, recommends none, so
+    give it ``spacing``. :func:`soma.plan.check` refuses a spacing or tile size the
+    encoder does not support. The tiles are embedded once and cached, and
+    ``aggregator`` pools the bag for a ``multiclass_classification`` head (two classes or
+    more; the classes come from the cohort's ``label`` column). AdamW (lr 1e-4) with a
+    cosine schedule, 50 epochs, the best tune-loss checkpoint and early stopping after 10
+    epochs without improvement.
     """
     return ExperimentConfig(
         cohort=_cohort(),
-        features=FeaturesConfig(encoder=encoder, extraction=_tissue_tiles()),
+        features=_tissue_tiles(encoder, spacing, tile_size),
         learner=LearnerConfig(
             "mil",
             {
@@ -117,17 +142,20 @@ def tile_classification(encoder: str) -> ExperimentConfig:
 
 
 @_register
-def survival(encoder: str, aggregator: str) -> ExperimentConfig:
+def survival(
+    encoder: str, aggregator: str, spacing: float | None = None, tile_size: int | None = None
+) -> ExperimentConfig:
     """Predict survival from whole slides: a discrete-time hazard head over a MIL bag.
 
-    Slides are tiled and embedded as in :func:`mil_classification`; ``aggregator`` pools
-    the bag for the ``survival`` head, which reads the cohort's ``time``, ``event`` and
-    ``bin`` columns (the number of bins comes from the cohort). AdamW (lr 1e-4) with a
-    cosine schedule, 50 epochs, selection and early stopping on the tune loss.
+    Slides are tiled at ``spacing`` and ``tile_size`` and embedded as in
+    :func:`mil_classification`; ``aggregator`` pools the bag for the ``survival`` head,
+    which reads the cohort's ``time``, ``event`` and ``bin`` columns (the number of bins
+    comes from the cohort). AdamW (lr 1e-4) with a cosine schedule, 50 epochs, selection
+    and early stopping on the tune loss.
     """
     return ExperimentConfig(
         cohort=_cohort(),
-        features=FeaturesConfig(encoder=encoder, extraction=_tissue_tiles()),
+        features=_tissue_tiles(encoder, spacing, tile_size),
         learner=LearnerConfig(
             "mil",
             {

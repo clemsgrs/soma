@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import inspect
 import sys
+import types
+import typing
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -69,11 +71,17 @@ def _load_config(config_path: Path) -> ExperimentConfig:
 
 
 def _preset_parameters(name: str) -> list[inspect.Parameter]:
-    """The preset ``name``'s arguments, from its signature: soma.register supplies no metadata."""
+    """The preset ``name``'s arguments, from its signature: soma.register supplies no metadata.
+    Annotations postponed as strings (``from __future__ import annotations``) are evaluated
+    when they can be."""
     from soma.presets import preset_registry
 
-    parameters = inspect.signature(preset_registry.get(name)).parameters.values()
-    return [p for p in parameters if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
+    preset = preset_registry.get(name)
+    try:
+        signature = inspect.signature(preset, eval_str=True)
+    except Exception:  # an annotation that does not evaluate: keep the strings
+        signature = inspect.signature(preset)
+    return [p for p in signature.parameters.values() if p.kind not in (p.VAR_POSITIONAL, p.VAR_KEYWORD)]
 
 
 def _selected_preset(argv: Sequence[str], *, positional: bool) -> str | None:
@@ -102,6 +110,15 @@ def _flag(argument: str) -> str:
     return f"--{argument.replace('_', '-')}"
 
 
+def _flag_type(annotation: Any) -> type | None:
+    """``int`` or ``float`` for an argument annotated so, ``X | None`` included; ``None`` (a
+    string flag) for any other annotation."""
+    if typing.get_origin(annotation) in (typing.Union, types.UnionType):
+        members = [member for member in typing.get_args(annotation) if member is not type(None)]
+        annotation = members[0] if len(members) == 1 else None
+    return next((kind for kind in (int, float) if annotation in (kind, kind.__name__)), None)
+
+
 def _add_preset_arguments(parser: argparse.ArgumentParser, name: str | None) -> None:
     """The selected preset's own arguments as flags, an ``int``/``float`` annotation as the
     flag's type; one named like the command's own flag is a usage error."""
@@ -109,10 +126,10 @@ def _add_preset_arguments(parser: argparse.ArgumentParser, name: str | None) -> 
         return
     group = parser.add_argument_group(f"{name} arguments", "The preset's own arguments (soma list presets).")
     for p in _preset_parameters(name):
-        kind = next((kind for kind in (int, float) if p.annotation in (kind, kind.__name__)), None)
         try:
             group.add_argument(
-                _flag(p.name), dest=f"preset_{p.name}", metavar=p.name.upper(), type=kind, default=None,
+                _flag(p.name), dest=f"preset_{p.name}", metavar=p.name.upper(), type=_flag_type(p.annotation),
+                default=None,
                 help="Required." if p.default is p.empty else f"Default: {p.default!r}.".replace("%", "%%"),
             )
         except argparse.ArgumentError:
