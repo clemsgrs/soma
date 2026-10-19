@@ -116,8 +116,9 @@ def _register_stub_encoders() -> None:
         "supported_spacing_um": [0.5],
         "default_spacing_um": 0.5,
         "precision": "fp32",
+        "source": "",
     }
-    aggregates = {"tile_encoder": STUB_ENCODER, "tile_encoder_output_variant": "default"}
+    aggregates ={"tile_encoder": STUB_ENCODER, "tile_encoder_output_variant": "default"}
     for name, cls, metadata in (
         (STUB_ENCODER, _SwitchableTransformEncoder, {"level": "tile", "input_size": 32}),
         (STUB_SLIDE_ENCODER, _MeanSlideEncoder, {"level": "slide", **aggregates}),
