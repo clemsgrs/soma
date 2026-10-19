@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,7 +19,10 @@ from soma.pipeline.layout import (
     build_experiment_spec,
     canonical_experiment_payload,
     capture_environment,
+    component_record,
     create_run_metadata,
+    external_fingerprints,
+    fingerprint_conflicts,
     read_test_results,
     register_test_result,
     resolve_managed_output_paths,
@@ -128,6 +133,125 @@ def test_run_yaml_stamps_bounded_environment(tmp_path: Path):
     assert set(payload["environment"]) == {"soma", "torch", "cuda"}
     # No deeper env / GPU-model / clean-tree fields leaked into the stamp.
     assert "gpu" not in payload["environment"]
+
+
+#: A user's metric module, written to a file the component record digests.
+_USER_METRICS = "soma_test_user_metrics"
+_USER_METRICS_SOURCE = (
+    "def positive_rate(predictions, targets):\n"
+    "    return float((predictions['predicted_label'] == 1).mean())\n"
+)
+
+
+@pytest.fixture
+def user_metric(tmp_path: Path, monkeypatch) -> Path:
+    directory = tmp_path / "user_code"
+    directory.mkdir()
+    path = directory / f"{_USER_METRICS}.py"
+    path.write_text(_USER_METRICS_SOURCE, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(directory))
+    yield path
+    sys.modules.pop(_USER_METRICS, None)
+
+
+def test_the_component_record_lists_a_custom_metric_by_the_digest_of_its_file(tmp_path: Path, user_metric: Path):
+    name = f"{_USER_METRICS}.positive_rate"
+    plan = Plan(
+        experiment(
+            tmp_path / "dataset.csv",
+            tmp_path / "splits.csv",
+            features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
+            aggregator="abmil",
+            evaluation={"metrics": ["auroc", name]},
+        )
+    )
+
+    record = component_record(plan)
+
+    digest = hashlib.sha256(_USER_METRICS_SOURCE.encode("utf-8")).hexdigest()
+    (entry,) = [entry for entry in record if entry["kind"] == "metric" and entry["name"] == name]
+    assert entry["object"] == name
+    assert entry["source_sha256"] == entry["fingerprint"] == digest
+    assert "distribution" not in entry
+    # The metric is the record's only component from outside soma, slide2vec, hs2p and torch.
+    assert external_fingerprints(record) == {f"metric '{name}'": digest}
+
+
+def test_a_name_that_resolves_to_another_object_conflicts_under_the_same_fingerprint():
+    # Two classes in one unchanged file share its digest: only the object tells them apart.
+    entry = {"kind": "aggregator", "name": "custom", "source_sha256": "a" * 64, "fingerprint": "a" * 64}
+
+    conflicts = fingerprint_conflicts(
+        {
+            "saved": [{**entry, "object": "user_models.VariantA"}],
+            "current": [{**entry, "object": "user_models.VariantB"}],
+        }
+    )
+
+    assert conflicts == {
+        "aggregator 'custom' (user_models.VariantA)": {"saved": "a" * 12, "current": "absent"},
+        "aggregator 'custom' (user_models.VariantB)": {"saved": "absent", "current": "a" * 12},
+    }
+
+
+#: A namespace package (no ``__init__.py``) that two installed distributions share, as
+#: ``protobuf`` and ``googleapis-common-protos`` share ``google``.
+_NAMESPACE = "soma_test_namespace"
+
+
+@pytest.fixture
+def namespace_distributions(tmp_path: Path, monkeypatch) -> Path:
+    """A site directory where ``soma-test-alpha`` 1.0 owns ``<namespace>/alpha.py`` and
+    ``soma-test-beta`` 2.0 owns ``<namespace>/beta.py`` (each listed in its ``RECORD``),
+    while ``<namespace>/gamma.py`` belongs to neither. The three files are identical."""
+    site = tmp_path / "site-packages"
+    package = site / _NAMESPACE
+    package.mkdir(parents=True)
+    for module in ("alpha", "beta", "gamma"):
+        (package / f"{module}.py").write_text(_USER_METRICS_SOURCE, encoding="utf-8")
+    for distribution, version, module in (("soma-test-alpha", "1.0", "alpha"), ("soma-test-beta", "2.0", "beta")):
+        info = site / f"{distribution.replace('-', '_')}-{version}.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {distribution}\nVersion: {version}\n", encoding="utf-8"
+        )
+        (info / "RECORD").write_text(
+            f"{_NAMESPACE}/{module}.py,,\n{info.name}/METADATA,,\n{info.name}/RECORD,,\n", encoding="utf-8"
+        )
+    monkeypatch.syspath_prepend(str(site))
+    yield site
+    for name in [name for name in sys.modules if name == _NAMESPACE or name.startswith(f"{_NAMESPACE}.")]:
+        sys.modules.pop(name)
+
+
+def test_a_module_in_a_shared_namespace_is_attributed_to_the_distribution_that_installed_it(
+    tmp_path: Path, namespace_distributions: Path
+):
+    metrics = [f"{_NAMESPACE}.{module}.positive_rate" for module in ("alpha", "beta", "gamma")]
+    plan = Plan(
+        experiment(
+            tmp_path / "dataset.csv",
+            tmp_path / "splits.csv",
+            features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
+            aggregator="abmil",
+            evaluation={"metrics": ["auroc", *metrics]},
+        )
+    )
+
+    record = component_record(plan)
+
+    owners = {
+        entry["object"]: (entry.get("distribution"), entry.get("version"), entry["fingerprint"])
+        for entry in record
+        if entry["name"] in metrics
+    }
+    digest = hashlib.sha256(_USER_METRICS_SOURCE.encode("utf-8")).hexdigest()
+    assert owners == {
+        metrics[0]: ("soma-test-alpha", "1.0", "1.0"),
+        metrics[1]: ("soma-test-beta", "2.0", "2.0"),
+        # A file no distribution lists is not installed code: its digest pins it.
+        metrics[2]: (None, None, digest),
+    }
 
 
 def test_canonical_experiment_payload_omits_the_run_section(tmp_path: Path):

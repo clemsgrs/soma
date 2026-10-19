@@ -79,9 +79,9 @@ features at build time and are recorded in the bundle's ``model.json``.
 
 ``plan.yaml`` is the plan as YAML. It loads as a config, so ``soma run
 plan.yaml`` replays the run with every value pinned. A component named by a
-dotted import path keeps that path in the plan, and the bundle's
-``provenance.json`` records the installed version of each top-level package such
-a path imports from (``<package>_version``); versions are not part of the plan.
+dotted import path keeps that path in the plan. Versions and code are not part
+of the plan: the run records the code each component resolved to (see
+:ref:`component-record`).
 
 A resume into an existing run directory (``run.resume`` or ``run.run_id``)
 compares the current plan with the saved ``plan.yaml`` and refuses on any
@@ -89,7 +89,57 @@ difference, except where and how the launch runs: ``run.output_dir``,
 ``run.run_id``, ``run.resume``, ``run.mirror_root`` and ``run.folds``. A changed
 ``run.seed`` is drift. GPU and preprocessing worker counts the config leaves unset
 stay unset in the plan, so a run resumes on another machine. The cohort files'
-content is then checked against the run's experiment identity.
+content is then checked against the run's experiment identity, and the code of
+the external components against the run's component record.
+
+.. _component-record:
+
+Component code
+--------------
+
+The experiment identity holds each component's name and params, not its code.
+The run records the code instead: the ``components`` field of ``run.yaml`` and
+the ``components`` list of each bundle's ``provenance.json`` hold one entry for
+each component of the plan. These are the encoder, the sampler, the
+augmentation, each trainer callback, the learner and its aggregator or decoder,
+head, optimizer and schedulers, and each metric in ``evaluation.metrics``. An
+entry holds:
+
+- ``kind``, and ``name`` as the plan spells it
+- ``object``: the ``module.qualname`` of the class or function the name resolved to
+- ``distribution`` and ``version`` when the object's file belongs to an
+  installed distribution (its ``RECORD`` lists the file), and ``editable: true``
+  when that install is editable (the file is in its project directory)
+- ``source_sha256``: the SHA-256 of the file that defines the object, or
+  ``null`` when there is no file (for example a notebook cell)
+- ``git``: the ``sha`` and ``dirty`` state of the git work tree that holds the
+  file, when there is one
+- ``fingerprint``: the ``version`` of a non-editable install, otherwise
+  ``source_sha256``
+
+A component is *external* when its object does not come from soma, slide2vec,
+hs2p or torch. The run already records the versions of these four. Two checks
+compare the fingerprints of the external components:
+
+- **Resume.** A resume into a run whose ``run.yaml`` has a component record is
+  refused when the fingerprint of an external component changed. The error
+  names each component with its old and new fingerprint. No setting overrides
+  this: start a fresh run.
+- **Leaderboard.** ``soma leaderboard`` keeps the latest run of each seed of an
+  experiment. If these runs disagree on the fingerprint of an external
+  component, it stops with an error that names the experiment and the
+  components. Rerun the stale seeds on the current code: the newer run of a
+  seed replaces the older one.
+
+Both checks also compare the ``object``: a name that now resolves to another
+class or function is a change, even when the fingerprint is the same (two
+classes of one unchanged file have the same ``source_sha256``). The error then
+lists the old object as ``absent`` in the new run, and the new one as
+``absent`` in the old run.
+
+Runs without a component record are not compared. When an external component
+has no fingerprint (no source file and no installed version), the run warns at
+start that neither check can detect edits to it.
 
 .. _model-bundle:
 
@@ -108,10 +158,10 @@ is a directory of four files:
   class names, target schema, metrics, and for grid runs the grid geometry, read
   spacing and tile size. A detection bundle also records the score threshold
   chosen on tune and the matching distance.
-- ``provenance.json``: the soma, slide2vec and hs2p versions, the version of
-  each package a dotted-path component comes from, the selected epoch and its
-  monitor value, the fold, the run id and the identity of the feature source
-  (the cache key and feature identity, not a path).
+- ``provenance.json``: the soma, slide2vec and hs2p versions, the component
+  record (see :ref:`component-record`), the selected epoch and its monitor
+  value, the fold, the run id and the identity of the feature source (the cache
+  key and feature identity, not a path).
 
 :func:`soma.load` rebuilds the model in eval mode and returns a
 :class:`soma.ModelBundle` with ``model``, ``preprocessing`` and ``provenance``.

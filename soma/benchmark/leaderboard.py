@@ -12,7 +12,8 @@ tables rank by one metric; multi-metric Benchmark tables use neutral row order a
 independent per-metric ranks plus Pareto membership. Because a run's identity
 (``experiment_id``) fingerprints the *entire* config modulo seed, two runs that differ in
 any **unfixed** axis are never pooled. Seed-runs of the *same* config collapse to mean ±
-std + n.
+std + n; seed-runs whose ``run.yaml`` records different code for an external component
+are refused instead (the experiment id does not see code).
 
 Reference rows (a registered :class:`~soma.benchmark.registry.Benchmark`'s
 ``expected()``) inject two ways: a broad, config-agnostic scalar renders as a **threshold
@@ -34,6 +35,7 @@ import yaml
 
 from soma.evaluation.metrics import metric_registry
 from soma.evaluation.summary import sample_std
+from soma.pipeline.layout import fingerprint_conflicts
 
 if TYPE_CHECKING:
     from soma.benchmark.registry import Benchmark
@@ -111,6 +113,9 @@ class RunRecord:
     splits_checksum: str
     task: str
     summary: dict[str, float]
+    #: The run's component record (``run.yaml`` ``components``); ``None`` for a run
+    #: recorded before the record existed.
+    components: list[dict[str, Any]] | None = None
 
     @property
     def triple(self) -> TripleKey:
@@ -164,6 +169,7 @@ def load_run_record(run_dir: str | Path) -> RunRecord | None:
         splits_checksum=str(experiment.get("splits_checksum") or ""),
         task=task,
         summary=summary,
+        components=meta.get("components"),
     )
 
 
@@ -425,6 +431,12 @@ def project_leaderboard(
     groups: dict[str, list[RunRecord]] = {}
     for record in records:
         groups.setdefault(record.experiment_id, []).append(record)
+    _refuse_mixed_code(
+        {
+            experiment_id: [r for r in recs if _metric_value(r.summary, metric_name, chosen_split) is not None]
+            for experiment_id, recs in groups.items()
+        }
+    )
 
     prelim: list[dict[str, Any]] = []
     for experiment_id, recs in groups.items():
@@ -549,6 +561,7 @@ def _project_multi_metric(
             for experiment_id, missing in sorted(incomplete.items())
         )
         raise ValueError(f"Incomplete Reported metrics: {details}")
+    _refuse_mixed_code(groups)
 
     prelim: list[dict[str, Any]] = []
     for experiment_id, recs in groups.items():
@@ -690,6 +703,34 @@ def _select_latest_attempts(
         candidates = complete or completed or attempts
         selected.append(max(candidates, key=_attempt_recency_key))
     return selected
+
+
+def _refuse_mixed_code(groups: dict[str, list[RunRecord]]) -> None:
+    """Refuse to pool the seed runs of an experiment that ran different component code.
+
+    The experiment id is a recipe identity: it does not see the code a component's name
+    resolved to. Each run records that code (``run.yaml`` ``components``), and the chosen
+    seed runs of one experiment must agree on the fingerprint of every external
+    component. Runs recorded before the record existed are not compared.
+    """
+    problems = []
+    for experiment_id, recs in groups.items():
+        conflicts = fingerprint_conflicts(
+            {f"seed {record.seed}": record.components for record in recs if record.components is not None}
+        )
+        if conflicts:
+            details = ", ".join(
+                f"{component} ({', '.join(f'{run}: {value}' for run, value in fingerprints.items())})"
+                for component, fingerprints in conflicts.items()
+            )
+            problems.append(f"{experiment_id}: {details}")
+    if problems:
+        raise ValueError(
+            "Seed runs of one experiment ran different component code: "
+            + "; ".join(problems)
+            + ". Rerun the stale seeds on the current code (a seed's latest run replaces its "
+            "older ones), or move their run dirs out of the root."
+        )
 
 
 def _is_ranking_eligible(

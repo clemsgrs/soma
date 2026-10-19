@@ -17,7 +17,7 @@ from hs2p import TilingConfig
 
 from soma import ExperimentConfig, Plan, presets, resolve
 from soma.config import Component, CRoMaOptions, EncoderLeaf, FeaturesConfig
-from soma.plan import check, dotted_packages, load_cohort
+from soma.plan import check, load_cohort
 from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
 
@@ -225,7 +225,7 @@ def test_derived_shape_family_and_unit(files):
 def user_package(tmp_path: Path, monkeypatch):
     package = tmp_path / "pkgs" / "mylab"
     package.mkdir(parents=True)
-    (package / "__init__.py").write_text('__version__ = "1.2.3"\n')
+    (package / "__init__.py").write_text("")
     (package / "learners.py").write_text(
         textwrap.dedent(
             """
@@ -251,7 +251,6 @@ def test_a_dotted_path_class_keeps_its_params_verbatim(files, user_package):
     assert plan.learner.name == user_package
     own = {k: v for k, v in plan.learner.params.items() if k not in ("aggregator", "head", "normalization", "projection", "optimizer", "scheduler")}
     assert own == {"scale": 0.5}
-    assert dotted_packages(plan) == {"mylab": "1.2.3"}
 
 
 # --- check: the cross-section rules ----------------------------------------------------

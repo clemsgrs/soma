@@ -46,7 +46,7 @@ from soma.pipeline.layout import (
     test_identity_digest,
 )
 from soma.pipeline.representation import run_representation
-from soma.plan import Plan, check, dotted_packages, resolve, revalidated
+from soma.plan import Plan, check, resolve, revalidated
 from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 __all__ = ["Pipeline", "PipelineResult"]
@@ -147,7 +147,7 @@ class Pipeline:
             return run_representation(self)
         layout, mirror = open_run(plan, config=self._config, num_folds=num_folds)
         with RunRecorder(layout, plan) as recorder:
-            inputs = self._prepare(layout)
+            inputs = self._prepare(layout, recorder.components)
             results = []
             for fold, fold_split in enumerate(inputs.cohort.folds):
                 directory = fold_dir(layout.run_dir, fold, num_folds)
@@ -181,8 +181,9 @@ class Pipeline:
 
     # -- run() helpers ------------------------------------------------------------
 
-    def _prepare(self, layout) -> RunInputs:
-        """Extract the features, apply the test-clobber guard and print the run summary."""
+    def _prepare(self, layout, components: list[dict[str, Any]]) -> RunInputs:
+        """Extract the features, apply the test-clobber guard and print the run summary;
+        every fold bundle carries ``components``, the run's component record."""
         plan = self._plan
         folds = plan.run.folds
         num_folds = self._cohort.num_folds
@@ -224,7 +225,7 @@ class Pipeline:
                 if plan.features.cache.enabled
                 else layout.run_dir / "segmentation_roi_population"
             ),
-            packages=dotted_packages(plan),
+            components=components,
             rois=context.rois,
         )
 
