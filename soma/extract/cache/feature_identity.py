@@ -1,10 +1,10 @@
-"""The feature identity a pooled cache records, and its verification when the cache is reused.
+"""The feature identity a feature cache records, and its verification when the cache is reused.
 
-A pooled cache key covers the encoder name, output variant, precision, registry input
-size and spacing, but not the image transform. slide2vec records the full feature
-identity, transform included, in each sidecar's ``compatibility`` block. soma copies that
-block into ``cache_metadata.json`` with the slide2vec version, so a later run can tell
-whether the installed slide2vec would still extract the same features.
+A cache key covers the encoder name, output variant, precision and geometry, but not the
+encoder's code or image transform. slide2vec records the full feature identity, code and
+transform included, in each sidecar's ``compatibility`` block. soma copies that block into
+``cache_metadata.json`` with the slide2vec version, so a later run can tell whether the
+installed slide2vec and encoder would still extract the same features.
 
 The record lives under ``feature_identity`` and is in one of two states:
 
@@ -12,19 +12,26 @@ The record lives under ``feature_identity`` and is in one of two states:
 * recorded: ``identity`` is the block slide2vec wrote with the first committed features,
   and ``slide2vec_version`` the version it was last verified with.
 
-A cache whose record is absent cannot be verified. When it holds features it is a miss:
-it is deleted and extracted again. When it holds none it starts a pending record.
+A recorded cache is checked twice. The encoder's code, read from the registry, is compared
+on every hit. The whole identity, which needs the encoder loaded, is compared when the
+cache was last verified with another slide2vec version.
+
+A cache whose record is absent cannot be verified. A pooled cache that holds features is
+then a miss: it is deleted and extracted again. A dense cache that holds grids is refused,
+as a cache whose identity differs. A cache that holds no features starts a pending record.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 import slide2vec
+from slide2vec.encoders import encoder_code, encoder_registry
 
 from soma.extract.cache._types import FeatureCacheResolution
 from soma.extract.cache.io import _load_metadata, _write_metadata
@@ -33,8 +40,9 @@ logger = logging.getLogger(__name__)
 
 FEATURE_IDENTITY_METADATA_KEY = "feature_identity"
 
-# Cache kinds whose payloads are pooled embeddings. Dense caches record no identity.
+# Cache kinds whose payloads are pooled embeddings, and the dense kinds (token grids).
 _POOLED_CACHE_KINDS = frozenset({"tile", "image", "slide", "patient", "hierarchical"})
+_DENSE_CACHE_KINDS = frozenset({"dense", "dense_image"})
 
 
 class CacheFeatureIdentityMismatch(ValueError):
@@ -43,14 +51,17 @@ class CacheFeatureIdentityMismatch(ValueError):
 
 @dataclass(frozen=True)
 class FeatureIdentityCheck:
-    """How a pooled cache's recorded feature identity is verified when it is resolved.
+    """How a cache's recorded feature identity is verified when it is resolved.
 
-    ``differing`` compares a recorded identity with the one the installed slide2vec
-    would produce for this run, and returns ``{field: (recorded, current)}`` for the
-    fields that differ. It loads the encoder to read its transform, so it is called
-    only when the cache was last verified with another slide2vec version.
+    ``encoder`` is the registered encoder whose features the cache holds. Its code is
+    compared on every resolution, from the registry alone. ``differing`` compares a
+    recorded identity with the one the installed slide2vec would produce for this run,
+    and returns ``{field: (recorded, current)}`` for the fields that differ. It loads the
+    encoder to read its transform, so it is called only when the cache was last verified
+    with another slide2vec version.
     """
 
+    encoder: str
     differing: Callable[[dict[str, Any]], dict[str, tuple[Any, Any]]]
     # ``cache.on_identity_mismatch``: 'error' or 'reextract'.
     on_mismatch: str = "error"
@@ -58,7 +69,7 @@ class FeatureIdentityCheck:
 
 def pending_identity_record(cache_kind: str) -> dict[str, Any] | None:
     """The record a new cache starts with, or None for a kind that records no identity."""
-    if cache_kind not in _POOLED_CACHE_KINDS:
+    if cache_kind not in _POOLED_CACHE_KINDS | _DENSE_CACHE_KINDS:
         return None
     return {"slide2vec_version": slide2vec.__version__, "identity": None}
 
@@ -107,6 +118,7 @@ def record_committed_identity(
 
 def stale_features_reason(
     *,
+    cache_kind: str,
     cache_dir: Path,
     features_dir: Path,
     metadata_path: Path,
@@ -118,7 +130,7 @@ def stale_features_reason(
     Returns None when the features in the cache can be reused, and otherwise the reason
     why the whole cache must be extracted again. Raises
     :class:`CacheFeatureIdentityMismatch` when the recorded identity differs from the
-    current one and ``check`` does not ask to extract again.
+    current one, or cannot be verified, and ``check`` does not ask to extract again.
     """
     installed = slide2vec.__version__
     record = existing.get(FEATURE_IDENTITY_METADATA_KEY)
@@ -130,10 +142,19 @@ def stale_features_reason(
             return f"extraction was interrupted under slide2vec {record.get('slide2vec_version')}"
         return None
     if record is None:
-        if not any(features_dir.glob("*.pt")):
+        # ROI grids sit one directory down, under their slide.
+        if not any(features_dir.rglob("*.pt")):
             # Nothing to verify: an empty cache starts a record like a new one.
             _write_record(metadata_path, existing, {"slide2vec_version": installed, "identity": None})
             return None
+        if cache_kind in _DENSE_CACHE_KINDS:
+            # Grids are costly to extract again: the user decides, as for a mismatch.
+            message = (
+                f"Dense feature cache at {cache_dir} holds grids but records no feature "
+                "identity: the cache predates the record, so soma cannot verify that the "
+                "cached grids match the current ones."
+            )
+            return _refuse(message, check=check, reason="no recorded feature identity")
         logger.warning(
             "Feature cache at %s holds features but records no feature identity, so soma "
             "cannot verify that slide2vec %s would extract the same features. Extracting "
@@ -142,6 +163,10 @@ def stale_features_reason(
             installed,
         )
         return "no recorded feature identity"
+    # Every hit: the encoder's code is read from the registry, without building it.
+    code_reason = _changed_code_reason(cache_dir=cache_dir, identity=record["identity"], check=check)
+    if code_reason is not None:
+        return code_reason
     verified_version = record.get("slide2vec_version")
     if verified_version == installed:
         return None
@@ -151,6 +176,10 @@ def stale_features_reason(
         # the comparison. The identity stays the one slide2vec wrote with the features.
         _write_record(metadata_path, existing, {**record, "slide2vec_version": installed})
         return None
+    missing = [field for field, (old, _) in differing.items() if old is slide2vec.MISSING_FIELD]
+    if len(missing) == len(differing):
+        return _refuse(_predates_message(cache_dir, missing), check=check, reason="unverifiable feature identity")
+    differing = {field: values for field, values in differing.items() if field not in missing}
     details = "; ".join(
         f"{leaf} (recorded {old!r}, current {new!r})"
         for field, (old, new) in sorted(differing.items())
@@ -158,16 +187,100 @@ def stale_features_reason(
     )
     message = (
         f"Feature cache at {cache_dir} was last verified with slide2vec {verified_version}, "
-        f"and slide2vec {installed} now extracts different features: {details}."
+        f"and slide2vec {installed} now extracts different features: {details}. Reusing "
+        "or completing the cache would mix the two."
     )
+    return _refuse(message, check=check, reason="feature identity changed")
+
+
+def _refuse(message: str, *, check: FeatureIdentityCheck, reason: str) -> str:
+    """Follow ``cache.on_identity_mismatch`` for a cache whose features cannot be reused:
+    return ``reason`` (extract the cache again) under ``reextract``, raise otherwise."""
     if check.on_mismatch == "reextract":
         logger.warning("%s Extracting the cache again (cache.on_identity_mismatch).", message)
-        return "feature identity changed"
+        return reason
     raise CacheFeatureIdentityMismatch(
-        f"{message} Reusing or completing the cache would mix the two. Delete the cache "
-        "directory, choose another cache.root_dir, or set "
-        "cache.on_identity_mismatch: reextract."
+        f"{message} Delete the cache directory, choose another cache.root_dir, or set "
+        "cache.on_identity_mismatch: reextract to extract it again."
     )
+
+
+def _current_code(encoder: str) -> list[tuple[str, str, str, dict[str, Any]]]:
+    """``(field, encoder, label, code)`` for each code field of ``encoder``'s identity.
+
+    Every encoder records its own code (``encoder_code``). A slide or patient encoder
+    also records the code of its registered tile encoder (``tile_encoder_code``), whose
+    features it aggregates. Read from the registry: no encoder is built.
+    """
+    current = [("encoder_code", encoder, f"encoder '{encoder}'", encoder_code(encoder))]
+    info = encoder_registry.info(encoder)
+    if info.get("level", "tile") != "tile":
+        tile_encoder = str(info["tile_encoder"])
+        current.append(
+            (
+                "tile_encoder_code",
+                tile_encoder,
+                f"tile encoder '{tile_encoder}' of encoder '{encoder}'",
+                encoder_code(tile_encoder),
+            )
+        )
+    return current
+
+
+def _changed_code_reason(
+    *, cache_dir: Path, identity: dict[str, Any], check: FeatureIdentityCheck
+) -> str | None:
+    """Compare the encoder code a cache records with the code registered now.
+
+    Returns None when they match, and otherwise follows ``cache.on_identity_mismatch``.
+    """
+    current = _current_code(check.encoder)
+    for field, _, label, code in current:
+        if field in identity and identity[field] != code:
+            message = (
+                f"Feature cache at {cache_dir} holds features extracted with other code for "
+                f"{label}: recorded {_describe_code(identity[field])}, current "
+                f"{_describe_code(code)}. Reusing or completing the cache would mix "
+                "features of the two."
+            )
+            return _refuse(message, check=check, reason="encoder code changed")
+    missing = [field for field, _, _, _ in current if field not in identity]
+    if missing:
+        return _refuse(_predates_message(cache_dir, missing), check=check, reason="unverifiable encoder code")
+    for _, name, _, code in current:
+        if code.get("fingerprint") is None and name not in _UNFINGERPRINTED_WARNED:
+            _UNFINGERPRINTED_WARNED.add(name)
+            warnings.warn(
+                f"encoder '{name}' ({code.get('object')}) has no source file: soma cannot "
+                "detect changes to its code in the feature cache. Define the encoder in a "
+                ".py file.",
+                UserWarning,
+                stacklevel=2,
+            )
+    return None
+
+
+#: The encoders without a fingerprint soma has warned about, once per process.
+_UNFINGERPRINTED_WARNED: set[str] = set()
+
+
+def _predates_message(cache_dir: Path, fields: list[str]) -> str:
+    """Why a cache whose record lacks required ``fields`` cannot be verified."""
+    those = "that field" if len(fields) == 1 else "those fields"
+    return (
+        f"Feature cache at {cache_dir} records no {', '.join(sorted(fields))} in its feature "
+        f"identity: the cache predates {those}, so soma cannot verify that the cached "
+        "features match the current ones."
+    )
+
+
+def _describe_code(code: Any) -> str:
+    """``module.Class (fingerprint 1a2b3c4d5e6f)``, a SHA-256 shortened to 12 characters."""
+    if not isinstance(code, dict):
+        return repr(code)
+    fingerprint = code.get("fingerprint")
+    shown = "none" if fingerprint is None else str(fingerprint)
+    return f"{code.get('object')} (fingerprint {shown[:12] if len(shown) == 64 else shown})"
 
 
 def _write_record(metadata_path: Path, existing: dict[str, Any], record: dict[str, Any]) -> None:

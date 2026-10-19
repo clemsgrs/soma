@@ -70,17 +70,14 @@ A new foundation model
 
 Encoders belong to slide2vec, which extracts the features, so a new foundation model
 is registered with slide2vec, not with :func:`soma.register`. The simplest way needs
-no package: register the class in your own script with
-``slide2vec.register_encoder``, then name it in ``features.encoder``.
+no package. Write the class in a file of its own, ``my_encoder.py``, and register it
+with ``slide2vec.register_encoder``:
 
 .. code-block:: python
-
-   from dataclasses import replace
+   :caption: my_encoder.py
 
    import torch
    from slide2vec import TorchTileEncoder, register_encoder
-
-   import soma
 
 
    @register_encoder(
@@ -104,10 +101,27 @@ no package: register the class in your own script with
                output_variant=output_variant,
            )
 
+Then import the file in the script that runs soma, and name the encoder in
+``features.encoder``:
+
+.. code-block:: python
+   :caption: run.py
+
+   from dataclasses import replace
+
+   import soma
+
+   import my_encoder  # registers "my-tile-model"
 
    config = soma.presets.mil_classification("my-tile-model", "abmil")
    config.features.execution = replace(config.features.execution, num_gpus=1)
    result = soma.Pipeline(config).run()
+
+Keep the class out of the run script. The feature cache checks the encoder's code on
+every run: it compares the file that defines the class with the file that extracted
+the cached features (see :ref:`feature-identity`). If the class is in the run script,
+the check covers the whole script, so any edit to it, even to a training setting,
+fails the check.
 
 The decorator records the model's input size, spacing and precision. soma reads them
 to tile the slides and to check the extraction settings, without building the model,
@@ -128,10 +142,11 @@ start processes that never import it:
 For these cases, install the encoder as a slide2vec plugin package (see
 :doc:`benchmark-in-house-encoder`); every process then finds it by name.
 
-The feature cache does not check an encoder's code or weights. After you change the
-model behind a name, delete its feature cache directory (see :doc:`caching`), or a
-run reuses the features of the old model while its component record (see
-:ref:`component-record`) names the new code.
+After you edit ``my_encoder.py``, the feature cache refuses the features of the old
+code (see :ref:`feature-identity`). Two changes stay undetected: new weights behind
+the same path, and edits to code that the class inherits or imports from other files.
+After such a change, delete the encoder's feature cache directory (see
+:doc:`caching`), or a run reuses the features of the old model.
 
 .. _bring-your-own-features:
 

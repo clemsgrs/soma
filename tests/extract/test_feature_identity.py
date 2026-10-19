@@ -4,7 +4,8 @@ The cache key does not cover the encoder's image transform, so a slide2vec upgra
 changes an encoder's preprocessing used to leave the key unchanged and the old features in
 use (issue #512). These scenarios run real slide2vec extraction with a weight-free encoder
 whose transform the test can change, and simulate the upgrade by changing the installed
-slide2vec version.
+slide2vec version. The key does not cover the encoder's code either: the last scenarios
+edit the file that defines a user's encoder, which every cache hit checks.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from tests.extraction_configs import extraction, tissue_masks
 import soma
 from soma.data import ImageManifest
 from tests.e2e.synthetic import write_tiff
+from tests.user_encoders import UserEncoderModule, notebook_encoder
 
 STUB_ENCODER = "soma512-switchable-transform"
 STUB_SLIDE_ENCODER = "soma512-slide"
@@ -176,10 +178,10 @@ def _image_dataset(root: Path, n: int = 4) -> ImageManifest:
     return ImageManifest.from_csv(dataset_csv)
 
 
-def extract_images(dataset, root: Path, **cache_settings):
+def extract_images(dataset, root: Path, *, encoder: str = STUB_ENCODER, **cache_settings):
     return soma.extract(
         dataset,
-        encoder=STUB_ENCODER,
+        encoder=encoder,
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=2),
         cache=CacheOptions(enabled=True, root_dir=root / "cache", **cache_settings),
         output_dir=root / "run",
@@ -299,26 +301,68 @@ def test_image_cache_is_refused_after_an_upgrade_changed_the_transform(
     assert encoder.encoded_images == encoded
 
 
+def _drop_recorded_field(root: Path, kind: str, field: str) -> None:
+    """Rewrite a cache's record as a slide2vec that did not record ``field`` wrote it."""
+    metadata_path = cache_dir_for(root, kind) / "cache_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    del metadata["feature_identity"]["identity"][field]
+    metadata_path.write_text(json.dumps(metadata))
+
+
 def test_image_cache_whose_record_lacks_a_required_field_is_refused_after_an_upgrade(
     tmp_path, encoder, monkeypatch
 ):
     dataset = _image_dataset(tmp_path / "data")
     extract_images(dataset, tmp_path)
     encoded = encoder.encoded_images
-    metadata_path = cache_dir_for(tmp_path, "image") / "cache_metadata.json"
-    metadata = json.loads(metadata_path.read_text())
-    del metadata["feature_identity"]["identity"]["feature_dtype"]
-    metadata_path.write_text(json.dumps(metadata))
+    _drop_recorded_field(tmp_path, "image", "feature_dtype")
 
     _upgrade_slide2vec(monkeypatch, encoder, mean=ORIGINAL_MEAN)
 
-    # slide2vec 7 reports a required field the record lacks as a difference rather than
-    # as something it cannot verify, so the cache is refused like any other mismatch.
-    with pytest.raises(
-        CacheFeatureIdentityMismatch, match=r"feature_dtype \(recorded MISSING_FIELD"
-    ):
+    # The features may be the same: the record predates the field, so it cannot tell.
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
         extract_images(dataset, tmp_path)
+    message = str(refused.value)
+    assert "records no feature_dtype" in message
+    assert "predates" in message
+    assert "now extracts different features" not in message
     assert encoder.encoded_images == encoded
+
+
+@pytest.mark.parametrize("cached_samples", [4, 3], ids=["complete", "partial"])
+def test_cache_whose_record_predates_the_encoder_code_cannot_be_verified(
+    tmp_path, encoder, cached_samples
+):
+    extract_images(_image_dataset(tmp_path / "data", n=cached_samples), tmp_path)
+    _drop_recorded_field(tmp_path, "image", "encoder_code")
+    encoded = encoder.encoded_images
+
+    # No slide2vec upgrade: the code is checked on every hit.
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
+        extract_images(_image_dataset(tmp_path / "data", n=4), tmp_path)
+    message = str(refused.value)
+    assert "records no encoder_code" in message
+    assert "predates" in message
+    assert "now extracts different features" not in message
+    assert encoder.encoded_images == encoded
+
+
+def test_reextract_setting_rebuilds_a_cache_whose_record_predates_the_encoder_code(
+    tmp_path, encoder
+):
+    dataset = _image_dataset(tmp_path / "data")
+    extract_images(dataset, tmp_path)
+    _drop_recorded_field(tmp_path, "image", "encoder_code")
+    encoded = encoder.encoded_images
+
+    rebuilt = extract_images(dataset, tmp_path, on_identity_mismatch="reextract")
+
+    assert encoder.encoded_images == encoded + 4
+    _assert_expected_features(_features(rebuilt), _expected_image_features(4, mean=ORIGINAL_MEAN))
+    recorded = cache_metadata(tmp_path, "image")["feature_identity"]["identity"]
+    assert recorded["encoder_code"]["object"] == (
+        f"{_SwitchableTransformEncoder.__module__}._SwitchableTransformEncoder"
+    )
 
 
 def test_cache_hit_on_the_same_slide2vec_version_does_not_load_the_encoder(tmp_path, encoder):
@@ -534,11 +578,13 @@ def slide_manifests(tmp_path_factory) -> dict[int, Path]:
     return manifests
 
 
-def _extract_slides(dataset_csv: Path, root: Path, kind: str, **cache_settings):
-    """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``."""
+def _extract_slides(dataset_csv: Path, root: Path, kind: str, *, encoder: str | None = None, **cache_settings):
+    """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``.
+
+    ``encoder`` replaces the stub encoder of ``kind``."""
     return soma.extract(
         ImageManifest.from_csv(dataset_csv),
-        encoder=_SLIDE_KINDS[kind],
+        encoder=encoder or _SLIDE_KINDS[kind],
         extraction=extraction(
             0.5,
             32,
@@ -701,3 +747,105 @@ def test_completing_a_tile_cache_without_a_recorded_identity_extracts_it_again(
     _assert_same_features(_features(completed), _expected_slide_features("tile", changed=True))
     recorded = cache_metadata(tmp_path, "tile")["feature_identity"]
     assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
+
+
+# --- The encoder's code, checked on every hit ---------------------------------------------
+
+USER_TILE_ENCODER = "soma652-user-tile"
+#: Slide and patient encoders that aggregate the user's tile encoder.
+_USER_AGGREGATORS = {"slide": "soma652-user-slide", "patient": "soma652-user-patient"}
+
+
+@pytest.fixture
+def user_encoder(tmp_path, request, monkeypatch) -> UserEncoderModule:
+    """The user's tile encoder in a module file, and slide and patient encoders over it."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    encoder_registry.names()  # discover the built-in encoders before copying the entries
+    monkeypatch.setattr(encoder_registry, "_entries", dict(encoder_registry._entries))
+    common = {
+        "output_variants": {"default": {"encode_dim": 3}},
+        "default_output_variant": "default",
+        "supported_spacing_um": [0.5],
+        "default_spacing_um": 0.5,
+        "precision": "fp32",
+        "source": "",
+        "tile_encoder": USER_TILE_ENCODER,
+        "tile_encoder_output_variant": "default",
+    }
+    encoder_registry.register(_USER_AGGREGATORS["slide"], _MeanSlideEncoder, metadata={"level": "slide", **common})
+    encoder_registry.register(
+        _USER_AGGREGATORS["patient"], _MeanPatientEncoder, metadata={"level": "patient", **common}
+    )
+    return UserEncoderModule(tmp_path / "user_code", request, module="soma652_user_encoder", name=USER_TILE_ENCODER)
+
+
+def _user_slide_features(kind: str, *, scale: float) -> dict[str, torch.Tensor]:
+    """Literal features of the blue, magenta, green and yellow slides under the user's
+    encoder: each channel normalises to -2 (0) or 2 (255), times ``scale``; patients
+    p0 and p1 average the first and the last pair of slides."""
+    if kind == "patient":
+        values = {"p0": [0.0, -2.0, 2.0], "p1": [0.0, 2.0, -2.0]}
+    else:
+        values = {
+            "slide00": [-2.0, -2.0, 2.0],
+            "slide01": [2.0, -2.0, 2.0],
+            "slide02": [-2.0, 2.0, -2.0],
+            "slide03": [2.0, 2.0, -2.0],
+        }
+    return {sample_id: scale * torch.tensor(vector) for sample_id, vector in values.items()}
+
+
+@pytest.mark.parametrize("kind", ["slide", "patient"])
+def test_slide_cache_detects_an_edit_to_its_tile_encoder(tmp_path, user_encoder, slide_manifests, kind):
+    _extract_slides(slide_manifests[4], tmp_path, kind, encoder=_USER_AGGREGATORS[kind])
+    # Without its tile cache, only the slide or patient cache can tell.
+    shutil.rmtree(cache_dir_for(tmp_path, "tile"))
+    original = user_encoder.fingerprint
+
+    user_encoder.edit()
+
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
+        _extract_slides(slide_manifests[4], tmp_path, kind, encoder=_USER_AGGREGATORS[kind])
+    message = str(refused.value)
+    assert f"tile encoder '{USER_TILE_ENCODER}'" in message
+    assert original[:12] in message and user_encoder.fingerprint[:12] in message
+
+
+@pytest.mark.parametrize("kind", ["slide", "patient"])
+def test_reextract_setting_aggregates_the_tiles_of_the_edited_tile_encoder(
+    tmp_path, user_encoder, slide_manifests, kind
+):
+    extracted = _extract_slides(slide_manifests[4], tmp_path, kind, encoder=_USER_AGGREGATORS[kind])
+    _assert_same_features(_features(extracted), _user_slide_features(kind, scale=1.0))
+
+    user_encoder.edit()
+    rebuilt = _extract_slides(
+        slide_manifests[4], tmp_path, kind, encoder=_USER_AGGREGATORS[kind], on_identity_mismatch="reextract"
+    )
+
+    _assert_same_features(_features(rebuilt), _user_slide_features(kind, scale=2.0))
+    recorded = cache_metadata(tmp_path, kind)["feature_identity"]["identity"]
+    assert recorded["tile_encoder_code"]["fingerprint"] == user_encoder.fingerprint
+
+
+def test_cache_of_an_encoder_without_a_source_file_is_reused_with_one_warning(
+    tmp_path, request, monkeypatch
+):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    name = "soma652-notebook-encoder"
+    cell = notebook_encoder(request, module="soma652_notebook", name=name)
+    dataset = _image_dataset(tmp_path / "data")
+
+    with pytest.warns(UserWarning) as caught:
+        extract_images(dataset, tmp_path, encoder=name)
+        encoded = sum(cell.ENCODED)
+        extract_images(dataset, tmp_path, encoder=name)
+
+    assert sum(cell.ENCODED) == encoded
+    assert cache_metadata(tmp_path, "image")["feature_identity"]["identity"]["encoder_code"]["fingerprint"] is None
+    warned = [str(warning.message) for warning in caught if "no source file" in str(warning.message)]
+    assert len(warned) == 1
+    assert f"encoder '{name}' (soma652_notebook.UserTileEncoder)" in warned[0]
+    assert ".py file" in warned[0]

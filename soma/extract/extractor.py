@@ -948,6 +948,7 @@ class _PooledFeatureExtractor:
             )
 
         return FeatureIdentityCheck(
+            encoder=encoder_name,
             differing=differing,
             on_mismatch=self._cache.on_identity_mismatch,
         )

@@ -40,16 +40,19 @@ def test_slide2vec_minimum_is_aligned_with_hs2p_6():
     # ``ExecutionOptions`` GPU and worker counts as given and resolves them where a run
     # uses them (``resolved_num_gpus()``), so a plan reads the same on every machine.
     # 7.1.2 lifts the ``prism`` extra's torch<2.8 cap, so torchvision 0.23 (whose
-    # keypoint transforms the point augmentation builds on) resolves. 7.0.0 resumes an
-    # artifact only when its sidecar records the full feature identity, and
-    # ``Model.pooled_identity_differences`` (6.3.2) reports a required field the record
-    # lacks as ``MISSING_FIELD`` instead of accepting it, which soma's cache check relies
-    # on. Earlier floors: 6.3.3 tiles for a patient-level model without the slides'
-    # patient ids; 6.3.4 adds the ``patch_features_prenorm`` dense feature kind the EVA
-    # segmentation benchmarks tap.
+    # keypoint transforms the point augmentation builds on) resolves. 7.1.3 records the
+    # encoder's code in every sidecar and reads it from the registry
+    # (``slide2vec.encoders.encoder_code``), which soma's cache checks on every hit;
+    # 7.1.4 adds ``Model.dense_identity_differences``, which verifies a dense cache
+    # after an upgrade. 7.0.0 resumes an artifact only when its sidecar records the full
+    # feature identity, and ``Model.pooled_identity_differences`` (6.3.2) reports a
+    # required field the record lacks as ``MISSING_FIELD`` instead of accepting it, which
+    # soma's cache check relies on. Earlier floors: 6.3.3 tiles for a patient-level model
+    # without the slides' patient ids; 6.3.4 adds the ``patch_features_prenorm`` dense
+    # feature kind the EVA segmentation benchmarks tap.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "slide2vec[fm]>=7.1.2" in data["project"]["dependencies"]
+    assert "slide2vec[fm]>=7.1.4" in data["project"]["dependencies"]
 
 
 def test_hs2p_minimum_provides_registered_roi_mask_reads():

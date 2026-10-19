@@ -204,6 +204,7 @@ class _TileFeatureExtractor:
             )
 
         return FeatureIdentityCheck(
+            encoder=self._encoder.name,
             differing=differing,
             on_mismatch=self._cache.on_identity_mismatch,
         )

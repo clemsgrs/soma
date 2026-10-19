@@ -29,6 +29,7 @@ from slide2vec import DenseImageOptions, DenseOptions, ExecutionOptions, ImageSp
 from slide2vec.encoders.registry import resolve_patch_size
 
 from soma.extract.cache import (
+    FeatureIdentityCheck,
     build_dense_cache_key,
     dense_extraction_geometry,
     record_feature_dim,
@@ -212,6 +213,7 @@ class _DenseImageExtractor:
                     target_size_px=self._target_size,
                     window_size=self._options.window_size,
                 ),
+                feature_identity=self._feature_identity_check(feature_dir, dtype=dense_dtype),
             )
             payload_dir = cache_resolution.features_dir
             if cache_resolution.complete:
@@ -238,16 +240,7 @@ class _DenseImageExtractor:
 
         with _dense_extract_lock():
             model = Model.from_preset(self._encoder.name, **self._encoder.params)
-            execution = execution_options(
-                self._execution,
-                encoder_name=self._encoder.name,
-                output_dir=out_root,
-                save_tile_embeddings=True,
-                # soma resolves cache.dtype → 'fp16'/'fp32' once and passes the resolved
-                # value, so the on-disk grid is cast to exactly the dtype folded into the
-                # cache key above (key and storage can never drift).
-                output_dtype=dense_dtype,
-            )
+            execution = self._embed_execution(out_root, dtype=dense_dtype)
             logger.info(
                 "Encoding %d tiles into dense grids with '%s' at target_size=%s, patch=%s -> grid %s",
                 len(records),
@@ -281,6 +274,38 @@ class _DenseImageExtractor:
                 validate_payloads=self._cache.validate_payloads,
             )
         return CachedGridSource(payload_dir)
+
+    def _embed_execution(self, out_root: Path, *, dtype: str) -> ExecutionOptions:
+        """The execution handed to :meth:`slide2vec.Model.embed_images_dense`.
+
+        soma resolves ``cache.dtype`` to 'fp16' or 'fp32' once and passes the resolved
+        value, so the on-disk grid is cast to exactly the dtype folded into the cache key
+        (key and storage can never drift).
+        """
+        return execution_options(
+            self._execution,
+            encoder_name=self._encoder.name,
+            output_dir=out_root,
+            save_tile_embeddings=True,
+            output_dtype=dtype,
+        )
+
+    def _feature_identity_check(self, feature_dir: Path, *, dtype: str) -> FeatureIdentityCheck:
+        """Verify a cache against the identity slide2vec would give these grids now."""
+
+        def differing(recorded: dict) -> dict:
+            model = Model.from_preset(self._encoder.name, **self._encoder.params)
+            return model.dense_identity_differences(
+                recorded,
+                dense=self._dense_options(),
+                execution=self._embed_execution(feature_dir, dtype=dtype),
+            )
+
+        return FeatureIdentityCheck(
+            encoder=self._encoder.name,
+            differing=differing,
+            on_mismatch=self._cache.on_identity_mismatch,
+        )
 
 
 def image_options(dense: DenseOptions) -> DenseImageOptions:

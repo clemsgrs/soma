@@ -42,11 +42,13 @@ from soma.models.heads.classification import BinaryClassificationHead
 from soma.models.heads.dense_metrics import soft_dice_loss
 from soma.models.heads.registry import task_registry
 from soma.models.heads.segmentation import SegmentationHead
+from soma.extract.cache import CacheFeatureIdentityMismatch
 from soma.registry import NoParams
 from soma.testing import check_aggregator, check_task_head
 from soma.learn.sample_dataset import SampleBatch
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_marker_cohort, make_slide_cohort
+from tests.user_encoders import UserEncoderModule
 
 CUSTOM_HEAD = "e2e_dice_only_segmentation"
 CUSTOM_DECODER = "e2e_two_stage_conv"
@@ -68,6 +70,10 @@ class EditableMeanPool(MeanPool):
 #: The same file after the user edits ``forward``. It is longer, so Python cannot load
 #: stale bytecode for it.
 USER_SOURCE_EDITED = USER_SOURCE.replace("super().forward(X, mask)", "super().forward(X * 1.0, mask)")
+
+#: A user's tile encoder in a module file of its own, which the cache scenario edits.
+USER_ENCODER = "e2e-user-encoder"
+USER_ENCODER_MODULE = "e2e_user_encoders"
 
 #: An aggregator written in a notebook cell: its module has no file.
 NOTEBOOK_AGGREGATOR = "e2e_notebook_mean_pool"
@@ -696,4 +702,73 @@ def test_a_component_without_a_source_file_warns_once_and_has_no_fingerprint(
     artifact.check_equal("aggregator/source_sha256", recorded["source_sha256"], None)
     artifact.check_equal("aggregator/fingerprint", recorded["fingerprint"], None)
     artifact.check_equal("aggregator/no_git_state", "git" in recorded, False)
+    artifact.assert_passed()
+
+
+@pytest.fixture
+def user_encoder(tmp_path, request) -> UserEncoderModule:
+    """``UserTileEncoder`` from a module file on the path, registered as ``USER_ENCODER``."""
+    return UserEncoderModule(tmp_path / "user_code", request, module=USER_ENCODER_MODULE, name=USER_ENCODER)
+
+
+def _feature_identity(cache_root: Path) -> dict:
+    """The feature identity the run's one tile cache records."""
+    (metadata_path,) = cache_root.glob("tile/*/cache_metadata.json")
+    return json.loads(metadata_path.read_text())["feature_identity"]["identity"]
+
+
+def test_edited_encoder_code_is_caught_on_a_feature_cache_hit(tmp_path, new_artifact, user_encoder):
+    """A user's encoder in a module file: its feature cache is reused while the file is
+    unchanged, and refused once the file is edited, with an error that names the encoder
+    code and both fingerprints. ``cache.on_identity_mismatch: reextract`` extracts it
+    again. The run record and the cache record the same fingerprint."""
+    artifact = new_artifact("extension_encoder_code_cache_check")
+    cohort = make_slide_cohort(tmp_path / "cohort")
+    config_path = tmp_path / "config.yaml"
+    config = _slide_config(cohort, tmp_path, USER_ENCODER, aggregator="abmil")
+    original = user_encoder.fingerprint
+
+    first = run_soma(config, config_path)
+    artifact.record_run("first", first)
+    artifact.check_training_reduced_loss("first", first)
+    extracted = user_encoder.encoded
+    artifact.check_at_least("first/tiles_encoded", extracted, 1)
+    encoder = _component(_run_yaml(first.run_dir)["components"], "encoder")
+    artifact.check_equal("first/run_record/fingerprint", encoder["fingerprint"], original)
+    artifact.check_equal(
+        "first/cache_records_the_encoder_code",
+        _feature_identity(tmp_path / "cache")["encoder_code"],
+        {"object": user_encoder.object, "fingerprint": original, "source": ""},
+    )
+
+    # The file is unchanged: a full cache hit, nothing encoded.
+    second = run_soma(config, config_path)
+    artifact.record_run("unchanged", second)
+    artifact.check_equal("unchanged/tiles_encoded", user_encoder.encoded - extracted, 0)
+
+    # An edit to the file is caught on the hit, with no slide2vec upgrade.
+    user_encoder.edit()
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
+        soma_main(["run", str(config_path)])
+    message = str(refused.value)
+    artifact.check_equal("edited/names_the_encoder", f"encoder '{USER_ENCODER}'" in message, True)
+    artifact.check_equal("edited/names_the_class", user_encoder.object in message, True)
+    artifact.check_equal("edited/names_the_old_fingerprint", original[:12] in message, True)
+    artifact.check_equal("edited/names_the_new_fingerprint", user_encoder.fingerprint[:12] in message, True)
+    artifact.check_equal("edited/no_upgrade_is_blamed", "upgrade" in message, False)
+    artifact.check_equal("edited/tiles_encoded", user_encoder.encoded, 0)
+
+    # reextract deletes the cache and extracts it again with the edited code.
+    config["features"]["cache"]["on_identity_mismatch"] = "reextract"
+    third = run_soma(config, config_path)
+    artifact.record_run("reextracted", third)
+    artifact.check_training_reduced_loss("reextracted", third)
+    artifact.check_equal("reextracted/tiles_encoded", user_encoder.encoded, extracted)
+    encoder = _component(_run_yaml(third.run_dir)["components"], "encoder")
+    artifact.check_equal("reextracted/run_record/fingerprint", encoder["fingerprint"], user_encoder.fingerprint)
+    artifact.check_equal(
+        "reextracted/cache/fingerprint",
+        _feature_identity(tmp_path / "cache")["encoder_code"]["fingerprint"],
+        user_encoder.fingerprint,
+    )
     artifact.assert_passed()
