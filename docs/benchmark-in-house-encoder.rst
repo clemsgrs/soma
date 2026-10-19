@@ -1,28 +1,51 @@
 Benchmark an in-house encoder
 =============================
 
-Install an in-house encoder as a slide2vec preset, then compare it with public
-presets under the same soma benchmark protocol. Keep the plugin in its own
-package; soma uses its registered name.
+Register an in-house encoder with slide2vec, then compare it with public presets
+under the same soma benchmark protocol. soma uses the encoder's registered name.
+Its normalization transform must preserve geometry (no resize or crop).
 
-Install and inspect
+From your own script
+--------------------
+
+The simplest way needs no package: register the encoder in your script with
+``slide2vec.register_encoder`` (see :ref:`custom-encoder`), then run each benchmark
+from the same script with ``soma.benchmark.run_benchmark``:
+
+.. code-block:: python
+
+   from soma.benchmark import run_benchmark
+
+   import my_encoder  # registers "my-private-encoder" with slide2vec.register_encoder
+
+   for encoder in ("my-private-encoder", "uni2"):
+       run_benchmark(
+           "eva/bach",
+           encoder=encoder,
+           raw_root="/data/eva/bach",
+           output_root="runs/eva-bach",
+           seeds=1,
+       )
+
+The registration exists only in the process that ran your script. slide2vec starts
+one worker process per visible GPU, and those processes never import it, so make one
+GPU visible, for example with ``CUDA_VISIBLE_DEVICES=0``.
+
+As a plugin package
 -------------------
 
-Follow the `slide2vec custom encoder plugin guide
-<https://clemsgrs.github.io/slide2vec/models.html#custom-encoder-plugin-package>`_
-for implementation, packaging, weights, and credentials. The plugin's
-normalization transform must preserve geometry (no resize or crop).
-
-Install the plugin in soma's Python environment and check discovery::
+``soma reproduce`` on the command line, and extraction on several GPUs, need an
+encoder that every new process finds by name. Install it as a slide2vec plugin
+package: follow slide2vec's `installed package guide
+<https://clemsgrs.github.io/slide2vec/models.html#from-an-installed-package>`_ for
+packaging, weights and credentials. Install the plugin in soma's Python environment
+and check discovery::
 
    pip install ./my-slide2vec-encoders
    soma list encoders
 
 The private preset should appear beside the public names. If it does not,
 resolve the installation or provider error before running a benchmark.
-
-Run the comparison
-------------------
 
 List protocols with ``soma list benchmarks`` and choose one whose input mode
 and geometry fit the preset. EVA accepts pooled tile features; a dense

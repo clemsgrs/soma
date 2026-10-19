@@ -806,3 +806,39 @@ def test_the_custom_aggregator_example_runs_as_written(monkeypatch) -> None:
     (entry,) = [entry for entry in soma.components("aggregators") if entry["name"] == "projected_mean"]
     assert entry["params"] == {"hidden_dim": 64}
     assert example.config.learner.params["aggregator"].name == "projected_mean"
+
+
+def test_the_custom_encoder_example_runs_as_written(monkeypatch) -> None:
+    """The in-script encoder of ``extending.rst`` runs as the page prints it: slide2vec
+    registers it, soma lists it, and the config naming it on one GPU passes ``check``."""
+    import sys
+    import types
+
+    from slide2vec.encoders import encoder_registry
+
+    import soma
+
+    # The example registers a name; restore the registry so it does not leak into later tests.
+    encoder_registry.names()  # discover the built-in encoders before copying the entries
+    monkeypatch.setattr(encoder_registry, "_entries", dict(encoder_registry._entries))
+    launched = []
+
+    class RecordingPipeline:
+        def __init__(self, config):
+            self.config = config
+
+        def run(self):
+            launched.append(self.config)
+
+    monkeypatch.setattr(soma, "Pipeline", RecordingPipeline)
+    page = (Path(__file__).resolve().parents[2] / "docs" / "extending.rst").read_text(encoding="utf-8")
+    (source,) = [source for _, source, _ in _python_snippets(page) if "register_encoder(" in source]
+    example = types.ModuleType("extending_encoder_example")
+    monkeypatch.setitem(sys.modules, example.__name__, example)
+    exec(compile(source, "docs/extending.rst", "exec"), example.__dict__)
+
+    assert "my-tile-model" in [entry["name"] for entry in soma.components("encoders")]
+    assert launched == [example.config]
+    assert example.config.features.encoder.name == "my-tile-model"
+    assert example.config.features.execution.num_gpus == 1
+    check(example.config)
