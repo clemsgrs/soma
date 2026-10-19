@@ -274,6 +274,92 @@ The end-to-end scenarios ``grid_live_segmentation`` and ``grid_live_detection``
 <https://github.com/clemsgrs/soma/blob/main/tests/e2e/test_grid.py>`_) run the whole
 grid flow on synthetic tiles with it, from loaders to evaluation.
 
+.. _runtime-observers:
+
+Watching a managed run
+----------------------
+
+A fold writes ``training_history.json`` only after it is trained and scored. To
+read each epoch while a :class:`~soma.Pipeline` run trains, pass a
+``callback_factory``. It returns runtime observers: Trainer callbacks that watch
+the fold.
+
+.. code-block:: python
+
+   from soma import Pipeline
+   from soma.pipeline import FoldContext
+
+
+   class EpochPrinter:
+       def __init__(self, context: FoldContext):
+           self.context = context
+
+       def on_epoch_end(self, trainer, learner):
+           row = trainer.history.rows[-1]
+           print(self.context.fold, trainer.epoch, row["train_loss"], row.get("loss"))
+
+
+   result = Pipeline(config, callback_factory=lambda context: [EpochPrinter(context)]).run()
+
+**Runtime observers and config callbacks.** ``trainer.callbacks`` in the config
+is the selection policy (``checkpoint``, ``early_stopping``). It is part of
+``config.yaml``, ``plan.yaml`` and the experiment identity. A runtime observer is
+a Python input, like ``source``. It is not part of ``config.yaml``,
+``plan.yaml``, the experiment identity, the component record in ``run.yaml`` or
+the resume check. A run started with observers resumes without them, and the
+other way round. The CLI has no option for them.
+
+**When the factory is called.** ``run()`` calls ``callback_factory(context)``
+once for each fold it trains, before it seeds the fold. Building observers
+therefore cannot change the fold's random state. The factory is not called for a
+fold that is already complete on resume, or for a fold outside ``run.folds``. A
+fold that was not complete restarts from epoch 0 on resume, so its new observers
+see the epochs from 0 again. A representation run (``evaluation.representation``)
+trains no fold and never calls the factory. A model with no trainable parameter
+is not fitted, so its observers see no epoch.
+
+The ``context`` is a frozen :class:`soma.pipeline.FoldContext`:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Field
+     - Value
+   * - ``run_id``, ``run_dir``
+     - The run's id and directory.
+   * - ``fold_dir``
+     - The fold's directory. With a single fold, it is ``run_dir``.
+   * - ``fold``, ``num_folds``
+     - The fold index (from 0) and the number of folds in the splits.
+   * - ``seed``
+     - The base seed, ``run.seed``. The fold trains under
+       ``soma.seed_everything(seed, fold=fold)``, so its effective seed is
+       ``seed + fold``.
+
+**Order and hooks.** The observers run after the config's callbacks and the
+progress panel. ``History`` is always the first callback, so in ``on_epoch_end``
+``trainer.history.rows[-1]`` is the current epoch's row: the same row that
+``training_history.json`` writes at the end of the fold. An epoch without a tune
+evaluation has only ``epoch``, ``train_loss``, ``lr`` and ``elapsed_seconds`` in
+its row, where the file writes ``null`` for the tune values. Observers use the
+fit-callback hooks (see :ref:`custom-callbacks`); there is no other event.
+
+**The observer contract.** An observer may read these Trainer attributes:
+``epoch``, ``total_epochs``, ``train_loss``, ``lr``, ``optimizer_steps``,
+``summary`` (the tune values, or ``None`` on an epoch without a tune evaluation)
+and ``history.rows``. The train-side values are ``train_loss`` and ``lr``. An
+observer must not set ``trainer.should_stop``, change the learner or the
+optimizer, or draw from the global random state (Python ``random``, NumPy or
+torch). An observer that follows these rules changes nothing in the run: its
+predictions, metrics and ``bundle/weights.safetensors`` are byte-identical to the
+same run without it.
+
+**Failures.** soma does not catch an observer's errors. An exception from the
+factory or from an observer hook fails the run like any callback error. During
+the fit, every callback's ``on_exception`` runs first. ``run.yaml`` then records
+``status: failed`` and the error. To make your telemetry best-effort, catch the
+errors inside your own observer.
+
 Reference
 ---------
 

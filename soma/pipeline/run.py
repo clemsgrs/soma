@@ -10,6 +10,7 @@ plan → objects is :mod:`soma.pipeline.build`, the run layout and resume guards
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,7 @@ from soma.data import AnnotationManifest, Cohort, GridSource, ImageManifest, Til
 from soma.extract import RoiSet
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_summary
 from soma.pipeline.build import (
+    FoldSetup,
     RunInputs,
     annotation_sampled,
     build_composite_dense_store,
@@ -49,7 +51,7 @@ from soma.pipeline.representation import run_representation
 from soma.plan import Plan, check, resolve, revalidated
 from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
-__all__ = ["Pipeline", "PipelineResult"]
+__all__ = ["FoldContext", "Pipeline", "PipelineResult"]
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +72,23 @@ class PipelineResult:
     dataset_checksum: str = ""
     splits_checksum: str = ""
     test_checksum: str = ""
+
+
+@dataclass(frozen=True)
+class FoldContext:
+    """The fold a :class:`Pipeline` is about to train, as its ``callback_factory`` gets it.
+
+    ``seed`` is the run's base seed (``run.seed``): the fold trains under
+    ``soma.seed_everything(seed, fold=fold)``, so its effective seed is ``seed + fold``.
+    A single-fold run's ``fold_dir`` is its ``run_dir``.
+    """
+
+    run_id: str
+    run_dir: Path
+    fold_dir: Path
+    fold: int
+    num_folds: int
+    seed: int
 
 
 @dataclass(frozen=True)
@@ -99,9 +118,19 @@ class Pipeline:
             :class:`~soma.data.GridSource` or, for a live grid run, the pixels'
             :class:`~soma.data.ImageSource`). Without one, ``run()`` extracts them as the
             config describes (or builds the live encoder stage).
+        callback_factory: Builds runtime observers for each fold ``run()`` trains:
+            ``callback_factory(context)`` gets the fold's :class:`FoldContext` and
+            returns Trainer callbacks, which run after the plan's. Like ``source``, it
+            is not part of the config, the plan or the experiment identity.
     """
 
-    def __init__(self, config: ExperimentConfig, *, source: Any = None) -> None:
+    def __init__(
+        self,
+        config: ExperimentConfig,
+        *,
+        source: Any = None,
+        callback_factory: Callable[[FoldContext], Sequence[Any]] | None = None,
+    ) -> None:
         ensure_default_logging()
         if not isinstance(config, ExperimentConfig):
             raise TypeError(f"Pipeline takes an ExperimentConfig, got {type(config).__name__}")
@@ -110,6 +139,7 @@ class Pipeline:
         check(config)  # config errors surface before any data is read
         self._config = config
         self._source = source
+        self._callback_factory = callback_factory
         self._cohort, self._image_manifest, self._annotation_manifest = load_pipeline_data(config)
         self._plan = resolve(config, self._cohort)
 
@@ -155,7 +185,8 @@ class Pipeline:
                     if mirror is not None and fold_is_complete(directory):
                         mirror.fold_completed(fold=fold, fold_dir=directory)
                     continue
-                results.append(run_fold(directory, build_fold(inputs, fold, fold_split)))
+                setup = build_fold(inputs, fold, fold_split)
+                results.append(run_fold(directory, setup, observers=self._observers(inputs, setup, directory)))
                 if mirror is not None:
                     mirror.fold_completed(fold=fold, fold_dir=directory)
             pending = self._pending_folds(layout.run_dir)
@@ -298,6 +329,21 @@ class Pipeline:
         if rois is None:
             return RunFeatures(source=source, cohort=self._cohort)
         return RunFeatures(source=source, cohort=self._cohort.derived(rois.children), rois=rois)
+
+    def _observers(self, inputs: RunInputs, setup: FoldSetup, directory: Path) -> tuple[Any, ...]:
+        """The fold's runtime observers, built before ``run_fold`` seeds the fold, so
+        building them cannot move its random state."""
+        if self._callback_factory is None:
+            return ()
+        context = FoldContext(
+            run_id=inputs.run_id,
+            run_dir=inputs.run_dir,
+            fold_dir=directory,
+            fold=setup.fold,
+            num_folds=setup.num_folds,
+            seed=setup.seed,
+        )
+        return tuple(self._callback_factory(context))
 
     def _pending_folds(self, run_dir: Path) -> tuple[int, ...]:
         num_folds = self._cohort.num_folds

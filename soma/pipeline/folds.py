@@ -10,7 +10,8 @@ step for step by the parity scenarios in ``tests/e2e/test_parity.py``:
 4. build the loaders
 5. ``Baseline.fit`` on the train targets (set shape)
 6. ``Trainer.fit`` with exactly the plan's callbacks (``Checkpoint`` in memory, no file,
-   and ``EarlyStopping``)
+   and ``EarlyStopping``), then the read-only runtime observers ``Pipeline`` built for
+   the fold before step 1
 7. the tune-time step (detection: ``sweep_threshold`` on tune)
 8. per split: ``soma.predict`` (+ baseline rows) -> ``soma.evaluate`` -> write
    ``predictions_<split>`` and ``metrics.json``
@@ -21,6 +22,7 @@ Shape differences live in the :class:`~soma.pipeline.build.FoldSetup` the builde
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -48,8 +50,9 @@ class FoldResult:
     bundle: Path | None = None
 
 
-def run_fold(fold_dir: str | Path, setup: FoldSetup) -> FoldResult:
-    """Train, score and save one fold in the canonical order."""
+def run_fold(fold_dir: str | Path, setup: FoldSetup, *, observers: Sequence[Any] = ()) -> FoldResult:
+    """Train, score and save one fold in the canonical order; ``observers`` are Trainer
+    callbacks that run after the plan's."""
     fold_dir = Path(fold_dir)
     fold_dir.mkdir(parents=True, exist_ok=True)
     seed_everything(setup.seed, fold=setup.fold)  # 1
@@ -58,8 +61,9 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup) -> FoldResult:
     loaders = setup.build_loaders(learner, fold_dir)  # 4
     baseline = setup.fit_baseline(learner.head) if setup.fit_baseline is not None else None  # 5
     # The plan's callbacks are the whole policy: no implicit Checkpoint, EarlyStopping or
-    # Progress, so a run without ``checkpoint`` keeps its final weights.
-    trainer = learn.Trainer(callbacks=setup.callbacks(), **setup.trainer)
+    # Progress, so a run without ``checkpoint`` keeps its final weights. The runtime
+    # observers only read, after them.
+    trainer = learn.Trainer(callbacks=[*setup.callbacks(), *observers], **setup.trainer)
     fit = trainer.fit(learner, loaders.train, loaders.tune)  # 6
     if loaders.after_fit is not None:
         loaders.after_fit(fold_dir)

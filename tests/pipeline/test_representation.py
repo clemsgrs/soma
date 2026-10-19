@@ -755,3 +755,34 @@ def test_pipeline_representation_run_writes_normal_artifacts_without_task_report
     assert metadata["finished_at"] == "2026-08-11T12:34:56+00:00"
     assert metadata["seed"] == 0
     assert metadata["representation_provenance"] == {"croma": "9.8.7"}
+
+
+def test_a_representation_run_calls_no_callback_factory(tmp_path: Path):
+    """A representation run trains no fold, so it builds no runtime observer."""
+    rows = _croma_cohort()
+    _representation_inputs(
+        tmp_path,
+        rows=rows,
+        split_rows=[(0, row[0], "test") for row in rows],
+        tensors=_croma_tensors(rows),
+    )
+    config = experiment(
+        tmp_path / "dataset.csv",
+        tmp_path / "splits.csv",
+        output_dir=tmp_path / "outputs",
+        head=None,
+        evaluation={"representation": CRoMaOptions(confounder_column="site", split="test")},
+    )
+    contexts = []
+
+    def factory(context):
+        contexts.append(context)
+        return []
+
+    from soma.pipeline import Pipeline
+
+    result = Pipeline(config, source=CachedSetSource(tmp_path / "features"), callback_factory=factory).run()
+
+    assert result.fold_results == []
+    assert result.summary["test/croma_median"] == 0.0
+    assert contexts == []
