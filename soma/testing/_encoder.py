@@ -146,6 +146,7 @@ def register_fake_encoder() -> str:
                 "supported_spacing_um": [0.25, 0.5],
                 "default_spacing_um": 0.5,
                 "precision": "fp32",
+                "source": "",  # no weights to download
             },
         )
     except ValueError:  # registered already: this module was imported again
