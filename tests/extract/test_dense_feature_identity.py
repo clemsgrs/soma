@@ -16,9 +16,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import slide2vec
 import tifffile
 import torch
-from slide2vec import DenseOptions, ExecutionOptions
+import torch.nn.functional as F
+from slide2vec import DenseOptions, ExecutionOptions, TileEncoder
+from slide2vec.encoders import encoder_registry
+from torchvision.transforms import v2
 
 import soma
 from soma.config import CacheOptions
@@ -136,3 +140,163 @@ def test_dense_cache_is_reused_until_its_encoder_file_is_edited(tmp_path, dense_
     assert f"encoder '{USER_ENCODER}'" in message and user_encoder.object in message
     assert original[:12] in message and user_encoder.fingerprint[:12] in message
     assert user_encoder.encoded == 0
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_reextract_setting_rebuilds_a_dense_cache_after_an_encoder_edit(tmp_path, dense_data, user_encoder, kind):
+    extract_grids(kind, dense_data, tmp_path, encoder=USER_ENCODER)
+    encoded = user_encoder.encoded
+
+    user_encoder.edit()
+    rebuilt = extract_grids(kind, dense_data, tmp_path, encoder=USER_ENCODER, on_identity_mismatch="reextract")
+
+    assert user_encoder.encoded == encoded
+    _assert_grids(rebuilt, _expected_grids(rebuilt, scale=2.0))
+    recorded = cache_metadata(tmp_path, kind)["feature_identity"]
+    assert recorded["slide2vec_version"] == slide2vec.__version__
+    assert recorded["identity"]["encoder_code"] == {
+        "object": user_encoder.object,
+        "fingerprint": user_encoder.fingerprint,
+        "source": "",
+    }
+
+
+# --- After a slide2vec upgrade ------------------------------------------------------------
+
+SWITCHABLE_ENCODER = "soma652-switchable-dense"
+_ORIGINAL_MEAN = [0.5, 0.5, 0.5]
+_CHANGED_MEAN = [0.25, 0.5, 0.5]
+_UPGRADED_VERSION = "999.0.0"
+
+
+class _SwitchableDenseEncoder(TileEncoder):
+    """Each 8x8 block of a grid is its mean normalised RGB; the test changes the mean."""
+
+    mean: list[float] = list(_ORIGINAL_MEAN)
+    instances = 0
+    encoded = 0
+
+    def __init__(self, **kwargs) -> None:
+        self._device = torch.device("cpu")
+        type(self).instances += 1
+
+    @property
+    def encode_dim(self) -> int:
+        return 3
+
+    @property
+    def patch_size(self) -> tuple[int, int]:
+        return (8, 8)
+
+    @property
+    def device(self) -> torch.device:
+        return self._device
+
+    def to(self, device):
+        self._device = torch.device(device)
+        return self
+
+    def get_transform(self):
+        return v2.Compose(
+            [v2.ToImage(), v2.ToDtype(torch.float32, scale=True), v2.Normalize(mean=list(type(self).mean), std=[0.25] * 3)]
+        )
+
+    def get_normalization_transform(self):
+        return self.get_transform()
+
+    def encode_tiles(self, batch: torch.Tensor) -> torch.Tensor:
+        return batch.float().mean(dim=(-2, -1))
+
+    def encode_tiles_dense(self, batch: torch.Tensor) -> torch.Tensor:
+        type(self).encoded += int(batch.shape[0])
+        return F.avg_pool2d(batch.float(), kernel_size=8, stride=8)
+
+
+@pytest.fixture
+def switchable(monkeypatch) -> type[_SwitchableDenseEncoder]:
+    """The switchable encoder, with its original transform and fresh counters, on CPU."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    encoder_registry.names()  # discover the built-in encoders before copying the entries
+    monkeypatch.setattr(encoder_registry, "_entries", dict(encoder_registry._entries))
+    encoder_registry.register(
+        SWITCHABLE_ENCODER,
+        _SwitchableDenseEncoder,
+        metadata={
+            "level": "tile",
+            "input_size": 32,
+            "patch_size": 8,
+            "supports_variable_input_size": True,
+            "output_variants": {"default": {"encode_dim": 3}},
+            "default_output_variant": "default",
+            "supported_spacing_um": [0.25, 0.5],
+            "default_spacing_um": 0.5,
+            "precision": "fp32",
+            "source": "",
+        },
+    )
+    monkeypatch.setattr(_SwitchableDenseEncoder, "mean", list(_ORIGINAL_MEAN))
+    monkeypatch.setattr(_SwitchableDenseEncoder, "instances", 0)
+    monkeypatch.setattr(_SwitchableDenseEncoder, "encoded", 0)
+    return _SwitchableDenseEncoder
+
+
+def _upgrade_slide2vec(monkeypatch, encoder, *, mean: list[float]) -> None:
+    """Install a newer slide2vec in which the encoder normalizes with ``mean``."""
+    monkeypatch.setattr(slide2vec, "__version__", _UPGRADED_VERSION)
+    monkeypatch.setattr(encoder, "mean", list(mean))
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_dense_cache_is_refused_after_an_upgrade_changed_the_transform(
+    tmp_path, dense_data, switchable, monkeypatch, kind
+):
+    extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+    encoded = switchable.encoded
+
+    _upgrade_slide2vec(monkeypatch, switchable, mean=_CHANGED_MEAN)
+
+    with pytest.raises(CacheFeatureIdentityMismatch, match=r"transform\.normalize\.mean"):
+        extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+    assert switchable.encoded == encoded
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_reextract_setting_rebuilds_a_dense_cache_after_an_upgrade_changed_the_transform(
+    tmp_path, dense_data, switchable, monkeypatch, kind
+):
+    extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+
+    _upgrade_slide2vec(monkeypatch, switchable, mean=_CHANGED_MEAN)
+    rebuilt = extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER, on_identity_mismatch="reextract")
+
+    # Red normalises with mean 0.25: 0 -> -1, 255 -> 3.
+    expected = _expected_grids(rebuilt, scale=1.0)
+    for grid in expected.values():
+        grid[0] = grid[0] + 1
+    _assert_grids(rebuilt, expected)
+    recorded = cache_metadata(tmp_path, kind)["feature_identity"]
+    assert recorded["slide2vec_version"] == _UPGRADED_VERSION
+    assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_dense_cache_verified_after_an_upgrade_hits_cheaply_from_then_on(
+    tmp_path, dense_data, switchable, monkeypatch, kind
+):
+    extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+    encoded = switchable.encoded
+    instances = switchable.instances
+
+    _upgrade_slide2vec(monkeypatch, switchable, mean=_ORIGINAL_MEAN)
+    reused = extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+
+    # The upgrade kept the identity: the cache is reused, at the cost of one encoder load.
+    assert switchable.encoded == encoded
+    assert switchable.instances == instances + 1
+    _assert_grids(reused, _expected_grids(reused, scale=1.0))
+    assert cache_metadata(tmp_path, kind)["feature_identity"]["slide2vec_version"] == _UPGRADED_VERSION
+
+    extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+
+    assert switchable.instances == instances + 1
