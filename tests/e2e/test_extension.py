@@ -686,7 +686,8 @@ def test_a_component_without_a_source_file_warns_once_and_has_no_fingerprint(
         "warnings",
         [str(warning.message) for warning in caught if "cannot detect edits" in str(warning.message)],
         [
-            f"aggregator '{NOTEBOOK_AGGREGATOR}' has no source file and no installed version: "
+            f"aggregator '{NOTEBOOK_AGGREGATOR}' ({NOTEBOOK_MODULE}.NotebookMeanPool) has no source file "
+            "and no installed version: "
             "resume and the leaderboard cannot detect edits to its code."
         ],
     )

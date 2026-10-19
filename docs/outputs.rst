@@ -108,7 +108,8 @@ entry holds:
 - ``kind``, and ``name`` as the plan spells it
 - ``object``: the ``module.qualname`` of the class or function the name resolved to
 - ``distribution`` and ``version`` when the object's file belongs to an
-  installed distribution, and ``editable: true`` when that install is editable
+  installed distribution (its ``RECORD`` lists the file), and ``editable: true``
+  when that install is editable (the file is in its project directory)
 - ``source_sha256``: the SHA-256 of the file that defines the object, or
   ``null`` when there is no file (for example a notebook cell)
 - ``git``: the ``sha`` and ``dirty`` state of the git work tree that holds the
@@ -129,6 +130,12 @@ compare the fingerprints of the external components:
   component, it stops with an error that names the experiment and the
   components. Rerun the stale seeds on the current code: the newer run of a
   seed replaces the older one.
+
+Both checks also compare the ``object``: a name that now resolves to another
+class or function is a change, even when the fingerprint is the same (two
+classes of one unchanged file have the same ``source_sha256``). The error then
+lists the old object as ``absent`` in the new run, and the new one as
+``absent`` in the old run.
 
 Runs without a component record are not compared. When an external component
 has no fingerprint (no source file and no installed version), the run warns at

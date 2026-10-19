@@ -142,13 +142,19 @@ def component_record(plan: Plan) -> list[dict[str, Any]]:
 
 
 def external_fingerprints(record: Iterable[Mapping[str, Any]]) -> dict[str, str | None]:
-    """``{"<kind> '<name>'": fingerprint}`` for each external component of a record: one
-    whose object's top-level package is not in :data:`VERSIONED_PACKAGES`."""
+    """``{"<kind> '<name>' (<object>)": fingerprint}`` for each external component of a
+    record: one whose object's top-level package is not in :data:`VERSIONED_PACKAGES`.
+
+    The object is part of the key, so a name that resolves to another object (another
+    class of the same unchanged file shares its digest) is another component. It is
+    left out when the name already spells it (a dotted path to the object)."""
     found = {}
     for entry in record:
         obj = entry.get("object")
         if obj and str(obj).split(".", 1)[0] not in VERSIONED_PACKAGES:
-            found[f"{entry['kind']} '{entry['name']}'"] = entry.get("fingerprint")
+            name = entry["name"]
+            label = f"{entry['kind']} '{name}'" if name == obj else f"{entry['kind']} '{name}' ({obj})"
+            found[label] = entry.get("fingerprint")
     return found
 
 
@@ -156,9 +162,10 @@ def fingerprint_conflicts(records: Mapping[str, Iterable[Mapping[str, Any]]]) ->
     """The external components whose fingerprint is not the same in every record.
 
     ``records`` maps a label of each run (``"seed 0"``) to its component record. Each
-    conflicting component (``"<kind> '<name>'"``) maps to its fingerprint per run, as a
-    message shows it: a source digest shortened to 12 characters, ``none`` without a
-    fingerprint, and ``absent`` when the run does not list it as external.
+    conflicting component (a key of :func:`external_fingerprints`) maps to its
+    fingerprint per run, as a message shows it: a source digest shortened to 12
+    characters, ``none`` without a fingerprint, and ``absent`` when the run does not list
+    it as external, as when its name resolved to another object in that run.
     """
     fingerprints = {label: external_fingerprints(record) for label, record in records.items()}
     conflicts: dict[str, dict[str, str]] = {}
@@ -217,9 +224,10 @@ def _source_file(target: Any) -> Path | None:
 
 
 @functools.lru_cache(maxsize=1)
-def _packages_distributions() -> Mapping[str, list[str]]:
-    """Top-level package → distributions, read once per process (it scans every installed
-    distribution); a version is still read afresh for each record."""
+def _packages_distributions(path: tuple[str, ...]) -> Mapping[str, list[str]]:
+    """Top-level package → distributions on the import ``path`` (``sys.path``), read once
+    per path (it scans every installed distribution); a version is still read afresh for
+    each record."""
     from importlib.metadata import packages_distributions
 
     return packages_distributions()
@@ -228,13 +236,14 @@ def _packages_distributions() -> Mapping[str, list[str]]:
 def _installed_distribution(module: str, source: Path | None) -> tuple[Any, bool] | None:
     """``(distribution, editable)`` of the installed distribution that ``source`` belongs
     to: one that provides the module's top-level package and holds the file (under its
-    project directory when editable, under its install directory otherwise)."""
+    project directory when editable, listed in its ``RECORD`` otherwise, since the
+    distributions of a namespace package share its install directory)."""
     from importlib.metadata import PackageNotFoundError, distribution
 
     if source is None or not module:
         return None
     top = module.split(".", 1)[0]
-    for name in _packages_distributions().get(top, ()):
+    for name in _packages_distributions(tuple(sys.path)).get(top, ()):
         try:
             found = distribution(name)
         except PackageNotFoundError:
@@ -244,8 +253,11 @@ def _installed_distribution(module: str, source: Path | None) -> tuple[Any, bool
             if source.is_relative_to(root):
                 return found, True
             continue
-        base = Path(found.locate_file("")).resolve()
-        if source.is_relative_to(base / top) or (source.parent == base and source.stem == top):
+        try:
+            relative = source.relative_to(Path(found.locate_file("")).resolve()).as_posix()
+        except ValueError:
+            continue
+        if relative in {file.as_posix() for file in found.files or ()}:
             return found, False
     return None
 
