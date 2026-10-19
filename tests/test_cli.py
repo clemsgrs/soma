@@ -419,6 +419,7 @@ def _typed_preset(
     lr: "float" = 1e-4,
     batch_size: Literal[1, 8] = 1,
     workers: Literal["auto", 4] = "auto",
+    mode: Literal["auto", None] = "auto",
 ) -> ExperimentConfig:
     """A user's preset with typed arguments (``lr`` annotated as under postponed annotations)."""
     config = presets.mil_classification(encoder, "abmil")
@@ -480,6 +481,9 @@ def test_preset_arguments_take_their_declared_types(tmp_path: Path, capsys, type
     assert config.loaders.num_workers == 4
     code, err = _exit_code([*run, "--batch-size", "4"], capsys)
     assert code == 2 and "--batch-size: invalid choice: '4'" in err
+    # None among a Literal's values means the flag may be left out, not a choice.
+    code, err = _exit_code([*run, "--mode", "None"], capsys)
+    assert code == 2 and "--mode: invalid choice: 'None'" in err
 
 
 def test_a_preset_annotation_that_does_not_evaluate_leaves_the_flags_working(capsys, typed_presets):
