@@ -20,11 +20,13 @@ from __future__ import annotations
 
 import json
 import logging
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 import slide2vec
+from slide2vec.encoders import encoder_code, encoder_registry
 
 from soma.extract.cache._types import FeatureCacheResolution
 from soma.extract.cache.io import _load_metadata, _write_metadata
@@ -43,14 +45,17 @@ class CacheFeatureIdentityMismatch(ValueError):
 
 @dataclass(frozen=True)
 class FeatureIdentityCheck:
-    """How a pooled cache's recorded feature identity is verified when it is resolved.
+    """How a cache's recorded feature identity is verified when it is resolved.
 
-    ``differing`` compares a recorded identity with the one the installed slide2vec
-    would produce for this run, and returns ``{field: (recorded, current)}`` for the
-    fields that differ. It loads the encoder to read its transform, so it is called
-    only when the cache was last verified with another slide2vec version.
+    ``encoder`` is the registered encoder whose features the cache holds. Its code is
+    compared on every resolution, from the registry alone. ``differing`` compares a
+    recorded identity with the one the installed slide2vec would produce for this run,
+    and returns ``{field: (recorded, current)}`` for the fields that differ. It loads the
+    encoder to read its transform, so it is called only when the cache was last verified
+    with another slide2vec version.
     """
 
+    encoder: str
     differing: Callable[[dict[str, Any]], dict[str, tuple[Any, Any]]]
     # ``cache.on_identity_mismatch``: 'error' or 'reextract'.
     on_mismatch: str = "error"
@@ -142,6 +147,10 @@ def stale_features_reason(
             installed,
         )
         return "no recorded feature identity"
+    # Every hit: the encoder's code is read from the registry, without building it.
+    code_reason = _changed_code_reason(cache_dir=cache_dir, identity=record["identity"], check=check)
+    if code_reason is not None:
+        return code_reason
     verified_version = record.get("slide2vec_version")
     if verified_version == installed:
         return None
@@ -160,14 +169,68 @@ def stale_features_reason(
         f"Feature cache at {cache_dir} was last verified with slide2vec {verified_version}, "
         f"and slide2vec {installed} now extracts different features: {details}."
     )
+    return _refuse(message, check=check, reason="feature identity changed")
+
+
+def _refuse(message: str, *, check: FeatureIdentityCheck, reason: str) -> str:
+    """Follow ``cache.on_identity_mismatch`` for a cache whose features cannot be reused:
+    return ``reason`` (extract the cache again) under ``reextract``, raise otherwise."""
     if check.on_mismatch == "reextract":
         logger.warning("%s Extracting the cache again (cache.on_identity_mismatch).", message)
-        return "feature identity changed"
+        return reason
     raise CacheFeatureIdentityMismatch(
         f"{message} Reusing or completing the cache would mix the two. Delete the cache "
         "directory, choose another cache.root_dir, or set "
         "cache.on_identity_mismatch: reextract."
     )
+
+
+def _current_code(encoder: str) -> list[tuple[str, str, dict[str, Any]]]:
+    """``(field, label, code)`` for each code field of ``encoder``'s feature identity.
+
+    Every encoder records its own code (``encoder_code``). A slide or patient encoder
+    also records the code of its registered tile encoder (``tile_encoder_code``), whose
+    features it aggregates. Read from the registry: no encoder is built.
+    """
+    current = [("encoder_code", f"encoder '{encoder}'", encoder_code(encoder))]
+    info = encoder_registry.info(encoder)
+    if info.get("level", "tile") != "tile":
+        tile_encoder = str(info["tile_encoder"])
+        current.append(
+            (
+                "tile_encoder_code",
+                f"tile encoder '{tile_encoder}' of encoder '{encoder}'",
+                encoder_code(tile_encoder),
+            )
+        )
+    return current
+
+
+def _changed_code_reason(
+    *, cache_dir: Path, identity: dict[str, Any], check: FeatureIdentityCheck
+) -> str | None:
+    """Compare the encoder code a cache records with the code registered now.
+
+    Returns None when they match, and otherwise follows ``cache.on_identity_mismatch``.
+    """
+    for field, label, code in _current_code(check.encoder):
+        recorded = identity.get(field)
+        if field in identity and recorded != code:
+            message = (
+                f"Feature cache at {cache_dir} holds features extracted with other code for "
+                f"{label}: recorded {_describe_code(recorded)}, current {_describe_code(code)}."
+            )
+            return _refuse(message, check=check, reason="encoder code changed")
+    return None
+
+
+def _describe_code(code: Any) -> str:
+    """``module.Class (fingerprint 1a2b3c4d5e6f)``, a SHA-256 shortened to 12 characters."""
+    if not isinstance(code, dict):
+        return repr(code)
+    fingerprint = code.get("fingerprint")
+    shown = "none" if fingerprint is None else str(fingerprint)
+    return f"{code.get('object')} (fingerprint {shown[:12] if len(shown) == 64 else shown})"
 
 
 def _write_record(metadata_path: Path, existing: dict[str, Any], record: dict[str, Any]) -> None:
