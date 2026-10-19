@@ -151,7 +151,6 @@ def validate_feature_adaptor_compatibility(
     feature_mode: str = "cached",
     unit: str | None = None,
     has_composite: bool = False,
-    is_hierarchical: bool = False,
 ) -> None:
     """Enforce which data planes own the feature adaptor.
 
@@ -178,16 +177,14 @@ def validate_feature_adaptor_compatibility(
         if has_composite
         else f"{unit}-level features"
         if unit in {"patient", "tile"}
-        else "a hierarchical feature stream"
-        if is_hierarchical
         else None
     )
     if unsupported is not None:
         raise ValueError(
             f"{requested_text} is not yet supported for {unsupported}: the feature adaptor fits "
-            "on the tile-encoder MIL path, the slide-encoder embedding path, and the "
-            "single-encoder dense path. Use {method: none} here (composites normalize per "
-            "member via member_norm)."
+            "on the tile-encoder MIL path (flat or hierarchical bags), the slide-encoder "
+            "embedding path, and the single-encoder dense path. Use {method: none} here "
+            "(composites normalize per member via member_norm)."
         )
 
 

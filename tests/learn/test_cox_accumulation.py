@@ -50,10 +50,31 @@ def _transmil_cox_model(cox_window: int = 1) -> MILModel:
     return MILModel(aggregator=agg, task_head=head)
 
 
+def _hipt_cox_model(cox_window: int = 1) -> MILModel:
+    """HIPT over regions of 2 x 2 tiles; no dropout, so a forward is deterministic."""
+    agg = aggregator_registry.get("hipt")(
+        input_dim=D,
+        region_size=8,
+        patch_size=4,
+        embed_dim_region=12,
+        embed_dim_slide=12,
+        num_heads=2,
+        dropout=0.0,
+    )
+    head = CoxSurvivalHead(input_dim=agg.output_dim, cox_window=cox_window)
+    return MILModel(aggregator=agg, task_head=head)
+
+
 def _bags(sizes, seed=0):
     """Return a list of (n_i, D) feature tensors."""
     g = torch.Generator().manual_seed(seed)
     return [torch.randn(n, D, generator=g) for n in sizes]
+
+
+def _region_bags(regions, seed=0):
+    """Return a list of (m_i, 4, D) region grids: m_i regions of 2 x 2 tiles."""
+    g = torch.Generator().manual_seed(seed)
+    return [torch.randn(m, 4, D, generator=g) for m in regions]
 
 
 def _window_batch(bags, time, event):
@@ -128,6 +149,24 @@ class TestWindowedLoop:
             [[True] * 8],
             [[True] * 3],
         ]
+
+    def test_hipt_window_step_reaches_every_bag_with_the_breslow_loss(self):
+        torch.manual_seed(0)
+        model = _hipt_cox_model(cox_window=8)
+        bags = [bag.requires_grad_() for bag in _region_bags([2, 1, 3, 2, 1, 4, 2, 3])]
+        # The earliest time is an event, so every bag is at risk at some event time and
+        # enters the loss (a censored bag earlier than every event would get no gradient).
+        time = [8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+        event = [0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0]
+        loss = MILLearner(model).training_step(_window_batch(bags, time, event))
+        loss.backward()
+
+        for i, bag in enumerate(bags):
+            assert bag.grad is not None and bag.grad.abs().sum() > 0, f"bag {i}"
+        with torch.no_grad():
+            risks = torch.cat([model(bag.unsqueeze(0)).logits.view(1) for bag in bags])
+        expected = cox_breslow_loss(risks, torch.tensor(time), torch.tensor(event))
+        assert torch.allclose(loss.detach(), expected, atol=1e-6)
 
 
 # ---------------------------------------------------------------------------

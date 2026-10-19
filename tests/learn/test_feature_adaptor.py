@@ -6,7 +6,8 @@ behavior — what the fitted buffers are, that they come from the Support split 
 that the optimizer never sees them, and that they survive a checkpoint round-trip.
 
 Sections: the module itself, then each path it is wired into — the tile-encoder MIL
-path (issues #283, #284) and the slide-encoder embedding path (issue #285).
+path (issues #283, #284), its hierarchical stores (issue #655) and the slide-encoder
+embedding path (issue #285).
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from soma.data import Cohort, ImageManifest
 from soma.data import CachedSetSource
 from soma.learn.feature_adaptor import NormalizationParams, ProjectionParams
 from tests.experiment_configs import experiment
+from tests.extraction_configs import extraction
 from soma.models.heads.classification import BinaryClassificationHead
 from soma.learn.feature_adaptor import build_feature_adaptor
 from soma.models.model import EmbeddingModel, MILModel
@@ -841,6 +843,114 @@ def test_attention_reconstructs_the_projected_model_from_the_bundle(tmp_path: Pa
 
 
 # ---------------------------------------------------------------------------
+# Hierarchical path — region-grid stores read by HIPT (issue #655)
+# ---------------------------------------------------------------------------
+
+#: Each region is an ordered 2 x 2 grid of tiles.
+_TILES_PER_REGION = 4
+#: Regions per sample and feature scale. The two train samples hold different region
+#: counts, so a batch of both pads the region axis; the held-out samples are two orders
+#: of magnitude wider, so a leaked row would move the fitted statistics.
+_REGION_GRIDS = {"s0": (2, 1.0), "s1": (3, 2.0), "s2": (1, 500.0), "s3": (2, 900.0)}
+_HIPT = {
+    "name": "hipt",
+    "params": {"embed_dim_region": 12, "embed_dim_slide": 12, "num_heads": 2, "dropout": 0.0},
+}
+
+
+def _region_fold(data_dir: Path, *, flat: bool, feature_dim: int = _TILE_DIM) -> CachedSetSource:
+    """The cohort of :func:`_synthetic_fold` with region-grid features: one ``(M, 4, D)``
+    tensor per sample, or (``flat=True``) the same tiles stored as an ``(M * 4, D)`` bag
+    in region order and then tile order."""
+    _synthetic_fold(data_dir, feature_dim)  # writes the cohort CSVs
+    torch.manual_seed(0)
+    feature_dir = data_dir / "region_features"
+    feature_dir.mkdir()
+    for sample_id, (regions, scale) in _REGION_GRIDS.items():
+        grid = torch.randn(regions, _TILES_PER_REGION, feature_dim) * scale
+        torch.save(grid.reshape(-1, feature_dim) if flat else grid, feature_dir / f"{sample_id}.pt")
+    return CachedSetSource(feature_dir)
+
+
+def _run_region_fold(
+    data_dir: Path,
+    normalization: NormalizationParams | None,
+    projection: ProjectionParams | None = None,
+    *,
+    flat: bool = False,
+):
+    """One fold over :func:`_region_fold`: HIPT on the region grids, at batch size 2 so
+    the two train samples are padded to a common region count; ``mean_pool`` on the
+    flat tiles."""
+    store = _region_fold(data_dir, flat=flat)
+    if flat:
+        model = {"aggregator": "mean_pool"}
+    else:
+        model = {
+            "aggregator": _HIPT,
+            "features": FeaturesConfig(extraction=extraction(0.5, 4, requested_region_size_px=8)),
+        }
+    run_dir, state_dict = _pipeline_run(
+        data_dir,
+        store,
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1},
+        **model,
+        **_ADAM,
+        **_adaptor(normalization, projection),
+    )
+    sidecar = json.loads((run_dir / "feature_adapter.json").read_text(encoding="utf-8"))
+    return state_dict, sidecar, store
+
+
+def test_zscore_on_a_region_grid_store_is_fit_on_the_support_tiles_only(tmp_path: Path):
+    """The adaptor fits on the train samples' stored tiles, not on padded batches: the
+    statistics equal those of the same tiles in a flat store, and those computed
+    directly from the stored tiles."""
+    zscore = NormalizationParams(method="zscore")
+    grouped_state, grouped_sidecar, store = _run_region_fold(tmp_path / "regions", zscore)
+    flat_state, flat_sidecar, _ = _run_region_fold(tmp_path / "flat", zscore, flat=True)
+
+    for buffer in ("center", "scale"):
+        key = f"feature_adaptor.{buffer}"
+        assert torch.equal(grouped_state[key], flat_state[key]), buffer
+    support = torch.cat([store.load(sid).reshape(-1, _TILE_DIM) for sid in ("s0", "s1")]).double()
+    assert torch.allclose(grouped_state["feature_adaptor.center"], support.mean(dim=0).float(), atol=1e-5)
+    assert torch.allclose(
+        grouped_state["feature_adaptor.scale"], support.std(dim=0, unbiased=False).float(), atol=1e-4
+    )
+    # 2 + 3 regions of 4 tiles each.
+    assert grouped_sidecar["normalization"]["n_fit_samples"] == 20
+    assert flat_sidecar["normalization"]["n_fit_samples"] == 20
+    assert grouped_sidecar["n_support_samples"] == 2
+
+
+@pytest.mark.parametrize(
+    "normalization, projection",
+    [
+        (NormalizationParams(method="l2"), ProjectionParams(method="random", target_dim=6)),
+        (NormalizationParams(method="layernorm"), ProjectionParams(method="pca", target_dim=3)),
+    ],
+    ids=["l2+random", "layernorm+pca"],
+)
+def test_every_adaptor_method_fits_a_region_grid_store_as_it_fits_the_flat_tiles(
+    tmp_path: Path, normalization: NormalizationParams, projection: ProjectionParams
+):
+    """Each method is accepted on a region-grid store and fits exactly as on the flat
+    tiles. The run trains, so HIPT was built at the projected width (wider and narrower
+    than the native 4)."""
+    grouped_state, grouped_sidecar, _ = _run_region_fold(tmp_path / "regions", normalization, projection)
+    flat_state, flat_sidecar, _ = _run_region_fold(tmp_path / "flat", normalization, projection, flat=True)
+
+    adaptor_keys = sorted(key for key in grouped_state if key.startswith("feature_adaptor."))
+    assert adaptor_keys == sorted(key for key in flat_state if key.startswith("feature_adaptor."))
+    for key in adaptor_keys:
+        assert torch.equal(grouped_state[key], flat_state[key]), key
+    assert grouped_sidecar == flat_sidecar
+    assert grouped_sidecar["projection"]["output_dim"] == projection.target_dim
+
+
+# ---------------------------------------------------------------------------
 # Slide-encoder embedding path — end to end through Pipeline (issue #285)
 # ---------------------------------------------------------------------------
 
@@ -1609,8 +1719,6 @@ def test_a_bundle_rebuilds_a_registered_user_head_with_the_run_task_params(
 
 
 def _dense_pipeline_config(tmp_path: Path, **adaptor):
-    from tests.extraction_configs import extraction
-
     return experiment(
         tmp_path / "manifest.csv",
         tmp_path / "splits.csv",

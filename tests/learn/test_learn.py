@@ -19,6 +19,7 @@ from torch.utils.data import DataLoader
 
 from soma.models.aggregators.mil.abmil import ABMIL
 from soma.models.aggregators.mil.clam import CLAM_SB
+from soma.models.aggregators.mil.hipt import HIPT
 from soma.models.aggregators.pooling import MeanPool
 from soma.learn import (
     Budget,
@@ -32,9 +33,10 @@ from soma.learn import (
     Trainer,
 )
 from soma.models.heads.classification import BinaryClassificationHead
+from soma.models.heads.ordinal_classification import OrdinalClassificationHead
 from soma.models.heads.regression import RegressionHead
-from soma.models.heads.survival import CoxSurvivalHead, cox_breslow_loss
-from soma.learn.collate import BagBatch, CoxWindowBatch, bag_collate_fn
+from soma.models.heads.survival import CoxSurvivalHead, SurvivalHead, cox_breslow_loss
+from soma.learn.collate import BagBatch, CoxWindowBatch, bag_collate_fn, hierarchical_bag_collate_fn
 from soma.models.model import EmbeddingModel, MILModel
 from soma.learn.sample_dataset import SampleBatch
 
@@ -387,6 +389,56 @@ class TestTrainerBudget:
         )
         assert result.optimizer_steps == 5
         assert result.history["epoch"].tolist() == [0, 1, 2]
+
+    @pytest.mark.parametrize("task", ["survival", "ordinal_classification"])
+    def test_hipt_accumulation_steps_each_window_and_the_partial_one_within_its_epoch(self, task):
+        """Per-sample losses over hierarchical bags at batch size 1, accumulating 8 batches:
+        10 bags make windows of 8 and 2, so ceil(10 / 8) = 2 steps per epoch, and the
+        partial window steps before the epoch ends, so no gradient reaches the next one."""
+        torch.manual_seed(0)
+        aggregator = HIPT(
+            input_dim=D,
+            region_size=8,
+            patch_size=4,
+            embed_dim_region=12,
+            embed_dim_slide=12,
+            num_heads=2,
+            dropout=0.0,
+        )
+        if task == "survival":
+            head = SurvivalHead(input_dim=aggregator.output_dim, num_bins=4)
+            targets = [{"bin": i % 4, "event": i % 2, "time": float(i + 1)} for i in range(10)]
+        else:
+            head = OrdinalClassificationHead(input_dim=aggregator.output_dim, num_classes=3)
+            targets = [{"label": i % 3} for i in range(10)]
+        g = torch.Generator().manual_seed(0)
+        # 1 to 3 regions of 2 x 2 tiles each.
+        items = [(torch.randn(1 + i % 3, 4, D, generator=g), targets[i], f"s{i}") for i in range(10)]
+        loader = DataLoader(
+            items,
+            batch_size=1,
+            collate_fn=functools.partial(hierarchical_bag_collate_fn, target_dtypes=head.target_dtypes),
+        )
+
+        class EpochEnd:
+            def __init__(self) -> None:
+                self.steps: list[int] = []
+                self.gradient_left: list[bool] = []
+
+            def on_epoch_end(self, trainer, learner) -> None:
+                self.steps.append(trainer.optimizer_steps)
+                self.gradient_left.append(
+                    any(p.grad is not None and bool(p.grad.any()) for p in learner.parameters())
+                )
+
+        recorder = EpochEnd()
+        learner = MILLearner(MILModel(aggregator=aggregator, task_head=head))
+        result = Trainer(max_epochs=3, accumulate_grad_batches=8, callbacks=[recorder], device="cpu").fit(
+            learner, loader
+        )
+        assert recorder.steps == [2, 4, 6]
+        assert recorder.gradient_left == [False, False, False]
+        assert result.optimizer_steps == 6
 
     def test_validation_every_n_epochs_always_includes_the_final_epoch(self):
         learner = _learner()
