@@ -49,8 +49,10 @@ from zero and ``num_bins`` is inferred as ``max(bin) + 1``.
 
 Survival samples are slides or patients (``cohort.collapse: patient_id``); a
 tile-level run is rejected. For patient runs, all slides of a patient must agree
-on the survival target. Survival MIL supports ``abmil``, ``transmil``, ``mean_pool``,
-and hierarchical ``hipt`` features; other aggregators are rejected.
+on the survival target. Survival MIL supports ``abmil``, ``transmil``, ``mean_pool``
+and ``hipt``; other aggregators are rejected. A hierarchical store works with all
+four: ``hipt`` reads it grouped, and the others read it as a flat bag of its tiles
+(see :doc:`aggregators`).
 
 Task heads
 ----------

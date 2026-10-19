@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
 import torch
 
@@ -843,7 +844,7 @@ def test_attention_reconstructs_the_projected_model_from_the_bundle(tmp_path: Pa
 
 
 # ---------------------------------------------------------------------------
-# Hierarchical path — region-grid stores read by HIPT (issue #655)
+# Hierarchical path — region-grid stores, read grouped by HIPT and flat by the rest (issue #655)
 # ---------------------------------------------------------------------------
 
 #: Each region is an ordered 2 x 2 grid of tiles.
@@ -948,6 +949,40 @@ def test_every_adaptor_method_fits_a_region_grid_store_as_it_fits_the_flat_tiles
         assert torch.equal(grouped_state[key], flat_state[key]), key
     assert grouped_sidecar == flat_sidecar
     assert grouped_sidecar["projection"]["output_dim"] == projection.target_dim
+
+
+@pytest.mark.parametrize("aggregator", ["abmil", "mean_pool"])
+def test_a_non_hipt_aggregator_reads_a_region_grid_store_as_the_same_tiles_stored_flat(
+    tmp_path: Path, aggregator: str
+):
+    """Any aggregator but HIPT reads each region grid as one flat bag. With zscore
+    fitted, it trains to the same weights and scores the test sample with the same
+    logits as on a flat store of the same tiles in the same order. Batch size 2 pads the
+    two train bags (8 and 12 tiles) to a common length."""
+    from soma.evaluation import Predictions
+
+    runs = {}
+    for layout in ("regions", "flat"):
+        store = _region_fold(tmp_path / layout, flat=layout == "flat")
+        runs[layout] = _pipeline_run(
+            tmp_path / layout,
+            store,
+            aggregator=aggregator,
+            loaders={"batch_size": 2},
+            trainer={"max_epochs": 2},
+            **_ADAM,
+            **_adaptor(NormalizationParams(method="zscore")),
+        )
+    (grouped_dir, grouped_state), (flat_dir, flat_state) = runs["regions"], runs["flat"]
+
+    assert "feature_adaptor.center" in grouped_state
+    assert sorted(grouped_state) == sorted(flat_state)
+    for key in grouped_state:
+        assert torch.equal(grouped_state[key], flat_state[key]), key
+    grouped = Predictions.from_parquet(grouped_dir / "predictions_test.parquet").frame
+    flat = Predictions.from_parquet(flat_dir / "predictions_test.parquet").frame
+    assert grouped["sample_id"].tolist() == ["s3"]
+    pd.testing.assert_frame_equal(grouped, flat)
 
 
 # ---------------------------------------------------------------------------

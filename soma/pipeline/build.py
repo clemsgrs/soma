@@ -49,6 +49,7 @@ from soma.config import (
 from soma.data import (
     AnnotationManifest,
     Cohort,
+    FlatSetSource,
     FoldSplit,
     GridGeometry,
     ImageManifest,
@@ -946,6 +947,10 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
     aggregator_spec = None
     head_cls = task_cls
     aggregator_key = None if aggregator is None else aggregator_registry.key_of(aggregator.name)
+    if feature_store.rank == 3 and aggregator_key != "hipt":
+        # Only HIPT reads a hierarchical store grouped; any other aggregator reads each
+        # sample's tiles as one flat bag, so the bag path below applies unchanged.
+        feature_store = FlatSetSource(feature_store)
     if plan.unit == "patient":
         kind = "embedding"
     elif feature_store.rank == 1:
@@ -953,8 +958,6 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
             raise ValueError("an aggregator pools a bag; these features are one vector per sample")
         kind, fits_adaptor = "embedding", True
     elif feature_store.rank == 3:
-        if aggregator_key != "hipt":
-            raise ValueError("hierarchical features require the hipt aggregator")
         kind, fits_adaptor = "mil", True
         aggregator_spec = {"name": aggregator.name, "params": _resolve_hipt_params(inputs.preprocessing, aggregator)}
     else:
@@ -977,7 +980,7 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
         return build_learner(build_set_model(**model_spec, adaptor=adaptor), plan)
 
     def build_loaders(learner: Learner, fold_dir: Path) -> FoldLoaders:
-        return _set_loaders(inputs, records, learner.head, kind=kind)
+        return _set_loaders(inputs, feature_store, records, learner.head, kind=kind)
 
     def fit_baseline(head) -> Baseline:
         # Samples without features are scored with the training split's baseline (class
@@ -1031,9 +1034,12 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
     )
 
 
-def _set_loaders(inputs: RunInputs, records: _SetFoldRecords, head, *, kind: str) -> FoldLoaders:
-    """Step 4 for the set shape: the train / tune / test loaders and the scored splits."""
-    plan, feature_store = inputs.plan, inputs.source
+def _set_loaders(
+    inputs: RunInputs, feature_store, records: _SetFoldRecords, head, *, kind: str
+) -> FoldLoaders:
+    """Step 4 for the set shape: the train / tune / test loaders and the scored splits,
+    over ``feature_store`` (the run's source, or its flat view)."""
+    plan = inputs.plan
     loader_kwargs = _loader_kwargs(plan.loaders)
     target_fn = head.extract_targets
     patient = plan.unit == "patient"

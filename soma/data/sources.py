@@ -21,6 +21,7 @@ from soma.data.cohort import Cohort
 from soma.data.geometry import GridGeometry
 
 __all__ = [
+    "FlatSetSource",
     "GridSource",
     "GroupedSetSource",
     "ImageSource",
@@ -265,3 +266,36 @@ def group_by(
     return GroupedSetSource(
         source, {unit_id: tuple(ids) for unit_id, ids in members.items()}, how=how
     )
+
+
+class FlatSetSource:
+    """A rank-2 :class:`SetSource` over a hierarchical (rank-3) one.
+
+    Each sample's ``(M, P, D)`` region grid is served as one ``(M * P, D)`` bag, in
+    region order and then tile order: the same tiles, as many times, in the same order.
+    ``coords`` is ``None``: a hierarchical store's coordinates are not one per tile.
+    """
+
+    def __init__(self, source: SetSource) -> None:
+        if source.rank != 3:
+            raise ValueError(f"FlatSetSource flattens a rank 3 source, got rank {source.rank}")
+        self._source = source
+
+    @property
+    def sample_ids(self) -> list[str]:
+        return self._source.sample_ids
+
+    @property
+    def feature_dim(self) -> int:
+        return int(self._source.feature_dim)
+
+    @property
+    def rank(self) -> Literal[2]:
+        return 2
+
+    def load(self, sample_id: str) -> Tensor:
+        tensor = self._source.load(sample_id)
+        return tensor.reshape(-1, tensor.shape[-1])
+
+    def coords(self, sample_id: str) -> Tensor | None:
+        return None
