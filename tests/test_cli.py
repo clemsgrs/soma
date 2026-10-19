@@ -304,7 +304,10 @@ def test_init_takes_the_tiling_as_typed_flags(capsys):
     assert "requested_spacing_um: 0.5\n" in out
     tiling = yaml.safe_load(out)["features"]["extraction"]["tiling"]
     assert (tiling["requested_spacing_um"], tiling["requested_tile_size_px"]) == (0.5, 224)
-    out = _init(["survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "nll", "--tile-size", "224"], capsys)
+    out = _init(
+        ["survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "nll", "--num-bins", "4", "--tile-size", "224"],
+        capsys,
+    )
     tiling = yaml.safe_load(out)["features"]["extraction"]["tiling"]
     assert (tiling["requested_spacing_um"], tiling["requested_tile_size_px"]) == (0.5, 224)
 
@@ -354,9 +357,21 @@ def test_init_refuses_arguments_that_make_an_invalid_config(capsys):
     from soma.cli import main
 
     with pytest.raises(SystemExit) as exc_info:
-        main(["init", "survival", "--encoder", "uni2", "--aggregator", "clam_sb", "--loss", "nll"])
+        main(["init", "survival", "--encoder", "uni2", "--aggregator", "clam_sb", "--loss", "nll", "--num-bins", "4"])
     assert exc_info.value.code == 2
     assert "not supported for survival" in capsys.readouterr().err
+
+
+def test_init_takes_the_survival_bin_count_as_a_typed_flag(capsys):
+    from soma.cli import main
+
+    args = ["survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "nll"]
+    head = yaml.safe_load(_init([*args, "--num-bins", "4"], capsys))["learner"]["params"]["head"]
+    assert (head["name"], head["params"]["binning"], head["params"]["num_bins"]) == ("discrete_survival", "train_quantiles", 4)
+    with pytest.raises(SystemExit) as exc_info:
+        main(["init", *args])
+    assert exc_info.value.code == 2
+    assert "preset survival: loss 'nll' needs num_bins" in capsys.readouterr().err
 
 
 # --- a preset registered through soma.register ---

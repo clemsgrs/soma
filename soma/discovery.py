@@ -9,7 +9,7 @@ class is never registered, so it is never listed.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from soma.registry import Registry, benchmark_import_hint, kinds
@@ -49,7 +49,9 @@ def register(
     *,
     params: type | None = None,
     infer: Callable[[Any, Mapping[str, Any]], dict[str, Any]] | None = None,
+    fit: Callable[[Sequence[Any], Mapping[str, Any]], dict[str, Any]] | None = None,
 ) -> None:
-    """Register ``cls`` under ``name`` in the ``kind`` registry, with its params dataclass
-    and an optional ``infer(cohort, params) -> dict`` hook (see :meth:`Registry.register`)."""
-    registry(kind).register(name, cls, params=params, infer=infer)
+    """Register ``cls`` under ``name`` in the ``kind`` registry, with its params dataclass,
+    an optional ``infer(cohort, params) -> dict`` hook and an optional
+    ``fit(records, params) -> dict`` hook (see :meth:`Registry.register`)."""
+    registry(kind).register(name, cls, params=params, infer=infer, fit=fit)

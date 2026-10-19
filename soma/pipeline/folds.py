@@ -5,7 +5,8 @@ depends on the order random state is consumed, so the order is fixed here and re
 step for step by the parity scenarios in ``tests/e2e/test_parity.py``:
 
 1. ``soma.seed_everything(seed, fold=fold)``
-2. fit the feature adaptor on the train split (an explicit train-only step)
+2. fit the feature adaptor on the train split (an explicit train-only step), then the
+   head's registry ``fit`` hook on the training population (the survival bin edges)
 3. build the model (weight initialisation draws here) and its learner
 4. build the loaders
 5. ``Baseline.fit`` on the train targets (set shape)
@@ -57,7 +58,7 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup, *, observers: Sequence[Any]
     fold_dir.mkdir(parents=True, exist_ok=True)
     seed_everything(setup.seed, fold=setup.fold)  # 1
     adaptor = setup.fit_adaptor(fold_dir)  # 2
-    learner = setup.build_learner(adaptor)  # 3
+    learner = setup.build_learner(adaptor)  # 2 (the head's fit hook), 3
     loaders = setup.build_loaders(learner, fold_dir)  # 4
     baseline = setup.fit_baseline(learner.head) if setup.fit_baseline is not None else None  # 5
     # The plan's callbacks are the whole policy: no implicit Checkpoint, EarlyStopping or

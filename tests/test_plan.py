@@ -511,3 +511,89 @@ def test_a_plan_holds_the_upstream_dataclasses_and_writes_primitives(files):
     assert isinstance(plan.features.extraction, slide2vec.PreprocessingConfig)
     assert yaml.safe_load(plan.to_yaml()) == plan.to_dict()
     assert plan.to_dict()["features"]["extraction"]["tiling"]["requested_spacing_um"] == 0.5
+
+
+# --- survival bins derived from the training split (binning: train_quantiles) ---------
+
+QUANTILES = {"binning": "train_quantiles", "num_bins": 2}
+
+
+def _quantile_survival(files, **kwargs) -> ExperimentConfig:
+    params = {**QUANTILES, **kwargs.pop("head_params", {})}
+    return experiment(*files, head="discrete_survival", head_params=params, **kwargs)
+
+
+def _survival_folds(root: Path, rows: list[tuple], folds: list[dict[str, str]]) -> tuple[Path, Path]:
+    """``rows`` of ``(sample_id, patient_id, time, event)`` and one ``{sample_id: split}`` per fold."""
+    root.mkdir(parents=True, exist_ok=True)
+    records, splits = root / "dataset.csv", root / "splits.csv"
+    pd.DataFrame(
+        [{"sample_id": s, "patient_id": p, "image_path": f"/slides/{s}.tif", "time": t, "event": e} for s, p, t, e in rows]
+    ).to_csv(records, index=False)
+    pd.DataFrame(
+        [{"fold": fold, "sample_id": s, "split": split} for fold, roles in enumerate(folds) for s, split in roles.items()]
+    ).to_csv(splits, index=False)
+    return records, splits
+
+
+def test_train_quantile_bins_need_num_bins_and_take_no_bin_edges_or_bin_column(files):
+    with pytest.raises(ValueError, match="binning 'train_quantiles' needs num_bins"):
+        check(experiment(*files, head="discrete_survival", aggregator="abmil", head_params={"binning": "train_quantiles"}))
+    with pytest.raises(
+        ValueError, match=r"bin_edges cannot be set from a config: .* fitted per fold .*\(binning: train_quantiles\)"
+    ):
+        check(_quantile_survival(files, aggregator="abmil", head_params={"bin_edges": [1.5]}))
+    # The head reads no bin, so a targets mapping cannot name one.
+    with pytest.raises(ValueError, match=r"head targets name key\(s\) \['bin'\]"):
+        check(_quantile_survival(files, aggregator="abmil", head_params={"targets": {"bin": "b"}}))
+
+
+def test_train_quantile_bins_refuse_a_bin_column_at_cohort_load(tmp_path: Path):
+    files = _cohort_files(tmp_path, time=[float(i) for i in range(1, 9)], event=[1] * 8, bin=[0, 1] * 4)
+    message = (
+        r"cohort.records has a 'bin' column, but the head derives bins from the training split "
+        r"\(binning: train_quantiles\); drop the column or set binning: column"
+    )
+    with pytest.raises(ValueError, match=message):
+        load_cohort(_quantile_survival(files, aggregator="abmil"))
+    # binning: column reads the same file.
+    load_cohort(experiment(*files, head="discrete_survival", aggregator="abmil"))
+
+
+def test_the_plan_records_the_binning_and_bin_count_never_the_edges(tmp_path: Path):
+    files = _cohort_files(tmp_path, time=[float(i) for i in range(1, 9)], event=[1] * 8)
+    plan = _resolve(_quantile_survival(files, aggregator="abmil"))
+    assert plan.learner.params["head"].params == {
+        "num_bins": 2,
+        "binning": "train_quantiles",
+        "alpha": 0.15,
+        "dropout": 0.0,
+        "targets": {"time": "time", "event": "event"},
+    }
+
+
+def test_resolve_names_the_fold_whose_training_split_cannot_form_the_bins(tmp_path: Path):
+    rows = [(f"s{i}", f"p{i}", float(i + 1), event) for i, event in enumerate([1, 1, 1, 0, 0, 0, 1, 1])]
+    roles = ["train"] * 4 + ["tune"] * 2 + ["test"] * 2
+    fold_0 = dict(zip([f"s{i}" for i in range(8)], roles))
+    # Fold 1 trains on s3-s6: one uncensored time (7.0) for two bins.
+    fold_1 = dict(zip([f"s{i}" for i in (3, 4, 5, 6, 0, 1, 2, 7)], roles))
+    files = _survival_folds(tmp_path / "few", rows, [fold_0, fold_1])
+    with pytest.raises(ValueError, match=r"^Fold 1: .*num_bins=2 .* 1 uncensored training time\(s\)"):
+        _resolve(_quantile_survival(files, aggregator="abmil"))
+    _resolve(_quantile_survival(_survival_folds(tmp_path / "one", rows, [fold_0]), aggregator="abmil"))
+
+    # Five training times [1, 1, 1, 1, 2]: the 1/3 and 2/3 quantiles are both 1.
+    rows = [(f"s{i}", f"p{i}", time, 1) for i, time in enumerate([1.0, 1.0, 1.0, 1.0, 2.0, 3.0, 4.0, 5.0])]
+    files = _survival_folds(tmp_path / "tied", rows, [dict(zip([f"s{i}" for i in range(8)], ["train"] * 5 + ["tune"] + ["test"] * 2))])
+    with pytest.raises(ValueError, match=r"^Fold 0: .*num_bins=3 .*repeat the cut point 1 "):
+        _resolve(_quantile_survival(files, aggregator="abmil", head_params={"num_bins": 3}))
+
+
+def test_a_patient_run_counts_each_training_patient_once(tmp_path: Path):
+    # p0's two slides share one uncensored time; p1 is censored. Two slides, one patient.
+    rows = [("a", "p0", 1.0, 1), ("b", "p0", 1.0, 1), ("c", "p1", 2.0, 0), ("d", "p2", 3.0, 1), ("e", "p3", 4.0, 1)]
+    files = _survival_folds(tmp_path, rows, [{"a": "train", "b": "train", "c": "train", "d": "tune", "e": "test"}])
+    _resolve(_quantile_survival(files, aggregator="abmil"))  # slides: two uncensored times
+    with pytest.raises(ValueError, match=r"^Fold 0: .*num_bins=2 .* 1 uncensored training time\(s\)"):
+        _resolve(_quantile_survival(files, cohort={"collapse": "patient_id"}))

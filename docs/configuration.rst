@@ -132,8 +132,8 @@ Presets
 A preset returns a complete config for a common task (see :ref:`presets`);
 ``soma.components("presets")`` lists them with their arguments. A choice that
 changes the model has no default: you name the aggregator of a slide preset, the
-``loss`` of ``survival`` (``"nll"`` or ``"cox"``) and the ``num_classes`` of
-``segmentation`` and ``detection``.
+``loss`` of ``survival`` (``"nll"`` or ``"cox"``, and ``num_bins`` for ``"nll"``)
+and the ``num_classes`` of ``segmentation`` and ``detection``.
 
 The slide presets, ``mil_classification``, ``mil_regression`` and ``survival``,
 take the tiling as arguments: ``spacing`` (µm per pixel) and ``tile_size``

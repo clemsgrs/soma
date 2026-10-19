@@ -174,30 +174,44 @@ def survival(
     encoder: str,
     aggregator: str,
     loss: Literal["nll", "cox"],
+    num_bins: int | None = None,
     spacing: float | None = None,
     tile_size: int | None = None,
 ) -> ExperimentConfig:
     """Predict survival from whole slides: a MIL bag and a discrete-time or Cox head.
 
     Slides are tiled at ``spacing`` and ``tile_size`` and embedded as in
-    :func:`mil_classification`; ``aggregator`` pools the bag for the head ``loss`` picks:
+    :func:`mil_classification`; ``aggregator`` pools the bag for the head ``loss`` picks.
+    Both heads read the cohort's ``time`` and ``event`` columns:
 
     * ``nll``: the ``discrete_survival`` head, a discrete-time model trained with the hazard
-      negative log-likelihood. It reads the cohort's ``time``, ``event`` and ``bin``
-      columns (the number of bins comes from the cohort).
+      negative log-likelihood over ``num_bins`` time bins (required for ``nll``). The run
+      derives the bins from each fold's training split (``binning: train_quantiles``):
+      the cut points are quantiles of its uncensored times, so the tune and test times
+      never shape them. The cohort carries no ``bin`` column.
     * ``cox``: the ``cox_survival`` head, a Cox proportional-hazards model trained with
-      the Breslow partial likelihood. It reads ``time`` and ``event``. Bags are forwarded
-      one at a time and each loss is computed over a window of 32 of them, its risk set
-      (the head's ``cox_window``): one optimizer step per 32 bags, where ``nll`` takes
-      one per bag.
+      the Breslow partial likelihood; it has no bins, so it takes no ``num_bins``. Bags
+      are forwarded one at a time and each loss is computed over a window of 32 of them,
+      its risk set (the head's ``cox_window``): one optimizer step per 32 bags, where
+      ``nll`` takes one per bag.
 
     Both losses train the same way: AdamW (lr 1e-4) with a cosine schedule, 50 epochs,
     selection and early stopping on the tune loss.
     """
-    heads = {"nll": Component("discrete_survival"), "cox": Component("cox_survival", {"cox_window": 32})}
-    if loss not in heads:
-        raise ValueError(f"loss must be one of {', '.join(map(repr, heads))}, got {loss!r}.")
-    return _mil(encoder, aggregator, spacing, tile_size, heads[loss])
+    if loss == "nll":
+        if num_bins is None:
+            raise ValueError(
+                "loss 'nll' needs num_bins: the number of time bins the run derives from each "
+                "fold's training split."
+            )
+        head = Component("discrete_survival", {"binning": "train_quantiles", "num_bins": num_bins})
+    elif loss == "cox":
+        if num_bins is not None:
+            raise ValueError("loss 'cox' takes no num_bins: a Cox head has no time bins.")
+        head = Component("cox_survival", {"cox_window": 32})
+    else:
+        raise ValueError(f"loss must be one of 'nll', 'cox', got {loss!r}.")
+    return _mil(encoder, aggregator, spacing, tile_size, head)
 
 
 @_register

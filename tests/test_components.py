@@ -224,6 +224,15 @@ def test_a_registered_custom_class_is_listed_and_validates(aggregators):
         aggregators.validate("fancy_mil", {"width": 0})
 
 
+def test_soma_register_passes_the_fit_hook_through(aggregators):
+    def fit_width(records, params):
+        return {"width": len(records)}
+
+    soma.register("aggregators", "fancy_mil", FancyMIL, params=FancyMILParams, fit=fit_width)
+
+    assert aggregators.fit("fancy_mil", ["a", "b", "c"], {}) == {"width": 3}
+
+
 def test_a_dotted_path_class_resolves_with_a_warning_unvalidated_and_unlisted(aggregators):
     dotted = "tests.test_components.FancyMIL"
 

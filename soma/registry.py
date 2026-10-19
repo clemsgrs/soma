@@ -10,7 +10,7 @@ import inspect
 import sys
 import warnings
 import weakref
-from collections.abc import Callable, Collection, Mapping
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -88,7 +88,9 @@ class Registry:
     Each entry declares its params at registration: a dataclass whose fields mirror the
     constructor keywords a user sets, with their defaults, validated in its
     ``__post_init__`` (:meth:`validate`). A head may also declare
-    ``infer(cohort, params) -> dict`` for the fields the cohort decides (:meth:`infer`).
+    ``infer(cohort, params) -> dict`` for the fields the cohort decides (:meth:`infer`),
+    and ``fit(records, params) -> dict`` for the fields one fold's training records
+    decide (:meth:`fit`).
     A dotted import path that names no registered class resolves too, unvalidated and
     unlisted, with a one-line warning (:meth:`resolve`). :func:`soma.components` lists
     the entries of every registry.
@@ -114,6 +116,7 @@ class Registry:
         *,
         params: type | None = None,
         infer: Callable[[Any, Mapping[str, Any]], dict[str, Any]] | None = None,
+        fit: Callable[[Sequence[Any], Mapping[str, Any]], dict[str, Any]] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> None:
         """Register ``cls`` under ``name`` with the dataclass of its params (ADR 0018)."""
@@ -122,7 +125,7 @@ class Registry:
             raise ValueError(msg)
         if params is not None and not (isinstance(params, type) and dataclasses.is_dataclass(params)):
             raise TypeError(f"params of {self._domain} '{name}' must be a dataclass, got {params!r}")
-        self._entries[name] = _Entry(cls=cls, params=params, infer=infer, metadata=metadata or {})
+        self._entries[name] = _Entry(cls=cls, params=params, infer=infer, fit=fit, metadata=metadata or {})
 
     def validate(self, name: str, params: Mapping[str, Any] | None = None) -> dict[str, Any]:
         """Check ``params`` against the entry's params dataclass and return them.
@@ -167,6 +170,19 @@ class Registry:
         if entry is None or entry.infer is None:
             return {}
         return dict(entry.infer(cohort, dict(params or {})))
+
+    def fit(self, name: str, records: Sequence[Any], params: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """The fields the entry's ``fit`` hook fits on one fold's training ``records``
+        (``{}`` without one).
+
+        ``infer`` runs once on the whole cohort; ``fit`` runs once per fold on the samples
+        that fold trains on, so what it returns may differ between folds and is merged into
+        that fold's params (the survival bin edges). ``params`` are the resolved params.
+        """
+        _, entry = self._lookup(name)
+        if entry is None or entry.fit is None:
+            return {}
+        return dict(entry.fit(list(records), dict(params or {})))
 
     def get(self, name: str) -> Any:
         """Retrieve a registered class by name."""
@@ -303,16 +319,18 @@ def _dotted_path(obj: Any) -> str:
 
 
 class _Entry:
-    __slots__ = ("cls", "params", "infer", "metadata")
+    __slots__ = ("cls", "params", "infer", "fit", "metadata")
 
     def __init__(
         self,
         cls: Any,
         params: type | None,
         infer: Callable[[Any, Mapping[str, Any]], dict[str, Any]] | None,
+        fit: Callable[[Sequence[Any], Mapping[str, Any]], dict[str, Any]] | None,
         metadata: dict[str, Any],
     ) -> None:
         self.cls = cls
         self.params = params
         self.infer = infer
+        self.fit = fit
         self.metadata = metadata

@@ -334,10 +334,14 @@ a head's ``metrics``, a grid head's ``geometry``. soma reads only the dataclass
 passed to ``register``; a ``Params`` attribute on the class is ignored. A head can
 also register an ``infer(cohort, params)`` hook that returns the params the cohort
 decides, such as a classification head's class count and label map or a survival
-head's bin count; a value set in the config wins. A registration inherits nothing
-from the registration of its base class, so a subclass names the params and the
-hook it reuses; both are public. A head named by dotted path gets no hook, so its
-config sets ``num_classes`` and ``label_map`` itself.
+head's bin count; a value set in the config wins. A ``fit(records, params)`` hook
+returns the params one fold's training samples decide, such as the survival head's
+bin edges under ``binning: train_quantiles``: it runs once per fold, and what it
+returns goes into that fold's model, never into the plan. A registration inherits
+nothing from the registration of its base class, so a subclass names the params and
+the hooks it reuses (``infer_num_bins`` and ``fit_bin_edges`` for a survival head);
+all are public. A head named by dotted path gets no hook, so its config sets
+``num_classes`` and ``label_map`` itself.
 
 :func:`soma.testing.check_task_head` checks a head on one batch: its declared
 ``prediction_columns``, the columns of the family's

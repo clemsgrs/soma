@@ -204,6 +204,41 @@ def test_slide_task_heads_learn_from_the_same_features(
     artifact.assert_passed()
 
 
+def test_survival_bins_are_derived_from_the_training_split(
+    cohort, shared_cache, tmp_path, encoder_name, new_artifact
+):
+    """``binning: train_quantiles`` on a cohort without a ``bin`` column: the run cuts the
+    training split's uncensored times at their quartiles, the bundle carries the cut
+    points and ``soma.load`` rebuilds the head with them; the plan never holds them."""
+    import yaml
+
+    import soma
+
+    artifact = new_artifact("slide_mil_survival_nll_train_quantiles")
+    head = {"name": "discrete_survival", "params": {"binning": "train_quantiles", "num_bins": 4}}
+    config = _config(cohort, tmp_path, encoder_name, head=head, metrics=["c_index"], cache_root=shared_cache)
+    records = pd.read_csv(cohort.manifest("survival")).drop(columns="bin")
+    config["cohort"]["records"] = str(tmp_path / "dataset_survival_times.csv")
+    records.to_csv(config["cohort"]["records"], index=False)
+
+    run = run_soma(config, tmp_path / "config.yaml")
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("test/c_index", run.summary["test/c_index"], 0.75)
+
+    train = set(pd.read_csv(cohort.splits_csv).query("split == 'train'")["sample_id"])
+    uncensored = records[records["sample_id"].isin(train) & (records["event"] == 1)]["time"]
+    expected = [float(edge) for edge in np.quantile(uncensored, [0.25, 0.5, 0.75], method="linear")]
+    artifact.facts["uncensored_training_times"] = len(uncensored)
+    model = json.loads((run.run_dir / "bundle" / "model.json").read_text())
+    artifact.check_equal("bundle/model.json/bin_edges", model["params"]["head"]["params"].get("bin_edges"), expected)
+    artifact.check_equal("bundle/load/bin_edges", soma.load(run.run_dir / "bundle").model.task_head.bin_edges, expected)
+    plan_head = yaml.safe_load((run.run_dir / "plan.yaml").read_text())["learner"]["params"]["head"]["params"]
+    artifact.check_equal("plan/head/binning", (plan_head["binning"], plan_head["num_bins"]), ("train_quantiles", 4))
+    artifact.check_equal("plan/head/no_bin_edges", "bin_edges" in plan_head, False)
+    artifact.assert_passed()
+
+
 def test_cross_validated_aggregators_are_ranked_on_a_leaderboard(
     cohort, shared_cache, tmp_path, encoder_name, new_artifact
 ):

@@ -277,6 +277,13 @@ def load_cohort(config: ExperimentConfig):
         unit=config.cohort.collapse,
         allow_missing_test=config.cohort.tune_is_test,
     )
+    head = _head(config)
+    derives_bins = head is not None and head.params.get("binning") == "train_quantiles"
+    if derives_bins and cohort.records and "bin" in cohort.records[0].metadata:
+        raise ValueError(
+            "cohort.records has a 'bin' column, but the head derives bins from the training split "
+            "(binning: train_quantiles); drop the column or set binning: column."
+        )
     return cohort.with_test_from_tune() if config.cohort.tune_is_test else cohort
 
 
@@ -323,6 +330,14 @@ def _check(config: ExperimentConfig) -> None:
     head_cls = task_head_class(head.name)
     family = str(head_cls.task_family)
     head_params = _head_params(head)
+    if family == "survival" and "bin_edges" in head_params:
+        from soma.models.heads.survival import DiscreteSurvivalHead
+
+        if issubclass(head_cls, DiscreteSurvivalHead):
+            raise ValueError(
+                f"head '{head.name}': bin_edges cannot be set from a config: they are fitted per fold "
+                "on the training split (binning: train_quantiles)."
+            )
     registries["head"].validate(head.name, head_params)
     target_columns(config)
     aggregator, decoder = params.get("aggregator"), params.get("decoder")
@@ -717,7 +732,13 @@ def _resolve_head(config: ExperimentConfig, head: Component, cohort: Any, regist
         from soma.models.heads.survival import resolve_survival_task, validate_survival_dataset
 
         _, loss = resolve_survival_task(head.name)
-        validate_survival_dataset(cohort.records, sample_unit(config), loss=loss, num_bins=given.get("num_bins"))
+        validate_survival_dataset(
+            cohort.records,
+            sample_unit(config),
+            loss=loss,
+            num_bins=given.get("num_bins"),
+            binning=given.get("binning", "column"),
+        )
     inferred = plain(registry.infer(head.name, cohort, given))
     contradictions = sorted(key for key in set(inferred) & set(given) if plain(given[key]) != inferred[key])
     if contradictions:
@@ -726,8 +747,32 @@ def _resolve_head(config: ExperimentConfig, head: Component, cohort: Any, regist
             f"contradicts what the cohort shows ({', '.join(f'{key}={inferred[key]!r}' for key in contradictions)})."
         )
     params = registry.canonical_params(head.name, {**explicit, **inferred, **given})
+    # The head's fit hook runs per fold at train time; a fold it cannot fit (too few
+    # uncensored times for the survival bins) fails here, before anything is extracted.
+    # What it fits stays out of the plan, which is the same for every fold.
+    for fold, records in enumerate(_fold_training_records(config, cohort)):
+        try:
+            registry.fit(head.name, records, params)
+        except ValueError as error:
+            raise ValueError(f"Fold {fold}: {error}") from None
     targets, _ = target_columns(config)
     return replace(head, params={**params, "targets": targets})
+
+
+def _fold_training_records(config: ExperimentConfig, cohort: Any) -> Iterator[list[Any]]:
+    """Each fold's training records, one per sample the fold trains on: a patient run's
+    patients by their first record in cohort order, so a patient with several slides
+    counts once."""
+    if sample_unit(config) != "patient":
+        for fold in cohort.folds:
+            yield [cohort.record(sample_id) for sample_id in fold.train]
+        return
+    first: dict[str, Any] = {}
+    for record in cohort.records:
+        first.setdefault(record.patient_id, record)
+    for fold in cohort.folds:
+        patients = dict.fromkeys(cohort.record(sample_id).patient_id for sample_id in fold.train)
+        yield [first[patient_id] for patient_id in patients]
 
 
 # --- provenance ------------------------------------------------------------------------

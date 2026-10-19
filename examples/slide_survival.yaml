@@ -5,9 +5,11 @@ run:
 cohort:
   # dataset.csv carries the survival head's targets as same-named columns: `time`
   # (time-to-event), `event` (0/1) and `bin` (the discrete bin containing `time`, for
-  # every sample including censored ones — compute these yourself, e.g. via qcut on
-  # uncensored times). A CSV that stores the time under another column name (e.g. a
-  # legacy `label`) maps it with the head's `targets` below instead of being rewritten.
+  # every sample including censored ones, computed before the run). To derive the bins
+  # from each fold's training split instead, drop `bin` and set the head's
+  # `binning: train_quantiles` with `num_bins`. A CSV that stores the time under another
+  # column name (e.g. a legacy `label`) maps it with the head's `targets` below instead
+  # of being rewritten.
   records: data/dataset.csv
   splits: data/splits.csv
 
