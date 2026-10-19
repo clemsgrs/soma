@@ -375,6 +375,38 @@ and a scorer — and hand it to ``soma.benchmark.run_benchmark_spec`` for
 execution. soma runs every canonical seed with one shared feature cache and
 returns the aggregated ``BenchmarkRunResult`` together with the per-seed
 evidence roots, without touching the registry, reference tables, or ledger.
+The result also carries the dataset, splits and test checksums that every seed
+ran against.
+
+By default each seed runs as ``Pipeline(config).run()``. Some protocols cannot
+run through a ``Pipeline``: HEST fits a closed-form probe that only
+``HestBenchmark.run`` executes. For those, set the spec's optional ``run``
+field. soma then calls ``run(config)`` for each seed in place of the
+``Pipeline``. The runner must return an object with ``dataset_checksum``,
+``splits_checksum`` and ``test_checksum``, as a ``PipelineResult`` does. To
+wrap a registered recipe, pass its runner along; ``getattr`` gives ``None``
+for a recipe that a ``Pipeline`` runs:
+
+.. code-block:: python
+
+   from soma.benchmark import BenchmarkSpec, get_benchmark, run_benchmark_spec
+
+   recipe = get_benchmark("hest/IDC")
+   spec = BenchmarkSpec(
+       name="my-leaderboard/hest-IDC",
+       canonical_seeds=recipe.canonical_seeds,
+       primary_metric=recipe.primary_metric,
+       build_config=recipe.build_config,
+       score=recipe.score,
+       run=getattr(recipe, "run", None),
+   )
+   result = run_benchmark_spec(
+       spec,
+       dataset_csv="hest/IDC/curated/dataset.csv",
+       splits_csv="hest/IDC/curated/splits.csv",
+       encoder="uni2",
+       output_root="runs/hest-IDC",
+   )
 
 Runnable demonstrations live in ``examples/``
 (`examples/README.md <https://github.com/clemsgrs/soma/blob/main/examples/README.md>`_):
