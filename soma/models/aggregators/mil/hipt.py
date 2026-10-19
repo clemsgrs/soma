@@ -359,7 +359,8 @@ class HIPT(Aggregator):
             X: Tile features ``(B, N, D)`` where ``N = M × P``, or
                 hierarchical features ``(B, M, P, D)``.
             mask: Boolean mask ``(B, N)`` for flat inputs or ``(B, M)`` for
-                hierarchical inputs. True = valid tile/region.
+                hierarchical inputs. True = valid tile/region. On flat input,
+                masked tiles enter the region ViT as zeros.
 
         Returns:
             AggregatorOutput with slide-level representation ``(B, D_slide)``.
@@ -393,6 +394,9 @@ class HIPT(Aggregator):
                 X = torch.nn.functional.pad(X, (0, 0, 0, pad_n))
                 mask = torch.nn.functional.pad(mask, (0, pad_n), value=False)
                 N = N + pad_n
+            # A region ViT sees all P tiles of a region: zero the masked ones, as the pad
+            # above is, so what the padding holds cannot reach the output.
+            X = X.masked_fill(~mask.unsqueeze(-1), 0)
 
             M = N // P
             X_regions = X.reshape(B, M, P, D)
