@@ -559,7 +559,7 @@ def _sha256(text: str) -> str:
 
 
 def test_edited_component_code_is_recorded_and_guards_resume_and_leaderboard(
-    tmp_path, encoder_name, new_artifact, user_aggregator
+    tmp_path, encoder_name, new_artifact, user_aggregator, capsys
 ):
     """A registered aggregator in a module file, edited between two seeds of one
     experiment: each run records the file's digest, a resume across the edit is refused,
@@ -608,4 +608,39 @@ def test_edited_component_code_is_recorded_and_guards_resume_and_leaderboard(
         _component(_run_yaml(first.run_dir)["components"], "aggregator")["fingerprint"],
         _sha256(USER_SOURCE),
     )
+
+    # Seed 1 runs the edited code under the same experiment id: the leaderboard refuses
+    # to pool it with seed 0, naming the experiment and the aggregator.
+    second = run_soma(_slide_config(cohort, tmp_path, encoder_name, aggregator=EDITABLE_AGGREGATOR, seed=1), config_path)
+    artifact.record_run("seed_1", second)
+    experiment_id = _run_yaml(first.run_dir)["experiment_id"]
+    artifact.check_equal("seed_1/same_experiment", _run_yaml(second.run_dir)["experiment_id"] == experiment_id, True)
+    artifact.check_equal(
+        "seed_1/aggregator/fingerprint",
+        _component(_run_yaml(second.run_dir)["components"], "aggregator")["fingerprint"],
+        _sha256(USER_SOURCE_EDITED),
+    )
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as board:
+        soma_main(["leaderboard", "--root", str(tmp_path / "runs")])
+    error = capsys.readouterr().err
+    artifact.check_equal("leaderboard_mixed_code/exit_code", board.value.code, 2)
+    artifact.check_equal("leaderboard_mixed_code/names_the_experiment", experiment_id in error, True)
+    artifact.check_equal(
+        "leaderboard_mixed_code/names_the_aggregator", f"aggregator '{EDITABLE_AGGREGATOR}'" in error, True
+    )
+
+    # Rerunning seed 0 on the edited code replaces the stale attempt: the board pools the
+    # two new runs.
+    rerun = run_soma(_slide_config(cohort, tmp_path, encoder_name, aggregator=EDITABLE_AGGREGATOR), config_path)
+    artifact.record_run("seed_0_rerun", rerun)
+    with pytest.raises(SystemExit) as board:
+        soma_main(["leaderboard", "--root", str(tmp_path / "runs")])
+    artifact.check_equal("leaderboard/exit_code", board.value.code, 0)
+    (board_json,) = (tmp_path / "runs" / "leaderboards").glob("*.json")
+    (row,) = json.loads(board_json.read_text())["rows"]
+    artifact.check_equal("leaderboard/n", row["n"], 2)
+    artifact.check_equal("leaderboard/seeds", row["seeds"], [0, 1])
+    expected_mean = (second.summary["test/auroc"] + rerun.summary["test/auroc"]) / 2
+    artifact.check_equal("leaderboard/mean", round(row["mean"], 6), round(expected_mean, 6))
     artifact.assert_passed()
