@@ -187,7 +187,8 @@ def stale_features_reason(
     )
     message = (
         f"Feature cache at {cache_dir} was last verified with slide2vec {verified_version}, "
-        f"and slide2vec {installed} now extracts different features: {details}."
+        f"and slide2vec {installed} now extracts different features: {details}. Reusing "
+        "or completing the cache would mix the two."
     )
     return _refuse(message, check=check, reason="feature identity changed")
 
@@ -199,26 +200,26 @@ def _refuse(message: str, *, check: FeatureIdentityCheck, reason: str) -> str:
         logger.warning("%s Extracting the cache again (cache.on_identity_mismatch).", message)
         return reason
     raise CacheFeatureIdentityMismatch(
-        f"{message} Reusing or completing the cache would mix the two. Delete the cache "
-        "directory, choose another cache.root_dir, or set "
-        "cache.on_identity_mismatch: reextract."
+        f"{message} Delete the cache directory, choose another cache.root_dir, or set "
+        "cache.on_identity_mismatch: reextract to extract it again."
     )
 
 
-def _current_code(encoder: str) -> list[tuple[str, str, dict[str, Any]]]:
-    """``(field, label, code)`` for each code field of ``encoder``'s feature identity.
+def _current_code(encoder: str) -> list[tuple[str, str, str, dict[str, Any]]]:
+    """``(field, encoder, label, code)`` for each code field of ``encoder``'s identity.
 
     Every encoder records its own code (``encoder_code``). A slide or patient encoder
     also records the code of its registered tile encoder (``tile_encoder_code``), whose
     features it aggregates. Read from the registry: no encoder is built.
     """
-    current = [("encoder_code", f"encoder '{encoder}'", encoder_code(encoder))]
+    current = [("encoder_code", encoder, f"encoder '{encoder}'", encoder_code(encoder))]
     info = encoder_registry.info(encoder)
     if info.get("level", "tile") != "tile":
         tile_encoder = str(info["tile_encoder"])
         current.append(
             (
                 "tile_encoder_code",
+                tile_encoder,
                 f"tile encoder '{tile_encoder}' of encoder '{encoder}'",
                 encoder_code(tile_encoder),
             )
@@ -234,23 +235,25 @@ def _changed_code_reason(
     Returns None when they match, and otherwise follows ``cache.on_identity_mismatch``.
     """
     current = _current_code(check.encoder)
-    for field, label, code in current:
-        recorded = identity.get(field)
-        if field in identity and recorded != code:
+    for field, _, label, code in current:
+        if field in identity and identity[field] != code:
             message = (
                 f"Feature cache at {cache_dir} holds features extracted with other code for "
-                f"{label}: recorded {_describe_code(recorded)}, current {_describe_code(code)}."
+                f"{label}: recorded {_describe_code(identity[field])}, current "
+                f"{_describe_code(code)}. Reusing or completing the cache would mix "
+                "features of the two."
             )
             return _refuse(message, check=check, reason="encoder code changed")
-    missing = [field for field, _, _ in current if field not in identity]
+    missing = [field for field, _, _, _ in current if field not in identity]
     if missing:
         return _refuse(_predates_message(cache_dir, missing), check=check, reason="unverifiable encoder code")
-    for _, label, code in current:
-        if code.get("fingerprint") is None and label not in _UNFINGERPRINTED_WARNED:
-            _UNFINGERPRINTED_WARNED.add(label)
+    for _, name, _, code in current:
+        if code.get("fingerprint") is None and name not in _UNFINGERPRINTED_WARNED:
+            _UNFINGERPRINTED_WARNED.add(name)
             warnings.warn(
-                f"{label} ({code.get('object')}) has no source file: soma cannot detect "
-                "changes to its code in the feature cache. Define the encoder in a .py file.",
+                f"encoder '{name}' ({code.get('object')}) has no source file: soma cannot "
+                "detect changes to its code in the feature cache. Define the encoder in a "
+                ".py file.",
                 UserWarning,
                 stacklevel=2,
             )
