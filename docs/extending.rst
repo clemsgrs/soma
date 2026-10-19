@@ -130,7 +130,8 @@ For these cases, install the encoder as a slide2vec plugin package (see
 
 The feature cache does not check an encoder's code or weights. After you change the
 model behind a name, delete its feature cache directory (see :doc:`caching`), or a
-run reuses the features of the old model.
+run reuses the features of the old model while its component record (see
+:ref:`component-record`) names the new code.
 
 .. _bring-your-own-features:
 
