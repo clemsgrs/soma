@@ -4,7 +4,8 @@ The cache key does not cover the encoder's image transform, so a slide2vec upgra
 changes an encoder's preprocessing used to leave the key unchanged and the old features in
 use (issue #512). These scenarios run real slide2vec extraction with a weight-free encoder
 whose transform the test can change, and simulate the upgrade by changing the installed
-slide2vec version.
+slide2vec version. The key does not cover the encoder's code either: the last scenarios
+edit the file that defines a user's encoder, which every cache hit checks.
 """
 
 from __future__ import annotations
