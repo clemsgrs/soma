@@ -35,7 +35,7 @@ from soma.learn import (
 from soma.models.heads.classification import BinaryClassificationHead
 from soma.models.heads.ordinal_classification import OrdinalClassificationHead
 from soma.models.heads.regression import RegressionHead
-from soma.models.heads.survival import CoxSurvivalHead, SurvivalHead, cox_breslow_loss
+from soma.models.heads.survival import CoxSurvivalHead, DiscreteSurvivalHead, cox_breslow_loss
 from soma.learn.collate import BagBatch, CoxWindowBatch, bag_collate_fn, hierarchical_bag_collate_fn
 from soma.models.model import EmbeddingModel, MILModel
 from soma.learn.sample_dataset import SampleBatch
@@ -406,7 +406,7 @@ class TestTrainerBudget:
             dropout=0.0,
         )
         if task == "survival":
-            head = SurvivalHead(input_dim=aggregator.output_dim, num_bins=4)
+            head = DiscreteSurvivalHead(input_dim=aggregator.output_dim, num_bins=4)
             targets = [{"bin": i % 4, "event": i % 2, "time": float(i + 1)} for i in range(10)]
         else:
             head = OrdinalClassificationHead(input_dim=aggregator.output_dim, num_classes=3)

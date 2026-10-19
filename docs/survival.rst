@@ -3,7 +3,7 @@ Survival
 
 Two heads model time-to-event with right censoring; the head selects the loss:
 
-* ``survival`` — **discrete-time** survival modeling. The continuous time
+* ``discrete_survival`` — **discrete-time** survival modeling. The continuous time
   axis is split into ``num_bins`` bins; the head emits one hazard logit per bin
   and trains with the sigmoid-hazard negative log-likelihood (the Gensheimer /
   HIPT ``NLLSurvLoss`` formulation).
@@ -23,9 +23,9 @@ Two heads model time-to-event with right censoring; the head selects the loss:
     one optimizer step per window.
 
 Both losses rank with Harrell's C-index via scikit-survival. The ``survival``
-preset takes the loss as its ``loss`` argument: ``"nll"`` builds the ``survival``
-head and ``"cox"`` the ``cox_survival`` head in accumulation mode, with
-``cox_window: 32``.
+preset takes the loss as its ``loss`` argument: ``"nll"`` builds the
+``discrete_survival`` head and ``"cox"`` the ``cox_survival`` head in
+accumulation mode, with ``cox_window: 32``.
 
 Survival datasets carry these target columns; the head's ``targets`` param maps
 a target to a differently named column, for example ``targets: {time: label}``:
@@ -42,7 +42,7 @@ a target to a differently named column, for example ``targets: {time: label}``:
      - ``1`` if the event was observed, ``0`` if right-censored.
    * - ``bin``
      - Index of the discrete time bin containing ``time``, for every sample
-       including censored ones. Required for the ``survival`` head only.
+       including censored ones. Required for the ``discrete_survival`` head only.
 
 Compute the bins yourself (e.g. ``qcut`` on the uncensored times). Set the
 head's ``num_bins`` param to fix the head width: any subset of indices in
@@ -60,7 +60,7 @@ four: ``hipt`` reads it grouped, and the others read it as a flat bag of its til
 Task heads
 ----------
 
-.. autoclass:: soma.models.heads.survival.SurvivalHead
+.. autoclass:: soma.models.heads.survival.DiscreteSurvivalHead
    :members:
 
 .. autoclass:: soma.models.heads.survival.CoxSurvivalHead

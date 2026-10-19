@@ -27,7 +27,7 @@ from soma.pipeline import Pipeline, PipelineResult
 from soma.models.heads.registry import task_registry
 from soma.models.heads.survival import (
     CoxSurvivalHead,
-    SurvivalHead,
+    DiscreteSurvivalHead,
     cox_breslow_loss,
     resolve_survival_task,
     validate_survival_dataset,
@@ -144,7 +144,7 @@ class TestPolarity:
 
 class TestCoxSurvivalHead:
     def test_the_head_name_selects_the_objective(self):
-        assert resolve_survival_task("survival") == (SurvivalHead, "nll")
+        assert resolve_survival_task("discrete_survival") == (DiscreteSurvivalHead, "nll")
         assert resolve_survival_task("cox_survival") == (CoxSurvivalHead, "cox")
 
     def test_target_dtypes_have_no_bin(self):
@@ -352,7 +352,7 @@ class TestCoxConfigGuards:
                 experiment(
                     tmp_path / "d.csv",
                     tmp_path / "s.csv",
-                    head="survival",
+                    head="discrete_survival",
                     head_params={"loss": "cox"},
                     loaders={"batch_size": 4},
                 )

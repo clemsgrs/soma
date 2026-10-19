@@ -32,8 +32,8 @@ _EPS = 1e-7
 
 
 @dataclass
-class SurvivalParams:
-    """:class:`SurvivalHead`'s params; ``num_bins`` left unset is inferred from the
+class DiscreteSurvivalParams:
+    """:class:`DiscreteSurvivalHead`'s params; ``num_bins`` left unset is inferred from the
     cohort's ``bin`` targets (:func:`infer_num_bins`)."""
 
     num_bins: int | None = None
@@ -181,7 +181,7 @@ def _risk_from_logits(logits: Tensor) -> Tensor:
     return -survival.sum(dim=1)
 
 
-class SurvivalHead(TaskHead):
+class DiscreteSurvivalHead(TaskHead):
     """Discrete-time survival head (sigmoid-hazard NLL).
 
     Args:
@@ -208,7 +208,7 @@ class SurvivalHead(TaskHead):
     ) -> None:
         super().__init__()
         if num_bins < 1:
-            raise ValueError(f"SurvivalHead requires num_bins >= 1, got {num_bins}.")
+            raise ValueError(f"DiscreteSurvivalHead requires num_bins >= 1, got {num_bins}.")
         self.fc = nn.Linear(input_dim, num_bins)
         self.dropout = build_input_dropout(dropout)
         self.num_bins = num_bins
@@ -224,7 +224,7 @@ class SurvivalHead(TaskHead):
 
     def forward(self, X: Tensor) -> Tensor:
         if X.ndim != 2:
-            msg = f"SurvivalHead expects input of shape (B, D), got {tuple(X.shape)}"
+            msg = f"DiscreteSurvivalHead expects input of shape (B, D), got {tuple(X.shape)}"
             raise ValueError(msg)
         if self.dropout is not None:
             X = self.dropout(X)
@@ -250,7 +250,7 @@ class CoxSurvivalHead(TaskHead):
     """Continuous-time CoxPH survival head (Breslow partial likelihood).
 
     Emits a single risk scalar per sample; the Cox partial likelihood is computed
-    over a risk set of multiple samples. Unlike :class:`SurvivalHead`, there is no
+    over a risk set of multiple samples. Unlike :class:`DiscreteSurvivalHead`, there is no
     binning and risk is the **raw** model output — higher means higher hazard /
     shorter survival, which is what ``concordance_index_censored`` expects.
     (Reusing the NLL head's ``-sum(surv)`` derivation here would double-invert the
@@ -356,7 +356,7 @@ class CoxSurvivalHead(TaskHead):
 def resolve_survival_task(task_name: str) -> tuple[type[TaskHead], str]:
     """The head class a survival leaf names and its objective: ``cox`` for a
     :class:`CoxSurvivalHead` (or a subclass), else the discrete-time ``nll``. The leaf's
-    name selects the objective (``survival`` or ``cox_survival``); a registered subclass
+    name selects the objective (``discrete_survival`` or ``cox_survival``); a registered subclass
     inherits its base's."""
     head_cls = task_registry.resolve(task_name)
     return head_cls, ("cox" if issubclass(head_cls, CoxSurvivalHead) else "nll")
@@ -443,5 +443,5 @@ def validate_survival_dataset(
                 )
 
 
-task_registry.register("survival", SurvivalHead, params=SurvivalParams, infer=infer_num_bins)
+task_registry.register("discrete_survival", DiscreteSurvivalHead, params=DiscreteSurvivalParams, infer=infer_num_bins)
 task_registry.register("cox_survival", CoxSurvivalHead, params=CoxSurvivalParams)

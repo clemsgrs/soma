@@ -182,7 +182,7 @@ def survival(
     Slides are tiled at ``spacing`` and ``tile_size`` and embedded as in
     :func:`mil_classification`; ``aggregator`` pools the bag for the head ``loss`` picks:
 
-    * ``nll``: the ``survival`` head, a discrete-time model trained with the hazard
+    * ``nll``: the ``discrete_survival`` head, a discrete-time model trained with the hazard
       negative log-likelihood. It reads the cohort's ``time``, ``event`` and ``bin``
       columns (the number of bins comes from the cohort).
     * ``cox``: the ``cox_survival`` head, a Cox proportional-hazards model trained with
@@ -194,7 +194,7 @@ def survival(
     Both losses train the same way: AdamW (lr 1e-4) with a cosine schedule, 50 epochs,
     selection and early stopping on the tune loss.
     """
-    heads = {"nll": Component("survival"), "cox": Component("cox_survival", {"cox_window": 32})}
+    heads = {"nll": Component("discrete_survival"), "cox": Component("cox_survival", {"cox_window": 32})}
     if loss not in heads:
         raise ValueError(f"loss must be one of {', '.join(map(repr, heads))}, got {loss!r}.")
     return _mil(encoder, aggregator, spacing, tile_size, heads[loss])

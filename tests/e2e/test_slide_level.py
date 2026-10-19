@@ -45,7 +45,7 @@ def _config(
     epochs: int = 25,
     learning_rate: float = 5e-3,
 ) -> dict:
-    manifest_task = "survival" if head["name"] == "cox_survival" else head["name"]
+    manifest_task = "survival" if head["name"] in ("discrete_survival", "cox_survival") else head["name"]
     return {
         "run": {"output_dir": str(workdir / "runs"), "seed": 0},
         "cohort": {
@@ -161,7 +161,7 @@ def shared_cache(tmp_path_factory) -> Path:
             0.8,
             {"epochs": 100, "learning_rate": 2e-2},
         ),
-        ("survival_nll", {"name": "survival", "params": {"num_bins": 4}}, "c_index", 0.75, {}),
+        ("survival_nll", {"name": "discrete_survival", "params": {"num_bins": 4}}, "c_index", 0.75, {}),
         (
             "survival_cox",
             {"name": "cox_survival", "params": {"cox_window": 6}},
