@@ -1,10 +1,10 @@
-"""The feature identity a pooled cache records, and its verification when the cache is reused.
+"""The feature identity a feature cache records, and its verification when the cache is reused.
 
-A pooled cache key covers the encoder name, output variant, precision, registry input
-size and spacing, but not the image transform. slide2vec records the full feature
-identity, transform included, in each sidecar's ``compatibility`` block. soma copies that
-block into ``cache_metadata.json`` with the slide2vec version, so a later run can tell
-whether the installed slide2vec would still extract the same features.
+A cache key covers the encoder name, output variant, precision and geometry, but not the
+encoder's code or image transform. slide2vec records the full feature identity, code and
+transform included, in each sidecar's ``compatibility`` block. soma copies that block into
+``cache_metadata.json`` with the slide2vec version, so a later run can tell whether the
+installed slide2vec and encoder would still extract the same features.
 
 The record lives under ``feature_identity`` and is in one of two states:
 
@@ -12,8 +12,13 @@ The record lives under ``feature_identity`` and is in one of two states:
 * recorded: ``identity`` is the block slide2vec wrote with the first committed features,
   and ``slide2vec_version`` the version it was last verified with.
 
-A cache whose record is absent cannot be verified. When it holds features it is a miss:
-it is deleted and extracted again. When it holds none it starts a pending record.
+A recorded cache is checked twice. The encoder's code, read from the registry, is compared
+on every hit. The whole identity, which needs the encoder loaded, is compared when the
+cache was last verified with another slide2vec version.
+
+A cache whose record is absent cannot be verified. A pooled cache that holds features is
+then a miss: it is deleted and extracted again. A dense cache that holds grids is refused,
+as a cache whose identity differs. A cache that holds no features starts a pending record.
 """
 
 from __future__ import annotations
@@ -35,8 +40,9 @@ logger = logging.getLogger(__name__)
 
 FEATURE_IDENTITY_METADATA_KEY = "feature_identity"
 
-# Cache kinds whose payloads are pooled embeddings. Dense caches record no identity.
+# Cache kinds whose payloads are pooled embeddings, and the dense kinds (token grids).
 _POOLED_CACHE_KINDS = frozenset({"tile", "image", "slide", "patient", "hierarchical"})
+_DENSE_CACHE_KINDS = frozenset({"dense", "dense_image"})
 
 
 class CacheFeatureIdentityMismatch(ValueError):
@@ -63,7 +69,7 @@ class FeatureIdentityCheck:
 
 def pending_identity_record(cache_kind: str) -> dict[str, Any] | None:
     """The record a new cache starts with, or None for a kind that records no identity."""
-    if cache_kind not in _POOLED_CACHE_KINDS:
+    if cache_kind not in _POOLED_CACHE_KINDS | _DENSE_CACHE_KINDS:
         return None
     return {"slide2vec_version": slide2vec.__version__, "identity": None}
 

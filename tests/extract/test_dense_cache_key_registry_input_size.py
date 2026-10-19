@@ -192,7 +192,8 @@ def _write_grids(resolution, dataset) -> None:
     geometry = compute_dense_geometry(target_size=(64, 64), patch_size=16)
     for sample_id in dataset.sample_ids:
         sidecar = dense_grid_metadata(geometry, feature_dim=8, pad_mode="reflect")
-        sidecar.update(window_size=32, overlap=0.5)
+        # The feature identity slide2vec writes in each sidecar, which a commit records.
+        sidecar.update(window_size=32, overlap=0.5, compatibility={"encoder_name": "stub-encoder"})
         write_dense_grid(resolution.features_dir, sample_id, torch.randn(8, 4, 4), sidecar)
     record_feature_dim(resolution, 8)
     record_sample_identity_signatures(resolution, list(dataset.sample_ids))

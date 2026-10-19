@@ -338,6 +338,10 @@ def _dense_kw(tmp_path: Path, dataset) -> dict:
     )
 
 
+#: The feature identity slide2vec writes in each sidecar; a dense commit records it.
+_COMPATIBILITY = {"encoder_name": "uni", "dtype": "fp16"}
+
+
 def _populate(res, dataset, *, d: int, gh: int, gw: int) -> None:
     """Write proper grid + sidecar for every sample via the real writer."""
     geom = compute_dense_geometry(target_size=(gh * 16, gw * 16), patch_size=16)
@@ -345,6 +349,7 @@ def _populate(res, dataset, *, d: int, gh: int, gw: int) -> None:
         meta = dense_grid_metadata(geom, feature_dim=d, pad_mode="reflect")
         meta["source_spacing_um"] = 0.5
         meta["effective_spacing_um"] = 0.5
+        meta["compatibility"] = _COMPATIBILITY
         write_dense_grid(res.features_dir, sid, torch.randn(d, gh, gw), meta)
     record_feature_dim(res, d)
     record_sample_identity_signatures(res, list(dataset.sample_ids))
@@ -362,6 +367,7 @@ def test_dense_cache_partial_message_counts_samples_without_identity(
     res = resolve_dense_cache(**kw)
     geom = compute_dense_geometry(target_size=(512, 512), patch_size=16)
     meta = dense_grid_metadata(geom, feature_dim=8, pad_mode="reflect")
+    meta["compatibility"] = _COMPATIBILITY
     write_dense_grid(res.features_dir, "s1", torch.randn(8, 32, 32), meta)
     record_feature_dim(res, 8)
     record_sample_identity_signatures(res, ["s1"])
@@ -414,11 +420,9 @@ def test_dense_cache_validator_requires_sidecar(tmp_path: Path):
     # on the default path that loads no tensors.
     dataset = _make_dataset(tmp_path)
     kw = _dense_kw(tmp_path, dataset)
-    res = resolve_dense_cache(**kw)
-    record_feature_dim(res, 1536)
+    _populate(resolve_dense_cache(**kw), dataset, d=1536, gh=32, gw=32)
     for sid in dataset.sample_ids:
-        torch.save(torch.randn(1536, 32, 32), res.feature_path_for_id(sid))  # NO sidecar
-    record_sample_identity_signatures(res, list(dataset.sample_ids))
+        (resolve_dense_cache(**kw).features_dir / f"{sid}{DENSE_SIDECAR_SUFFIX}").unlink()  # NO sidecar
     assert resolve_dense_cache(**kw).complete is False
 
 
@@ -440,6 +444,7 @@ def test_dense_cache_validator_gates_sidecar_content_validation(
         meta = dense_grid_metadata(wrong_geom, feature_dim=1536, pad_mode="reflect")
         meta["source_spacing_um"] = 0.5
         meta["effective_spacing_um"] = 0.5
+        meta["compatibility"] = _COMPATIBILITY
         write_dense_grid(res.features_dir, sid, torch.randn(1536, 16, 32), meta)
     record_feature_dim(res, 1536)
     record_sample_identity_signatures(res, list(dataset.sample_ids))
@@ -577,6 +582,7 @@ def test_dense_cache_matching_manifest_does_not_sign_unsigned_grids(tmp_path: Pa
         meta = dense_grid_metadata(geom, feature_dim=8, pad_mode="reflect")
         meta["source_spacing_um"] = 0.5
         meta["effective_spacing_um"] = 0.5
+        meta["compatibility"] = _COMPATIBILITY
         write_dense_grid(res.features_dir, sid, torch.randn(8, 32, 32), meta)
     assert res.manifest_path.is_file()
 

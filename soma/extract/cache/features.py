@@ -1041,6 +1041,7 @@ def resolve_dense_cache(
     payload_stem_by_id: dict[str, str] | None = None,
     extraction_geometry: dict[str, Any] | None = None,
     cache_kind: str = "dense",
+    feature_identity: FeatureIdentityCheck | None = None,
 ) -> FeatureCacheResolution:
     metadata = _build_dense_cache_metadata(
         tile_encoder_name=tile_encoder_name,
@@ -1073,6 +1074,7 @@ def resolve_dense_cache(
         complete_state=complete_state,
         validate_payloads=validate_payloads,
         payload_stem_by_id=payload_stem_by_id,
+        feature_identity=feature_identity,
     )
 
 
