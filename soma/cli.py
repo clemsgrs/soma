@@ -113,15 +113,16 @@ def _flag(argument: str) -> str:
 def _flag_options(p: inspect.Parameter) -> dict[str, Any]:
     """argparse's ``metavar``, ``type`` and ``choices`` for the preset argument ``p``: an
     ``int`` or ``float`` annotation (``X | None`` included) types the flag, and a
-    ``Literal`` one makes its values the choices. Any other annotation is a string flag."""
+    ``Literal`` one makes its values the choices, each matched by its text. Any other
+    annotation is a string flag."""
     annotation = p.annotation
     if typing.get_origin(annotation) in (typing.Union, types.UnionType):
         members = [member for member in typing.get_args(annotation) if member is not type(None)]
         annotation = members[0] if len(members) == 1 else None
     if typing.get_origin(annotation) is typing.Literal:
         choices = typing.get_args(annotation)
-        kinds = {type(choice) for choice in choices}
-        return {"type": kinds.pop() if len(kinds) == 1 else None, "choices": choices}
+        by_text = {str(choice): choice for choice in choices}
+        return {"type": lambda text: by_text.get(text, text), "choices": choices}
     kind = next((kind for kind in (int, float) if annotation in (kind, kind.__name__)), None)
     return {"metavar": p.name.upper(), "type": kind}
 

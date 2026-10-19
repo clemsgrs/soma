@@ -414,13 +414,19 @@ def _seeded_preset(encoder: str, seed: int = 3) -> ExperimentConfig:
 
 
 def _typed_preset(
-    encoder: str, epochs: int = 50, lr: "float" = 1e-4, batch_size: Literal[1, 8] = 1
+    encoder: str,
+    epochs: int = 50,
+    lr: "float" = 1e-4,
+    batch_size: Literal[1, 8] = 1,
+    workers: Literal["auto", 4] = "auto",
 ) -> ExperimentConfig:
     """A user's preset with typed arguments (``lr`` annotated as under postponed annotations)."""
     config = presets.mil_classification(encoder, "abmil")
     config.trainer.max_epochs = epochs
     config.learner.params["optimizer"] = Component("adamw", {"lr": lr})
     config.loaders.batch_size = batch_size
+    if workers != "auto":
+        config.loaders.num_workers = workers
     return config
 
 
@@ -467,11 +473,13 @@ def test_preset_arguments_take_their_declared_types(tmp_path: Path, capsys, type
     assert config.trainer.max_epochs == 10 and config.learner.params["optimizer"].params["lr"] == 0.001
     code, err = _exit_code([*run, "--epochs", "ten"], capsys)
     assert code == 2 and "--epochs" in err
-    # A Literal's values are the flag's choices, converted to their type.
+    # A Literal's values are the flag's choices, each matched by its text.
     config, _ = _pipeline_call([*run, "--batch-size", "8"])
     assert config.loaders.batch_size == 8
+    config, _ = _pipeline_call([*run, "--workers", "4"])
+    assert config.loaders.num_workers == 4
     code, err = _exit_code([*run, "--batch-size", "4"], capsys)
-    assert code == 2 and "--batch-size: invalid choice: 4" in err
+    assert code == 2 and "--batch-size: invalid choice: '4'" in err
 
 
 def test_a_preset_annotation_that_does_not_evaluate_leaves_the_flags_working(capsys, typed_presets):
