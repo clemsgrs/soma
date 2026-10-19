@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import sys
 from pathlib import Path
 
 import pytest
@@ -17,7 +19,9 @@ from soma.pipeline.layout import (
     build_experiment_spec,
     canonical_experiment_payload,
     capture_environment,
+    component_record,
     create_run_metadata,
+    external_fingerprints,
     read_test_results,
     register_test_result,
     resolve_managed_output_paths,
@@ -128,6 +132,48 @@ def test_run_yaml_stamps_bounded_environment(tmp_path: Path):
     assert set(payload["environment"]) == {"soma", "torch", "cuda"}
     # No deeper env / GPU-model / clean-tree fields leaked into the stamp.
     assert "gpu" not in payload["environment"]
+
+
+#: A user's metric module, written to a file the component record digests.
+_USER_METRICS = "soma_test_user_metrics"
+_USER_METRICS_SOURCE = (
+    "def positive_rate(predictions, targets):\n"
+    "    return float((predictions['predicted_label'] == 1).mean())\n"
+)
+
+
+@pytest.fixture
+def user_metric(tmp_path: Path, monkeypatch) -> Path:
+    directory = tmp_path / "user_code"
+    directory.mkdir()
+    path = directory / f"{_USER_METRICS}.py"
+    path.write_text(_USER_METRICS_SOURCE, encoding="utf-8")
+    monkeypatch.syspath_prepend(str(directory))
+    yield path
+    sys.modules.pop(_USER_METRICS, None)
+
+
+def test_the_component_record_lists_a_custom_metric_by_the_digest_of_its_file(tmp_path: Path, user_metric: Path):
+    name = f"{_USER_METRICS}.positive_rate"
+    plan = Plan(
+        experiment(
+            tmp_path / "dataset.csv",
+            tmp_path / "splits.csv",
+            features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
+            aggregator="abmil",
+            evaluation={"metrics": ["auroc", name]},
+        )
+    )
+
+    record = component_record(plan)
+
+    digest = hashlib.sha256(_USER_METRICS_SOURCE.encode("utf-8")).hexdigest()
+    (entry,) = [entry for entry in record if entry["kind"] == "metric" and entry["name"] == name]
+    assert entry["object"] == name
+    assert entry["source_sha256"] == entry["fingerprint"] == digest
+    assert "distribution" not in entry
+    # The metric is the record's only component from outside soma, slide2vec, hs2p and torch.
+    assert external_fingerprints(record) == {f"metric '{name}'": digest}
 
 
 def test_canonical_experiment_payload_omits_the_run_section(tmp_path: Path):
