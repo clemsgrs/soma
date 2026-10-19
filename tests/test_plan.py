@@ -450,7 +450,7 @@ def test_the_composite_encoder_serves_cached_grid_runs_only(files):
 
 def _pooled(encoder: str, spacing_um: float, tile_size_px: int, **params) -> ExperimentConfig:
     """A MIL preset over ``encoder`` that tiles slides at ``spacing_um`` and ``tile_size_px``."""
-    config = presets.mil_classification(encoder)
+    config = presets.mil_classification(encoder, "abmil")
     config.features.encoder = EncoderLeaf(encoder, params)
     config.features.extraction = dataclasses.replace(
         config.features.extraction,
@@ -474,12 +474,12 @@ def test_a_pooled_tiling_off_the_encoders_supported_spacing_needs_the_opt_in():
 def test_an_unset_tiling_is_left_to_the_encoder():
     # ``soma init`` prints these with the tiling (and hipt's region geometry) null, for the
     # user to fill in; virchow2 supports several spacings and names no default.
-    check(presets.mil_classification("virchow2"))
+    check(presets.mil_classification("virchow2", "abmil"))
     check(presets.mil_classification("uni2", aggregator="hipt"))
 
 
 def test_a_precision_off_the_encoders_recommendation_needs_the_opt_in():
-    config = presets.mil_classification("uni2")
+    config = presets.mil_classification("uni2", "abmil")
     config.features.execution = slide2vec.ExecutionOptions(precision="fp32")
     with pytest.raises(ValueError, match="supports precision fp16; this run extracts at precision fp32"):
         check(config)

@@ -84,7 +84,7 @@ A config has no override mechanism: you edit it. In Python, assign its fields:
 
    from soma import presets
 
-   config = presets.mil_classification("uni2")
+   config = presets.mil_classification("uni2", "abmil")
    config.run.seed = 1
    config.trainer.max_steps = 2000
    config.learner.params["head"].params["dropout"] = 0.2
@@ -130,21 +130,26 @@ Presets
 -------
 
 A preset returns a complete config for a common task (see :ref:`presets`);
-``soma.components("presets")`` lists them with their arguments.
+``soma.components("presets")`` lists them with their arguments. A choice that
+changes the model has no default: you name the aggregator of a slide preset, the
+``loss`` of ``survival`` (``"nll"`` or ``"cox"``) and the ``num_classes`` of
+``segmentation`` and ``detection``.
 
-The slide presets, ``mil_classification`` and ``survival``, take the tiling as
-arguments: ``spacing`` (µm per pixel) and ``tile_size`` (pixels). An argument you
-leave out takes the encoder's recommended value, and the preset keeps its tiles with
-at least 10% tissue:
+The slide presets, ``mil_classification``, ``mil_regression`` and ``survival``,
+take the tiling as arguments: ``spacing`` (µm per pixel) and ``tile_size``
+(pixels). An argument you leave out takes the encoder's recommended value, and the
+preset keeps its tiles with at least 10% tissue:
 
 .. code-block:: python
 
-   config = presets.mil_classification("uni2", spacing=0.5, tile_size=224)
+   config = presets.mil_classification("uni2", "abmil", spacing=0.5, tile_size=224)
 
 On the command line, they are the ``--spacing`` and ``--tile-size`` flags of
 ``soma init`` and ``soma run --preset``.
 
 .. autofunction:: soma.presets.mil_classification
+
+.. autofunction:: soma.presets.mil_regression
 
 .. autofunction:: soma.presets.tile_classification
 

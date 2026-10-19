@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Callable
+from typing import Literal
 
 from hs2p import MaskSamplingConfig, TilingConfig
 from slide2vec import PreprocessingConfig
@@ -34,6 +35,7 @@ from soma.registry import Registry, signature_params
 __all__ = [
     "detection",
     "mil_classification",
+    "mil_regression",
     "preset_registry",
     "segmentation",
     "survival",
@@ -90,9 +92,29 @@ def _tissue_tiles(encoder: str, spacing: float | None, tile_size: int | None) ->
     return features
 
 
+def _mil(
+    encoder: str, aggregator: str, spacing: float | None, tile_size: int | None, head: Component
+) -> ExperimentConfig:
+    """``head`` over ``aggregator``'s pooling of each slide's tissue tiles, trained with
+    AdamW (lr 1e-4) and a cosine schedule."""
+    return ExperimentConfig(
+        cohort=_cohort(),
+        features=_tissue_tiles(encoder, spacing, tile_size),
+        learner=LearnerConfig(
+            "mil",
+            {
+                "aggregator": Component(aggregator),
+                "head": head,
+                "optimizer": Component("adamw", {"lr": 1e-4}),
+                "scheduler": [Component("cosine")],
+            },
+        ),
+    )
+
+
 @_register
 def mil_classification(
-    encoder: str, aggregator: str = "abmil", spacing: float | None = None, tile_size: int | None = None
+    encoder: str, aggregator: str, spacing: float | None = None, tile_size: int | None = None
 ) -> ExperimentConfig:
     """Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
 
@@ -101,24 +123,30 @@ def mil_classification(
     recommended value; ``virchow2``, which supports several spacings, recommends none, so
     give it ``spacing``. :func:`soma.plan.check` refuses a spacing or tile size the
     encoder does not support. The tiles are embedded once and cached, and
-    ``aggregator`` pools the bag for a ``multiclass_classification`` head (two classes or
-    more; the classes come from the cohort's ``label`` column). AdamW (lr 1e-4) with a
-    cosine schedule, 50 epochs, the best tune-loss checkpoint and early stopping after 10
-    epochs without improvement.
+    ``aggregator`` (``abmil``, ``transmil``, ``mean_pool``, ...; ``soma list aggregators``)
+    pools the bag for a ``multiclass_classification`` head (two classes or more; the
+    classes come from the cohort's ``label`` column). AdamW (lr 1e-4) with a cosine
+    schedule, 50 epochs, the best tune-loss checkpoint and early stopping after 10 epochs
+    without improvement.
     """
-    return ExperimentConfig(
-        cohort=_cohort(),
-        features=_tissue_tiles(encoder, spacing, tile_size),
-        learner=LearnerConfig(
-            "mil",
-            {
-                "aggregator": Component(aggregator),
-                "head": Component("multiclass_classification"),
-                "optimizer": Component("adamw", {"lr": 1e-4}),
-                "scheduler": [Component("cosine")],
-            },
-        ),
-    )
+    return _mil(encoder, aggregator, spacing, tile_size, Component("multiclass_classification"))
+
+
+@_register
+def mil_regression(
+    encoder: str, aggregator: str, spacing: float | None = None, tile_size: int | None = None
+) -> ExperimentConfig:
+    """Regress a value from whole slides: a frozen tile encoder, a MIL aggregator and a regressor.
+
+    Slides are tiled at ``spacing`` and ``tile_size`` and embedded as in
+    :func:`mil_classification`; ``aggregator`` pools the bag for a ``regression`` head,
+    which learns the cohort's ``value`` column with a mean squared error loss. To regress
+    several values, set the head's ``num_outputs`` param to their count ``G``: the head
+    then reads the columns ``value_0`` to ``value_{G-1}``. AdamW (lr 1e-4) with a cosine
+    schedule, 50 epochs, the best tune-loss checkpoint and early stopping after 10 epochs
+    without improvement.
+    """
+    return _mil(encoder, aggregator, spacing, tile_size, Component("regression"))
 
 
 @_register
@@ -143,39 +171,43 @@ def tile_classification(encoder: str) -> ExperimentConfig:
 
 @_register
 def survival(
-    encoder: str, aggregator: str, spacing: float | None = None, tile_size: int | None = None
+    encoder: str,
+    aggregator: str,
+    loss: Literal["nll", "cox"],
+    spacing: float | None = None,
+    tile_size: int | None = None,
 ) -> ExperimentConfig:
-    """Predict survival from whole slides: a discrete-time hazard head over a MIL bag.
+    """Predict survival from whole slides: a MIL bag and a discrete-time or Cox head.
 
     Slides are tiled at ``spacing`` and ``tile_size`` and embedded as in
-    :func:`mil_classification`; ``aggregator`` pools the bag for the ``survival`` head,
-    which reads the cohort's ``time``, ``event`` and ``bin`` columns (the number of bins
-    comes from the cohort). AdamW (lr 1e-4) with a cosine schedule, 50 epochs, selection
-    and early stopping on the tune loss.
+    :func:`mil_classification`; ``aggregator`` pools the bag for the head ``loss`` picks:
+
+    * ``nll``: the ``survival`` head, a discrete-time model trained with the hazard
+      negative log-likelihood. It reads the cohort's ``time``, ``event`` and ``bin``
+      columns (the number of bins comes from the cohort).
+    * ``cox``: the ``cox_survival`` head, a Cox proportional-hazards model trained with
+      the Breslow partial likelihood. It reads ``time`` and ``event``. Bags are forwarded
+      one at a time and each loss is computed over a window of 32 of them, its risk set
+      (the head's ``cox_window``): one optimizer step per 32 bags, where ``nll`` takes
+      one per bag.
+
+    Both losses train the same way: AdamW (lr 1e-4) with a cosine schedule, 50 epochs,
+    selection and early stopping on the tune loss.
     """
-    return ExperimentConfig(
-        cohort=_cohort(),
-        features=_tissue_tiles(encoder, spacing, tile_size),
-        learner=LearnerConfig(
-            "mil",
-            {
-                "aggregator": Component(aggregator),
-                "head": Component("survival"),
-                "optimizer": Component("adamw", {"lr": 1e-4}),
-                "scheduler": [Component("cosine")],
-            },
-        ),
-    )
+    heads = {"nll": Component("survival"), "cox": Component("cox_survival", {"cox_window": 32})}
+    if loss not in heads:
+        raise ValueError(f"loss must be one of {', '.join(map(repr, heads))}, got {loss!r}.")
+    return _mil(encoder, aggregator, spacing, tile_size, heads[loss])
 
 
 @_register
-def segmentation(encoder: str, decoder: str, num_classes: int = 2) -> ExperimentConfig:
+def segmentation(encoder: str, decoder: str, num_classes: int) -> ExperimentConfig:
     """Segment tissue: a decoder over a frozen encoder's dense token grid.
 
     Each tile (at the encoder's recommended size and spacing) is encoded once into a
     token grid and cached; ``decoder`` upsamples it to per-pixel ``segmentation`` logits
-    for ``num_classes`` classes, whose indices the label masks hold (background 0 and one
-    foreground class by default). For masks holding raw values, replace the head's params
+    for ``num_classes`` classes, whose indices the label masks hold (``2`` for background
+    0 and one foreground class 1). For masks holding raw values, replace the head's params
     with a ``classes`` mapping (class name -> raw mask values) and ``ignore``. Batches of 8,
     AdamW (lr 1e-4) with a cosine schedule, 50 epochs, selection and early stopping on the
     tune loss.
@@ -197,12 +229,12 @@ def segmentation(encoder: str, decoder: str, num_classes: int = 2) -> Experiment
 
 
 @_register
-def detection(encoder: str, decoder: str, num_classes: int = 1, match_distance: float = 3.0) -> ExperimentConfig:
+def detection(encoder: str, decoder: str, num_classes: int, match_distance: float = 3.0) -> ExperimentConfig:
     """Detect cells: a decoder over a frozen encoder's dense token grid, one heatmap per class.
 
     Each image is encoded once into a token grid and cached; ``decoder`` predicts a peak
     heatmap for each of ``num_classes`` classes, whose indices the point annotations hold
-    (one cell class by default), scored by F1 at ``match_distance`` µm (3 µm, about a
+    (``1`` for a single cell class), scored by F1 at ``match_distance`` µm (3 µm, about a
     nucleus radius, by default). For points holding raw classes, replace the head's params
     with a ``classes`` mapping (class name -> raw point classes) and ``drop``. One image
     per batch, AdamW (lr 1e-4) with a cosine schedule, 50 epochs, selection and early

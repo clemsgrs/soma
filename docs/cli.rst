@@ -20,14 +20,14 @@ Basic usage
 
 or a preset on your cohort (see :ref:`presets`)::
 
-    soma run --preset mil_classification --encoder uni2 \
+    soma run --preset mil_classification --encoder uni2 --aggregator abmil \
         --cohort dataset.csv --splits splits.csv --out runs
 
 A config is edited, not overridden: there are no override flags. To start
 from a preset and change it, print it as YAML with every default filled in,
 edit the file, and run it::
 
-    soma init mil_classification --encoder uni2 > experiment.yaml
+    soma init mil_classification --encoder uni2 --aggregator abmil > experiment.yaml
     soma run experiment.yaml
 
 Use ``soma --help`` or ``soma COMMAND --help`` for command options.
@@ -57,10 +57,11 @@ Available commands
    --help`` lists them), its required ones are required, and ``--seed``
    defaults to 0. The registered presets:
 
-   * ``detection(encoder, decoder, num_classes=1, match_distance=3.0)`` — Detect cells: a decoder over a frozen encoder's dense token grid, one heatmap per class.
-   * ``mil_classification(encoder, aggregator="abmil", spacing=None, tile_size=None)`` — Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
-   * ``segmentation(encoder, decoder, num_classes=2)`` — Segment tissue: a decoder over a frozen encoder's dense token grid.
-   * ``survival(encoder, aggregator, spacing=None, tile_size=None)`` — Predict survival from whole slides: a discrete-time hazard head over a MIL bag.
+   * ``detection(encoder, decoder, num_classes, match_distance=3.0)`` — Detect cells: a decoder over a frozen encoder's dense token grid, one heatmap per class.
+   * ``mil_classification(encoder, aggregator, spacing=None, tile_size=None)`` — Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
+   * ``mil_regression(encoder, aggregator, spacing=None, tile_size=None)`` — Regress a value from whole slides: a frozen tile encoder, a MIL aggregator and a regressor.
+   * ``segmentation(encoder, decoder, num_classes)`` — Segment tissue: a decoder over a frozen encoder's dense token grid.
+   * ``survival(encoder, aggregator, loss, spacing=None, tile_size=None)`` — Predict survival from whole slides: a MIL bag and a discrete-time or Cox head.
    * ``tile_classification(encoder)`` — Classify tile images: a linear probe on a frozen tile encoder's embeddings.
 
 ``soma init NAME [PRESET ARGUMENTS]``

@@ -104,14 +104,14 @@ def build_cli_rst() -> str:
 
         or a preset on your cohort (see :ref:`presets`)::
 
-            soma run --preset mil_classification --encoder uni2 \\
+            soma run --preset mil_classification --encoder uni2 --aggregator abmil \\
                 --cohort dataset.csv --splits splits.csv --out runs
 
         A config is edited, not overridden: there are no override flags. To start
         from a preset and change it, print it as YAML with every default filled in,
         edit the file, and run it::
 
-            soma init mil_classification --encoder uni2 > experiment.yaml
+            soma init mil_classification --encoder uni2 --aggregator abmil > experiment.yaml
             soma run experiment.yaml
 
         Use ``soma --help`` or ``soma COMMAND --help`` for command options.

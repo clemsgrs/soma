@@ -22,7 +22,10 @@ Two heads model time-to-event with right censoring; the head selects the loss:
     trainer forwards ``cox_window`` bags un-padded and computes one Cox loss and
     one optimizer step per window.
 
-Both losses rank with Harrell's C-index via scikit-survival.
+Both losses rank with Harrell's C-index via scikit-survival. The ``survival``
+preset takes the loss as its ``loss`` argument: ``"nll"`` builds the ``survival``
+head and ``"cox"`` the ``cox_survival`` head in accumulation mode, with
+``cox_window: 32``.
 
 Survival datasets carry these target columns; the head's ``targets`` param maps
 a target to a differently named column, for example ``targets: {time: label}``:
