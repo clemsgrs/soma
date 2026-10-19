@@ -32,6 +32,7 @@ from tests.extraction_configs import extraction, tissue_masks
 import soma
 from soma.data import ImageManifest
 from tests.e2e.synthetic import write_tiff
+from tests.user_encoders import UserEncoderModule
 
 STUB_ENCODER = "soma512-switchable-transform"
 STUB_SLIDE_ENCODER = "soma512-slide"
@@ -576,11 +577,13 @@ def slide_manifests(tmp_path_factory) -> dict[int, Path]:
     return manifests
 
 
-def _extract_slides(dataset_csv: Path, root: Path, kind: str, **cache_settings):
-    """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``."""
+def _extract_slides(dataset_csv: Path, root: Path, kind: str, *, encoder: str | None = None, **cache_settings):
+    """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``.
+
+    ``encoder`` replaces the stub encoder of ``kind``."""
     return soma.extract(
         ImageManifest.from_csv(dataset_csv),
-        encoder=_SLIDE_KINDS[kind],
+        encoder=encoder or _SLIDE_KINDS[kind],
         extraction=extraction(
             0.5,
             32,
@@ -743,3 +746,83 @@ def test_completing_a_tile_cache_without_a_recorded_identity_extracts_it_again(
     _assert_same_features(_features(completed), _expected_slide_features("tile", changed=True))
     recorded = cache_metadata(tmp_path, "tile")["feature_identity"]
     assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
+
+
+# --- The encoder's code, checked on every hit ---------------------------------------------
+
+USER_TILE_ENCODER = "soma652-user-tile"
+#: Slide and patient encoders that aggregate the user's tile encoder.
+_USER_AGGREGATORS = {"slide": "soma652-user-slide", "patient": "soma652-user-patient"}
+
+
+@pytest.fixture
+def user_encoder(tmp_path, request, monkeypatch) -> UserEncoderModule:
+    """The user's tile encoder in a module file, and slide and patient encoders over it."""
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    encoder_registry.names()  # discover the built-in encoders before copying the entries
+    monkeypatch.setattr(encoder_registry, "_entries", dict(encoder_registry._entries))
+    common = {
+        "output_variants": {"default": {"encode_dim": 3}},
+        "default_output_variant": "default",
+        "supported_spacing_um": [0.5],
+        "default_spacing_um": 0.5,
+        "precision": "fp32",
+        "source": "",
+        "tile_encoder": USER_TILE_ENCODER,
+        "tile_encoder_output_variant": "default",
+    }
+    encoder_registry.register(_USER_AGGREGATORS["slide"], _MeanSlideEncoder, metadata={"level": "slide", **common})
+    encoder_registry.register(
+        _USER_AGGREGATORS["patient"], _MeanPatientEncoder, metadata={"level": "patient", **common}
+    )
+    return UserEncoderModule(tmp_path / "user_code", request, module="soma652_user_encoder", name=USER_TILE_ENCODER)
+
+
+def _user_slide_features(kind: str, *, scale: float) -> dict[str, torch.Tensor]:
+    """Literal features of the blue, magenta, green and yellow slides under the user's
+    encoder: each channel normalises to -2 (0) or 2 (255), times ``scale``; patients
+    p0 and p1 average the first and the last pair of slides."""
+    if kind == "patient":
+        values = {"p0": [0.0, -2.0, 2.0], "p1": [0.0, 2.0, -2.0]}
+    else:
+        values = {
+            "slide00": [-2.0, -2.0, 2.0],
+            "slide01": [2.0, -2.0, 2.0],
+            "slide02": [-2.0, 2.0, -2.0],
+            "slide03": [2.0, 2.0, -2.0],
+        }
+    return {sample_id: scale * torch.tensor(vector) for sample_id, vector in values.items()}
+
+
+@pytest.mark.parametrize("kind", ["slide", "patient"])
+def test_slide_cache_detects_an_edit_to_its_tile_encoder(tmp_path, user_encoder, slide_manifests, kind):
+    _extract_slides(slide_manifests[4], tmp_path, kind, encoder=_USER_AGGREGATORS[kind])
+    # Without its tile cache, only the slide or patient cache can tell.
+    shutil.rmtree(cache_dir_for(tmp_path, "tile"))
+    original = user_encoder.fingerprint
+
+    user_encoder.edit()
+
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
+        _extract_slides(slide_manifests[4], tmp_path, kind, encoder=_USER_AGGREGATORS[kind])
+    message = str(refused.value)
+    assert f"tile encoder '{USER_TILE_ENCODER}'" in message
+    assert original[:12] in message and user_encoder.fingerprint[:12] in message
+
+
+@pytest.mark.parametrize("kind", ["slide", "patient"])
+def test_reextract_setting_aggregates_the_tiles_of_the_edited_tile_encoder(
+    tmp_path, user_encoder, slide_manifests, kind
+):
+    extracted = _extract_slides(slide_manifests[4], tmp_path, kind, encoder=_USER_AGGREGATORS[kind])
+    _assert_same_features(_features(extracted), _user_slide_features(kind, scale=1.0))
+
+    user_encoder.edit()
+    rebuilt = _extract_slides(
+        slide_manifests[4], tmp_path, kind, encoder=_USER_AGGREGATORS[kind], on_identity_mismatch="reextract"
+    )
+
+    _assert_same_features(_features(rebuilt), _user_slide_features(kind, scale=2.0))
+    recorded = cache_metadata(tmp_path, kind)["feature_identity"]["identity"]
+    assert recorded["tile_encoder_code"]["fingerprint"] == user_encoder.fingerprint
