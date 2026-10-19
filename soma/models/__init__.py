@@ -32,11 +32,11 @@ from soma.models.heads import (
     BranchAwareClassificationHead,
     CoxSurvivalHead,
     DetectionHead,
+    DiscreteSurvivalHead,
     MulticlassClassificationHead,
     OrdinalClassificationHead,
     RegressionHead,
     SegmentationHead,
-    SurvivalHead,
     TaskHead,
     task_registry,
 )
@@ -79,7 +79,7 @@ __all__ = [
     "OrdinalClassificationHead",
     "RegressionHead",
     "SegmentationHead",
-    "SurvivalHead",
+    "DiscreteSurvivalHead",
     "TaskHead",
     "task_registry",
     # decoders

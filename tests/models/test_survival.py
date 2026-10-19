@@ -21,7 +21,7 @@ from soma.evaluation import Predictions
 from soma.evaluation.metrics import compute_survival_metrics, resolve_metrics
 from soma.pipeline import Pipeline, PipelineResult
 from soma.models.heads.registry import task_registry
-from soma.models.heads.survival import SurvivalHead, survival_nll_loss, validate_survival_dataset
+from soma.models.heads.survival import DiscreteSurvivalHead, survival_nll_loss, validate_survival_dataset
 
 D = 16
 FIXED_RUN_ID = "20990101_000000"
@@ -87,27 +87,27 @@ class TestSurvivalLoss:
 
 
 # ---------------------------------------------------------------------------
-# SurvivalHead
+# DiscreteSurvivalHead
 # ---------------------------------------------------------------------------
 
 
 class TestSurvivalHead:
     def test_registered(self):
-        assert task_registry.get("survival") is SurvivalHead
+        assert task_registry.get("discrete_survival") is DiscreteSurvivalHead
 
     def test_target_dtypes(self):
-        assert SurvivalHead.target_dtypes == {
+        assert DiscreteSurvivalHead.target_dtypes == {
             "bin": torch.long,
             "event": torch.float,
             "time": torch.float,
         }
 
     def test_forward_shape(self):
-        head = SurvivalHead(input_dim=8, num_bins=4)
+        head = DiscreteSurvivalHead(input_dim=8, num_bins=4)
         assert head(torch.randn(3, 8)).shape == (3, 4)
 
     def test_extract_targets(self):
-        head = SurvivalHead(input_dim=8, num_bins=4)
+        head = DiscreteSurvivalHead(input_dim=8, num_bins=4)
         record = _record("s1", time=2.5, event=1, bin_=2)
         assert head.extract_targets(record) == {"bin": 2, "event": 1.0, "time": 2.5}
 
@@ -117,15 +117,15 @@ class TestSurvivalHead:
             _record("s1", 1.5, 0, 1),
             _record("s2", 3.5, 1, 3),
         ]
-        assert task_registry.infer("survival", SimpleNamespace(records=records), {}) == {"num_bins": 4}
+        assert task_registry.infer("discrete_survival", SimpleNamespace(records=records), {}) == {"num_bins": 4}
 
     def test_postprocess_returns_risk_scores(self):
-        head = SurvivalHead(input_dim=8, num_bins=4)
+        head = DiscreteSurvivalHead(input_dim=8, num_bins=4)
         out = head.postprocess(torch.randn(5, 4))
         assert "risk_scores" in out and out["risk_scores"].shape == (5,)
 
     def test_compute_metrics_returns_c_index(self):
-        head = SurvivalHead(input_dim=8, num_bins=4)
+        head = DiscreteSurvivalHead(input_dim=8, num_bins=4)
         logits = torch.randn(6, 4)
         targets = {
             "bin": torch.tensor([0, 1, 2, 3, 1, 2]),
@@ -137,10 +137,10 @@ class TestSurvivalHead:
         assert isinstance(m["c_index"], float)
 
     def test_default_metrics(self):
-        assert SurvivalHead(input_dim=8, num_bins=4).metrics == ["c_index"]
+        assert DiscreteSurvivalHead(input_dim=8, num_bins=4).metrics == ["c_index"]
 
     def test_gradient_flows(self):
-        head = SurvivalHead(input_dim=8, num_bins=4)
+        head = DiscreteSurvivalHead(input_dim=8, num_bins=4)
         X = torch.randn(3, 8, requires_grad=True)
         targets = {"bin": torch.tensor([0, 1, 3]), "event": torch.tensor([1.0, 0.0, 1.0])}
         head.compute_loss(head(X), targets).backward()
@@ -242,7 +242,7 @@ class TestValidateSurvivalDataset:
 
 class TestSurvivalConfigValidation:
     def _check(self, tmp_path, **fields):
-        check(experiment(tmp_path / "d.csv", tmp_path / "s.csv", head="survival", **fields))
+        check(experiment(tmp_path / "d.csv", tmp_path / "s.csv", head="discrete_survival", **fields))
 
     def test_rejects_tile(self, tmp_path: Path):
         # A tile encoder without an aggregator embeds each tile: a tile-level sample.
@@ -303,7 +303,7 @@ class TestSurvivalEndToEnd:
             splits_csv,
             output_dir=tmp_path / 'out',
             aggregator='mean_pool',
-            head='survival',
+            head="discrete_survival",
             loaders={"batch_size": 2},
             trainer={"max_epochs": 2},
             scheduler='cosine',
@@ -357,7 +357,7 @@ class TestSurvivalEndToEnd:
             dataset_csv,
             splits_csv,
             output_dir=tmp_path / 'out',
-            head='survival',
+            head="discrete_survival",
             cohort={"collapse": "patient_id"},
             loaders={"batch_size": 2},
             trainer={"max_epochs": 2},
@@ -393,7 +393,7 @@ def test_explicit_width_trains_sparse_whole_dataset_with_four_outputs(tmp_path, 
         splits_csv,
         output_dir=tmp_path / 'out',
         aggregator=aggregation or None,
-        head='survival',
+        head="discrete_survival",
         head_params={'num_bins': 4},
         seed=0,
         cohort={"allow_missing_tune": True},

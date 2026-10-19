@@ -99,7 +99,7 @@ def test_a_preset_has_no_default_for_a_choice_that_changes_the_model(name, argum
 
 
 def test_the_survival_loss_picks_the_head():
-    assert presets.survival("uni2", "abmil", "nll").learner.params["head"] == Component("survival")
+    assert presets.survival("uni2", "abmil", "nll").learner.params["head"] == Component("discrete_survival")
     # The MIL loader forwards one bag at a time, so Cox accumulates a 32-bag risk set.
     config = presets.survival("uni2", "abmil", "cox")
     assert config.learner.params["head"] == Component("cox_survival", {"cox_window": 32})

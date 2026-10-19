@@ -39,7 +39,7 @@ Task Zoo
      - MSE
      - ``mae``, ``r2``
      - Continuous targets; see :ref:`regression-task`
-   * - ``survival``
+   * - ``discrete_survival``
      - Discrete-time hazard NLL
      - ``c_index``
      - Time-to-event with right censoring, over time bins; see :doc:`survival`

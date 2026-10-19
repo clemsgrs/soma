@@ -525,7 +525,8 @@ def test_list_heads_prints_the_registered_heads(capsys):
     main(["list", "heads"])
 
     names = [row[0] for row in _rows(capsys.readouterr().out)]
-    assert {"binary_classification", "segmentation", "survival", "cox_survival"} <= set(names)
+    assert {"binary_classification", "segmentation", "discrete_survival", "cox_survival"} <= set(names)
+    assert "survival" not in names
 
 
 def test_list_encoders_filters_by_level(capsys):

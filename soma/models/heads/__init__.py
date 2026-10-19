@@ -19,8 +19,8 @@ from soma.models.heads.segmentation import SegmentationHead, SegmentationParams,
 from soma.models.heads.survival import (
     CoxSurvivalHead,
     CoxSurvivalParams,
-    SurvivalHead,
-    SurvivalParams,
+    DiscreteSurvivalHead,
+    DiscreteSurvivalParams,
     infer_num_bins,
 )
 
@@ -32,7 +32,7 @@ __all__ = [
     "DetectionParams",
     "RegressionParams",
     "SegmentationParams",
-    "SurvivalParams",
+    "DiscreteSurvivalParams",
     "infer_label_map",
     "infer_num_bins",
     "infer_ordinal_label_map",
@@ -41,7 +41,7 @@ __all__ = [
     "BranchAwareClassificationHead",
     "OrdinalClassificationHead",
     "RegressionHead",
-    "SurvivalHead",
+    "DiscreteSurvivalHead",
     "CoxSurvivalHead",
     "SegmentationHead",
     "DetectionHead",

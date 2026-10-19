@@ -27,7 +27,7 @@ learner:
     aggregator:
       name: abmil
     head:
-      name: survival
+      name: discrete_survival
       params:
         alpha: 0.15  # up-weighting of the uncensored NLL term (HIPT default)
         # targets: {time: label}  # target key -> CSV column, when the names differ

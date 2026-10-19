@@ -129,8 +129,8 @@ def test_a_null_head_param_resolves_like_the_omitted_one(tmp_path: Path):
             config = experiment(*files, aggregator="abmil", head=head, head_params=nulls)
             assert plans(config, head) == [omitted, omitted]
     survival = _cohort_files(tmp_path / "survival", time=[1.0, 2.0] * 4, event=[1, 0] * 4, bin=[0, 1, 2, 3] * 2)
-    omitted = _resolve(experiment(*survival, head="survival", aggregator="abmil"))
-    config = experiment(*survival, head="survival", aggregator="abmil", head_params={"num_bins": None})
+    omitted = _resolve(experiment(*survival, head="discrete_survival", aggregator="abmil"))
+    config = experiment(*survival, head="discrete_survival", aggregator="abmil", head_params={"num_bins": None})
     assert plans(config, "survival") == [omitted, omitted]
     assert omitted.learner.params["head"].params["num_bins"] == 4
 
@@ -162,10 +162,10 @@ def test_head_targets_map_keys_to_cohort_columns(tmp_path: Path):
 
 def test_survival_bins_are_inferred_after_the_columns_are_checked(tmp_path: Path):
     records, splits = _cohort_files(tmp_path, time=[1.0, 2.0] * 4, event=[1, 0] * 4, bin=[0, 1, 2, 3] * 2)
-    plan = _resolve(experiment(records, splits, head="survival", aggregator="abmil"))
+    plan = _resolve(experiment(records, splits, head="discrete_survival", aggregator="abmil"))
     assert plan.learner.params["head"].params["num_bins"] == 4
     # An explicit width may exceed the bins the cohort uses.
-    wide = _resolve(experiment(records, splits, head="survival", aggregator="abmil", head_params={"num_bins": 6}))
+    wide = _resolve(experiment(records, splits, head="discrete_survival", aggregator="abmil", head_params={"num_bins": 6}))
     assert wide.learner.params["head"].params["num_bins"] == 6
 
 
@@ -382,9 +382,9 @@ def test_last_checkpoint_selection_never_early_stops(files):
 
 def test_survival_refuses_tiles_label_aware_aggregators_and_bad_cox_risk_sets(files):
     with pytest.raises(ValueError, match="belong to a slide or patient"):
-        check(experiment(*files, head="survival", features=FeaturesConfig(encoder="uni2")))
+        check(experiment(*files, head="discrete_survival", features=FeaturesConfig(encoder="uni2")))
     with pytest.raises(ValueError, match="'clam_sb' is not supported for survival"):
-        check(experiment(*files, head="survival", aggregator="clam_sb"))
+        check(experiment(*files, head="discrete_survival", aggregator="clam_sb"))
     with pytest.raises(ValueError, match="batch_size >= 2"):
         check(experiment(*files, head="cox_survival", aggregator="abmil"))
     with pytest.raises(ValueError, match="accumulate_grad_batches = 1"):

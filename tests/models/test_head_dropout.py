@@ -20,7 +20,7 @@ from soma.models.heads.classification import (
 )
 from soma.models.heads.ordinal_classification import OrdinalClassificationHead
 from soma.models.heads.regression import RegressionHead
-from soma.models.heads.survival import CoxSurvivalHead, SurvivalHead
+from soma.models.heads.survival import CoxSurvivalHead, DiscreteSurvivalHead
 from soma.models.model import EmbeddingModel, MILModel
 
 from tests.pooled_features import D as PIPELINE_D, NUM_SAMPLES, setup_synthetic_data
@@ -38,7 +38,7 @@ HEADS = {
         lambda **kw: BranchAwareClassificationHead(input_dim=D, num_classes=3, **kw),
         (4, 3, D),
     ),
-    "survival": (lambda **kw: SurvivalHead(input_dim=D, num_bins=4, **kw), (4, D)),
+    "survival": (lambda **kw: DiscreteSurvivalHead(input_dim=D, num_bins=4, **kw), (4, D)),
     "cox": (lambda **kw: CoxSurvivalHead(input_dim=D, **kw), (4, D)),
     "ordinal": (
         lambda **kw: OrdinalClassificationHead(input_dim=D, num_classes=6, **kw),
@@ -171,7 +171,7 @@ class TestBothModelingPaths:
         torch.manual_seed(0)
         model = MILModel(
             aggregator=MeanPool(input_dim=D),
-            task_head=SurvivalHead(input_dim=D, num_bins=4, dropout=0.5),
+            task_head=DiscreteSurvivalHead(input_dim=D, num_bins=4, dropout=0.5),
         )
         model.train()
         assert not torch.equal(model(X).logits, model(X).logits)
@@ -181,7 +181,7 @@ class TestBothModelingPaths:
         torch.manual_seed(0)
         model = MILModel(
             aggregator=MeanPool(input_dim=D),
-            task_head=SurvivalHead(input_dim=D, num_bins=4),
+            task_head=DiscreteSurvivalHead(input_dim=D, num_bins=4),
         )
         model.train()
         assert torch.equal(model(X).logits, model(X).logits)

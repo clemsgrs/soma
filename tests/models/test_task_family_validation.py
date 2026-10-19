@@ -14,7 +14,7 @@ def test_task_family_of_builtin_heads():
     assert task_family_of("segmentation") == "segmentation"
     assert task_family_of("binary_classification") == "binary_classification"
     assert task_family_of("branch_aware_classification") == "multiclass_classification"
-    assert task_family_of("survival") == "survival"
+    assert task_family_of("discrete_survival") == "survival"
 
 
 def test_task_family_of_unknown_name_lists_registered_heads():
@@ -32,9 +32,9 @@ def test_registered_subclass_inherits_family(monkeypatch):
 
 
 def test_survival_task_keeps_a_registered_subclass_and_infers_its_loss(monkeypatch):
-    from soma.models.heads.survival import CoxSurvivalHead, SurvivalHead, resolve_survival_task
+    from soma.models.heads.survival import CoxSurvivalHead, DiscreteSurvivalHead, resolve_survival_task
 
-    class MyNll(SurvivalHead):
+    class MyNll(DiscreteSurvivalHead):
         pass
 
     class MyCox(CoxSurvivalHead):
@@ -43,7 +43,7 @@ def test_survival_task_keeps_a_registered_subclass_and_infers_its_loss(monkeypat
     monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
     task_registry.register("my_nll", MyNll)
     task_registry.register("my_cox", MyCox)
-    assert resolve_survival_task("survival") == (SurvivalHead, "nll")
+    assert resolve_survival_task("discrete_survival") == (DiscreteSurvivalHead, "nll")
     assert resolve_survival_task("cox_survival") == (CoxSurvivalHead, "cox")
     assert resolve_survival_task("my_nll") == (MyNll, "nll")
     assert resolve_survival_task("my_cox") == (MyCox, "cox")
@@ -54,13 +54,13 @@ def test_registered_survival_subclass_still_validates_the_dataset(tmp_path, monk
     import torch
 
     from soma.pipeline import Pipeline
-    from soma.models.heads.survival import SurvivalHead, SurvivalParams
+    from soma.models.heads.survival import DiscreteSurvivalHead, DiscreteSurvivalParams
 
-    class MySurvival(SurvivalHead):
+    class MySurvival(DiscreteSurvivalHead):
         pass
 
     monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
-    task_registry.register("_test_my_survival", MySurvival, params=SurvivalParams)
+    task_registry.register("_test_my_survival", MySurvival, params=DiscreteSurvivalParams)
 
     dataset_csv = tmp_path / "dataset.csv"
     dataset_csv.write_text(
