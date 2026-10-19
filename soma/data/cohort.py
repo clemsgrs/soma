@@ -23,6 +23,7 @@ from soma.data.validation import (
     is_valid_split_name,
     iter_rows,
     optional_text,
+    read_manifest_csv,
     require_columns,
     validate_patient_ids,
     validate_sample_ids,
@@ -386,8 +387,8 @@ class Cohort:
         """:meth:`from_frames` over CSV files; expression sidecars sit beside ``records_csv``."""
         records_csv = Path(records_csv)
         return cls.from_frames(
-            pd.read_csv(records_csv),
-            None if splits_csv is None else pd.read_csv(splits_csv),
+            read_manifest_csv(records_csv),
+            None if splits_csv is None else read_manifest_csv(splits_csv),
             targets=targets,
             dtypes=dtypes,
             unit=unit,

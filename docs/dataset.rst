@@ -9,6 +9,16 @@ soma loads samples and split assignments from two CSV manifests:
 Both files are validated on loading. Keep ``sample_id`` stable across them;
 sample and patient IDs must be bare names without path separators.
 
+soma reads ``sample_id`` and ``patient_id`` as literal strings in every CSV it
+loads: ``001`` stays ``001``, not ``1``, and ``NA`` is an ID, not a missing value.
+In these two columns only an empty cell is missing, so leave ``patient_id`` blank
+for a sample without a patient. soma warns when a ``patient_id`` is spelled like a
+missing value (``NA``, ``nan``, ``NULL``, ``None``, ...). Every other column is
+parsed as usual: numbers stay numbers, and an empty cell or ``NA`` is missing.
+A DataFrame you pass to the Python API (``Cohort.from_frames``,
+``ImageManifest.from_frame``, ``AnnotationManifest.from_frame``) is used as you
+built it, so parse its IDs as strings yourself.
+
 Dataset format
 --------------
 

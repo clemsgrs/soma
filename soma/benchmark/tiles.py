@@ -77,6 +77,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
+from soma.data.validation import read_manifest_csv
 from soma.models.detection_targets import IGNORE_VALUE, points_on_valid
 from soma.evaluation.detection.io import read_ignore_mask
 
@@ -211,13 +212,13 @@ def tile_detection_manifest(
         raise ValueError(f"overlap must be in [0, tile_size); got {overlap} vs {tile_size}")
     stride = tile_size - overlap
 
-    roi_df = pd.read_csv(curated_dir / "dataset.csv")
+    roi_df = read_manifest_csv(curated_dir / "dataset.csv")
     for col in _REQUIRED:
         if col not in roi_df.columns:
             raise ValueError(f"curated dataset.csv missing required column {col!r}")
     uniform_spacing = _resolve_uniform_spacing(roi_df, target_spacing)
 
-    split_df = pd.read_csv(curated_dir / "splits.csv")
+    split_df = read_manifest_csv(curated_dir / "splits.csv")
     for col in ("sample_id", "split", "fold"):
         if col not in split_df.columns:
             raise ValueError(f"curated splits.csv missing required column {col!r}")

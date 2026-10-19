@@ -1,5 +1,6 @@
 """Tests for soma CLI entrypoint."""
 
+import json
 from pathlib import Path
 from typing import Literal
 from unittest.mock import MagicMock, patch
@@ -561,6 +562,70 @@ def test_list_help_prints_structured_block(capsys):
     assert "commands:" in out
     assert "options:" in out
     assert "examples:" in out
+
+
+# --- soma evaluate ---
+
+
+def _zero_padded_cohort(root: Path) -> tuple[Path, Path]:
+    """All-numeric, zero-padded sample ids: type inference would read 001 as 1."""
+    root.mkdir()
+    for sample_id, (x, y) in {"001": (2, 3), "002": (5, 7)}.items():
+        (root / f"{sample_id}.csv").write_text(f"x,y,class\n{x},{y},0\n")
+    (root / "dataset.csv").write_text(
+        "sample_id,value,points_path\n"
+        f"001,0.0,{root / '001.csv'}\n002,1.0,{root / '002.csv'}\n"
+        f"003,2.0,{root / '001.csv'}\n004,3.0,{root / '002.csv'}\n"
+    )
+    (root / "splits.csv").write_text("sample_id,split\n001,train\n002,train\n003,test\n004,test\n")
+    return root / "dataset.csv", root / "splits.csv"
+
+
+@pytest.mark.parametrize(("splits", "mae"), [(True, 1.0), (False, 0.5)], ids=["splits", "unsplit"])
+def test_evaluate_scores_zero_padded_sample_ids(tmp_path: Path, splits, mae):
+    from soma.cli import main
+
+    dataset_csv, splits_csv = _zero_padded_cohort(tmp_path / "cohort")
+    # The test split errs by 0 and 2 (MAE 1.0); over every row, by 0, 0, 0, 2 (MAE 0.5).
+    predictions = tmp_path / "predictions.parquet"
+    pd.DataFrame(
+        {"sample_id": ["001", "002", "003", "004"], "predicted_value": [0.0, 1.0, 2.0, 5.0]}
+    ).iloc[2 if splits else 0 :].to_parquet(predictions, index=False)
+    out = tmp_path / "evaluation.json"
+    split_args = ["--splits", str(splits_csv)] if splits else []
+    main(
+        ["evaluate", str(predictions), "--cohort", str(dataset_csv), *split_args,
+         "--metrics", "mae", "--out", str(out)]
+    )
+
+    assert json.loads(out.read_text())["metrics"]["mae"] == mae
+
+
+@pytest.mark.parametrize("splits", [True, False], ids=["splits", "unsplit"])
+def test_grid_evaluate_scores_zero_padded_sample_ids(tmp_path: Path, splits):
+    from soma.cli import main
+    from soma.evaluation import PointPredictions
+
+    dataset_csv, splits_csv = _zero_padded_cohort(tmp_path / "cohort")
+    ids = ["003", "004"] if splits else ["001", "002", "003", "004"]
+    xy = {"001": (2, 3), "002": (5, 7), "003": (2, 3), "004": (5, 7)}
+    frame = pd.DataFrame(
+        [(sample_id, *xy[sample_id], 0, 0.9) for sample_id in ids],
+        columns=["sample_id", "x", "y", "class", "score"],
+    )
+    predictions = tmp_path / "points.parquet"
+    PointPredictions(frame, classes=["cell"], sample_ids=ids, match_distance_px=2.0).to_parquet(
+        predictions
+    )
+    out = tmp_path / "evaluation.json"
+    split_args = ["--splits", str(splits_csv)] if splits else []
+    main(
+        ["evaluate", str(predictions), "--cohort", str(dataset_csv), *split_args,
+         "--metrics", "mean_f1", "--out", str(out)]
+    )
+
+    scored = json.loads(out.read_text())
+    assert (scored["num_samples"], scored["metrics"]["mean_f1"]) == (len(ids), 1.0)
 
 
 # --- Help / no-args ---

@@ -176,6 +176,33 @@ def test_duplicate_split_sample_id_raises(tmp_path):
         tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
 
 
+def test_zero_padded_roi_and_patient_ids_are_kept_literally(tmp_path):
+    curated = _write_manifest(
+        tmp_path,
+        [{"sample_id": "001", "points": [(10.0, 10.0, 0)]},
+         {"sample_id": "002", "points": [(10.0, 10.0, 0)]}],
+        [{"sample_id": "001", "split": "train", "fold": 0},
+         {"sample_id": "002", "split": "test", "fold": 0}],
+        size=(128, 128),
+    )
+    dataset = pd.read_csv(curated / "dataset.csv", dtype=str)
+    dataset["patient_id"] = ["0007", "0008"]
+    dataset.to_csv(curated / "dataset.csv", index=False)
+
+    tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
+
+    tiles = pd.read_csv(tmp_path / "tiled" / "dataset.csv", dtype=str)
+    assert tiles[["sample_id", "source_wsi", "patient_id"]].values.tolist() == [
+        ["001_t0000", "001", "0007"],
+        ["002_t0000", "002", "0008"],
+    ]
+    splits = pd.read_csv(tmp_path / "tiled" / "splits.csv", dtype=str)
+    assert splits[["sample_id", "split"]].values.tolist() == [
+        ["001_t0000", "train"],
+        ["002_t0000", "test"],
+    ]
+
+
 # --- F2: uniform spacing -------------------------------------------------------------
 
 

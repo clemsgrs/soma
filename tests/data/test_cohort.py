@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -317,3 +318,73 @@ def test_derived_refuses_a_child_of_an_unknown_sample() -> None:
     cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
     with pytest.raises(ValueError, match="'nope'"):
         cohort.derived({"nope__x0_y0": "nope"})
+
+
+def test_from_csv_reads_identifiers_as_their_literal_strings(tmp_path) -> None:
+    # Inference would read the all-numeric splits.csv as floats (001 -> 1.0) while the
+    # mixed records column keeps '001', so the split would name an unknown sample.
+    (tmp_path / "dataset.csv").write_text(
+        "sample_id,patient_id,label,value\n"
+        "001,0007,0,1.25\n"
+        "A02,0008,1,2.5\n"
+        "1e3,0009,1,3.0\n"
+        "1.0,0010,0,4.5\n"
+    )
+    (tmp_path / "splits.csv").write_text("sample_id,split\n001,train\n1e3,tune\n1.0,test\n")
+
+    cohort = Cohort.from_csv(
+        tmp_path / "dataset.csv", tmp_path / "splits.csv", targets=["label", "value"]
+    )
+
+    assert cohort.sample_ids == ["001", "A02", "1e3", "1.0"]
+    assert cohort.folds[0] == FoldSplit(train=("001",), tune=("1e3",), tests={"test": ("1.0",)})
+    assert [record.patient_id for record in cohort.records] == ["0007", "0008", "0009", "0010"]
+    assert cohort.record("001").targets == {"label": 0, "value": 1.25}
+    assert isinstance(cohort.record("001").targets["label"], int)
+
+
+def test_from_csv_keeps_na_spellings_as_identifiers_and_blank_cells_as_missing(tmp_path) -> None:
+    (tmp_path / "dataset.csv").write_text(
+        "sample_id,patient_id,label,split\nNA,NULL,0,train\nnan,,1,test\n"
+    )
+    with pytest.warns(UserWarning, match="patient_id"):
+        cohort = Cohort.from_csv(tmp_path / "dataset.csv", targets=["label"], unit="sample_id")
+    assert cohort.sample_ids == ["NA", "nan"]
+    assert cohort.record("NA").patient_id == "NULL"
+    assert cohort.record("nan").patient_id is None
+
+    (tmp_path / "blank.csv").write_text("sample_id,label,split\n,0,train\nb,1,test\n")
+    with pytest.raises(ValueError, match="blank sample_id"):
+        Cohort.from_csv(tmp_path / "blank.csv", targets=["label"])
+
+
+@pytest.mark.parametrize("missing", ["", "NA"])
+def test_from_csv_keeps_target_columns_numeric_and_their_blanks_invalid(tmp_path, missing) -> None:
+    (tmp_path / "dataset.csv").write_text(
+        f"sample_id,label,value,site,split\n001,0,1.5,NA,train\n002,{missing},2.5,b,test\n"
+    )
+    with pytest.raises(ValueError, match="'label'.*blank for sample '002'"):
+        Cohort.from_csv(tmp_path / "dataset.csv", targets=["label", "value"])
+
+    cohort = Cohort.from_csv(tmp_path / "dataset.csv", targets=["value"])
+    assert cohort.record("002").targets == {"value": 2.5}
+    assert pd.isna(cohort.record("001").metadata["site"])
+
+
+def test_na_spelled_patient_ids_warn_once_and_blank_ones_do_not(tmp_path) -> None:
+    # R's write.csv spells a missing value NA: under the literal contract those samples
+    # share one patient named 'NA', so the reader says so.
+    (tmp_path / "dataset.csv").write_text(
+        "sample_id,patient_id,label,split\n"
+        "s0,NA,0,train\ns1,nan,1,train\ns2,None,0,test\ns3,p3,1,test\n"
+    )
+    with pytest.warns(UserWarning) as caught:
+        Cohort.from_csv(tmp_path / "dataset.csv", targets=["label"])
+    messages = [str(warning.message) for warning in caught if "patient_id" in str(warning.message)]
+    assert len(messages) == 1
+    assert "['s0', 's1', 's2']" in messages[0] and "blank" in messages[0]
+
+    (tmp_path / "blank.csv").write_text("sample_id,patient_id,label,split\ns0,,0,train\ns1,,1,test\n")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert Cohort.from_csv(tmp_path / "blank.csv", targets=["label"]).record("s0").patient_id is None

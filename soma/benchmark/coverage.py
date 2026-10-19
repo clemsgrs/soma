@@ -23,6 +23,8 @@ from hs2p.api import resolve_annotation_masks, summarize_annotation_coverage
 from hs2p.tiling.mask import open_annotation_mask
 from hs2p.wsi.reader import open_slide
 
+from soma.data.validation import read_manifest_csv
+
 REQUIRED_COLUMNS = {"sample_id", "image_path", "label_mask_path"}
 _METRICS = ("area_mm2", "frac", "est_tiles")
 
@@ -55,7 +57,7 @@ def summarize_coverage(
     ``spacing_um`` is tiled at its own spacing, and the estimate sizes tiles the same way.
     """
     if isinstance(manifest, (str, Path)):
-        manifest = pd.read_csv(manifest)
+        manifest = read_manifest_csv(manifest)
     missing = REQUIRED_COLUMNS - set(manifest.columns)
     if missing:
         raise ValueError(
