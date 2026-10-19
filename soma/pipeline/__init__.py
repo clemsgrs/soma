@@ -8,6 +8,6 @@ mirror; ``representation.py`` the task-free CRoMa evaluation.
 """
 
 from soma.pipeline.folds import FoldResult
-from soma.pipeline.run import Pipeline, PipelineResult
+from soma.pipeline.run import FoldContext, Pipeline, PipelineResult
 
-__all__ = ["FoldResult", "Pipeline", "PipelineResult"]
+__all__ = ["FoldContext", "FoldResult", "Pipeline", "PipelineResult"]

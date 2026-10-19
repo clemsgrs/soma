@@ -18,6 +18,10 @@ fold order (ADR 0017):
 Every predictions file must be byte-identical, the metrics equal and
 ``bundle/weights.safetensors`` byte-identical. A failure here is fixed in the pipeline,
 never by loosening the comparison: byte identity depends on the RNG consumption order.
+
+The set MIL and grid segmentation scenarios also run the config once more through
+``soma.Pipeline`` with a read-only runtime observer (``callback_factory``), which must
+match the CLI run under the same comparison.
 """
 
 from __future__ import annotations
@@ -67,17 +71,59 @@ def _prediction_files(root: Path) -> dict[str, str]:
     return files
 
 
+def _check_identical(artifact, prefix: str, run_dir: Path, other_dir: Path, other_metrics: dict) -> None:
+    """``run_dir``'s predictions and weights are byte-identical to ``other_dir``'s, and its
+    metrics equal ``other_metrics``; each check is named after ``prefix``."""
+    files = _prediction_files(run_dir)
+    artifact.check_equal(f"{prefix}predictions/files", sorted(files), sorted(_prediction_files(other_dir)))
+    artifact.check_equal(f"{prefix}predictions/sha256", files, _prediction_files(other_dir))
+    artifact.check_equal(f"{prefix}metrics", json.loads((run_dir / "metrics.json").read_text()), other_metrics)
+    weights = (run_dir / "bundle" / "weights.safetensors").read_bytes()
+    other_weights = (other_dir / "bundle" / "weights.safetensors").read_bytes()
+    artifact.check_equal(f"{prefix}weights/identical", weights == other_weights, True)
+
+
 def _check_parity(artifact, run, hand_dir: Path, hand_metrics: dict) -> None:
     artifact.record_run("pipeline", run)
     artifact.check_training_reduced_loss("pipeline", run)
-    pipeline_files = _prediction_files(run.run_dir)
-    artifact.check_equal("predictions/files", sorted(pipeline_files), sorted(_prediction_files(hand_dir)))
-    artifact.check_equal("predictions/sha256", pipeline_files, _prediction_files(hand_dir))
-    artifact.check_equal("metrics", json.loads((run.run_dir / "metrics.json").read_text()), hand_metrics)
-    pipeline_weights = (run.run_dir / "bundle" / "weights.safetensors").read_bytes()
-    hand_weights = (hand_dir / "bundle" / "weights.safetensors").read_bytes()
-    artifact.check_equal("weights/identical", pipeline_weights == hand_weights, True)
+    _check_identical(artifact, "", run.run_dir, hand_dir, hand_metrics)
     artifact.check_equal("best_model_pt/absent", (run.run_dir / "best_model.pt").exists(), False)
+
+
+class _EpochReader:
+    """A read-only runtime observer: at each epoch end it copies what the observer
+    contract lets it read."""
+
+    def __init__(self, epochs: list) -> None:
+        self.epochs = epochs
+
+    def on_epoch_end(self, trainer, learner) -> None:
+        summary = None if trainer.summary is None else dict(trainer.summary)
+        self.epochs.append(
+            (
+                trainer.epoch,
+                trainer.total_epochs,
+                trainer.train_loss,
+                trainer.lr,
+                trainer.optimizer_steps,
+                summary,
+                dict(trainer.history.rows[-1]),
+            )
+        )
+
+
+def _check_observer_changes_nothing(artifact, run, source) -> None:
+    """The CLI run's config again through ``soma.Pipeline``, with a read-only observer on
+    the fold: it reads every epoch, and the run is byte-identical to the CLI run."""
+    epochs: list = []
+    observed = soma.Pipeline(
+        soma.ExperimentConfig.from_yaml(run.config_path),
+        source=source,
+        callback_factory=lambda context: [_EpochReader(epochs)],
+    ).run()
+    artifact.check_equal("observer/epochs_read", len(epochs), len(run.histories()[""]))
+    run_metrics = json.loads((run.run_dir / "metrics.json").read_text())
+    _check_identical(artifact, "observer/", observed.run_dir, run.run_dir, run_metrics)
 
 
 def _fit(learner, fold, *, epochs: int):
@@ -189,6 +235,7 @@ def test_set_mil_classification_pipeline_equals_hand_composition(tmp_path, new_a
 
     artifact.check_equal("tileless/placeholder_rows", metrics["test"]["num_placeholder_samples"], 1)
     _check_parity(artifact, run, hand, metrics)
+    _check_observer_changes_nothing(artifact, run, CachedSetSource(feature_dir))
     artifact.assert_passed()
 
 
@@ -277,6 +324,7 @@ def test_grid_segmentation_pipeline_equals_hand_composition(tmp_path, new_artifa
     soma.save(result, hand / "bundle")  # 9
 
     _check_parity(artifact, run, hand, metrics)
+    _check_observer_changes_nothing(artifact, run, CachedGridSource(grid_dir))
     artifact.assert_passed()
 
 

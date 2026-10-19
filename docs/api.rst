@@ -101,6 +101,37 @@ contracts and :doc:`outputs` for the saved attention scores and overlays:
 
    result = Pipeline(replace(abmil, evaluation=evaluation), source=features).run()
 
+Watch a run while it trains
+---------------------------
+
+``Pipeline(config, source=..., callback_factory=...)`` attaches runtime observers
+to each fold it trains. ``run()`` calls ``callback_factory(context)`` once per
+fold, before it seeds the fold, and appends the Trainer callbacks it returns after
+the config's callbacks. ``context`` is a :class:`~soma.pipeline.FoldContext`.
+Like ``source``, the factory is not part of the config, the plan or the
+experiment identity:
+
+.. code-block:: python
+
+   class TuneLoss:
+       def __init__(self, context):
+           self.fold = context.fold
+
+       def on_epoch_end(self, trainer, learner):
+           if trainer.summary is not None:  # None on an epoch without a tune evaluation
+               print(self.fold, trainer.epoch, trainer.summary["loss"])
+
+
+   result = Pipeline(abmil, source=features, callback_factory=lambda context: [TuneLoss(context)]).run()
+
+An observer only reads: it must not stop the run, change the learner or the
+optimizer, or draw from the global random state. An exception from the factory or
+from an observer fails the run, and ``run.yaml`` records it. :ref:`runtime-observers`
+gives the fields an observer may read, the seed convention, the resume behaviour
+and the failure policy.
+
+.. autoclass:: soma.pipeline.FoldContext
+
 Dense features over given images
 --------------------------------
 
