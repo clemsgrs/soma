@@ -125,4 +125,5 @@ The shared base classes are :class:`soma.models.aggregators.base.Aggregator` and
    :members:
 
 ``soma.components("aggregators")`` lists the registered aggregators with their
-params and defaults.
+params and defaults. :ref:`Extending soma <custom-aggregator>` writes, registers and
+checks an aggregator of your own.

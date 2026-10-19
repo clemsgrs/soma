@@ -782,3 +782,27 @@ def test_every_python_snippet_in_the_docs_compiles_and_names_public_soma_objects
 
     assert snippets > 20
     assert offences == []
+
+
+def test_the_custom_aggregator_example_runs_as_written(monkeypatch) -> None:
+    """The worked aggregator of ``extending.rst`` runs as the page prints it: it registers
+    with its params, passes ``soma.testing.check_aggregator``, and the preset names it."""
+    import sys
+    import types
+
+    import soma
+    from soma.models.aggregators import aggregator_registry
+
+    # The example registers a name; restore the registry so it does not leak into later tests.
+    monkeypatch.setattr(aggregator_registry, "_entries", dict(aggregator_registry._entries))
+    page = (Path(__file__).resolve().parents[2] / "docs" / "extending.rst").read_text(encoding="utf-8")
+    (source,) = [source for _, source, _ in _python_snippets(page) if "check_aggregator(" in source]
+    # Run it as a module of its own, as a user's script would be: ``@dataclass`` looks its
+    # class's module up in ``sys.modules``.
+    example = types.ModuleType("extending_aggregator_example")
+    monkeypatch.setitem(sys.modules, example.__name__, example)
+    exec(compile(source, "docs/extending.rst", "exec"), example.__dict__)
+
+    (entry,) = [entry for entry in soma.components("aggregators") if entry["name"] == "projected_mean"]
+    assert entry["params"] == {"hidden_dim": 64}
+    assert example.config.learner.params["aggregator"].name == "projected_mean"
