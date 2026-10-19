@@ -1065,7 +1065,8 @@ def guard_resume_plan_drift(run_dir: Path, plan: Plan) -> None:
     and ``run.folds``, the folds this launch takes on; :meth:`Plan.comparable`), so an
     otherwise identical relaunch passes while a changed seed, encoder, head or evaluation
     protocol is caught before it mixes incompatible folds (issue #244). The manifest guard
-    then checks the cohort files' content."""
+    then checks the cohort files' content, and the component guard the code of the
+    external components."""
     if not (plan.run.resume or plan.run.run_id):
         return
     saved_path = Path(run_dir) / PLAN_FILENAME
@@ -1076,6 +1077,7 @@ def guard_resume_plan_drift(run_dir: Path, plan: Plan) -> None:
     current = comparable(yaml.safe_load(plan.to_yaml()))
     if saved == current:
         guard_resume_manifest_drift(run_dir, plan)
+        guard_resume_component_drift(run_dir, plan)
         return
     differing = sorted(key for key in set(saved) | set(current) if saved.get(key) != current.get(key))
     raise ValueError(
@@ -1110,6 +1112,36 @@ def guard_resume_manifest_drift(run_dir: Path, plan: Plan) -> None:
         f"on (experiment identity {str(saved_experiment_id)[:12]} → "
         f"{current_experiment_id[:12]}). Resuming would mix folds trained on different "
         "data. Start a fresh run, or restore the original manifests."
+    )
+
+
+def guard_resume_component_drift(run_dir: Path, plan: Plan) -> None:
+    """Refuse to resume when the code of an external component changed since the run ran.
+
+    The run's ``run.yaml`` records the fingerprint of each component
+    (:func:`component_record`). The fingerprints of the external components, those not
+    from soma, slide2vec, hs2p or torch, are compared with the current ones; a difference
+    is refused and no setting overrides it, since the run would hold folds trained by two
+    versions of the code. A ``run.yaml`` without a record (written before the record
+    existed) is not compared.
+    """
+    run_yaml = Path(run_dir) / "run.yaml"
+    if not run_yaml.is_file():
+        return
+    saved = (yaml.safe_load(run_yaml.read_text(encoding="utf-8")) or {}).get("components")
+    if saved is None:
+        return
+    conflicts = fingerprint_conflicts({"saved": saved, "current": component_record(plan)})
+    if not conflicts:
+        return
+    details = "; ".join(
+        f"{component}: {fingerprints['saved']} → {fingerprints['current']}"
+        for component, fingerprints in conflicts.items()
+    )
+    raise ValueError(
+        f"Refusing to resume run '{Path(run_dir).name}': the code of its external "
+        f"component(s) changed since the run was recorded ({details}). Resuming would mix "
+        "folds trained by different code. Start a fresh run."
     )
 
 

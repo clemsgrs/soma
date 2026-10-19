@@ -585,4 +585,27 @@ def test_edited_component_code_is_recorded_and_guards_resume_and_leaderboard(
         _component(record, "head")["object"],
         "soma.models.heads.classification.BinaryClassificationHead",
     )
+
+    # A resume onto the seed-0 run passes while the code is unchanged...
+    resume_path = tmp_path / "resume.yaml"
+    resume = _slide_config(cohort, tmp_path, encoder_name, aggregator=EDITABLE_AGGREGATOR, resume=True)
+    resume_path.write_text(yaml.safe_dump(resume, sort_keys=False))
+    soma_main(["run", str(resume_path)])
+    run_dirs = sorted((tmp_path / "runs").glob("experiments/*/runs/*"))
+    artifact.check_equal("resume_unchanged/reused_the_run", run_dirs == [first.run_dir], True)
+    artifact.check_equal("resume_unchanged/status", _run_yaml(first.run_dir)["status"], "completed")
+
+    # ... and is refused once `forward` is edited, naming the aggregator and both fingerprints.
+    user_aggregator.edit()
+    with pytest.raises(ValueError, match="Refusing to resume") as refused:
+        soma_main(["run", str(resume_path)])
+    message = str(refused.value)
+    artifact.check_equal("resume_edited/names_the_aggregator", f"aggregator '{EDITABLE_AGGREGATOR}'" in message, True)
+    artifact.check_equal("resume_edited/names_the_old_fingerprint", _sha256(USER_SOURCE)[:12] in message, True)
+    artifact.check_equal("resume_edited/names_the_new_fingerprint", _sha256(USER_SOURCE_EDITED)[:12] in message, True)
+    artifact.check_equal(
+        "resume_edited/run_keeps_its_record",
+        _component(_run_yaml(first.run_dir)["components"], "aggregator")["fingerprint"],
+        _sha256(USER_SOURCE),
+    )
     artifact.assert_passed()
