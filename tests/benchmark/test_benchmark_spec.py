@@ -105,6 +105,20 @@ def test_benchmark_spec_rejects_invalid_ranking_declaration_on_construction():
         )
 
 
+def test_benchmark_spec_rejects_a_runner_that_is_not_callable():
+    # A non-callable runner would otherwise be skipped for a Pipeline run that cannot
+    # train the benchmark's config.
+    with pytest.raises(TypeError, match="run must be callable"):
+        BenchmarkSpec(
+            name="fmtf/invalid-runner",
+            canonical_seeds=(7,),
+            primary_metric="test/accuracy",
+            build_config=_build_config,
+            score=_score,
+            run="hest_probe",
+        )
+
+
 @pytest.mark.parametrize("canonical_seeds", [(), (7, 7), (7, "3"), (True,)])
 def test_benchmark_spec_rejects_invalid_canonical_seeds(canonical_seeds):
     with pytest.raises(

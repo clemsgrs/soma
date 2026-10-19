@@ -66,6 +66,7 @@ from soma.benchmark.hest.curate import curate_hest
 from soma.benchmark.curation import CuratedManifest
 from soma.benchmark.hest.probe import DEFAULT_PCA_COMPONENTS, RidgePCAProbe, gene_pearson
 from soma.learn import learner_registry
+from soma.pipeline import PipelineResult
 from soma.registry import check_positive
 
 REFERENCE_NAME = "hest"
@@ -266,7 +267,7 @@ class HestBenchmark:
         cfg.evaluation = EvaluationConfig(metrics=[EVAL_METRIC])
         return cfg
 
-    def run(self, config: ExperimentConfig) -> dict[str, float]:
+    def run(self, config: ExperimentConfig) -> PipelineResult:
         """Extract, fit, predict and evaluate each fold through soma's verbs.
 
         Extracts the cohort's tiles once into a rank-1 set source (soma's feature cache),
@@ -277,11 +278,14 @@ class HestBenchmark:
         ``metrics.json`` and ``predictions_<split>.parquet`` and the run's
         ``summary.json`` into the managed run directory
         (``output_root/experiments/<experiment>/runs/<run_id>``, as a ``Pipeline`` run), so
-        runs of different encoders under one ``output_root`` never overwrite each other;
-        returns the summary. Like a ``Pipeline`` run it writes ``experiment.json`` and a
-        ``run.yaml`` that tracks the run's status, so ``soma leaderboard`` and
-        ``soma reproduce --from-run-dir`` can read the run. ``run.folds`` is refused: the
-        closed-form probe fits every fold in one launch. The config resolves to its plan
+        runs of different encoders under one ``output_root`` never overwrite each other.
+        Like a ``Pipeline`` run it writes ``experiment.json`` and a ``run.yaml`` that
+        tracks the run's status, so ``soma leaderboard`` and ``soma reproduce
+        --from-run-dir`` can read the run, and returns a :class:`~soma.pipeline.PipelineResult`
+        (no fold results) carrying the summary, the run directory and the dataset, splits
+        and test checksums those files record, so ``run_benchmark_spec`` can run it as a
+        spec's ``run``. ``run.folds`` is refused: the closed-form probe fits every fold in
+        one launch. The config resolves to its plan
         against the expression cohort (``plan.yaml`` beside ``config.yaml``), and a resume
         onto an existing run whose saved plan differs is refused before anything is written.
         """
@@ -318,7 +322,7 @@ class HestBenchmark:
         with RunRecorder(layout, plan) as recorder:
             summary = self._run_folds(plan, cohort, run_dir)
             recorder.complete(summary)
-        return summary
+            return recorder.with_identity(PipelineResult(fold_results=[], summary=summary, run_dir=run_dir))
 
     def _run_folds(self, plan, cohort, run_dir: Path) -> dict[str, float]:
         """:meth:`run`'s work inside the managed run directory; returns the summary."""

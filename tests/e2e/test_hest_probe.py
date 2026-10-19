@@ -5,10 +5,15 @@
 ``soma.evaluate`` (``mean_pearson`` + one Pearson per gene). Synthetic spots carry gene
 expression that is a linear function of their colour, so only a probe that receives each
 spot's own features and expression can correlate.
+
+The same runner serves both benchmark entry points: ``soma reproduce`` / ``run_benchmark``
+call the registered benchmark's ``run``, and ``run_benchmark_spec`` calls the ``run`` of an
+external ``BenchmarkSpec`` that wraps the recipe.
 """
 
 from __future__ import annotations
 
+import functools
 import json
 
 import numpy as np
@@ -16,7 +21,8 @@ import pandas as pd
 import yaml
 from PIL import Image
 
-from soma.benchmark import get_benchmark
+from soma.benchmark import BenchmarkSpec, get_benchmark, run_benchmark, run_benchmark_spec
+from soma.cli import main as soma_main
 from slide2vec import ExecutionOptions
 from soma.benchmark.leaderboard import axis_value, load_run_record
 from tests.e2e.harness import CPU_EXECUTION
@@ -24,7 +30,12 @@ from tests.e2e.harness import CPU_EXECUTION
 GENES = ["ERBB2", "ESR1", "MKI67"]
 
 
-def _spots(root, n: int = 40, size: int = 224, seed: int = 0):
+def _spots(root, n: int = 40, size: int = 224, seed: int = 0, folds: int = 1):
+    """``n`` one-colour spots whose expression is a linear function of their colour.
+
+    One fold holds the last 10 spots out for test. ``folds=2`` adds a second fold that
+    holds the first 10 out, so the summary carries HEST's fold-averaged headline
+    (``test/mean_pearson_mean``)."""
     rng = np.random.default_rng(seed)
     tiles = root / "tiles"
     tiles.mkdir(parents=True)
@@ -46,8 +57,71 @@ def _spots(root, n: int = 40, size: int = 224, seed: int = 0):
     np.save(root / "targets.npy", expression)
     (root / "genes.json").write_text(json.dumps(GENES))
     split = ["train"] * 30 + ["test"] * (n - 30)
-    pd.DataFrame({"sample_id": ids, "split": split}).to_csv(root / "splits.csv", index=False)
+    splits = pd.DataFrame({"sample_id": ids, "split": split})
+    if folds == 2:
+        second = pd.DataFrame({"sample_id": ids, "split": ["test"] * 10 + ["train"] * (n - 10)})
+        splits = pd.concat([splits.assign(fold=0), second.assign(fold=1)], ignore_index=True)
+    splits.to_csv(root / "splits.csv", index=False)
     return root / "dataset.csv", root / "splits.csv"
+
+
+def _cpu_sized(monkeypatch, benchmark) -> None:
+    """Shrink the registered recipe to the synthetic spots: PCA dim 2 (the ``fake``
+    encoder's features are 3-d) and CPU execution. The recipe is otherwise untouched."""
+    monkeypatch.setattr(
+        benchmark,
+        "build_config",
+        functools.partial(
+            benchmark.build_config, pca_components=2, execution=ExecutionOptions(**CPU_EXECUTION)
+        ),
+    )
+
+
+def test_reproduce_hest_runs_the_benchmark_runner_from_the_cli_and_run_benchmark(
+    tmp_path, monkeypatch, encoder_name, new_artifact
+):
+    """``soma reproduce hest/IDC`` and ``run_benchmark`` run HEST through its own runner (no
+    ``Pipeline`` trains the probe) and score the same fold-averaged Pearson."""
+    artifact = new_artifact("reproduce_hest")
+    curated = tmp_path / "curated"
+    _spots(curated, folds=2)
+    benchmark = get_benchmark("hest/IDC")
+    _cpu_sized(monkeypatch, benchmark)
+    code = 0
+    try:
+        soma_main(
+            [
+                "reproduce",
+                "hest/IDC",
+                "--curated-dir",
+                str(curated),
+                "--encoder",
+                encoder_name,
+                "--output-root",
+                str(tmp_path / "cli"),
+                "--cache-root",
+                str(tmp_path / "cache"),
+            ]
+        )
+    except SystemExit as exc:
+        code = int(exc.code or 0)
+    artifact.check_equal("cli/exit_code", code, 0)
+    cli_score = benchmark.score(tmp_path / "cli" / "seed_0")[benchmark.primary_metric]
+    artifact.check_at_least("cli/test/mean_pearson_mean", cli_score, 0.8)
+
+    result = run_benchmark(
+        "hest/IDC",
+        encoder=encoder_name,
+        curated_dir=curated,
+        output_root=tmp_path / "api",
+        cache_root=tmp_path / "cache",
+        return_result=True,
+    )
+
+    artifact.check_equal("api/status", result.status, 0)
+    artifact.check_equal("api/metrics", [m.metric for m in result.metrics], ["test/mean_pearson_mean"])
+    artifact.check_equal("api/score_matches_cli", result.metrics[0].measured, cli_score)
+    artifact.assert_passed()
 
 
 def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, new_artifact):
@@ -64,7 +138,7 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
         execution=ExecutionOptions(**CPU_EXECUTION),
     )
 
-    summary = benchmark.run(config)
+    summary = benchmark.run(config).summary
 
     (run,) = (tmp_path / "run").glob("experiments/*/runs/*")
     metrics = json.loads((run / "metrics.json").read_text())["test"]
@@ -96,6 +170,61 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
     artifact.check_equal("metadata/encoder_axis", axes, {"encoder": encoder_name})
     artifact.assert_passed()
 
+
+def test_run_benchmark_spec_runs_hest_through_the_specs_runner(
+    tmp_path, monkeypatch, encoder_name, new_artifact
+):
+    """An external harness wraps the registered recipe in a ``BenchmarkSpec`` and passes its
+    runner: ``run_benchmark_spec`` runs HEST with it, never builds a ``Pipeline``, and
+    returns the manifest checksums the run recorded in ``experiment.json`` and ``run.yaml``."""
+    import soma.pipeline
+
+    artifact = new_artifact("benchmark_spec_hest")
+    dataset_csv, splits_csv = _spots(tmp_path / "data", folds=2)
+    recipe = get_benchmark("hest/IDC")
+    _cpu_sized(monkeypatch, recipe)
+
+    class NoPipeline:
+        def __init__(self, config):
+            raise AssertionError("run_benchmark_spec built a Pipeline for a spec with a runner")
+
+    monkeypatch.setattr(soma.pipeline, "Pipeline", NoPipeline)
+    spec = BenchmarkSpec(
+        name="fmtf/hest-IDC",
+        canonical_seeds=recipe.canonical_seeds,
+        primary_metric=recipe.primary_metric,
+        build_config=recipe.build_config,
+        score=recipe.score,
+        run=getattr(recipe, "run", None),
+    )
+
+    result = run_benchmark_spec(
+        spec,
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        encoder=encoder_name,
+        output_root=tmp_path / "evidence",
+    )
+
+    (run_dir,) = (tmp_path / "evidence" / "seed_0").glob("experiments/*/runs/*")
+    experiment = json.loads((run_dir.parent.parent / "experiment.json").read_text())
+    recorded = yaml.safe_load((run_dir / "run.yaml").read_text())
+    artifact.check_equal("status", result.status, 0)
+    artifact.check_equal("metrics", [m.metric for m in result.metrics], ["test/mean_pearson_mean"])
+    artifact.check_at_least("test/mean_pearson_mean", result.metrics[0].measured, 0.8)
+    artifact.check_equal(
+        "checksums/non_empty",
+        all((result.dataset_checksum, result.splits_checksum, result.test_checksum)),
+        True,
+    )
+    artifact.check_equal(
+        "checksums/dataset_as_recorded", result.dataset_checksum == experiment["dataset_checksum"], True
+    )
+    artifact.check_equal(
+        "checksums/splits_as_recorded", result.splits_checksum == experiment["splits_checksum"], True
+    )
+    artifact.check_equal("checksums/test_as_recorded", result.test_checksum == recorded["test_checksum"], True)
+    artifact.assert_passed()
 
 def _twin_encoder(name: str) -> str:
     """Register a second name for the ``fake`` encoder: an encoder axis value of its own."""

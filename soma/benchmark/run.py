@@ -5,7 +5,8 @@ everything ``soma reproduce`` provides for a registered Built-in Benchmark — r
 resolution, tolerance status, provenance, and ledger append. :func:`run_benchmark_spec`
 executes an external project's direct :class:`~soma.benchmark.spec.BenchmarkSpec` with
 exact seeds, shared feature caching, metric aggregation, and per-seed evidence roots,
-without registry, reference, tolerance, ledger, or CLI concerns.
+without registry, reference, tolerance, ledger, or CLI concerns. Both pick how a seed runs
+in one helper: the benchmark's or spec's own runner when it has one, else a ``Pipeline``.
 
 The helpers here keep the CLI's reporting contract verbatim (stdout/stderr text, exit
 codes): a return value of ``0`` is success, ``2`` a usage/protocol error, and — exactly
@@ -34,6 +35,21 @@ def _pipeline_cls():
     from soma.pipeline import Pipeline
 
     return Pipeline
+
+
+def _run_seed(owner, config, *, pipeline_cls=None):
+    """Run one seed's config: ``owner``'s own runner if it has one, else a ``Pipeline``.
+
+    Both public runners pick how a seed runs here, so the registered-benchmark path and
+    the external-spec path cannot drift apart. A benchmark that composes the verbs itself
+    (HEST's closed-form probe) exposes ``run``; a :class:`BenchmarkSpec` carries it as its
+    ``run`` field. Either way the result exposes the run's ``dataset_checksum``,
+    ``splits_checksum`` and ``test_checksum``.
+    """
+    runner = getattr(owner, "run", None)
+    if callable(runner):
+        return runner(config)
+    return (pipeline_cls or _pipeline_cls())(config).run()
 
 
 def _reproduce_seeds(benchmark, requested: int | None) -> tuple[int, ...]:
@@ -667,7 +683,6 @@ def _reproduce_one(
     overrides = {"cache": {"enabled": True, "root_dir": str(cache_root)}}
     print(f"Feature cache (shared across seeds): {cache_root}", flush=True)
 
-    pipeline_cls = pipeline_cls or _pipeline_cls()
     measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
     seed_roots: list[Path] = []
     for seed in seeds:
@@ -687,13 +702,7 @@ def _reproduce_one(
             overrides=overrides,
         )
         with _panel_runtime_boundary(isolate_runtime_failures):
-            # A benchmark that composes the verbs itself (HEST's closed-form probe) runs
-            # its own config; every other one is a Pipeline run.
-            runner = getattr(benchmark, "run", None)
-            if callable(runner):
-                runner(config)
-            else:
-                pipeline_cls(config).run()
+            _run_seed(benchmark, config, pipeline_cls=pipeline_cls)
             metrics = _require_reported_scores(
                 benchmark,
                 benchmark.score(seed_root),
@@ -821,7 +830,18 @@ def run_benchmark_spec(
     cache_root: str | Path | None = None,
     seeds: Sequence[int] | None = None,
 ) -> BenchmarkRunResult:
-    """Execute an external benchmark specification without registry concerns."""
+    """Execute an external benchmark specification without registry concerns.
+
+    Runs every seed (``seeds``, by default ``spec.canonical_seeds``) under
+    ``<output_root>/seed_<n>``, with one feature cache shared by all seeds (``cache_root``,
+    by default ``<output_root>/feature_cache``), and scores each seed with ``spec.score``.
+
+    A seed runs through ``spec.run(config)`` when the spec sets a runner, and through
+    ``Pipeline(config).run()`` otherwise. Both return the dataset, splits and test
+    checksums of the run, which the returned :class:`BenchmarkRunResult` carries; every
+    seed must report the same three, or a ``ValueError`` is raised. A score that misses a
+    Reported metric also raises ``ValueError``.
+    """
     import statistics
 
     selected_seeds = _validate_seed_sequence(
@@ -837,7 +857,6 @@ def run_benchmark_spec(
     measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
     seed_roots: list[Path] = []
     identities: set[tuple[str, str, str]] = set()
-    pipeline_cls = _pipeline_cls()
 
     for seed in selected_seeds:
         # Free the previous seed's pipeline before building the next, as in
@@ -854,7 +873,7 @@ def run_benchmark_spec(
             overrides=overrides,
             encoder=encoder,
         )
-        run = pipeline_cls(config).run()
+        run = _run_seed(spec, config)
         identities.add((run.dataset_checksum, run.splits_checksum, run.test_checksum))
         # Drop the result before the next seed: through its fold results it owns the
         # trained learner and, for live segmentation, the frozen encoder, which would
