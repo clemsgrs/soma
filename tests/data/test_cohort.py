@@ -358,6 +358,15 @@ def test_from_csv_keeps_na_spellings_as_identifiers_and_blank_cells_as_missing(t
         Cohort.from_csv(tmp_path / "blank.csv", targets=["label"])
 
 
+def test_blank_split_sample_id_is_rejected_not_matched_to_a_literal_nan_record(tmp_path) -> None:
+    # Stringified, a blank split cell reads 'nan' and would put the record literally named
+    # 'nan' in the test split.
+    (tmp_path / "dataset.csv").write_text("sample_id,label\na,1\nnan,2\n")
+    (tmp_path / "splits.csv").write_text("sample_id,split\na,train\n,test\n")
+    with pytest.raises(ValueError, match="blank sample_id"):
+        Cohort.from_csv(tmp_path / "dataset.csv", tmp_path / "splits.csv", targets=["label"])
+
+
 @pytest.mark.parametrize("missing", ["", "NA"])
 def test_from_csv_keeps_target_columns_numeric_and_their_blanks_invalid(tmp_path, missing) -> None:
     (tmp_path / "dataset.csv").write_text(

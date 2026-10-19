@@ -188,6 +188,13 @@ def _split_frame(records_df: pd.DataFrame, splits_df: pd.DataFrame | None) -> pd
         columns = ["sample_id", "split"] + (["fold"] if "fold" in records_df.columns else [])
         splits_df = records_df[columns]
     require_columns(splits_df, {"sample_id", "split"}, what="splits table")
+    # Reject blank IDs before any str() conversion turns them into 'nan', a legal literal ID.
+    blank_ids = splits_df["sample_id"].isna()
+    if blank_ids.any():
+        raise ValueError(
+            f"splits table has blank sample_id value(s) at row(s) "
+            f"{splits_df.index[blank_ids].tolist()}"
+        )
     splits_df = splits_df.copy()
     if "fold" not in splits_df.columns:
         splits_df["fold"] = 0
