@@ -13,8 +13,7 @@ from soma.testing import ConformanceError, check_aggregator
 
 D = 16
 
-#: Small widths keep the transformers CPU-sized. HIPT reads 2x2-tile regions, and a flat
-#: HIPT bag is whole regions: the check's bags (16 tiles, 8 for the padded ones) are.
+#: Small widths keep the transformers CPU-sized. HIPT reads 2x2-tile regions.
 AGGREGATOR_PARAMS = {
     "abmil": {"hidden_dim": 8},
     "clam_sb": {"hidden_dim": 8, "attn_dim": 4, "k_sample": 2},
@@ -31,6 +30,14 @@ def test_every_registered_aggregator_conforms(name):
     torch.manual_seed(0)
     aggregator = aggregator_registry.get(name)(input_dim=D, **AGGREGATOR_PARAMS.get(name, {}))
     check_aggregator(aggregator, input_dim=D)
+
+
+def test_hipt_conforms_on_flat_bags_that_end_partway_through_a_region():
+    # 10 tiles, and 5 for the padded bag: both end inside a 2x2-tile region, so masked
+    # tiles share a region with valid ones.
+    torch.manual_seed(0)
+    hipt = aggregator_registry.get("hipt")(input_dim=D, **AGGREGATOR_PARAMS["hipt"])
+    check_aggregator(hipt, input_dim=D, n_tiles=10)
 
 
 class _MaskBlindMean(MeanPool):
