@@ -403,3 +403,31 @@ class TestMILCoxEndToEnd:
             result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
         assert isinstance(result, PipelineResult)
         assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics
+
+    def test_abmil_accumulation_mode_runs_on_a_region_grid_store(self, tmp_path: Path):
+        """ABMIL reads each region grid as one flat bag through the Cox window, and
+        scores exactly as on the same tiles stored as a flat bag."""
+        risks = {}
+        for layout in ("regions", "flat"):
+            (tmp_path / layout).mkdir()
+            dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path / layout)
+            torch.manual_seed(1)
+            for i in range(8):
+                grid = torch.randn(2 + (i % 2), 4, D)
+                torch.save(grid if layout == "regions" else grid.reshape(-1, D), feature_dir / f"s{i}.pt")
+            config = experiment(
+                dataset_csv,
+                splits_csv,
+                output_dir=tmp_path / layout / 'out',
+                aggregator='abmil',
+                head='cox_survival',
+                head_params={'cox_window': 8},
+                loaders={"batch_size": 1},
+                trainer={"max_epochs": 2},
+                scheduler='cosine',
+            )
+            with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+                result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
+            assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics
+            risks[layout] = Predictions.from_parquet(next(result.run_dir.rglob("predictions_test.parquet")))
+        pd.testing.assert_frame_equal(risks["regions"].frame, risks["flat"].frame)

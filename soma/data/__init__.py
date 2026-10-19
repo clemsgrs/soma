@@ -10,6 +10,7 @@ from soma.data.images import TileImageSource
 from soma.data.manifests import AnnotationEntry, AnnotationManifest, ImageEntry, ImageManifest
 from soma.data.records import SampleRecord
 from soma.data.sources import (
+    FlatSetSource,
     GridSource,
     GroupedSetSource,
     ImageSource,
@@ -39,6 +40,7 @@ __all__ = [
     "CachedLabelMapSource",
     "CachedSetSource",
     "Cohort",
+    "FlatSetSource",
     "FoldSplit",
     "GridGeometry",
     "GridSource",

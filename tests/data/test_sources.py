@@ -12,6 +12,7 @@ import torch
 
 from soma.data import (
     Cohort,
+    FlatSetSource,
     GridGeometry,
     SetSource,
     covers,
@@ -181,6 +182,36 @@ def test_group_by_advertises_only_units_the_source_covers_in_full() -> None:
 def test_group_by_sample_id_is_the_identity() -> None:
     slides = from_arrays({f"s{i}": torch.zeros(5) for i in range(4)})
     assert group_by(slides, _patient_cohort(), unit="sample_id") is slides
+
+
+def test_flat_set_source_reads_each_region_grid_as_one_bag_in_region_then_tile_order() -> None:
+    # Each tile holds (region, tile). s0's last tile repeats its first: a tile stored
+    # twice is read twice. The region-level coords are not tile coords, so none are served.
+    s0 = torch.tensor(
+        [
+            [[0.0, 0.0], [0.0, 1.0], [0.0, 2.0], [0.0, 3.0]],
+            [[1.0, 0.0], [1.0, 1.0], [1.0, 2.0], [0.0, 0.0]],
+        ]
+    )
+    s1 = torch.tensor([[[5.0, 0.0], [5.0, 1.0], [5.0, 2.0], [5.0, 3.0]]])
+    grouped = from_arrays({"s0": s0, "s1": s1}, coords={"s0": torch.zeros(2, 2), "s1": torch.zeros(1, 2)})
+    flat = FlatSetSource(grouped)
+
+    assert isinstance(flat, SetSource)
+    assert flat.rank == 2 and flat.feature_dim == 2
+    assert flat.sample_ids == ["s0", "s1"]
+    assert flat.load("s0").tolist() == [
+        [0.0, 0.0], [0.0, 1.0], [0.0, 2.0], [0.0, 3.0],
+        [1.0, 0.0], [1.0, 1.0], [1.0, 2.0], [0.0, 0.0],
+    ]
+    assert flat.load("s1").tolist() == [[5.0, 0.0], [5.0, 1.0], [5.0, 2.0], [5.0, 3.0]]
+    assert flat.coords("s0") is None
+    check_set_source(flat)
+
+
+def test_flat_set_source_flattens_only_hierarchical_sources() -> None:
+    with pytest.raises(ValueError, match="rank 3"):
+        FlatSetSource(from_arrays({"a": torch.zeros(2, 4)}))
 
 
 def test_grid_geometry_maps_tokens_to_level0_pixels() -> None:

@@ -109,6 +109,14 @@ HIPT
 ``features.extraction.region_tile_multiple``) controls how many tiles fit along
 each side of a region.
 
+A hierarchical store holds one ``(M, P, D)`` tensor per sample: ``M`` regions,
+each an ordered grid of ``P`` tiles. ``hipt`` reads it grouped, region by
+region. Every other aggregator reads it flat, as one ``(M·P, D)`` bag of the
+same tiles, in region order and then tile order. So ``abmil`` and ``hipt`` can
+be compared on the same tile features. No config key is needed: the aggregator
+chooses the view. With the verbs (``soma.learn.loaders``), wrap the store in
+:class:`soma.data.FlatSetSource` to get the flat view.
+
 .. autoclass:: soma.models.aggregators.mil.hipt.HIPT
    :members:
 
