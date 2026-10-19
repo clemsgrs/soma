@@ -21,7 +21,7 @@ import json
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -68,6 +68,17 @@ class EditableMeanPool(MeanPool):
 #: The same file after the user edits ``forward``. It is longer, so Python cannot load
 #: stale bytecode for it.
 USER_SOURCE_EDITED = USER_SOURCE.replace("super().forward(X, mask)", "super().forward(X * 1.0, mask)")
+
+#: An aggregator written in a notebook cell: its module has no file.
+NOTEBOOK_AGGREGATOR = "e2e_notebook_mean_pool"
+NOTEBOOK_MODULE = "e2e_notebook"
+NOTEBOOK_CELL = '''
+from soma.models import MeanPool
+
+
+class NotebookMeanPool(MeanPool):
+    pass
+'''
 
 # Call counters: the scenario proves the overrides actually ran, not just registered.
 CALLS = {
@@ -643,4 +654,45 @@ def test_edited_component_code_is_recorded_and_guards_resume_and_leaderboard(
     artifact.check_equal("leaderboard/seeds", row["seeds"], [0, 1])
     expected_mean = (second.summary["test/auroc"] + rerun.summary["test/auroc"]) / 2
     artifact.check_equal("leaderboard/mean", round(row["mean"], 6), round(expected_mean, 6))
+    artifact.assert_passed()
+
+
+@pytest.fixture
+def notebook_aggregator(monkeypatch):
+    """``NotebookMeanPool``, defined in a module without a file (as a notebook cell is),
+    registered as ``NOTEBOOK_AGGREGATOR``."""
+    module = ModuleType(NOTEBOOK_MODULE)
+    exec(compile(NOTEBOOK_CELL, "<notebook cell>", "exec"), module.__dict__)
+    monkeypatch.setitem(sys.modules, NOTEBOOK_MODULE, module)
+    monkeypatch.setattr(aggregator_registry, "_entries", dict(aggregator_registry._entries))
+    soma.register("aggregators", NOTEBOOK_AGGREGATOR, module.NotebookMeanPool, params=NoParams)
+
+
+def test_a_component_without_a_source_file_warns_once_and_has_no_fingerprint(
+    tmp_path, encoder_name, new_artifact, notebook_aggregator
+):
+    """An aggregator defined in a notebook cell has no file to digest and no installed
+    version: the run warns once that resume and the leaderboard cannot see edits to it,
+    and records it with a null fingerprint."""
+    artifact = new_artifact("extension_component_without_source")
+    cohort = make_slide_cohort(tmp_path / "cohort")
+    config = _slide_config(cohort, tmp_path, encoder_name, aggregator=NOTEBOOK_AGGREGATOR)
+    with pytest.warns(UserWarning) as caught:
+        run = run_soma(config, tmp_path / "config.yaml")
+
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_equal(
+        "warnings",
+        [str(warning.message) for warning in caught if "cannot detect edits" in str(warning.message)],
+        [
+            f"aggregator '{NOTEBOOK_AGGREGATOR}' has no source file and no installed version: "
+            "resume and the leaderboard cannot detect edits to its code."
+        ],
+    )
+    recorded = _component(_run_yaml(run.run_dir)["components"], "aggregator")
+    artifact.check_equal("aggregator/object", recorded["object"], f"{NOTEBOOK_MODULE}.NotebookMeanPool")
+    artifact.check_equal("aggregator/source_sha256", recorded["source_sha256"], None)
+    artifact.check_equal("aggregator/fingerprint", recorded["fingerprint"], None)
+    artifact.check_equal("aggregator/no_git_state", "git" in recorded, False)
     artifact.assert_passed()
