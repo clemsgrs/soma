@@ -1,4 +1,5 @@
-"""Extension seam: a user-registered task head, decoder and learner train through the real CLI.
+"""Extension seam: a user-registered task head, decoder, aggregator and learner train through
+the real CLI.
 
 The customisation API is subclass-and-override: subclass the family's built-in head (or
 ``Decoder``, or the shape's ``Learner``), override the methods that should differ, and
@@ -8,7 +9,8 @@ hook) or by its dotted import path, which resolves with a warning and passes its
 through unvalidated (ADR 0018). Validation keys on the registered class's
 ``task_family``, so the custom head passes everywhere the built-in one does. A custom set
 head passes the ``soma.testing.check_task_head`` conformance suite, and a learner's
-``predict_step`` override adds a column to the run's predictions.
+``predict_step`` override adds a column to the run's predictions. A custom aggregator
+trains on padded batches and passes ``soma.testing.check_aggregator``.
 """
 
 from __future__ import annotations
@@ -28,22 +30,27 @@ from soma.models.decoders.base import Decoder
 from soma.models.decoders.registry import decoder_registry
 from soma.evaluation import Predictions
 from soma.learn import DenseLearner, MILLearner, PredictOutput, learner_registry
+from soma.models.aggregators import Aggregator, AggregatorOutput, aggregator_registry
 from soma.models.heads import ClassificationParams, SegmentationParams, infer_label_map
 from soma.models.heads.classification import BinaryClassificationHead
 from soma.models.heads.dense_metrics import soft_dice_loss
 from soma.models.heads.registry import task_registry
 from soma.models.heads.segmentation import SegmentationHead
-from soma.testing import check_task_head
+from soma.testing import check_aggregator, check_task_head
 from soma.learn.sample_dataset import SampleBatch
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
-from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_slide_cohort
+from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_marker_cohort, make_slide_cohort
 
 CUSTOM_HEAD = "e2e_dice_only_segmentation"
 CUSTOM_DECODER = "e2e_two_stage_conv"
 CUSTOM_SET_HEAD = "e2e_label_smoothing_classification"
+CUSTOM_AGGREGATOR = "e2e_projected_mean"
 
 # Call counters: the scenario proves the overrides actually ran, not just registered.
-CALLS = {"loss": 0, "decoder": 0, "entropy": 0, "smoothing": 0, "predict": 0, "smooth_grid": 0}
+CALLS = {
+    "loss": 0, "decoder": 0, "entropy": 0, "smoothing": 0, "predict": 0, "smooth_grid": 0,
+    "aggregator": 0, "padded_bags": 0,
+}
 
 
 class AttentionEntropyLearner(MILLearner):
@@ -145,10 +152,44 @@ class TwoStageConvDecoder(Decoder):
         return self._num_classes
 
 
+@dataclass
+class ProjectedMeanParams:
+    """``ProjectedMeanAggregator``'s params: registering them validates a config's values."""
+
+    hidden_dim: int = 16
+
+    def __post_init__(self) -> None:
+        if self.hidden_dim < 1:
+            raise ValueError(f"hidden_dim must be >= 1, got {self.hidden_dim}")
+
+
+class ProjectedMeanAggregator(Aggregator):
+    """Project each tile, then average the bag's real tiles: the mask drops the padding,
+    and ``mask=None`` means every tile is real (the docs' worked aggregator)."""
+
+    def __init__(self, input_dim: int, hidden_dim: int = 16) -> None:
+        super().__init__()
+        self.hidden_dim = int(hidden_dim)
+        self.project = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU())
+
+    def forward(self, X: Tensor, mask: Tensor | None = None) -> AggregatorOutput:
+        CALLS["aggregator"] += 1
+        if mask is None:
+            mask = torch.ones(X.shape[:2], dtype=torch.bool, device=X.device)
+        CALLS["padded_bags"] += int((~mask).any(dim=1).sum())
+        H = self.project(X).masked_fill(~mask.unsqueeze(-1), 0.0)
+        z = H.sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp(min=1)
+        return AggregatorOutput(bag_representation=z)
+
+    @property
+    def output_dim(self) -> int:
+        return self.hidden_dim
+
+
 @pytest.fixture
 def registered_extensions(monkeypatch):
-    """Register the custom heads and decoder with their params for one test, then restore
-    the registries.
+    """Register the custom heads, decoder and aggregator with their params for one test,
+    then restore the registries.
 
     The set head inherits nothing from its base's registration, so it names the
     categorical heads' params and their ``infer`` hook (the cohort decides its class
@@ -157,12 +198,14 @@ def registered_extensions(monkeypatch):
     """
     monkeypatch.setattr(task_registry, "_entries", dict(task_registry._entries))
     monkeypatch.setattr(decoder_registry, "_entries", dict(decoder_registry._entries))
+    monkeypatch.setattr(aggregator_registry, "_entries", dict(aggregator_registry._entries))
     monkeypatch.setattr(learner_registry, "_warned", set())
     soma.register("heads", CUSTOM_HEAD, DiceOnlySegmentationHead, params=SegmentationParams)
     soma.register(
         "heads", CUSTOM_SET_HEAD, LabelSmoothingHead, params=ClassificationParams, infer=infer_label_map
     )
     soma.register("decoders", CUSTOM_DECODER, TwoStageConvDecoder, params=TwoStageConvParams)
+    soma.register("aggregators", CUSTOM_AGGREGATOR, ProjectedMeanAggregator, params=ProjectedMeanParams)
 
 
 def test_custom_head_and_decoder_train_through_cli(
@@ -211,6 +254,67 @@ def test_custom_head_and_decoder_train_through_cli(
     artifact.check_at_least("custom_loss_calls", CALLS["loss"], 1)
     artifact.check_at_least("custom_decoder_calls", CALLS["decoder"], 1)
     artifact.check_at_least("test/mean_dice", run.summary["test/mean_dice"], 0.8)
+    artifact.assert_passed()
+
+
+def test_custom_aggregator_trains_through_cli(tmp_path, encoder_name, new_artifact, registered_extensions):
+    """A user-registered ``Aggregator`` trains a slide classifier through the CLI under its
+    registered name. The marker cohort's bags hold 4 to 64 tiles and a batch holds four,
+    so bags are padded and the aggregator must read the mask. ``plan.yaml`` records the
+    validated params, and the aggregator passes ``check_aggregator``."""
+    CALLS["aggregator"] = CALLS["padded_bags"] = 0
+    artifact = new_artifact("extension_custom_aggregator")
+    cohort = make_marker_cohort(tmp_path / "cohort")
+    epochs = 30
+    config = {
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
+        "cohort": {"records": str(cohort.manifest()), "splits": str(cohort.splits_csv)},
+        "features": {
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": 32,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
+                "segmentation": {"method": "otsu", "downsample": 16},
+                "filter": {"ref_tile_size": 32, "a_t": 1},
+                "masks": {"pixel_mapping": {"background": 0, "tissue": 1}, "min_coverage": {"tissue": 0.5}},
+            },
+            "execution": {**CPU_EXECUTION, "precision": "fp32", "batch_size": 256},
+            "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
+        },
+        "loaders": {"batch_size": 4, **CPU_LOADER},
+        "learner": learner_section(
+            "mil",
+            {
+                "aggregator": {"name": CUSTOM_AGGREGATOR, "params": {"hidden_dim": 16}},
+                "head": {"name": "binary_classification"},
+            },
+            learning_rate=5e-3,
+            normalization={"method": "zscore"},
+        ),
+        "trainer": trainer_section(epochs),
+        "evaluation": {"metrics": ["accuracy", "auroc"]},
+    }
+    run = run_soma(config, tmp_path / "config.yaml")
+
+    plan = yaml.safe_load((run.run_dir / "plan.yaml").read_text())
+    artifact.check_equal(
+        "plan/aggregator",
+        plan["learner"]["params"]["aggregator"],
+        {"name": CUSTOM_AGGREGATOR, "params": {"hidden_dim": 16}},
+    )
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("custom_aggregator_calls", CALLS["aggregator"], epochs)
+    artifact.check_at_least("custom_aggregator_padded_bags", CALLS["padded_bags"], 1)
+    artifact.check_equal("test/accuracy", run.summary["test/accuracy"], 1.0)
+
+    check_aggregator(ProjectedMeanAggregator(input_dim=8), input_dim=8)
+    artifact.check_equal("custom_aggregator/check_aggregator", "passed", "passed")
     artifact.assert_passed()
 
 

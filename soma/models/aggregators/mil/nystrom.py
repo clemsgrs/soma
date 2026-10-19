@@ -26,7 +26,12 @@ def moore_penrose_iter_pinv(x: Tensor, iters: int = 6) -> Tensor:
     abs_x = torch.abs(x)
     col = abs_x.sum(dim=-1)
     row = abs_x.sum(dim=-2)
-    z = x.transpose(-2, -1) / (torch.max(col) * torch.max(row))
+    # The initial scale is taken per sample of the leading (batch) axis: a maximum over
+    # the whole tensor would couple the bags of a batch, so a bag's output would depend
+    # on the bags beside it. For a single bag it is the same maximum.
+    dims = tuple(range(1, col.ndim))
+    scale = col.amax(dim=dims, keepdim=True) * row.amax(dim=dims, keepdim=True)
+    z = x.transpose(-2, -1) / scale.unsqueeze(-1)
 
     I = torch.eye(x.shape[-1], device=x.device).unsqueeze(0)
 

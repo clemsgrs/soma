@@ -8,7 +8,8 @@ These rules hold for every test under `tests/` (design §10, ADR 0023).
   `soma.predict`, `soma.evaluate`, `soma.save` / `soma.load`, `soma.Pipeline`,
   `soma.resolve`), the CLI, a public class or function of a namespace, or a conformance
   suite of `soma.testing` (`check_set_source`, `check_grid_source`, `check_target_source`,
-  `check_image_source`, `check_encoder_stage`, `check_learner`, `check_task_head`).
+  `check_image_source`, `check_encoder_stage`, `check_learner`, `check_task_head`,
+  `check_aggregator`).
 - Never import a `_`-prefixed module or name, from soma or from another test module.
   Import-linter contract 5 refuses private modules, and
   `tests/repo/test_import_contracts.py` refuses private names. If a behaviour cannot be

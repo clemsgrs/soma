@@ -1,6 +1,7 @@
 """Conformance checks for soma's protocols: the :mod:`soma.data` sources, the live
-path's encoder stage, :class:`soma.learn.Learner` and :class:`soma.models.heads.TaskHead`
-implementations, plus :class:`FakeEncoder`, a parameter-free stand-in encoder stage, and
+path's encoder stage, :class:`soma.learn.Learner`, :class:`soma.models.heads.TaskHead` and
+:class:`~soma.models.aggregators.base.Aggregator` implementations, plus
+:class:`FakeEncoder`, a parameter-free stand-in encoder stage, and
 :func:`synthetic_cohort`, slides and labels to run soma on without data.
 
 Importing this module (``import soma`` does) registers ``fake`` with slide2vec: the
@@ -20,6 +21,7 @@ import torch
 
 from soma.data.geometry import GridGeometry
 from soma.data.sources import Points
+from soma.testing._aggregator import check_aggregator
 from soma.testing._cohort import synthetic_cohort
 from soma.testing._encoder import FakeEncoder, check_encoder_stage, check_image_source, register_fake_encoder
 from soma.testing._errors import ConformanceError
@@ -29,6 +31,7 @@ from soma.testing._task_head import check_task_head
 __all__ = [
     "ConformanceError",
     "FakeEncoder",
+    "check_aggregator",
     "check_encoder_stage",
     "check_grid_source",
     "check_image_source",

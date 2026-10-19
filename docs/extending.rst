@@ -221,7 +221,7 @@ A config names a component in one of two ways:
   sets, with its default. soma then lists the component with its defaults, accepts
   the short name, and checks the params before the run starts.
 
-The worked example is a task head. A head owns the loss, the metrics and the
+The first worked example is a task head. A head owns the loss, the metrics and the
 post-processing of one task family. The family is the ``task_family`` class
 attribute, which a subclass inherits, and soma validates a config by family, not by
 name; a subclass must still accept the representations the other components
@@ -299,13 +299,68 @@ subclass. A survival subclass keeps its base class's objective: a subclass of
 :class:`~soma.models.heads.survival.CoxSurvivalHead` trains the Cox objective, any
 other survival head the discrete-time NLL.
 
+.. _custom-aggregator:
+
+The second worked example is an aggregator, the component a MIL user most often
+writes. It subclasses :class:`soma.models.aggregators.base.Aggregator`, and its
+constructor receives ``input_dim`` and the leaf's params. ``forward(X, mask)`` maps a
+``(B, N, D)`` batch of bags to an
+:class:`~soma.models.aggregators.base.AggregatorOutput`. The bags of a batch are
+padded to the longest one, and the ``(B, N)`` ``mask`` is ``True`` on the real tiles.
+``mask`` can be ``None``, which means that every tile is real. The ``output_dim``
+property is the width of the ``bag_representation`` the head receives. This
+aggregator projects each tile and averages the real ones:
+
+.. code-block:: python
+
+   from dataclasses import dataclass
+
+   import torch
+   from torch import nn
+
+   import soma
+   from soma.models.aggregators.base import Aggregator, AggregatorOutput
+
+
+   class ProjectedMean(Aggregator):
+       def __init__(self, input_dim, hidden_dim=64):
+           super().__init__()
+           self.hidden_dim = hidden_dim
+           self.project = nn.Sequential(nn.Linear(input_dim, hidden_dim), nn.ReLU())
+
+       def forward(self, X, mask=None):
+           if mask is None:  # nothing is padded
+               mask = torch.ones(X.shape[:2], dtype=torch.bool, device=X.device)
+           H = self.project(X).masked_fill(~mask.unsqueeze(-1), 0.0)  # padded tiles add 0
+           z = H.sum(dim=1) / mask.sum(dim=1, keepdim=True).clamp(min=1)
+           return AggregatorOutput(bag_representation=z)
+
+       @property
+       def output_dim(self):
+           return self.hidden_dim
+
+
+   @dataclass
+   class ProjectedMeanParams:
+       hidden_dim: int = 64
+
+
+   soma.register("aggregators", "projected_mean", ProjectedMean, params=ProjectedMeanParams)
+   soma.testing.check_aggregator(ProjectedMean(input_dim=16), input_dim=16)
+
+   config = soma.presets.mil_classification("uni2", aggregator="projected_mean")
+
+:func:`soma.testing.check_aggregator` runs the aggregator in eval mode on random bags
+and raises a :class:`~soma.testing.ConformanceError` when the ``bag_representation``
+is not ``(B, output_dim)``, when ``mask=None`` fails or gives another output than a
+mask that marks every tile real, or when padded tiles change a bag's output. It fills
+the padding with large noise, so an aggregator that pools padded tiles fails. In a
+config, the leaf is ``learner.params.aggregator: {name: projected_mean, params:
+{hidden_dim: 128}}``. The end-to-end scenario ``extension_custom_aggregator`` trains a
+registered aggregator through the CLI.
+
 The other kinds follow the same pattern:
 
-- **Aggregators** subclass :class:`soma.models.aggregators.base.Aggregator`. The
-  constructor receives ``input_dim`` and the leaf's params; ``forward(X, mask)``
-  maps a ``(B, N, D)`` bag to an
-  :class:`~soma.models.aggregators.base.AggregatorOutput`, and the ``output_dim``
-  property gives the representation width the head receives.
 - **Decoders** subclass :class:`soma.models.decoders.base.Decoder`. The constructor
   receives ``input_dim``, ``num_classes`` and the leaf's params, plus
   ``num_upsample_blocks`` derived from the grid geometry when it accepts one and the
