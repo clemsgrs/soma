@@ -15,8 +15,13 @@ trains on padded batches and passes ``soma.testing.check_aggregator``.
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 import json
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -26,6 +31,7 @@ import yaml
 from torch import Tensor, nn
 
 import soma
+from soma.cli import main as soma_main
 from soma.models.decoders.base import Decoder
 from soma.models.decoders.registry import decoder_registry
 from soma.evaluation import Predictions
@@ -36,6 +42,7 @@ from soma.models.heads.classification import BinaryClassificationHead
 from soma.models.heads.dense_metrics import soft_dice_loss
 from soma.models.heads.registry import task_registry
 from soma.models.heads.segmentation import SegmentationHead
+from soma.registry import NoParams
 from soma.testing import check_aggregator, check_task_head
 from soma.learn.sample_dataset import SampleBatch
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
@@ -45,6 +52,22 @@ CUSTOM_HEAD = "e2e_dice_only_segmentation"
 CUSTOM_DECODER = "e2e_two_stage_conv"
 CUSTOM_SET_HEAD = "e2e_label_smoothing_classification"
 CUSTOM_AGGREGATOR = "e2e_projected_mean"
+EDITABLE_AGGREGATOR = "e2e_editable_mean_pool"
+
+#: A user's aggregator in a module file of its own, which the code-guard scenario edits.
+USER_MODULE = "e2e_user_aggregators"
+USER_SOURCE = '''"""A user's aggregator, in a module file the scenario edits between runs."""
+
+from soma.models import MeanPool
+
+
+class EditableMeanPool(MeanPool):
+    def forward(self, X, mask=None):
+        return super().forward(X, mask)
+'''
+#: The same file after the user edits ``forward``. It is longer, so Python cannot load
+#: stale bytecode for it.
+USER_SOURCE_EDITED = USER_SOURCE.replace("super().forward(X, mask)", "super().forward(X * 1.0, mask)")
 
 # Call counters: the scenario proves the overrides actually ran, not just registered.
 CALLS = {
@@ -324,9 +347,10 @@ def test_custom_learner_by_dotted_path_trains_through_cli(
     """A ``MILLearner`` subclass adding an intermediate loss trains through the CLI as
     the ``learner``, named by dotted import path and given its params; its
     ``predict_step`` adds a column to the predictions. ``plan.yaml`` records the dotted
-    path with its params verbatim, and every bundle's ``provenance.json`` names the
-    package it imports from. The registered custom head it trains passes
-    ``check_task_head``."""
+    path with its params verbatim, and every bundle's ``provenance.json`` records the
+    class it resolved to and the digest of the file that defines it, which is its
+    fingerprint (the file belongs to no installed distribution). The registered custom
+    head it trains passes ``check_task_head``."""
     CALLS["entropy"] = CALLS["smoothing"] = CALLS["predict"] = 0
     artifact = new_artifact("extension_custom_learner")
     cohort = make_slide_cohort(tmp_path / "cohort")
@@ -370,7 +394,11 @@ def test_custom_learner_by_dotted_path_trains_through_cli(
     artifact.check_equal("plan/learner_name", plan["learner"]["name"], learner)
     artifact.check_equal("plan/learner_params_verbatim", plan["learner"]["params"]["weight"], 0.01)
     provenance = json.loads((run.run_dir / "bundle" / "provenance.json").read_text())
-    artifact.check_equal("provenance/dotted_package", "tests_version" in provenance, True)
+    recorded = _component(provenance["components"], "learner")
+    source_sha256 = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+    artifact.check_equal("provenance/learner/object", recorded["object"], learner)
+    artifact.check_equal("provenance/learner/source_sha256", recorded["source_sha256"], source_sha256)
+    artifact.check_equal("provenance/learner/fingerprint", recorded["fingerprint"], source_sha256)
 
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)
@@ -448,4 +476,113 @@ def test_custom_grid_learner_by_dotted_path_trains_through_cli(
     artifact.check_training_reduced_loss("run", run)
     artifact.check_at_least("custom_training_steps", CALLS["smooth_grid"], epochs)
     artifact.check_at_least("test/mean_dice", run.summary["test/mean_dice"], 0.8)
+    artifact.assert_passed()
+
+
+# --- the code a run records ------------------------------------------------------------
+
+
+@pytest.fixture
+def user_aggregator(tmp_path, monkeypatch):
+    """``EditableMeanPool`` from a module file on the path, registered as
+    ``EDITABLE_AGGREGATOR``; ``edit()`` rewrites ``forward`` in the file, reloads the module
+    and registers the new class under the same name, as a new session would."""
+    directory = tmp_path / "user_code"
+    directory.mkdir()
+    path = directory / f"{USER_MODULE}.py"
+    path.write_text(USER_SOURCE)
+    monkeypatch.syspath_prepend(str(directory))
+    entries = dict(aggregator_registry._entries)
+
+    def load() -> None:
+        importlib.invalidate_caches()
+        module = sys.modules.get(USER_MODULE)
+        module = importlib.reload(module) if module is not None else importlib.import_module(USER_MODULE)
+        monkeypatch.setattr(aggregator_registry, "_entries", dict(entries))
+        soma.register("aggregators", EDITABLE_AGGREGATOR, module.EditableMeanPool, params=NoParams)
+
+    def edit() -> None:
+        path.write_text(USER_SOURCE_EDITED)
+        load()
+
+    load()
+    yield SimpleNamespace(path=path, edit=edit)
+    sys.modules.pop(USER_MODULE, None)
+
+
+def _slide_config(cohort, workdir: Path, encoder_name: str, *, aggregator: str, seed: int = 0, resume: bool = False) -> dict:
+    """A slide-level binary classifier over ``cohort`` with ``aggregator``, its features
+    cached under ``workdir``."""
+    return {
+        "run": {"output_dir": str(workdir / "runs"), "seed": seed, "resume": resume},
+        "cohort": {"records": str(cohort.manifest("binary_classification")), "splits": str(cohort.splits_csv)},
+        "features": {
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": 32,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                },
+                "segmentation": {"method": "otsu", "downsample": 16},
+                "filter": {"ref_tile_size": 32, "a_t": 1},
+                "masks": {"pixel_mapping": {"background": 0, "tissue": 1}, "min_coverage": {"tissue": 0.5}},
+            },
+            "execution": {**CPU_EXECUTION, "precision": "fp32", "batch_size": 256},
+            "cache": {"enabled": True, "root_dir": str(workdir / "cache")},
+        },
+        "loaders": {"batch_size": 1, **CPU_LOADER},
+        "learner": learner_section(
+            "mil",
+            {"aggregator": {"name": aggregator}, "head": {"name": "binary_classification"}},
+            learning_rate=5e-3,
+            normalization={"method": "zscore"},
+        ),
+        "trainer": trainer_section(25),
+        "evaluation": {"metrics": ["auroc"]},
+    }
+
+
+def _run_yaml(run_dir: Path) -> dict:
+    return yaml.safe_load((run_dir / "run.yaml").read_text())
+
+
+def _component(record: list[dict], kind: str) -> dict:
+    (entry,) = [entry for entry in record if entry["kind"] == kind]
+    return entry
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def test_edited_component_code_is_recorded_and_guards_resume_and_leaderboard(
+    tmp_path, encoder_name, new_artifact, user_aggregator
+):
+    """A registered aggregator in a module file, edited between two seeds of one
+    experiment: each run records the file's digest, a resume across the edit is refused,
+    and the leaderboard refuses to pool the two seeds until the stale one is rerun."""
+    artifact = new_artifact("extension_component_code_guards")
+    cohort = make_slide_cohort(tmp_path / "cohort")
+    config_path = tmp_path / "config.yaml"
+
+    first = run_soma(_slide_config(cohort, tmp_path, encoder_name, aggregator=EDITABLE_AGGREGATOR), config_path)
+    artifact.record_run("seed_0", first)
+    artifact.check_training_reduced_loss("seed_0", first)
+    record = _run_yaml(first.run_dir)["components"]
+    aggregator = _component(record, "aggregator")
+    artifact.check_equal("seed_0/aggregator/name", aggregator["name"], EDITABLE_AGGREGATOR)
+    artifact.check_equal("seed_0/aggregator/object", aggregator["object"], f"{USER_MODULE}.EditableMeanPool")
+    artifact.check_equal("seed_0/aggregator/source_sha256", aggregator["source_sha256"], _sha256(USER_SOURCE))
+    artifact.check_equal("seed_0/aggregator/fingerprint", aggregator["fingerprint"], _sha256(USER_SOURCE))
+    artifact.check_equal("seed_0/aggregator/not_installed", "distribution" in aggregator, False)
+    provenance = json.loads((first.run_dir / "bundle" / "provenance.json").read_text())
+    artifact.check_equal("seed_0/bundle_records_the_same_components", provenance["components"], record)
+    artifact.check_equal(
+        "seed_0/head/object",
+        _component(record, "head")["object"],
+        "soma.models.heads.classification.BinaryClassificationHead",
+    )
     artifact.assert_passed()

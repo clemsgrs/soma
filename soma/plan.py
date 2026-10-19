@@ -18,7 +18,6 @@ from __future__ import annotations
 import copy
 import dataclasses
 import importlib
-import sys
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
@@ -37,7 +36,7 @@ from soma.config import (
 __all__ = [
     "Plan",
     "check",
-    "dotted_packages",
+    "component_leaves",
     "expand",
     "head_family",
     "learner_shape",
@@ -734,48 +733,61 @@ def _resolve_head(config: ExperimentConfig, head: Component, cohort: Any, regist
 # --- provenance ------------------------------------------------------------------------
 
 
-def _leaf_names(plan: Plan | ExperimentConfig) -> list[str]:
-    config = plan.config if isinstance(plan, Plan) else plan
-    names = []
-    if config.features.encoder is not None:
-        names.append(config.features.encoder.name)
-    for leaf in (config.loaders.sampler, config.loaders.augment, *config.trainer.callbacks):
-        if leaf is not None:
-            names.append(leaf.name)
-    if config.learner is not None:
-        names.append(config.learner.name)
-        for key, value in config.learner.params.items():
-            for leaf in value if key == "scheduler" else [value]:
-                if isinstance(leaf, Component):
-                    names.append(leaf.name)
-                elif isinstance(leaf, Mapping) and isinstance(leaf.get("name"), str) and key == "scheduler":
-                    names.append(leaf["name"])
-    return names
+#: The learner params that hold a component leaf, in the order a record lists them.
+_LEARNER_LEAVES = ("aggregator", "decoder", "head", "optimizer", "scheduler")
 
 
-def dotted_packages(plan: Plan | ExperimentConfig) -> dict[str, str | None]:
-    """``{top-level package: installed version}`` for every dotted-path leaf of ``plan``.
+def component_leaves(plan: Plan | ExperimentConfig) -> list[tuple[str, str, Any]]:
+    """``(kind, name, object)`` for every component leaf of ``plan``.
 
-    soma, slide2vec and hs2p are recorded on their own; a package without a findable
-    version maps to ``None``.
+    The leaves are the encoder, the sampler, the augmentation, each trainer callback, the
+    learner and its leaves (aggregator or decoder, head, optimizer, schedulers), and each
+    ``evaluation.metrics`` entry, in that order. ``name`` is spelled as the plan spells it
+    (a registry key or a dotted path) and ``object`` is the class or function it resolves
+    to; it is ``None`` for a metric that only declares a direction.
     """
-    packages = sorted({name.split(".", 1)[0] for name in _leaf_names(plan) if "." in name})
-    return {package: _package_version(package) for package in packages if package not in ("soma", "slide2vec", "hs2p")}
+    from soma.models.encoders import encoder_registry
+
+    config = plan.config if isinstance(plan, Plan) else plan
+    registries = {**_registries(), "encoder": encoder_registry}
+    named: list[tuple[str, str]] = []
+    if config.features.encoder is not None:
+        named.append(("encoder", config.features.encoder.name))
+    for kind, leaf in (("sampler", config.loaders.sampler), ("augment", config.loaders.augment)):
+        if leaf is not None:
+            named.append((kind, leaf.name))
+    named += [("callback", leaf.name) for leaf in config.trainer.callbacks]
+    if config.learner is not None:
+        named.append(("learner", config.learner.name))
+        params = config.learner.params
+        for kind in _LEARNER_LEAVES:
+            value = params.get(kind)
+            for leaf in value if kind == "scheduler" and isinstance(value, (list, tuple)) else [value]:
+                if leaf is not None:
+                    named.append((kind, _leaf_name(leaf)))
+    leaves = [(kind, name, registries[kind].resolve(name)) for kind, name in named]
+    for entry in config.evaluation.metrics:
+        name = _leaf_name(entry)
+        leaves.append(("metric", name, _metric_object(name)))
+    return leaves
 
 
-def _package_version(package: str) -> str | None:
-    from importlib.metadata import PackageNotFoundError, packages_distributions, version
+def _leaf_name(leaf: Any) -> str:
+    """The name of a leaf spelled as a name, a ``Component`` or a ``{name, params}`` mapping."""
+    if isinstance(leaf, Component):
+        return leaf.name
+    if isinstance(leaf, Mapping):
+        return str(leaf["name"])
+    return str(leaf)
 
-    for distribution in packages_distributions().get(package, ()):
-        try:
-            return version(distribution)
-        except PackageNotFoundError:
-            continue
-    module = sys.modules.get(package)
-    if module is None:
-        try:
-            module = importlib.import_module(package)
-        except ImportError:
-            return None
-    found = getattr(module, "__version__", None)
-    return None if found is None else str(found)
+
+def _metric_object(name: str) -> Any:
+    """The function a metric name scores with: a registered metric's, or a dotted path's."""
+    from soma.evaluation.metrics import metric_registry
+
+    if name in metric_registry:
+        return metric_registry.get(name).fn
+    if "." in name:
+        module_name, _, attribute = name.rpartition(".")
+        return getattr(importlib.import_module(module_name), attribute)
+    return None

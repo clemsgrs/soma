@@ -204,8 +204,8 @@ class RunInputs:
     #: A grid run's slide2vec ``DenseOptions`` (its read spacing, tolerance and backend).
     dense: DenseOptions | None = None
     roi_population_cache_root: Path | None = None
-    #: ``{top-level package: version}`` of the plan's dotted-path components.
-    packages: dict[str, str | None] = field(default_factory=dict)
+    #: The run's component record (:func:`soma.pipeline.layout.component_record`).
+    components: list[dict[str, Any]] = field(default_factory=list)
     #: The ROIs of an annotation-sampled run, keyed like the source (``source.rois``).
     rois: RoiSet | None = None
     _roi_population: Any = field(default=None, repr=False)
@@ -218,12 +218,11 @@ class RunInputs:
     @property
     def provenance(self) -> dict[str, Any]:
         """What every fold bundle's ``provenance.json`` records beyond soma's own: the run,
-        the feature source's identity and one ``<package>_version`` entry per top-level
-        package a dotted-path component imports from."""
+        the feature source's identity and the code each component resolved to."""
         return {
             "run_id": self.run_id,
             "feature_source": self.source_identity,
-            **{f"{package}_version": version for package, version in self.packages.items()},
+            "components": self.components,
         }
 
     def roi_population(self):

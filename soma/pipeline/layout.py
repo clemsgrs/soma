@@ -14,7 +14,9 @@ the cohort files, and a resume must match the saved ``plan.yaml``.
 from __future__ import annotations
 
 import csv
+import functools
 import hashlib
+import inspect
 import io
 import json
 import logging
@@ -22,17 +24,20 @@ import os
 import socket
 import subprocess
 import sys
+import warnings
+from collections.abc import Iterable, Mapping
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from getpass import getuser
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 import yaml
 
 from soma._internal.atomic_io import atomic_write_text
 from soma.config import ExperimentConfig
-from soma.plan import Plan, comparable
+from soma.plan import Plan, comparable, component_leaves
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +104,179 @@ def soma_git_state() -> GitState:
         return GitState(sha=None, dirty=None)
     status = _git(package_dir, "status", "--porcelain", "--untracked-files=no")
     return GitState(sha=sha, dirty=None if status is None else bool(status))
+
+
+# ---------------------------------------------------------------------------
+# The component record: which code each component of a run resolved to
+# ---------------------------------------------------------------------------
+#
+# The experiment id is a recipe identity (ADR 0003, ADR 0020): a component enters it by
+# name and params only, as soma's own code does not enter it. The code a name resolved to
+# is provenance: ``run.yaml`` and each bundle's ``provenance.json`` record it per
+# component, and resume and the leaderboard compare the fingerprints of the external
+# components before they combine runs.
+
+#: The packages a run records by version and git state (``environment``, ``git_sha``).
+#: A component whose object comes from one of them is not external.
+VERSIONED_PACKAGES = frozenset({"soma", "slide2vec", "hs2p", "torch"})
+
+#: A component one record lists as external and the other does not.
+_ABSENT = object()
+
+
+def component_record(plan: Plan) -> list[dict[str, Any]]:
+    """One entry per resolved component leaf of ``plan`` (:func:`soma.plan.component_leaves`).
+
+    An entry holds the leaf's ``kind``, its ``name`` as the plan spells it, the
+    ``object`` it resolves to (``module.qualname``), the ``distribution`` and ``version``
+    of the installed distribution the object's file belongs to (with ``editable: true``
+    for an editable install), the ``source_sha256`` of that file (``None`` when there is
+    no file, as for a class defined in a notebook cell), the ``git`` state (``sha``,
+    ``dirty``) of the work tree holding the file, and the ``fingerprint`` the guards
+    compare: the version of a non-editable install, otherwise ``source_sha256``.
+    """
+    git_states: dict[tuple[str, str], Any] = {}
+    return [_component_entry(kind, name, obj, git_states) for kind, name, obj in component_leaves(plan)]
+
+
+def external_fingerprints(record: Iterable[Mapping[str, Any]]) -> dict[str, str | None]:
+    """``{"<kind> '<name>'": fingerprint}`` for each external component of a record: one
+    whose object's top-level package is not in :data:`VERSIONED_PACKAGES`."""
+    found = {}
+    for entry in record:
+        obj = entry.get("object")
+        if obj and str(obj).split(".", 1)[0] not in VERSIONED_PACKAGES:
+            found[f"{entry['kind']} '{entry['name']}'"] = entry.get("fingerprint")
+    return found
+
+
+def fingerprint_conflicts(records: Mapping[str, Iterable[Mapping[str, Any]]]) -> dict[str, dict[str, str]]:
+    """The external components whose fingerprint is not the same in every record.
+
+    ``records`` maps a label of each run (``"seed 0"``) to its component record. Each
+    conflicting component (``"<kind> '<name>'"``) maps to its fingerprint per run, as a
+    message shows it: a source digest shortened to 12 characters, ``none`` without a
+    fingerprint, and ``absent`` when the run does not list it as external.
+    """
+    fingerprints = {label: external_fingerprints(record) for label, record in records.items()}
+    conflicts: dict[str, dict[str, str]] = {}
+    for component in sorted({name for found in fingerprints.values() for name in found}):
+        values = {label: found.get(component, _ABSENT) for label, found in fingerprints.items()}
+        if len(set(values.values())) > 1:
+            conflicts[component] = {label: _describe_fingerprint(value) for label, value in values.items()}
+    return conflicts
+
+
+def _describe_fingerprint(value: Any) -> str:
+    if value is _ABSENT:
+        return "absent"
+    if value is None:
+        return "none"
+    text = str(value)
+    return text[:12] if len(text) == 64 else text
+
+
+def _component_entry(kind: str, name: str, obj: Any, git_states: dict[tuple[str, str], Any]) -> dict[str, Any]:
+    entry: dict[str, Any] = {"kind": kind, "name": name, "object": None}
+    target = obj.func if isinstance(obj, functools.partial) else obj
+    if target is None:
+        return {**entry, "source_sha256": None, "fingerprint": None}
+    if not hasattr(target, "__qualname__"):
+        target = type(target)
+    module = str(getattr(target, "__module__", None) or "")
+    entry["object"] = f"{module}.{target.__qualname__}"
+    source = _source_file(target)
+    installed = _installed_distribution(module, source)
+    if installed is not None:
+        distribution, editable = installed
+        entry["distribution"] = distribution.metadata["Name"]
+        entry["version"] = distribution.version
+        if editable:
+            entry["editable"] = True
+    entry["source_sha256"] = None if source is None else _sha256_file(source)
+    git = None if source is None else _work_tree_state(source.parent, git_states)
+    if git is not None:
+        entry["git"] = git
+    entry["fingerprint"] = entry["version"] if installed is not None and not installed[1] else entry["source_sha256"]
+    return entry
+
+
+def _source_file(target: Any) -> Path | None:
+    """The file that defines ``target``, or ``None`` (a notebook cell, a built-in)."""
+    try:
+        path = inspect.getsourcefile(target) or inspect.getfile(target)
+    except (TypeError, OSError):
+        return None
+    path = Path(path)
+    return path.resolve() if path.is_file() else None
+
+
+@functools.lru_cache(maxsize=1)
+def _packages_distributions() -> Mapping[str, list[str]]:
+    from importlib.metadata import packages_distributions
+
+    return packages_distributions()
+
+
+def _installed_distribution(module: str, source: Path | None) -> tuple[Any, bool] | None:
+    """``(distribution, editable)`` of the installed distribution that ``source`` belongs
+    to: one that provides the module's top-level package and holds the file (under its
+    project directory when editable, under its install directory otherwise)."""
+    from importlib.metadata import PackageNotFoundError, distribution
+
+    if source is None or not module:
+        return None
+    top = module.split(".", 1)[0]
+    for name in _packages_distributions().get(top, ()):
+        try:
+            found = distribution(name)
+        except PackageNotFoundError:
+            continue
+        root = _editable_root(found)
+        if root is not None:
+            if source.is_relative_to(root):
+                return found, True
+            continue
+        base = Path(found.locate_file("")).resolve()
+        if source.is_relative_to(base / top) or (source.parent == base and source.stem == top):
+            return found, False
+    return None
+
+
+def _editable_root(distribution: Any) -> Path | None:
+    """The project directory of an editable install (``direct_url.json``), else ``None``."""
+    text = distribution.read_text("direct_url.json")
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    url = str(payload.get("url") or "")
+    if not (payload.get("dir_info") or {}).get("editable") or not url.startswith("file://"):
+        return None
+    return Path(unquote(urlparse(url).path)).resolve()
+
+
+def _work_tree_state(directory: Path, git_states: dict[tuple[str, str], Any]) -> dict[str, Any] | None:
+    """``{sha, dirty}`` of the git work tree holding ``directory``, or ``None`` outside one.
+
+    ``dirty`` is the work tree's (tracked files only), not the file's. ``git_states``
+    caches the answers of one record."""
+    key = ("directory", str(directory))
+    if key not in git_states:
+        toplevel = _git(directory, "rev-parse", "--show-toplevel")
+        if not toplevel:
+            git_states[key] = None
+        else:
+            tree = ("tree", toplevel)
+            if tree not in git_states:
+                sha = _git(directory, "rev-parse", "HEAD")
+                status = _git(directory, "status", "--porcelain", "--untracked-files=no")
+                git_states[tree] = None if not sha else {"sha": sha, "dirty": None if status is None else bool(status)}
+            git_states[key] = git_states[tree]
+    state = git_states[key]
+    return None if state is None else dict(state)
 
 
 _SEMANTIC_IDENTITY_EXCLUDED_PATH_COLUMN_ALLOWLIST = frozenset(
@@ -383,6 +561,9 @@ class RunMetadata:
     # Bounded provenance: EXACTLY {soma, torch, cuda} (issue #213). Deeper env/GPU-model
     # capture is deliberately out of scope; a benchmark may show its own reference env.
     environment: dict[str, str] = field(default_factory=dict)
+    # The code each component resolved to (:func:`component_record`). Outside the bounded
+    # ``environment`` stamp, which stays soma, torch and cuda.
+    components: list[dict[str, Any]] = field(default_factory=list)
     # Test-set provenance (issue #247). The experiment_id / leaderboard triple are
     # test-invariant, so which test set THIS run scored is recorded here, not in the
     # shared experiment.json: ``test_checksum`` is the test-identity digest and the
@@ -411,6 +592,7 @@ class RunMetadata:
             "resolved_output_dir": str(self.resolved_output_dir),
             "summary_metrics": self.summary_metrics,
             "environment": dict(self.environment),
+            "components": [dict(entry) for entry in self.components],
             "test_checksum": self.test_checksum,
             "dataset_file_checksum": self.dataset_file_checksum,
             "splits_file_checksum": self.splits_file_checksum,
@@ -598,6 +780,7 @@ def create_run_metadata(
         summary_metrics=summary_metrics or {},
         error=error,
         environment=capture_environment(),
+        components=component_record(plan),
         test_checksum=test_identity_digest(plan),
         dataset_file_checksum=_sha256_file(dataset_path) if dataset_path.is_file() else "",
         splits_file_checksum=_sha256_file(splits_path) if splits_path.is_file() else "",
@@ -956,9 +1139,22 @@ class RunRecorder:
             status="running",
             started_at=datetime.now().astimezone().isoformat(),
         )
+        for component, fingerprint in external_fingerprints(self._metadata.components).items():
+            if fingerprint is None:
+                warnings.warn(
+                    f"{component} has no source file and no installed version: resume and the "
+                    "leaderboard cannot detect edits to its code.",
+                    UserWarning,
+                    stacklevel=2,
+                )
         write_run_metadata(layout.run_dir, self._metadata)
         self._write_indexes(self._metadata)
         return self
+
+    @property
+    def components(self) -> list[dict[str, Any]]:
+        """The run's component record (:func:`component_record`), once the run started."""
+        return list(self._metadata.components) if self._metadata is not None else []
 
     def complete(self, summary_metrics: dict[str, float]) -> None:
         self._summary_metrics = summary_metrics
