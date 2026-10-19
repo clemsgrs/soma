@@ -299,26 +299,68 @@ def test_image_cache_is_refused_after_an_upgrade_changed_the_transform(
     assert encoder.encoded_images == encoded
 
 
+def _drop_recorded_field(root: Path, kind: str, field: str) -> None:
+    """Rewrite a cache's record as a slide2vec that did not record ``field`` wrote it."""
+    metadata_path = cache_dir_for(root, kind) / "cache_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    del metadata["feature_identity"]["identity"][field]
+    metadata_path.write_text(json.dumps(metadata))
+
+
 def test_image_cache_whose_record_lacks_a_required_field_is_refused_after_an_upgrade(
     tmp_path, encoder, monkeypatch
 ):
     dataset = _image_dataset(tmp_path / "data")
     extract_images(dataset, tmp_path)
     encoded = encoder.encoded_images
-    metadata_path = cache_dir_for(tmp_path, "image") / "cache_metadata.json"
-    metadata = json.loads(metadata_path.read_text())
-    del metadata["feature_identity"]["identity"]["feature_dtype"]
-    metadata_path.write_text(json.dumps(metadata))
+    _drop_recorded_field(tmp_path, "image", "feature_dtype")
 
     _upgrade_slide2vec(monkeypatch, encoder, mean=ORIGINAL_MEAN)
 
-    # slide2vec 7 reports a required field the record lacks as a difference rather than
-    # as something it cannot verify, so the cache is refused like any other mismatch.
-    with pytest.raises(
-        CacheFeatureIdentityMismatch, match=r"feature_dtype \(recorded MISSING_FIELD"
-    ):
+    # The features may be the same: the record predates the field, so it cannot tell.
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
         extract_images(dataset, tmp_path)
+    message = str(refused.value)
+    assert "records no feature_dtype" in message
+    assert "predates" in message
+    assert "now extracts different features" not in message
     assert encoder.encoded_images == encoded
+
+
+@pytest.mark.parametrize("cached_samples", [4, 3], ids=["complete", "partial"])
+def test_cache_whose_record_predates_the_encoder_code_cannot_be_verified(
+    tmp_path, encoder, cached_samples
+):
+    extract_images(_image_dataset(tmp_path / "data", n=cached_samples), tmp_path)
+    _drop_recorded_field(tmp_path, "image", "encoder_code")
+    encoded = encoder.encoded_images
+
+    # No slide2vec upgrade: the code is checked on every hit.
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
+        extract_images(_image_dataset(tmp_path / "data", n=4), tmp_path)
+    message = str(refused.value)
+    assert "records no encoder_code" in message
+    assert "predates" in message
+    assert "now extracts different features" not in message
+    assert encoder.encoded_images == encoded
+
+
+def test_reextract_setting_rebuilds_a_cache_whose_record_predates_the_encoder_code(
+    tmp_path, encoder
+):
+    dataset = _image_dataset(tmp_path / "data")
+    extract_images(dataset, tmp_path)
+    _drop_recorded_field(tmp_path, "image", "encoder_code")
+    encoded = encoder.encoded_images
+
+    rebuilt = extract_images(dataset, tmp_path, on_identity_mismatch="reextract")
+
+    assert encoder.encoded_images == encoded + 4
+    _assert_expected_features(_features(rebuilt), _expected_image_features(4, mean=ORIGINAL_MEAN))
+    recorded = cache_metadata(tmp_path, "image")["feature_identity"]["identity"]
+    assert recorded["encoder_code"]["object"] == (
+        f"{_SwitchableTransformEncoder.__module__}._SwitchableTransformEncoder"
+    )
 
 
 def test_cache_hit_on_the_same_slide2vec_version_does_not_load_the_encoder(tmp_path, encoder):

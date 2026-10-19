@@ -160,6 +160,10 @@ def stale_features_reason(
         # the comparison. The identity stays the one slide2vec wrote with the features.
         _write_record(metadata_path, existing, {**record, "slide2vec_version": installed})
         return None
+    missing = [field for field, (old, _) in differing.items() if old is slide2vec.MISSING_FIELD]
+    if len(missing) == len(differing):
+        return _refuse(_predates_message(cache_dir, missing), check=check, reason="unverifiable feature identity")
+    differing = {field: values for field, values in differing.items() if field not in missing}
     details = "; ".join(
         f"{leaf} (recorded {old!r}, current {new!r})"
         for field, (old, new) in sorted(differing.items())
@@ -213,7 +217,8 @@ def _changed_code_reason(
 
     Returns None when they match, and otherwise follows ``cache.on_identity_mismatch``.
     """
-    for field, label, code in _current_code(check.encoder):
+    current = _current_code(check.encoder)
+    for field, label, code in current:
         recorded = identity.get(field)
         if field in identity and recorded != code:
             message = (
@@ -221,7 +226,20 @@ def _changed_code_reason(
                 f"{label}: recorded {_describe_code(recorded)}, current {_describe_code(code)}."
             )
             return _refuse(message, check=check, reason="encoder code changed")
+    missing = [field for field, _, _ in current if field not in identity]
+    if missing:
+        return _refuse(_predates_message(cache_dir, missing), check=check, reason="unverifiable encoder code")
     return None
+
+
+def _predates_message(cache_dir: Path, fields: list[str]) -> str:
+    """Why a cache whose record lacks required ``fields`` cannot be verified."""
+    those = "that field" if len(fields) == 1 else "those fields"
+    return (
+        f"Feature cache at {cache_dir} records no {', '.join(sorted(fields))} in its feature "
+        f"identity: the cache predates {those}, so soma cannot verify that the cached "
+        "features match the current ones."
+    )
 
 
 def _describe_code(code: Any) -> str:
