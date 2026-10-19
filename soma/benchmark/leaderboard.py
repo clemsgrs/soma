@@ -12,7 +12,8 @@ tables rank by one metric; multi-metric Benchmark tables use neutral row order a
 independent per-metric ranks plus Pareto membership. Because a run's identity
 (``experiment_id``) fingerprints the *entire* config modulo seed, two runs that differ in
 any **unfixed** axis are never pooled. Seed-runs of the *same* config collapse to mean ±
-std + n.
+std + n; seed-runs whose ``run.yaml`` records different code for an external component
+are refused instead (the experiment id does not see code).
 
 Reference rows (a registered :class:`~soma.benchmark.registry.Benchmark`'s
 ``expected()``) inject two ways: a broad, config-agnostic scalar renders as a **threshold

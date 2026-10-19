@@ -3,12 +3,14 @@
 Absorbs the former ``soma.output_layout`` (experiment identity, run metadata, run index,
 test-identity registry) and ``soma.provenance`` (git state of the soma checkout), and
 adds the pieces :class:`~soma.pipeline.Pipeline` composes: :class:`RunRecorder` (the
-run's status lifecycle), the plan and manifest resume drift guards, the fold
-directory layout and the fold-completeness rule (``metrics.json`` + ``bundle/``).
+run's status lifecycle), the component record (the code each component resolved to),
+the plan, manifest and component resume drift guards, the fold directory layout and the
+fold-completeness rule (``metrics.json`` + ``bundle/``).
 
 Everything here reads the run's :class:`~soma.plan.Plan`: the experiment identity is a
 digest of the plan (minus where and how a launch runs) and of the train/tune content of
-the cohort files, and a resume must match the saved ``plan.yaml``.
+the cohort files, and a resume must match the saved ``plan.yaml`` and the code its
+``run.yaml`` records.
 """
 
 from __future__ import annotations
@@ -176,7 +178,9 @@ def _describe_fingerprint(value: Any) -> str:
     return text[:12] if len(text) == 64 else text
 
 
-def _component_entry(kind: str, name: str, obj: Any, git_states: dict[tuple[str, str], Any]) -> dict[str, Any]:
+def _component_entry(
+    kind: str, name: str, obj: Any, git_states: dict[tuple[str, str], Any]
+) -> dict[str, Any]:
     entry: dict[str, Any] = {"kind": kind, "name": name, "object": None}
     target = obj.func if isinstance(obj, functools.partial) else obj
     if target is None:
@@ -197,7 +201,8 @@ def _component_entry(kind: str, name: str, obj: Any, git_states: dict[tuple[str,
     git = None if source is None else _work_tree_state(source.parent, git_states)
     if git is not None:
         entry["git"] = git
-    entry["fingerprint"] = entry["version"] if installed is not None and not installed[1] else entry["source_sha256"]
+    pinned_by_version = installed is not None and not installed[1]
+    entry["fingerprint"] = entry["version"] if pinned_by_version else entry["source_sha256"]
     return entry
 
 
@@ -213,6 +218,8 @@ def _source_file(target: Any) -> Path | None:
 
 @functools.lru_cache(maxsize=1)
 def _packages_distributions() -> Mapping[str, list[str]]:
+    """Top-level package → distributions, read once per process (it scans every installed
+    distribution); a version is still read afresh for each record."""
     from importlib.metadata import packages_distributions
 
     return packages_distributions()
@@ -1148,8 +1155,9 @@ def guard_resume_component_drift(run_dir: Path, plan: Plan) -> None:
 class RunRecorder:
     """Context manager that tracks run metadata lifecycle (running → completed/failed).
 
-    On enter: writes initial "running" metadata and appends to the per-run index.
-    On success: call ``complete(summary_metrics)`` (or ``partial(pending_folds)``) then
+    On enter: writes initial "running" metadata and appends to the per-run index; the
+    metadata holds the component record, and each external component without a
+    fingerprint warns once. On success: call ``complete(summary_metrics)`` (or ``partial(pending_folds)``) then
     exit normally. On exception: writes "failed" metadata and (if no prior successful run
     exists) advances the latest pointer before re-raising.
     """
