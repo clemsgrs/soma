@@ -12,11 +12,12 @@ import hashlib
 import importlib
 import sys
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 from slide2vec.encoders import encoder_registry
 
-__all__ = ["UserEncoderModule"]
+__all__ = ["UserEncoderModule", "notebook_encoder"]
 
 #: The module's source. A tile embeds as its mean normalised RGB times ``SCALE``; each
 #: 8x8 block of a dense grid likewise. ``ENCODED`` counts the tiles and images encoded.
@@ -128,3 +129,15 @@ class UserEncoderModule:
             importlib.import_module(self.module_name)
         else:
             importlib.reload(module)
+
+
+def notebook_encoder(request: pytest.FixtureRequest, *, module: str, name: str) -> ModuleType:
+    """The same encoder defined in a notebook cell: its module has no file. Registered
+    as ``name`` until the test ends."""
+    monkeypatch = request.getfixturevalue("monkeypatch")
+    encoder_registry.names()  # discover the built-in encoders before copying the entries
+    monkeypatch.setattr(encoder_registry, "_entries", dict(encoder_registry._entries))
+    cell = ModuleType(module)
+    monkeypatch.setitem(sys.modules, module, cell)
+    exec(compile(_SOURCE.replace("{name}", name), "<notebook cell>", "exec"), cell.__dict__)
+    return cell

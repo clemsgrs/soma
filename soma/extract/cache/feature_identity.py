@@ -229,7 +229,20 @@ def _changed_code_reason(
     missing = [field for field, _, _ in current if field not in identity]
     if missing:
         return _refuse(_predates_message(cache_dir, missing), check=check, reason="unverifiable encoder code")
+    for _, label, code in current:
+        if code.get("fingerprint") is None and label not in _UNFINGERPRINTED_WARNED:
+            _UNFINGERPRINTED_WARNED.add(label)
+            warnings.warn(
+                f"{label} ({code.get('object')}) has no source file: soma cannot detect "
+                "changes to its code in the feature cache. Define the encoder in a .py file.",
+                UserWarning,
+                stacklevel=2,
+            )
     return None
+
+
+#: The encoders without a fingerprint soma has warned about, once per process.
+_UNFINGERPRINTED_WARNED: set[str] = set()
 
 
 def _predates_message(cache_dir: Path, fields: list[str]) -> str:

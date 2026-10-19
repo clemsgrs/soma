@@ -32,7 +32,7 @@ from tests.extraction_configs import extraction, tissue_masks
 import soma
 from soma.data import ImageManifest
 from tests.e2e.synthetic import write_tiff
-from tests.user_encoders import UserEncoderModule
+from tests.user_encoders import UserEncoderModule, notebook_encoder
 
 STUB_ENCODER = "soma512-switchable-transform"
 STUB_SLIDE_ENCODER = "soma512-slide"
@@ -177,10 +177,10 @@ def _image_dataset(root: Path, n: int = 4) -> ImageManifest:
     return ImageManifest.from_csv(dataset_csv)
 
 
-def extract_images(dataset, root: Path, **cache_settings):
+def extract_images(dataset, root: Path, *, encoder: str = STUB_ENCODER, **cache_settings):
     return soma.extract(
         dataset,
-        encoder=STUB_ENCODER,
+        encoder=encoder,
         execution=ExecutionOptions(num_gpus=1, num_workers_per_gpu=0, precision="fp32", batch_size=2),
         cache=CacheOptions(enabled=True, root_dir=root / "cache", **cache_settings),
         output_dir=root / "run",
@@ -826,3 +826,25 @@ def test_reextract_setting_aggregates_the_tiles_of_the_edited_tile_encoder(
     _assert_same_features(_features(rebuilt), _user_slide_features(kind, scale=2.0))
     recorded = cache_metadata(tmp_path, kind)["feature_identity"]["identity"]
     assert recorded["tile_encoder_code"]["fingerprint"] == user_encoder.fingerprint
+
+
+def test_cache_of_an_encoder_without_a_source_file_is_reused_with_one_warning(
+    tmp_path, request, monkeypatch
+):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    name = "soma652-notebook-encoder"
+    cell = notebook_encoder(request, module="soma652_notebook", name=name)
+    dataset = _image_dataset(tmp_path / "data")
+
+    with pytest.warns(UserWarning) as caught:
+        extract_images(dataset, tmp_path, encoder=name)
+        encoded = sum(cell.ENCODED)
+        extract_images(dataset, tmp_path, encoder=name)
+
+    assert sum(cell.ENCODED) == encoded
+    assert cache_metadata(tmp_path, "image")["feature_identity"]["identity"]["encoder_code"]["fingerprint"] is None
+    warned = [str(warning.message) for warning in caught if "no source file" in str(warning.message)]
+    assert len(warned) == 1
+    assert f"encoder '{name}' (soma652_notebook.UserTileEncoder)" in warned[0]
+    assert ".py file" in warned[0]
