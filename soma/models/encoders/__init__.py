@@ -60,8 +60,9 @@ class EncoderRegistry(Registry):
 
     def register(self, name: str, cls: Any, **kwargs: Any) -> None:
         raise TypeError(
-            f"encoder '{name}' cannot be registered with soma: encoders are slide2vec's; "
-            "register it with slide2vec as an encoder provider"
+            f"encoder '{name}' cannot be registered with soma: encoders are slide2vec's. "
+            "Decorate the class with slide2vec.register_encoder in your script, or ship it "
+            "as a slide2vec plugin package for the CLI and multi-GPU runs"
         )
 
     def get(self, name: str) -> type:

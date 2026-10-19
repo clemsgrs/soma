@@ -25,8 +25,9 @@ MIL, a segmentation and a detection run.
      - Your code
    * - Features, once per run
      - :func:`soma.extract` returns a source
-     - A source of your own (:ref:`bring-your-own-features`); an encoder stage or
-       an image source on the live path (:ref:`custom-encoder-stage`)
+     - A new foundation model (:ref:`custom-encoder`); a source of your own
+       (:ref:`bring-your-own-features`); an encoder stage or an image source on the
+       live path (:ref:`custom-encoder-stage`)
    * - 1. Seed
      - ``soma.seed_everything(seed, fold=fold)``
      -
@@ -61,6 +62,76 @@ MIL, a segmentation and a detection run.
 Section 3 of the getting-started notebook, :ref:`the same run from the verbs
 </getting-started.ipynb#3.-The-same-run-from-the-verbs>`, runs these steps one cell
 each and compares the result with the pipeline's run.
+
+.. _custom-encoder:
+
+A new foundation model
+----------------------
+
+Encoders belong to slide2vec, which extracts the features, so a new foundation model
+is registered with slide2vec, not with :func:`soma.register`. The simplest way needs
+no package: register the class in your own script with
+``slide2vec.register_encoder``, then name it in ``features.encoder``.
+
+.. code-block:: python
+
+   from dataclasses import replace
+
+   import torch
+   from slide2vec import TorchTileEncoder, register_encoder
+
+   import soma
+
+
+   @register_encoder(
+       "my-tile-model",
+       encode_dim=768,
+       input_size=224,
+       supports_variable_input_size=False,
+       supported_spacing_um=0.5,
+       precision="fp16",
+       source="/models/my-tile-model.ts",
+   )
+   class MyTileModel(TorchTileEncoder):
+       def __init__(self, *, output_variant=None):
+           model = torch.jit.load("/models/my-tile-model.ts", map_location="cpu")
+           super().__init__(
+               model,
+               encode_dim=768,
+               input_size=224,
+               mean=(0.485, 0.456, 0.406),
+               std=(0.229, 0.224, 0.225),
+               output_variant=output_variant,
+           )
+
+
+   config = soma.presets.mil_classification("my-tile-model")
+   config.features.execution = replace(config.features.execution, num_gpus=1)
+   result = soma.Pipeline(config).run()
+
+The decorator records the model's input size, spacing and precision. soma reads them
+to tile the slides and to check the extraction settings, without building the model,
+so load the weights in the constructor, never at import time. ``mean`` and ``std``
+are the model's own normalization. slide2vec's `bring your own encoder
+<https://clemsgrs.github.io/slide2vec/models.html#bring-your-own-encoder>`_ guide
+describes the base classes (``TorchTileEncoder``, ``TimmTileEncoder``) and every
+field of the decorator.
+
+The registration exists only in the Python process that ran your script. Two cases
+start processes that never import it:
+
+- **The command line.** ``soma run`` and ``soma reproduce`` start a fresh process.
+- **Extraction on several GPUs.** slide2vec runs one worker process per GPU, and it
+  uses every visible GPU when ``features.execution.num_gpus`` is unset. The example
+  sets it to ``1`` for this reason.
+
+For these cases, install the encoder as a slide2vec plugin package (see
+:doc:`benchmark-in-house-encoder`); every process then finds it by name.
+
+The feature cache does not check an encoder's code or weights. After you change the
+model behind a name, delete its feature cache directory (see :doc:`caching`), or a
+run reuses the features of the old model while its component record (see
+:ref:`component-record`) names the new code.
 
 .. _bring-your-own-features:
 
@@ -206,7 +277,7 @@ Every swappable component kind has a registry: ``aggregators``, ``heads``,
 ``decoders``, ``learners``, ``optimizers``, ``schedulers``, ``callbacks``,
 ``samplers`` and ``augmentations``, plus ``benchmarks`` once :mod:`soma.benchmark`
 is imported. Encoders are listed too, but they belong to slide2vec and are
-registered there (see :doc:`benchmark-in-house-encoder`). ``soma.components()``
+registered there (see :ref:`custom-encoder`). ``soma.components()``
 names the kinds and ``soma.components(kind)`` lists one kind's entries, built-in or
 not, with their params and defaults; ``soma list [KIND]`` prints the same.
 
@@ -406,7 +477,7 @@ source serves the pixels it re-encodes. Either can be your own:
 A config cannot name a stage: a managed run builds its stage from
 ``features.encoder``. ``soma.Pipeline(config, source=images)`` accepts your image
 source and re-encodes it with that stage. To bring a new foundation model to a
-managed run, register it with slide2vec (see :doc:`benchmark-in-house-encoder`).
+managed run, register it with slide2vec (see :ref:`custom-encoder`).
 
 .. _custom-callbacks:
 
