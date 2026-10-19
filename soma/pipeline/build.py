@@ -939,7 +939,6 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
     validate_feature_adaptor_compatibility(
         *_adaptor_sections(normalization, projection),
         unit=plan.unit,
-        is_hierarchical=feature_store.rank == 3,
     )
     feature_dim = feature_store.feature_dim
     encoder_identity = _encoder_identity(plan)
@@ -956,7 +955,7 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
     elif feature_store.rank == 3:
         if aggregator_key != "hipt":
             raise ValueError("hierarchical features require the hipt aggregator")
-        kind = "mil"
+        kind, fits_adaptor = "mil", True
         aggregator_spec = {"name": aggregator.name, "params": _resolve_hipt_params(inputs.preprocessing, aggregator)}
     else:
         if aggregator is None:

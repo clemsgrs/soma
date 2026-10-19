@@ -57,8 +57,6 @@ AGGREGATOR_PARAMS = {
 #: clam_mb has one attention branch per class and refuses binary_classification.
 TASK = {"clam_mb": "multiclass_classification"}
 AUROC = {"binary_classification": "auroc", "multiclass_classification": "auroc_macro"}
-#: z-score normalization is not supported on hierarchical (HIPT) feature streams.
-NORMALIZATION = {"hipt": "none"}
 #: Training overrides. The scenario trains at 5e-3 (50x soma's 1e-4 default) so every
 #: aggregator converges in a few CPU epochs; max pooling (one feature per channel into
 #: a linear head) needs more epochs, and HIPT's transformers collapse to a constant
@@ -104,7 +102,7 @@ def _config(cohort, workdir, encoder_name, cache_root, aggregator, *, control=Fa
                 "head": {"name": TASK.get(aggregator, "binary_classification")},
             },
             learning_rate=training["learning_rate"],
-            normalization={"method": NORMALIZATION.get(aggregator, "zscore")},
+            normalization={"method": "zscore"},
         ),
         "trainer": trainer_section(training["epochs"]),
         "evaluation": {"metrics": ["accuracy", _auroc(aggregator)]},

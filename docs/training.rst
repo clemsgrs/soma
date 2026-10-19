@@ -113,9 +113,13 @@ train split alone; held-out samples use the fitted transform without updating it
 and positive. ``l2`` and ``layernorm`` are stateless. ``none`` adds no adaptor and
 requires ``eps`` to keep its default.
 
-The adaptor runs on cached tile-encoder MIL, slide-encoder embeddings and
-single-encoder dense grids; other paths refuse an active transform. A composite
-encoder normalizes each member's block before concatenation instead
+The adaptor runs on cached tile-encoder MIL bags, hierarchical stores (one
+``(M, P, D)`` grid of tiles per sample, read by ``hipt``), slide-encoder
+embeddings and single-encoder dense grids; other paths refuse an active
+transform. On a hierarchical store, the adaptor is fitted on the stored tiles of
+the train samples, so the fit is the same as on those tiles stored as a flat
+bag. The padding added when a batch is collated never enters the fit. A
+composite encoder normalizes each member's block before concatenation instead
 (``member_norm``, see :doc:`encoders/composite`).
 
 Feature projection
