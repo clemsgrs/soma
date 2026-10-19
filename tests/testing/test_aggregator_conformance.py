@@ -82,3 +82,15 @@ class _WrongWidthMean(MeanPool):
 def test_check_aggregator_refuses_an_output_dim_that_forward_does_not_return():
     with pytest.raises(ConformanceError, match=r"^forward: bag_representation's last axis is 16, output_dim is 32"):
         check_aggregator(_WrongWidthMean(input_dim=D), input_dim=D)
+
+
+class _Unpooled(MeanPool):
+    """Forgets to pool: returns the ``(B, N, D)`` tiles as the bag representation."""
+
+    def forward(self, X, mask=None):
+        return AggregatorOutput(bag_representation=X)
+
+
+def test_check_aggregator_refuses_a_bag_representation_whose_shape_depends_on_the_bag():
+    with pytest.raises(ConformanceError, match=r"^forward: bag_representation has shape \(16, 16\) .* \(8, 16\)"):
+        check_aggregator(_Unpooled(input_dim=D), input_dim=D)

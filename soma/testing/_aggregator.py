@@ -21,7 +21,7 @@ def _forward(aggregator, X: torch.Tensor, mask: torch.Tensor | None, output_dim:
     """``aggregator(X, mask)``'s bag representation, checked against ``output_dim``."""
     try:
         with torch.random.fork_rng(devices=[]):
-            torch.manual_seed(_SEED)
+            torch.random.default_generator.manual_seed(_SEED)
             output = aggregator(X, mask)
     except Exception as error:  # noqa: BLE001 - any failure is a conformance failure
         raise ConformanceError("forward", f"raised {error!r} {when}") from error
@@ -42,6 +42,12 @@ def _forward(aggregator, X: torch.Tensor, mask: torch.Tensor | None, output_dim:
 
 
 def _max_difference(left: torch.Tensor, right: torch.Tensor) -> float:
+    if left.shape != right.shape:
+        raise ConformanceError(
+            "forward",
+            f"bag_representation has shape {tuple(left.shape)} in one forward and {tuple(right.shape)} in "
+            "another: its shape must not depend on the batch or the bag length",
+        )
     return float((left - right).abs().max())
 
 
