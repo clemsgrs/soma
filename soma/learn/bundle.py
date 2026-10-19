@@ -10,7 +10,8 @@ A bundle is a directory::
       preprocessing.json    what predict / evaluate need beyond the module (class scheme,
                             target schema, geometry, spacing, thresholds); no tensors
       provenance.json       soma / slide2vec / hs2p versions, the selected epoch and its
-                            monitor, and whatever the caller adds (fold, run id, source)
+                            monitor, and whatever the caller adds (fold, run id, source,
+                            the component record)
 
 A model is rebuildable when a builder recorded itself on it (:func:`record_builder`):
 the pipeline's builders do. A hand-built model still saves, but ``load`` refuses it

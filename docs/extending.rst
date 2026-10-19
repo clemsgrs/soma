@@ -191,8 +191,8 @@ A config names the learner by its dotted import path, or by a name registered un
        weight: 0.01
 
 The run's ``plan.yaml`` keeps the import path as written and spells out every
-param, and the bundle's ``provenance.json`` records the installed version of the
-package the path imports from. In the notebook, :ref:`section 4
+param, and the run records the code the path resolved to (see
+:ref:`component-record`). In the notebook, :ref:`section 4
 </getting-started.ipynb#4.-Change-a-step>` writes and checks this learner, and
 :ref:`section 5 </getting-started.ipynb#5.-Hand-it-back-to-the-pipeline>` runs it
 through the pipeline by its dotted path.
@@ -453,9 +453,8 @@ saved run is reopened from Python, because its plan names them and soma resolves
 their family through the registry. Two ways keep this reliable:
 
 - **Name the classes by dotted path.** soma imports the module itself when it reads
-  the config, wherever the run starts, and the bundle records the package's
-  version. In exchange, the params are not validated or listed, and a head gets no
-  ``infer`` hook.
+  the config, wherever the run starts. In exchange, the params are not validated or
+  listed, and a head gets no ``infer`` hook.
 - **Register at import.** Put the ``soma.register`` calls in your package, import
   it before building the :class:`~soma.Pipeline`, and on the command line start
   soma from a short script that imports it first:
@@ -467,6 +466,12 @@ their family through the registry. Two ways keep this reliable:
      from soma.cli import main
 
      main(["run", "config.yaml"])
+
+Either way, editing your component's code does not change the experiment id: a
+rerun after an edit lands in the same experiment. The run records the code
+instead, so a resume across the edit is refused, and ``soma leaderboard`` refuses
+to pool seeds that ran different code until you rerun the stale ones (see
+:ref:`component-record`).
 
 A model you build by hand saves like any other, but :func:`soma.load` can only
 rebuild it when ``soma.learn.record_builder(model, builder, **params)`` recorded an

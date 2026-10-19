@@ -12,4 +12,5 @@ A Leaderboard is a **facet**: a fixed `(dataset + splits + task)` plus a set of 
 ## Consequences
 
 - The racy `update_experiment_index` write path is replaced/demoted; `soma leaderboard` scans-and-projects (and may cache the projection — the cache is disposable).
+- The experiment id is a recipe identity: it does not see the code a component's name resolves to. Each run records that code (`run.yaml` `components`), and the leaderboard refuses to pool seed runs of one experiment that disagree on the code of a component from outside soma, slide2vec, hs2p and torch.
 - Reproduction plugs in as a **reference row**: a Benchmark's `expected()` values render as pinned rows (a broad config-agnostic banner, or per-config aligned rows) beside the measured rows, and the tolerance check compares the two.
