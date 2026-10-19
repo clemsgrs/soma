@@ -110,26 +110,35 @@ def _flag(argument: str) -> str:
     return f"--{argument.replace('_', '-')}"
 
 
-def _flag_type(annotation: Any) -> type | None:
-    """``int`` or ``float`` for an argument annotated so, ``X | None`` included; ``None`` (a
-    string flag) for any other annotation."""
+def _flag_options(p: inspect.Parameter) -> dict[str, Any]:
+    """argparse's ``metavar``, ``type`` and ``choices`` for the preset argument ``p``: an
+    ``int`` or ``float`` annotation (``X | None`` included) types the flag, and a
+    ``Literal`` one makes its values the choices, each matched by its text. ``None``
+    among a Literal's values, like ``X | None``, means the flag may be left out. Any
+    other annotation is a string flag."""
+    annotation = p.annotation
     if typing.get_origin(annotation) in (typing.Union, types.UnionType):
         members = [member for member in typing.get_args(annotation) if member is not type(None)]
         annotation = members[0] if len(members) == 1 else None
-    return next((kind for kind in (int, float) if annotation in (kind, kind.__name__)), None)
+    if typing.get_origin(annotation) is typing.Literal:
+        choices = tuple(choice for choice in typing.get_args(annotation) if choice is not None)
+        by_text = {str(choice): choice for choice in choices}
+        return {"type": lambda text: by_text.get(text, text), "choices": choices}
+    kind = next((kind for kind in (int, float) if annotation in (kind, kind.__name__)), None)
+    return {"metavar": p.name.upper(), "type": kind}
 
 
 def _add_preset_arguments(parser: argparse.ArgumentParser, name: str | None) -> None:
     """The selected preset's own arguments as flags, an ``int``/``float`` annotation as the
-    flag's type; one named like the command's own flag is a usage error."""
+    flag's type and a ``Literal`` one as its choices; one named like the command's own flag
+    is a usage error."""
     if name is None:
         return
     group = parser.add_argument_group(f"{name} arguments", "The preset's own arguments (soma list presets).")
     for p in _preset_parameters(name):
         try:
             group.add_argument(
-                _flag(p.name), dest=f"preset_{p.name}", metavar=p.name.upper(), type=_flag_type(p.annotation),
-                default=None,
+                _flag(p.name), dest=f"preset_{p.name}", **_flag_options(p), default=None,
                 help="Required." if p.default is p.empty else f"Default: {p.default!r}.".replace("%", "%%"),
             )
         except argparse.ArgumentError:
@@ -1135,8 +1144,8 @@ def _print_top_level_help() -> None:
         "examples:\n"
         "  soma run /path/to/config.yaml\n"
         "  python -m soma run /path/to/config.yaml\n"
-        "  soma init mil_classification --encoder uni2 > exp.yaml\n"
-        "  soma run --preset mil_classification --encoder uni2 --cohort dataset.csv --splits splits.csv --out runs\n"
+        "  soma init mil_classification --encoder uni2 --aggregator abmil > exp.yaml\n"
+        "  soma run --preset mil_classification --encoder uni2 --aggregator abmil --cohort dataset.csv --splits splits.csv --out runs\n"
         "  soma list presets\n"
         "  soma list benchmarks\n"
         "  soma prepare-croma /data/croma\n"

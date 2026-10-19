@@ -62,7 +62,7 @@ Three ways to run
 -----------------
 
 - **A preset** returns a complete experiment for a common task from a few
-  arguments, such as ``soma.presets.mil_classification(encoder="uni2")``, or
+  arguments, such as ``soma.presets.mil_classification(encoder="uni2", aggregator="abmil")``, or
   ``soma run --preset`` on the command line.
 - **A config**, an :class:`soma.ExperimentConfig` in Python or the same fields in
   YAML, states every step. :func:`soma.resolve` expands it into a
@@ -93,7 +93,7 @@ and comparing encoders.
 Use cases
 ---------
 
-Each use case is a preset (or a task head swapped into one) over one source shape.
+Each use case is a preset over one source shape.
 The end-to-end scenarios in the last column run it in soma's test suite, on synthetic
 images with a weight-free encoder; `tests/e2e/README.md
 <https://github.com/clemsgrs/soma/blob/main/tests/e2e/README.md>`_ lists what each
@@ -108,15 +108,15 @@ scenario checks.
      - Source
      - End-to-end scenario
    * - Slide classification
-     - ``mil_classification(encoder, aggregator="abmil", spacing=None, tile_size=None)``
+     - ``mil_classification(encoder, aggregator, spacing=None, tile_size=None)``
      - Bags of tile features
      - ``slide_mil_binary_classification``, ``slide_mil_multiclass_classification``
    * - Survival
-     - ``survival(encoder, aggregator, spacing=None, tile_size=None)``; the ``cox_survival`` head
+     - ``survival(encoder, aggregator, loss, spacing=None, tile_size=None)`` with ``loss="nll"`` or ``loss="cox"``
      - Bags of tile features
      - ``slide_mil_survival_nll``, ``slide_mil_survival_cox``
    * - Regression
-     - The ``regression`` head in ``mil_classification``
+     - ``mil_regression(encoder, aggregator, spacing=None, tile_size=None)``
      - Bags of tile features
      - ``slide_mil_regression``
    * - Tile-level classification
@@ -124,11 +124,11 @@ scenario checks.
      - One embedding per image
      - ``tile_binary_classification``
    * - Segmentation
-     - ``segmentation(encoder, decoder, num_classes=2)``
+     - ``segmentation(encoder, decoder, num_classes)``
      - Dense token grids
      - ``dense_segmentation``, ``dense_preset_segmentation``, ``grid_live_segmentation``
    * - Detection
-     - ``detection(encoder, decoder, num_classes=1, match_distance=3.0)``
+     - ``detection(encoder, decoder, num_classes, match_distance=3.0)``
      - Dense token grids
      - ``dense_detection``, ``dense_preset_detection``, ``grid_live_detection``
 

@@ -105,7 +105,7 @@ no package: register the class in your own script with
            )
 
 
-   config = soma.presets.mil_classification("my-tile-model")
+   config = soma.presets.mil_classification("my-tile-model", "abmil")
    config.features.execution = replace(config.features.execution, num_gpus=1)
    result = soma.Pipeline(config).run()
 

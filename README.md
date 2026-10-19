@@ -61,9 +61,9 @@ python -m soma run config.yaml
 Or start from a preset, a complete experiment for a common task (`soma list presets`):
 
 ```bash
-soma run --preset mil_classification --encoder phikon --cohort dataset.csv --splits splits.csv --out output
+soma run --preset mil_classification --encoder phikon --aggregator abmil --cohort dataset.csv --splits splits.csv --out output
 # or print it as an editable YAML with every default filled in, edit it, then run it:
-soma init mil_classification --encoder phikon > experiment.yaml
+soma init mil_classification --encoder phikon --aggregator abmil > experiment.yaml
 soma run experiment.yaml
 ```
 

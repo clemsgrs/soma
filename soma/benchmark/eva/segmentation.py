@@ -417,7 +417,7 @@ def _build_eva_segmentation_config(
 
     live = spec.train_crop_scale is not None
     monitor = {"monitor": "foreground_mean_dice", "mode": "max"}
-    cfg = presets.segmentation(encoder, DECODER_NAME)
+    cfg = presets.segmentation(encoder, DECODER_NAME, task_params["num_classes"])
     cfg.run = RunConfig(output_dir=Path(output_root), seed=seed)
     cfg.cohort = CohortConfig(records=str(dataset_csv), splits=str(splits_csv), tune_is_test=True)
     cfg.features.kind = "live" if live else "cached"

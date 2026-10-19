@@ -1,6 +1,7 @@
 """Tests for soma CLI entrypoint."""
 
 from pathlib import Path
+from typing import Literal
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -169,13 +170,15 @@ def test_run_preset_builds_the_config_from_the_preset_and_the_cohort(tmp_path: P
 
 
 def test_run_preset_takes_the_tiling_as_typed_flags(tmp_path: Path):
-    config, _ = _pipeline_call(_preset_args(tmp_path, "--encoder", "uni2", "--spacing", "0.5", "--tile-size", "224"))
-    assert config.features == presets.mil_classification("uni2", spacing=0.5, tile_size=224).features
+    config, _ = _pipeline_call(
+        _preset_args(tmp_path, "--encoder", "uni2", "--aggregator", "abmil", "--spacing", "0.5", "--tile-size", "224")
+    )
+    assert config.features == presets.mil_classification("uni2", "abmil", spacing=0.5, tile_size=224).features
 
 
 def test_run_preset_takes_the_preset_s_defaults(tmp_path: Path):
-    config, _ = _pipeline_call(_preset_args(tmp_path, "--encoder", "uni2"))
-    assert config.learner.params["aggregator"].name == "abmil"
+    config, _ = _pipeline_call(_preset_args(tmp_path, "--encoder", "uni2", "--aggregator", "abmil"))
+    assert config.features.extraction.tiling is None
     assert config.run.seed == 0
 
 
@@ -183,7 +186,8 @@ def test_run_preset_takes_the_preset_s_defaults(tmp_path: Path):
     ("extra", "message"),
     [
         (("--aggregator", "abmil"), "--encoder"),  # a required preset argument
-        (("--encoder", "uni2", "--decoder", "linear"), "--decoder"),  # another preset's argument
+        (("--encoder", "uni2"), "--aggregator"),  # the aggregator has no default
+        (("--encoder", "uni2", "--aggregator", "abmil", "--decoder", "linear"), "--decoder"),  # another preset's argument
     ],
 )
 def test_run_preset_takes_exactly_its_own_arguments(tmp_path: Path, capsys, extra, message):
@@ -210,7 +214,7 @@ def test_run_takes_a_config_or_a_preset_not_both(tmp_path: Path, capsys):
 
 
 def test_run_preset_reports_a_bad_preset_argument(tmp_path: Path, capsys):
-    code, err = _exit_code(_preset_args(tmp_path, "--encoder", "not-an-encoder"), capsys)
+    code, err = _exit_code(_preset_args(tmp_path, "--encoder", "not-an-encoder", "--aggregator", "abmil"), capsys)
     assert code == 2
     assert "not-an-encoder" in err
 
@@ -228,7 +232,7 @@ def _init(args: list[str], capsys) -> str:
 def test_init_prints_an_editable_yaml_with_every_default(capsys):
     from soma import components
 
-    data = yaml.safe_load(_init(["mil_classification", "--encoder", "uni2"], capsys))
+    data = yaml.safe_load(_init(["mil_classification", "--encoder", "uni2", "--aggregator", "abmil"], capsys))
 
     config = ExperimentConfig.from_dict(data)
     check(config)
@@ -256,7 +260,7 @@ def test_init_output_does_not_depend_on_the_machine(monkeypatch, capsys):
         monkeypatch.setattr(os, "cpu_count", lambda cpus=cpus: cpus)
         monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
         monkeypatch.setattr(torch.cuda, "device_count", lambda gpus=gpus: gpus)
-        outputs.append(_init(["mil_classification", "--encoder", "uni2"], capsys))
+        outputs.append(_init(["mil_classification", "--encoder", "uni2", "--aggregator", "abmil"], capsys))
 
     assert outputs[0] == outputs[1]
     execution = yaml.safe_load(outputs[0])["features"]["execution"]
@@ -280,25 +284,27 @@ def test_init_output_resolves_to_the_preset_s_plan(tmp_path: Path, capsys):
     assert resolve(edited, load_cohort(edited)).comparable() == resolve(preset, load_cohort(preset)).comparable()
 
 
-@pytest.mark.parametrize("name", ["mil_classification", "tile_classification", "survival", "segmentation", "detection"])
+@pytest.mark.parametrize(
+    "name", ["mil_classification", "mil_regression", "tile_classification", "survival", "segmentation", "detection"]
+)
 def test_init_output_of_every_preset_passes_check(capsys, name):
-    arguments = {"aggregator": "abmil", "decoder": "lightweight_conv"}
+    arguments = {"aggregator": "abmil", "loss": "cox", "decoder": "lightweight_conv", "num_classes": "2"}
     from soma import components
 
     entry = next(entry for entry in components("presets") if entry["name"] == name)
     flags = ["--encoder", "uni2"] + [
-        token for key in entry["params"] if key in arguments for token in (f"--{key}", arguments[key])
+        token for key in entry["params"] if key in arguments for token in (f"--{key.replace('_', '-')}", arguments[key])
     ]
     check(ExperimentConfig.from_dict(yaml.safe_load(_init([name, *flags], capsys))))
 
 
 def test_init_takes_the_tiling_as_typed_flags(capsys):
     # The preset annotates them ``float | None`` and ``int | None``.
-    out = _init(["mil_classification", "--encoder", "uni2", "--spacing", "0.5"], capsys)
+    out = _init(["mil_classification", "--encoder", "uni2", "--aggregator", "abmil", "--spacing", "0.5"], capsys)
     assert "requested_spacing_um: 0.5\n" in out
     tiling = yaml.safe_load(out)["features"]["extraction"]["tiling"]
     assert (tiling["requested_spacing_um"], tiling["requested_tile_size_px"]) == (0.5, 224)
-    out = _init(["survival", "--encoder", "uni2", "--aggregator", "abmil", "--tile-size", "224"], capsys)
+    out = _init(["survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "nll", "--tile-size", "224"], capsys)
     tiling = yaml.safe_load(out)["features"]["extraction"]["tiling"]
     assert (tiling["requested_spacing_um"], tiling["requested_tile_size_px"]) == (0.5, 224)
 
@@ -307,7 +313,7 @@ def test_init_refuses_a_spacing_the_encoder_does_not_support(capsys):
     from soma.cli import main
 
     with pytest.raises(SystemExit) as exc_info:
-        main(["init", "mil_classification", "--encoder", "uni2", "--spacing", "1.0"])
+        main(["init", "mil_classification", "--encoder", "uni2", "--aggregator", "abmil", "--spacing", "1.0"])
     assert exc_info.value.code == 2
     assert "encoder 'uni2' supports spacing 0.5 µm" in capsys.readouterr().err
 
@@ -323,14 +329,32 @@ def test_init_requires_the_preset_s_arguments(capsys):
     with pytest.raises(SystemExit) as exc_info:
         main(["init", "segmentation", "--encoder", "uni2"])
     assert exc_info.value.code == 2
-    assert "--decoder" in capsys.readouterr().err
+    assert "preset segmentation needs --decoder, --num-classes" in capsys.readouterr().err
+
+
+def test_init_takes_the_survival_loss_from_its_choices(capsys):
+    from soma.cli import main
+
+    head = yaml.safe_load(_init(["survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "cox"], capsys))[
+        "learner"
+    ]["params"]["head"]
+    assert (head["name"], head["params"]["cox_window"]) == ("cox_survival", 32)
+    with pytest.raises(SystemExit) as exc_info:
+        main(["init", "survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "coxph"])
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    assert "argument --loss: invalid choice: 'coxph'" in err and "nll" in err and "cox" in err
+    with pytest.raises(SystemExit) as exc_info:
+        main(["init", "survival", "--help"])
+    assert exc_info.value.code == 0
+    assert "--loss {nll,cox}" in capsys.readouterr().out
 
 
 def test_init_refuses_arguments_that_make_an_invalid_config(capsys):
     from soma.cli import main
 
     with pytest.raises(SystemExit) as exc_info:
-        main(["init", "survival", "--encoder", "uni2", "--aggregator", "clam_sb"])
+        main(["init", "survival", "--encoder", "uni2", "--aggregator", "clam_sb", "--loss", "nll"])
     assert exc_info.value.code == 2
     assert "not supported for survival" in capsys.readouterr().err
 
@@ -384,22 +408,32 @@ def test_a_preset_registered_without_params_leaves_run_working(tmp_path: Path, u
 
 def _seeded_preset(encoder: str, seed: int = 3) -> ExperimentConfig:
     """A user's preset whose argument is named like soma run's own --seed."""
-    config = presets.mil_classification(encoder)
+    config = presets.mil_classification(encoder, "abmil")
     config.run.seed = seed
     return config
 
 
-def _typed_preset(encoder: str, epochs: int = 50, lr: "float" = 1e-4) -> ExperimentConfig:
+def _typed_preset(
+    encoder: str,
+    epochs: int = 50,
+    lr: "float" = 1e-4,
+    batch_size: Literal[1, 8] = 1,
+    workers: Literal["auto", 4] = "auto",
+    mode: Literal["auto", None] = "auto",
+) -> ExperimentConfig:
     """A user's preset with typed arguments (``lr`` annotated as under postponed annotations)."""
-    config = presets.mil_classification(encoder)
+    config = presets.mil_classification(encoder, "abmil")
     config.trainer.max_epochs = epochs
     config.learner.params["optimizer"] = Component("adamw", {"lr": lr})
+    config.loaders.batch_size = batch_size
+    if workers != "auto":
+        config.loaders.num_workers = workers
     return config
 
 
 def _unevaluable_preset(encoder: "NotAType", epochs: int = 50) -> ExperimentConfig:  # noqa: F821
     """A user's preset with an annotation that does not evaluate."""
-    config = presets.mil_classification(encoder)
+    config = presets.mil_classification(encoder, "abmil")
     config.trainer.max_epochs = epochs
     return config
 
@@ -440,11 +474,21 @@ def test_preset_arguments_take_their_declared_types(tmp_path: Path, capsys, type
     assert config.trainer.max_epochs == 10 and config.learner.params["optimizer"].params["lr"] == 0.001
     code, err = _exit_code([*run, "--epochs", "ten"], capsys)
     assert code == 2 and "--epochs" in err
+    # A Literal's values are the flag's choices, each matched by its text.
+    config, _ = _pipeline_call([*run, "--batch-size", "8"])
+    assert config.loaders.batch_size == 8
+    config, _ = _pipeline_call([*run, "--workers", "4"])
+    assert config.loaders.num_workers == 4
+    code, err = _exit_code([*run, "--batch-size", "4"], capsys)
+    assert code == 2 and "--batch-size: invalid choice: '4'" in err
+    # None among a Literal's values means the flag may be left out, not a choice.
+    code, err = _exit_code([*run, "--mode", "None"], capsys)
+    assert code == 2 and "--mode: invalid choice: 'None'" in err
 
 
 def test_a_preset_annotation_that_does_not_evaluate_leaves_the_flags_working(capsys, typed_presets):
     assert yaml.safe_load(_init(["unevaluable", "--encoder", "uni2", "--epochs", "10"], capsys))["trainer"]["max_epochs"] == 10
-    data = yaml.safe_load(_init(["mil_classification", "--encoder", "uni2", "--spacing", "0.5"], capsys))
+    data = yaml.safe_load(_init(["mil_classification", "--encoder", "uni2", "--aggregator", "abmil", "--spacing", "0.5"], capsys))
     assert data["features"]["extraction"]["tiling"]["requested_spacing_um"] == 0.5
 
 

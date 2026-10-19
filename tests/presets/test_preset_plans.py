@@ -1,8 +1,8 @@
 """The segmentation and detection presets, pinned as the plans they resolve to.
 
-Their head's class scheme and matching distance are preset arguments with defaults, so
-``soma run --preset segmentation|detection`` builds a head; a default that moves (and so
-moves the run identity) fails here. Regenerate the fixture only for a deliberate change:
+Their head's class count and matching distance are preset arguments, so ``soma run
+--preset segmentation|detection`` builds a head; a value that moves (and so moves the run
+identity) fails here. Regenerate the fixture only for a deliberate change:
 ``python -m tests.presets.test_preset_plans``.
 """
 
@@ -21,10 +21,14 @@ from soma.plan import load_cohort, resolve
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "preset_plans.yaml"
 
-#: ``(case id, preset, arguments)``: each preset at its defaults.
+#: ``(case id, preset, arguments)``: each preset with one foreground class, at its defaults.
 CASES: list[tuple[str, str, dict[str, Any]]] = [
-    ("segmentation@uni2+heavy_conv", "segmentation", {"encoder": "uni2", "decoder": "heavy_conv"}),
-    ("detection@uni2+lightweight_conv", "detection", {"encoder": "uni2", "decoder": "lightweight_conv"}),
+    ("segmentation@uni2+heavy_conv", "segmentation", {"encoder": "uni2", "decoder": "heavy_conv", "num_classes": 2}),
+    (
+        "detection@uni2+lightweight_conv",
+        "detection",
+        {"encoder": "uni2", "decoder": "lightweight_conv", "num_classes": 1},
+    ),
 ]
 
 
