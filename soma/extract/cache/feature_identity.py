@@ -118,6 +118,7 @@ def record_committed_identity(
 
 def stale_features_reason(
     *,
+    cache_kind: str,
     cache_dir: Path,
     features_dir: Path,
     metadata_path: Path,
@@ -129,7 +130,7 @@ def stale_features_reason(
     Returns None when the features in the cache can be reused, and otherwise the reason
     why the whole cache must be extracted again. Raises
     :class:`CacheFeatureIdentityMismatch` when the recorded identity differs from the
-    current one and ``check`` does not ask to extract again.
+    current one, or cannot be verified, and ``check`` does not ask to extract again.
     """
     installed = slide2vec.__version__
     record = existing.get(FEATURE_IDENTITY_METADATA_KEY)
@@ -141,10 +142,19 @@ def stale_features_reason(
             return f"extraction was interrupted under slide2vec {record.get('slide2vec_version')}"
         return None
     if record is None:
-        if not any(features_dir.glob("*.pt")):
+        # ROI grids sit one directory down, under their slide.
+        if not any(features_dir.rglob("*.pt")):
             # Nothing to verify: an empty cache starts a record like a new one.
             _write_record(metadata_path, existing, {"slide2vec_version": installed, "identity": None})
             return None
+        if cache_kind in _DENSE_CACHE_KINDS:
+            # Grids are costly to extract again: the user decides, as for a mismatch.
+            message = (
+                f"Dense feature cache at {cache_dir} holds grids but records no feature "
+                "identity: the cache predates the record, so soma cannot verify that the "
+                "cached grids match the current ones."
+            )
+            return _refuse(message, check=check, reason="no recorded feature identity")
         logger.warning(
             "Feature cache at %s holds features but records no feature identity, so soma "
             "cannot verify that slide2vec %s would extract the same features. Extracting "

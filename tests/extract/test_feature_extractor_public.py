@@ -16,6 +16,7 @@ import torch
 import numpy as np
 
 from slide2vec import DenseOptions, ExecutionOptions
+from slide2vec.encoders import encoder_code
 
 import soma
 from soma.data import AnnotationManifest, ImageManifest
@@ -220,6 +221,8 @@ def test_given_image_segmentation_extracts_dense_source(
                         "channel_dim": 0,
                         "source_spacing_um": 0.5,
                         "effective_spacing_um": 0.5,
+                        # The feature identity slide2vec writes, which a commit records.
+                        "compatibility": {"encoder_name": "phikon", "encoder_code": encoder_code("phikon")},
                     },
                 )
             ]
@@ -329,6 +332,8 @@ def test_annotation_sampled_slides_return_roi_keyed_grids_whose_rois_name_their_
                         "channel_dim": 0,
                         "source_spacing_um": 0.5,
                         "effective_spacing_um": 0.5,
+                        # The feature identity slide2vec writes, which a commit records.
+                        "compatibility": {"encoder_name": "phikon", "encoder_code": encoder_code("phikon")},
                     },
                 )
             ]
@@ -561,7 +566,8 @@ def test_complete_tile_cache_hit_does_not_load_encoder_or_rewrite_payload(
                     metadata={
                         "artifact_type": "image_embeddings",
                         "sample_id": "s0",
-                        "compatibility": {"encoder_name": "phikon"},
+                        # A hit checks the recorded encoder code against the registry.
+                        "compatibility": {"encoder_name": "phikon", "encoder_code": encoder_code("phikon")},
                     },
                 )
             ]
@@ -686,6 +692,8 @@ def _stub_roi_sampling(monkeypatch: pytest.MonkeyPatch):
                         "channel_dim": 0,
                         "source_spacing_um": 0.5,
                         "effective_spacing_um": 0.5,
+                        # The feature identity slide2vec writes, which a commit records.
+                        "compatibility": {"encoder_name": "phikon", "encoder_code": encoder_code("phikon")},
                     },
                 )
                 for region in regions

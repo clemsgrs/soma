@@ -187,6 +187,8 @@ class _FakeDenseModel:
                             "feature_kind": dense.feature_kind,
                             "attention_blocks": [int(b) for b in dense.attention_blocks],
                             "attention_include_registers": bool(dense.attention_include_registers),
+                            # The feature identity slide2vec writes, which a commit records.
+                            "compatibility": {"encoder_name": "uni"},
                         },
                     )
                 )

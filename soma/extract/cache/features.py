@@ -682,6 +682,7 @@ def _resolve_cache(
         stale_reason = None
         if feature_identity is not None:
             stale_reason = stale_features_reason(
+                cache_kind=cache_kind,
                 cache_dir=cache_dir,
                 features_dir=features_dir,
                 metadata_path=metadata_path,

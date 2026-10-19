@@ -36,8 +36,9 @@ KINDS = ("dense_image", "dense")
 USER_ENCODER = "soma652-user-dense"
 #: Blue and magenta: each channel normalises to -2 (0) or 2 (255) under mean 0.5, std 0.25.
 _COLOURS = {"blue": (0, 0, 255), "magenta": (255, 0, 255)}
+#: One sample per batch, so an interrupted extraction can leave some grids written.
 _EXECUTION = ExecutionOptions(
-    num_gpus=1, num_workers_per_gpu=0, num_preprocessing_workers=0, precision="fp32", batch_size=4
+    num_gpus=1, num_workers_per_gpu=0, num_preprocessing_workers=0, precision="fp32", batch_size=1
 )
 
 
@@ -300,3 +301,108 @@ def test_dense_cache_verified_after_an_upgrade_hits_cheaply_from_then_on(
     extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
 
     assert switchable.instances == instances + 1
+
+
+# --- The record's states ----------------------------------------------------------------
+
+
+def _drop_record(root: Path, kind: str) -> None:
+    """Rewrite a dense cache's metadata as soma wrote it before dense caches recorded one."""
+    (metadata_path,) = (root / "cache" / kind).glob("*/cache_metadata.json")
+    metadata = json.loads(metadata_path.read_text())
+    del metadata["feature_identity"]
+    metadata_path.write_text(json.dumps(metadata))
+
+
+def interrupt(extract, *, written_batches: int) -> None:
+    """Run ``extract`` with an encoder that fails after ``written_batches`` batches."""
+    encode = _SwitchableDenseEncoder.encode_tiles_dense
+    batches = 0
+
+    def fail_later(self, batch):
+        nonlocal batches
+        batches += 1
+        if batches > written_batches:
+            raise RuntimeError("interrupted")
+        return encode(self, batch)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(_SwitchableDenseEncoder, "encode_tiles_dense", fail_later)
+        with pytest.raises(Exception, match="interrupted"):
+            extract()
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_dense_cache_records_the_identity_slide2vec_wrote(tmp_path, dense_data, switchable, kind):
+    extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+
+    recorded = cache_metadata(tmp_path, kind)["feature_identity"]
+
+    assert recorded["slide2vec_version"] == slide2vec.__version__
+    assert recorded["identity"]["encoder_name"] == SWITCHABLE_ENCODER
+    assert recorded["identity"]["transform"]["normalize"] == {"mean": _ORIGINAL_MEAN, "std": [0.25] * 3}
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_dense_cache_with_grids_and_no_record_is_refused(tmp_path, dense_data, switchable, kind):
+    extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+    _drop_record(tmp_path, kind)
+    encoded = switchable.encoded
+
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
+        extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+    message = str(refused.value)
+    (cache_dir,) = (tmp_path / "cache" / kind).iterdir()
+    assert str(cache_dir) in message
+    assert "predates the record" in message
+    # Never deleted silently: the grids stay for the user to decide.
+    assert switchable.encoded == encoded
+    assert any(cache_dir.rglob("*.pt"))
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_reextract_setting_rebuilds_a_dense_cache_with_no_record(tmp_path, dense_data, switchable, kind):
+    extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+    _drop_record(tmp_path, kind)
+    encoded = switchable.encoded
+
+    rebuilt = extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER, on_identity_mismatch="reextract")
+
+    assert switchable.encoded == 2 * encoded
+    _assert_grids(rebuilt, _expected_grids(rebuilt, scale=1.0))
+    recorded = cache_metadata(tmp_path, kind)["feature_identity"]
+    assert recorded["identity"]["transform"]["normalize"]["mean"] == _ORIGINAL_MEAN
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_empty_dense_cache_without_a_record_starts_one_its_first_commit_completes(
+    tmp_path, dense_data, switchable, kind
+):
+    interrupt(lambda: extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER), written_batches=0)
+    _drop_record(tmp_path, kind)
+
+    extracted = extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+
+    _assert_grids(extracted, _expected_grids(extracted, scale=1.0))
+    recorded = cache_metadata(tmp_path, kind)["feature_identity"]
+    assert recorded["slide2vec_version"] == slide2vec.__version__
+    assert recorded["identity"]["transform"]["normalize"]["mean"] == _ORIGINAL_MEAN
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_dense_extraction_interrupted_before_an_upgrade_restarts_with_the_current_recipe(
+    tmp_path, dense_data, switchable, monkeypatch, kind
+):
+    interrupt(lambda: extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER), written_batches=1)
+    assert cache_metadata(tmp_path, kind)["feature_identity"]["identity"] is None
+
+    _upgrade_slide2vec(monkeypatch, switchable, mean=_CHANGED_MEAN)
+    resumed = extract_grids(kind, dense_data, tmp_path, encoder=SWITCHABLE_ENCODER)
+
+    expected = _expected_grids(resumed, scale=1.0)
+    for grid in expected.values():
+        grid[0] = grid[0] + 1
+    _assert_grids(resumed, expected)
+    recorded = cache_metadata(tmp_path, kind)["feature_identity"]
+    assert recorded["slide2vec_version"] == _UPGRADED_VERSION
+    assert recorded["identity"]["transform"]["normalize"]["mean"] == _CHANGED_MEAN
