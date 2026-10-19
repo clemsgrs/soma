@@ -21,7 +21,7 @@ PRESETS = [
     ("mil_classification", {"encoder": "uni2", "aggregator": "abmil"}, "set", "multiclass_classification", "slide", "abmil"),
     ("mil_regression", {"encoder": "uni2", "aggregator": "mean_pool"}, "set", "regression", "slide", "mean_pool"),
     ("tile_classification", {"encoder": "uni2"}, "set", "multiclass_classification", "tile", None),
-    ("survival", {"encoder": "uni2", "aggregator": "transmil", "loss": "nll"}, "set", "survival", "slide", "transmil"),
+    ("survival", {"encoder": "uni2", "aggregator": "transmil", "loss": "nll", "num_bins": 4}, "set", "survival", "slide", "transmil"),
     ("survival", {"encoder": "uni2", "aggregator": "abmil", "loss": "cox"}, "set", "survival", "slide", "abmil"),
     (
         "segmentation", {"encoder": "uni2", "decoder": "heavy_conv", "num_classes": 3},
@@ -55,7 +55,7 @@ def test_components_lists_the_six_presets_with_their_arguments():
         assert entries[name]["required"] == ["encoder", "aggregator"]
     assert entries["tile_classification"]["params"] == {"encoder": None}
     assert entries["survival"]["params"] == {
-        "encoder": None, "aggregator": None, "loss": None, "spacing": None, "tile_size": None,
+        "encoder": None, "aggregator": None, "loss": None, "num_bins": None, "spacing": None, "tile_size": None,
     }
     assert entries["survival"]["required"] == ["encoder", "aggregator", "loss"]
     assert entries["segmentation"]["required"] == ["encoder", "decoder", "num_classes"]
@@ -99,16 +99,26 @@ def test_a_preset_has_no_default_for_a_choice_that_changes_the_model(name, argum
 
 
 def test_the_survival_loss_picks_the_head():
-    assert presets.survival("uni2", "abmil", "nll").learner.params["head"] == Component("discrete_survival")
+    # nll derives num_bins bins from each fold's training split: no bin column to compute.
+    assert presets.survival("uni2", "abmil", "nll", num_bins=4).learner.params["head"] == Component(
+        "discrete_survival", {"binning": "train_quantiles", "num_bins": 4}
+    )
     # The MIL loader forwards one bag at a time, so Cox accumulates a 32-bag risk set.
     config = presets.survival("uni2", "abmil", "cox")
     assert config.learner.params["head"] == Component("cox_survival", {"cox_window": 32})
     assert config.loaders.batch_size == 1
-    nll = presets.survival("uni2", "abmil", "nll")
+    nll = presets.survival("uni2", "abmil", "nll", num_bins=4)
     del config.learner.params["head"], nll.learner.params["head"]
     assert config == nll  # the loss changes the head only
     with pytest.raises(ValueError, match="loss must be one of 'nll', 'cox', got 'coxph'"):
         presets.survival("uni2", "abmil", "coxph")
+
+
+def test_the_survival_bin_count_belongs_to_nll_alone():
+    with pytest.raises(ValueError, match="loss 'nll' needs num_bins"):
+        presets.survival("uni2", "abmil", "nll")
+    with pytest.raises(ValueError, match="loss 'cox' takes no num_bins"):
+        presets.survival("uni2", "abmil", "cox", num_bins=4)
 
 
 def test_each_call_returns_a_config_of_its_own():
@@ -126,7 +136,7 @@ def test_each_call_returns_a_config_of_its_own():
 SLIDE_PRESETS = [
     ("mil_classification", {"aggregator": "abmil"}),
     ("mil_regression", {"aggregator": "abmil"}),
-    ("survival", {"aggregator": "abmil", "loss": "nll"}),
+    ("survival", {"aggregator": "abmil", "loss": "nll", "num_bins": 4}),
 ]
 
 
@@ -172,7 +182,7 @@ def test_a_tile_size_alone_takes_the_encoder_s_spacing():
     tiling = presets.mil_classification("virchow2", "abmil", spacing=1.0).features.extraction.tiling
     assert (tiling.requested_spacing_um, tiling.requested_tile_size_px) == (1.0, 224)
     with pytest.raises(ValueError, match="encoder 'virchow2' has no default spacing: pass spacing as well as tile_size"):
-        presets.survival("virchow2", "abmil", "nll", tile_size=224)
+        presets.survival("virchow2", "abmil", "nll", num_bins=4, tile_size=224)
 
 
 def test_a_preset_s_arguments_are_checked():
@@ -194,10 +204,11 @@ def test_slide_and_tile_presets_resolve_against_a_cohort(tmp_path: Path):
         head = resolve(config, load_cohort(config)).learner.params["head"]
         assert (head.params["num_classes"], head.params["label_map"]) == (4, {"a": 0, "b": 1, "c": 2, "d": 3})
 
-    records, splits = _cohort(tmp_path / "survival", time=[1.0, 2.0] * 4, event=[1, 0] * 4, bin=[0, 1, 2, 3] * 2)
-    config = presets.survival("uni2", "abmil", "nll")
+    records, splits = _cohort(tmp_path / "survival", time=[1.0, 2.0, 3.0, 4.0] * 2, event=[1] * 8)
+    config = presets.survival("uni2", "abmil", "nll", num_bins=4)
     config.cohort = replace(config.cohort, records=records, splits=splits)
-    assert resolve(config, load_cohort(config)).learner.params["head"].params["num_bins"] == 4
+    params = resolve(config, load_cohort(config)).learner.params["head"].params
+    assert (params["binning"], params["num_bins"]) == ("train_quantiles", 4)
 
     # Cox reads no bins.
     records, splits = _cohort(tmp_path / "cox", time=[1.0, 2.0] * 4, event=[1, 0] * 4)

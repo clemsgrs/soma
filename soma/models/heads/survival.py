@@ -9,11 +9,13 @@ function. See ``survival-design.md`` for the full design.
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Mapping
 from dataclasses import dataclass
 from numbers import Integral
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import torch
 from torch import Tensor, nn
 
@@ -30,27 +32,75 @@ if TYPE_CHECKING:
 # Matches the HIPT reference clamp; guards log() against saturated hazards.
 _EPS = 1e-7
 
+#: Where a sample's time bin comes from: the cohort's ``bin`` column, or cut points fitted
+#: on each fold's training split.
+BINNINGS = ("column", "train_quantiles")
+
 
 @dataclass
 class DiscreteSurvivalParams:
-    """:class:`DiscreteSurvivalHead`'s params; ``num_bins`` left unset is inferred from the
-    cohort's ``bin`` targets (:func:`infer_num_bins`)."""
+    """:class:`DiscreteSurvivalHead`'s params. ``binning`` says where each sample's bin
+    comes from: ``column`` reads the cohort's ``bin`` column, and ``num_bins`` left unset
+    is inferred from it (:func:`infer_num_bins`); ``train_quantiles`` derives ``num_bins``
+    bins from each fold's training split (:func:`fit_bin_edges`), so ``num_bins`` is
+    required. The fitted ``bin_edges`` are not a param: a config cannot set them."""
 
     num_bins: int | None = None
+    binning: str = "column"
     alpha: float = 0.15
     dropout: float = 0.0
 
     def __post_init__(self) -> None:
         check_positive("num_bins", self.num_bins, integer=True, optional=True)
+        check_choice("binning", self.binning, BINNINGS)
+        if self.binning == "train_quantiles" and self.num_bins is None:
+            raise ValueError(
+                "binning 'train_quantiles' needs num_bins: the number of bins it derives from each "
+                "fold's training split (the head width). It has no default."
+            )
         check_probability("dropout", self.dropout, below_one=True)
 
 
 def infer_num_bins(cohort: "Cohort", params: Mapping[str, Any]) -> dict[str, Any]:
     """``num_bins``: the cohort's largest ``bin`` index plus one. An explicit ``num_bins``
-    may be wider than the bins the cohort uses, so nothing is inferred beside it."""
+    may be wider than the bins the cohort uses, so nothing is inferred beside it; under
+    ``binning: train_quantiles`` it is always explicit."""
     if params.get("num_bins") is not None:
         return {}
     return {"num_bins": max(int(record.targets["bin"]) for record in cohort.records) + 1}
+
+
+def fit_bin_edges(records: "Sequence[SampleRecord]", params: Mapping[str, Any]) -> dict[str, Any]:
+    """``bin_edges`` under ``binning: train_quantiles`` (``{}`` under ``column``): the
+    ``num_bins - 1`` inner quantiles of the uncensored times of one fold's training
+    ``records``, at ``1/K, ..., (K-1)/K`` (``K = num_bins``, linear interpolation).
+
+    The outer bins are open, so a tune or test time outside the training range falls in
+    the first or the last bin, and each bin holds its lower cut point
+    (:meth:`DiscreteSurvivalHead.extract_targets`). Fewer than ``num_bins`` uncensored
+    times, or tied cut points, cannot form ``num_bins`` bins: that raises rather than
+    leaving a bin empty.
+    """
+    if params.get("binning", "column") != "train_quantiles":
+        return {}
+    num_bins = int(params["num_bins"])
+    times = np.asarray(
+        [float(record.targets["time"]) for record in records if int(record.targets["event"]) == 1], dtype=float
+    )
+    cannot = f"binning 'train_quantiles' cannot form num_bins={num_bins} bins:"
+    if times.size < num_bins:
+        raise ValueError(
+            f"{cannot} the training split has {times.size} uncensored training time(s), fewer "
+            "than num_bins; lower num_bins."
+        )
+    edges = np.quantile(times, np.arange(1, num_bins) / num_bins, method="linear")
+    repeated = edges[1:][np.diff(edges) <= 0]
+    if repeated.size:
+        raise ValueError(
+            f"{cannot} the training split's {times.size} uncensored training time(s) repeat the "
+            f"cut point {repeated[0]:g} (tied times); lower num_bins."
+        )
+    return {"bin_edges": [float(edge) for edge in edges]}
 
 
 @dataclass
@@ -192,6 +242,12 @@ class DiscreteSurvivalHead(TaskHead):
             (c_index).
         dropout: Probability of zeroing an element of the head's input, applied
             before the linear layer. ``0.0`` (default) builds no dropout module.
+        binning: ``"column"`` (default) reads each sample's bin from its ``bin``
+            target; ``"train_quantiles"`` derives it from ``time`` and ``bin_edges``.
+        bin_edges: Under ``"train_quantiles"``, the ``num_bins - 1`` increasing cut
+            points :func:`fit_bin_edges` fits on a fold's training split. Bin ``j``
+            holds the times in ``[bin_edges[j-1], bin_edges[j])``; the first and last
+            bins are open. A run fits them per fold; a config cannot set them.
     """
 
     target_dtypes = {"bin": torch.long, "event": torch.float, "time": torch.float}
@@ -205,22 +261,56 @@ class DiscreteSurvivalHead(TaskHead):
         alpha: float = 0.15,
         metrics: list[str] | None = None,
         dropout: float = 0.0,
+        binning: str = "column",
+        bin_edges: "Sequence[float] | None" = None,
     ) -> None:
         super().__init__()
         if num_bins < 1:
             raise ValueError(f"DiscreteSurvivalHead requires num_bins >= 1, got {num_bins}.")
+        check_choice("binning", binning, BINNINGS)
+        if bin_edges is not None:
+            if binning != "train_quantiles":
+                raise ValueError(
+                    "bin_edges are the cut points of binning 'train_quantiles'; binning 'column' "
+                    "reads each sample's bin from the cohort."
+                )
+            bin_edges = [float(edge) for edge in bin_edges]
+            if len(bin_edges) != num_bins - 1 or any(b <= a for a, b in zip(bin_edges, bin_edges[1:])):
+                raise ValueError(
+                    f"bin_edges must be num_bins - 1 = {num_bins - 1} strictly increasing cut "
+                    f"points, got {bin_edges}."
+                )
         self.fc = nn.Linear(input_dim, num_bins)
         self.dropout = build_input_dropout(dropout)
         self.num_bins = num_bins
         self.alpha = alpha
+        self.binning = binning
+        self.bin_edges = bin_edges
+        self.target_schema = self.resolve_target_schema({"binning": binning})
         self.metrics = resolve_metrics("survival", metrics or [])
 
+    @classmethod
+    def resolve_target_schema(cls, params: "Mapping[str, Any] | None" = None) -> dict[str, type]:
+        """``time`` and ``event``, plus ``bin`` unless the head derives the bins
+        (``binning: train_quantiles``)."""
+        schema = dict(cls.target_schema)
+        if (params or {}).get("binning") == "train_quantiles":
+            del schema["bin"]
+        return schema
+
     def extract_targets(self, record: "SampleRecord") -> dict[str, int | float]:
-        return {
-            "bin": int(record.targets["bin"]),
-            "event": float(record.targets["event"]),
-            "time": float(record.targets["time"]),
-        }
+        time = float(record.targets["time"])
+        if self.binning == "train_quantiles":
+            if self.bin_edges is None:
+                raise ValueError(
+                    "this head derives its bins from the training split (binning 'train_quantiles') "
+                    "but holds no bin_edges: build it with the edges fit_bin_edges returns."
+                )
+            # Left-closed bins: a time equal to a cut point goes to the upper bin.
+            bin_index = bisect.bisect_right(self.bin_edges, time)
+        else:
+            bin_index = int(record.targets["bin"])
+        return {"bin": bin_index, "event": float(record.targets["event"]), "time": time}
 
     def forward(self, X: Tensor) -> Tensor:
         if X.ndim != 2:
@@ -363,21 +453,27 @@ def resolve_survival_task(task_name: str) -> tuple[type[TaskHead], str]:
 
 
 def validate_survival_dataset(
-    records: "Sequence[SampleRecord]", dataset_type: str, loss: str = "nll", *, num_bins: int | None = None
+    records: "Sequence[SampleRecord]",
+    dataset_type: str,
+    loss: str = "nll",
+    *,
+    num_bins: int | None = None,
+    binning: str = "column",
 ) -> None:
     """Fail fast on malformed survival columns before training begins.
 
     Survival datasets reuse ``label`` for the continuous time-to-event and add
     ``event`` (0/1). The discrete-time NLL path (``loss='nll'``) additionally
     requires ``bin`` (the discrete bin containing ``label``, for every sample
-    including censored ones); the continuous Cox path (``loss='cox'``) ignores
+    including censored ones), unless it derives the bins from the training split
+    (``binning='train_quantiles'``); the continuous Cox path (``loss='cox'``) ignores
     ``bin`` and so does not require it. Validates presence, ranges, bin
     indices in [0, num_bins) for an explicit positive integer NLL width, or
     contiguity from 0 when width is inferred, and — for patient pipelines — per-patient
     agreement on the survival targets (since the patient path extracts targets
     from one representative record).
     """
-    needs_bin = loss != "cox"
+    needs_bin = loss != "cox" and binning == "column"
     if needs_bin and num_bins is not None:
         if isinstance(num_bins, bool) or not isinstance(num_bins, Integral) or num_bins < 1:
             raise ValueError(f"Survival num_bins must be a positive integer, got {num_bins!r}.")
@@ -443,5 +539,7 @@ def validate_survival_dataset(
                 )
 
 
-task_registry.register("discrete_survival", DiscreteSurvivalHead, params=DiscreteSurvivalParams, infer=infer_num_bins)
+task_registry.register(
+    "discrete_survival", DiscreteSurvivalHead, params=DiscreteSurvivalParams, infer=infer_num_bins, fit=fit_bin_edges
+)
 task_registry.register("cox_survival", CoxSurvivalHead, params=CoxSurvivalParams)

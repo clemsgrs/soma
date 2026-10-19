@@ -61,7 +61,7 @@ Available commands
    * ``mil_classification(encoder, aggregator, spacing=None, tile_size=None)`` — Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
    * ``mil_regression(encoder, aggregator, spacing=None, tile_size=None)`` — Regress a value from whole slides: a frozen tile encoder, a MIL aggregator and a regressor.
    * ``segmentation(encoder, decoder, num_classes)`` — Segment tissue: a decoder over a frozen encoder's dense token grid.
-   * ``survival(encoder, aggregator, loss, spacing=None, tile_size=None)`` — Predict survival from whole slides: a MIL bag and a discrete-time or Cox head.
+   * ``survival(encoder, aggregator, loss, num_bins=None, spacing=None, tile_size=None)`` — Predict survival from whole slides: a MIL bag and a discrete-time or Cox head.
    * ``tile_classification(encoder)`` — Classify tile images: a linear probe on a frozen tile encoder's embeddings.
 
 ``soma init NAME [PRESET ARGUMENTS]``

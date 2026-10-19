@@ -84,6 +84,24 @@ def test_infer_returns_the_fields_the_cohort_decides():
     assert reg.infer("plain", cohort, {}) == {}
 
 
+def test_fit_returns_the_params_one_fold_s_training_records_decide():
+    seen = []
+
+    def fit_factor(records, params):
+        seen.append((list(records), dict(params)))
+        return {"factor": float(len(records))}
+
+    reg = Registry("widgets")
+    reg.register("scale", Scale, params=ScaleParams, fit=fit_factor)
+    reg.register("plain", Unregistered, params=ScaleParams)
+
+    assert reg.fit("scale", ["a", "b"], {"clip": True}) == {"factor": 2.0}
+    assert seen == [(["a", "b"], {"clip": True})]
+    # Without a hook nothing is fitted; infer and fit are separate hooks.
+    assert reg.fit("plain", ["a"], {}) == {}
+    assert reg.infer("scale", SimpleNamespace(records=["a"]), {}) == {}
+
+
 def test_params_must_be_a_dataclass():
     reg = Registry("widgets")
     with pytest.raises(TypeError, match="dataclass"):

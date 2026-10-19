@@ -158,7 +158,9 @@ class FoldSetup:
     """One fold's shape-specific steps, deferred so ``run_fold`` applies them in order.
 
     ``fit_adaptor(fold_dir)`` fits the feature adaptor on the train split (step 2);
-    ``build_learner(adaptor)`` builds the model and its learner (step 3);
+    ``build_learner(adaptor)`` runs the head's registry ``fit`` hook on the training
+    population (the rest of step 2, set shape), then builds the model and its learner
+    (step 3);
     ``build_loaders(learner, fold_dir)`` the loaders and scored splits (step 4);
     ``fit_baseline(head)``
     the placeholder predictor (step 5, set shape); ``callbacks()`` and ``trainer`` the
@@ -976,8 +978,33 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
         "encoder_identity": encoder_identity,
     }
 
+    def fit_head() -> dict[str, Any]:
+        # Step 2, after the adaptor: the head's registry ``fit`` hook on the samples the
+        # training loader iterates (a patient once, by its representative record), for
+        # the constructor params one fold's training split decides (the survival bin edges).
+        patient = plan.unit == "patient"
+        population = [records.records_by_id[pid] for pid in records.train] if patient else list(records.train)
+        try:
+            fitted = task_registry.fit(head.name, population, head_params(head))
+        except ValueError as error:
+            raise ValueError(f"Fold {fold}: {error}") from None
+        if fitted:
+            logger.info(
+                "Fold %d: head '%s' fitted %s on %d training %s",
+                fold,
+                head.name,
+                _jsonable(fitted),
+                len(population),
+                "patients" if patient else "samples",
+            )
+        return fitted
+
     def build_fold_learner(adaptor: FeatureAdaptor | None) -> Learner:
-        return build_learner(build_set_model(**model_spec, adaptor=adaptor), plan)
+        spec = model_spec
+        fitted = fit_head()
+        if fitted:
+            spec = {**model_spec, "head": {**model_spec["head"], "params": {**task_params, **fitted}}}
+        return build_learner(build_set_model(**spec, adaptor=adaptor), plan)
 
     def build_loaders(learner: Learner, fold_dir: Path) -> FoldLoaders:
         return _set_loaders(inputs, feature_store, records, learner.head, kind=kind)

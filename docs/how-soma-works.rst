@@ -112,9 +112,9 @@ scenario checks.
      - Bags of tile features
      - ``slide_mil_binary_classification``, ``slide_mil_multiclass_classification``
    * - Survival
-     - ``survival(encoder, aggregator, loss, spacing=None, tile_size=None)`` with ``loss="nll"`` or ``loss="cox"``
+     - ``survival(encoder, aggregator, loss, num_bins=None, spacing=None, tile_size=None)`` with ``loss="nll"`` (and ``num_bins``) or ``loss="cox"``
      - Bags of tile features
-     - ``slide_mil_survival_nll``, ``slide_mil_survival_cox``
+     - ``slide_mil_survival_nll``, ``slide_mil_survival_nll_train_quantiles``, ``slide_mil_survival_cox``
    * - Regression
      - ``mil_regression(encoder, aggregator, spacing=None, tile_size=None)``
      - Bags of tile features

@@ -21,6 +21,7 @@ from soma.models.heads.survival import (
     CoxSurvivalParams,
     DiscreteSurvivalHead,
     DiscreteSurvivalParams,
+    fit_bin_edges,
     infer_num_bins,
 )
 
@@ -33,6 +34,7 @@ __all__ = [
     "RegressionParams",
     "SegmentationParams",
     "DiscreteSurvivalParams",
+    "fit_bin_edges",
     "infer_label_map",
     "infer_num_bins",
     "infer_ordinal_label_map",

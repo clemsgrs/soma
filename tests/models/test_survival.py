@@ -148,6 +148,66 @@ class TestSurvivalHead:
 
 
 # ---------------------------------------------------------------------------
+# Bins derived from the training split (binning: train_quantiles)
+# ---------------------------------------------------------------------------
+
+
+def _timed(sample_id: str, time: float, event: int) -> SampleRecord:
+    return SampleRecord(sample_id=sample_id, targets={"time": time, "event": event})
+
+
+QUANTILES = {"binning": "train_quantiles", "num_bins": 4}
+
+
+class TestTrainQuantileBins:
+    def test_edges_are_the_inner_quantiles_of_the_uncensored_training_times(self):
+        # Six uncensored times; the 1/4, 2/4, 3/4 quantiles (linear) sit at positions
+        # 1.25, 2.5 and 3.75 of the sorted times: 10 + .25 * 10, 20 + .5 * 10, 30 + .75 * 10.
+        # The censored times (1 and 1000) take no part.
+        times = [5.0, 10.0, 20.0, 30.0, 40.0, 100.0]
+        records = [_timed(f"u{i}", t, 1) for i, t in enumerate(times)]
+        records += [_timed("c0", 1.0, 0), _timed("c1", 1000.0, 0)]
+
+        assert task_registry.fit("discrete_survival", records, QUANTILES) == {"bin_edges": [12.5, 25.0, 37.5]}
+
+    def test_a_column_head_fits_nothing(self):
+        records = [_timed(f"u{i}", float(i), 1) for i in range(8)]
+        assert task_registry.fit("discrete_survival", records, {"num_bins": 4}) == {}
+
+    @pytest.mark.parametrize(
+        ("time", "event", "bin_"),
+        [
+            (2.0, 1, 0),  # below the training range: the open first bin
+            (12.5, 1, 1),  # equal to a cut point: the upper bin
+            (25.0, 0, 2),  # censored samples are binned like the others
+            (37.4, 1, 2),
+            (500.0, 1, 3),  # above the training range: the open last bin
+        ],
+    )
+    def test_a_head_with_edges_bins_each_time_left_closed(self, time, event, bin_):
+        head = DiscreteSurvivalHead(input_dim=8, num_bins=4, binning="train_quantiles", bin_edges=[12.5, 25.0, 37.5])
+
+        assert head.extract_targets(_timed("s", time, event)) == {"bin": bin_, "event": float(event), "time": time}
+
+    def test_a_train_quantiles_head_reads_no_bin_column(self):
+        assert DiscreteSurvivalHead.resolve_target_schema(QUANTILES) == {"time": float, "event": int}
+        assert DiscreteSurvivalHead.resolve_target_schema({"num_bins": 4}) == {"time": float, "event": int, "bin": int}
+        head = DiscreteSurvivalHead(input_dim=8, num_bins=4, binning="train_quantiles", bin_edges=[12.5, 25.0, 37.5])
+        assert head.target_schema == {"time": float, "event": int}
+
+    def test_too_few_uncensored_times_cannot_form_the_bins(self):
+        records = [_timed(f"u{i}", float(i), 1) for i in range(3)] + [_timed("c", 9.0, 0)]
+        with pytest.raises(ValueError, match=r"num_bins=4 .* 3 uncensored training time\(s\).*lower num_bins"):
+            task_registry.fit("discrete_survival", records, QUANTILES)
+
+    def test_tied_cut_points_cannot_form_the_bins(self):
+        # Positions 5/3 and 10/3 of [1, 1, 1, 1, 1, 2] both fall among the ones.
+        records = [_timed(f"u{i}", t, 1) for i, t in enumerate([1.0, 1.0, 1.0, 1.0, 1.0, 2.0])]
+        with pytest.raises(ValueError, match=r"num_bins=3 .* 6 uncensored training time\(s\).*cut point 1 .*lower num_bins"):
+            task_registry.fit("discrete_survival", records, {"binning": "train_quantiles", "num_bins": 3})
+
+
+# ---------------------------------------------------------------------------
 # compute_survival_metrics
 # ---------------------------------------------------------------------------
 
@@ -368,6 +428,92 @@ class TestSurvivalEndToEnd:
 
         assert isinstance(result, PipelineResult)
         assert "c_index" in result.fold_results[0].test_evaluations["test"].metrics
+
+
+def test_a_patient_run_fits_the_bin_edges_on_its_training_patients_once_each(tmp_path: Path, caplog):
+    """p0's three slides count once: the training patients' uncensored times are 1, 2 and
+    4, whose median is 2 (the five slides' would be 1)."""
+    patients = {  # patient: (slides, time, event, split)
+        "p0": (3, 1.0, 1, "train"),
+        "p1": (1, 2.0, 1, "train"),
+        "p2": (1, 4.0, 1, "train"),
+        "p3": (1, 9.0, 0, "train"),
+        "p4": (1, 3.0, 1, "tune"),
+        "p5": (1, 5.0, 1, "test"),
+    }
+    rows = [
+        {"sample_id": f"{pid}_{k}", "patient_id": pid, "image_path": f"/{pid}_{k}.svs", "time": time, "event": event}
+        for pid, (slides, time, event, _) in patients.items()
+        for k in range(slides)
+    ]
+    dataset_csv, splits_csv = tmp_path / "dataset.csv", tmp_path / "splits.csv"
+    pd.DataFrame(rows).to_csv(dataset_csv, index=False)
+    pd.DataFrame(
+        {"sample_id": [r["sample_id"] for r in rows], "split": [patients[r["patient_id"]][3] for r in rows]}
+    ).to_csv(splits_csv, index=False)
+    features = tmp_path / "features"
+    features.mkdir()
+    torch.manual_seed(0)
+    for pid in patients:
+        torch.save(torch.randn(D), features / f"{pid}.pt")
+    config = experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / "out",
+        run={"run_id": "patient-quantiles"},
+        head="discrete_survival",
+        head_params={"binning": "train_quantiles", "num_bins": 2},
+        cohort={"collapse": "patient_id"},
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1, "callbacks": [{"name": "checkpoint", "params": {"selection": "last"}}]},
+    )
+    with caplog.at_level("INFO", logger="soma"):
+        result = Pipeline(config, source=CachedSetSource(features)).run()
+
+    import json
+
+    import soma
+
+    bundle = result.run_dir / "bundle"
+    head_params = json.loads((bundle / "model.json").read_text())["params"]["head"]["params"]
+    assert (head_params["binning"], head_params["bin_edges"]) == ("train_quantiles", [2.0])
+    head = soma.load(bundle).model.task_head
+    assert (head.binning, head.bin_edges) == ("train_quantiles", [2.0])
+    assert "bin_edges" not in (result.run_dir / "plan.yaml").read_text()
+    assert "fitted {'bin_edges': [2.0]} on 4 training patients" in caplog.text
+
+
+def test_a_training_slide_without_tissue_takes_no_part_in_the_bin_edges(tmp_path: Path):
+    """c is ``empty`` in the feature manifest, so it never trains: the edge is the median
+    of a's and b's times, 1.5, not of a's, b's and c's, 2."""
+    times = {"a": (1.0, "train"), "b": (2.0, "train"), "c": (10.0, "train"), "d": (3.0, "tune"), "e": (4.0, "test")}
+    dataset_csv, splits_csv = tmp_path / "dataset.csv", tmp_path / "splits.csv"
+    pd.DataFrame(
+        {"sample_id": list(times), "image_path": [f"/{s}.svs" for s in times], "time": [t for t, _ in times.values()], "event": 1}
+    ).to_csv(dataset_csv, index=False)
+    pd.DataFrame({"sample_id": list(times), "split": [split for _, split in times.values()]}).to_csv(splits_csv, index=False)
+    features = tmp_path / "features"
+    features.mkdir()
+    for sid in "abde":
+        torch.save(torch.randn(D), features / f"{sid}.pt")
+    pd.DataFrame(
+        {"sample_id": list(times), "feature_status": ["empty" if s == "c" else "success" for s in times], "feature_path": ""}
+    ).to_csv(features / "process_list.csv", index=False)
+    config = experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / "out",
+        run={"run_id": "empty-quantiles"},
+        head="discrete_survival",
+        head_params={"binning": "train_quantiles", "num_bins": 2},
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 1, "callbacks": [{"name": "checkpoint", "params": {"selection": "last"}}]},
+    )
+    result = Pipeline(config, source=CachedSetSource(features)).run()
+
+    import soma
+
+    assert soma.load(result.run_dir / "bundle").model.task_head.bin_edges == [1.5]
 
 
 @pytest.mark.parametrize("aggregation", [None, "mean_pool"])

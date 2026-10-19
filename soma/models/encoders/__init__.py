@@ -92,7 +92,7 @@ class EncoderRegistry(Registry):
 
     def _lookup(self, name: str) -> tuple[Any, _Entry]:
         params = CompositeParams if name == COMPOSITE else EncoderParams
-        return self.get(name), _Entry(cls=None, params=params, infer=None, metadata={})
+        return self.get(name), _Entry(cls=None, params=params, infer=None, fit=None, metadata={})
 
 
 #: The ``encoders`` domain of :func:`soma.components`.
