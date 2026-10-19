@@ -181,6 +181,19 @@ def test_coverage_cli_passes_the_tiling_tolerance(monkeypatch, tmp_path):
     assert captured["tolerance"] == pytest.approx(0.1)
 
 
+def test_summarize_coverage_keeps_zero_padded_sample_ids_of_a_csv(stub_hs2p, tmp_path):
+    manifest = tmp_path / "manifest.csv"
+    _manifest(2).assign(sample_id=["001", "002"]).to_csv(manifest, index=False)
+    df = cov.summarize_coverage(
+        manifest,
+        pixel_mapping=PIXEL_MAPPING,
+        min_coverage=None,
+        tile_size_px=256,
+        spacing_um=0.5,
+    )
+    assert df["sample_id"].tolist() == ["001", "002"]
+
+
 def test_write_coverage_csv_roundtrip(stub_hs2p, tmp_path):
     df = cov.summarize_coverage(
         _manifest(2),

@@ -954,6 +954,7 @@ def _evaluation_targets(args: argparse.Namespace, predictions):
     import pandas as pd
 
     from soma.data import Cohort
+    from soma.data.validation import read_manifest_csv
     from soma.evaluation.predictions import family_target_keys
     from soma.evaluation.scoring import _output_columns
 
@@ -963,7 +964,7 @@ def _evaluation_targets(args: argparse.Namespace, predictions):
         return cohort.targets(args.split or "test", fold=args.fold or 0)
     if args.split is not None or args.fold is not None:
         raise ValueError("--split and --fold select from --splits; pass a splits CSV")
-    records = pd.read_csv(args.cohort)
+    records = read_manifest_csv(args.cohort)
     unsplit = pd.DataFrame({"sample_id": records["sample_id"], "split": "test"})
     cohort = Cohort.from_frames(
         records, unsplit, targets=keys, sidecar_dir=Path(args.cohort).parent
@@ -991,8 +992,6 @@ def _read_predictions(path: str):
 def _evaluation_grid_targets(args: argparse.Namespace, predictions):
     """The annotation source a grid noun scores against: the cohort CSV's
     ``label_mask_path`` / ``points_path`` columns, restricted to one split (or every row)."""
-    import pandas as pd
-
     from soma.data import AnnotationManifest, Cohort, LabelMapSource, PointSource
     from soma.evaluation import LabelMapPredictions
 
@@ -1011,7 +1010,7 @@ def _evaluation_grid_targets(args: argparse.Namespace, predictions):
         return source.subset(list(ids))
     if args.split is not None or args.fold is not None:
         raise ValueError("--split and --fold select from --splits; pass a splits CSV")
-    return source.subset(list(pd.read_csv(args.cohort)["sample_id"].astype(str)))
+    return source.subset(annotations.sample_ids)
 
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:

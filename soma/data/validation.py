@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import warnings
 from pathlib import Path
 from typing import Hashable, Iterator
 
@@ -25,6 +26,7 @@ __all__ = [
     "optional_text",
     "optional_path",
     "parse_spacing_at_level_0",
+    "read_manifest_csv",
     "require_columns",
     "validate_sample_ids",
     "validate_patient_ids",
@@ -34,6 +36,16 @@ __all__ = [
 SPLIT_TRAIN = "train"
 SPLIT_TUNE = "tune"
 SPLIT_TEST_PREFIX = "test"
+
+#: Identifier columns every CSV reader parses as literal strings. ``source_wsi`` is the
+#: parent ROI's ``sample_id`` on each row of a tiled detection manifest.
+_IDENTIFIER_COLUMNS = ("sample_id", "patient_id", "source_wsi")
+#: pandas' default NA spellings (``pandas._libs.parsers.STR_NA_VALUES``), which a
+#: per-column ``na_values`` must restate for the columns that keep them.
+_PANDAS_NA_VALUES = (
+    "", "#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN", "-nan", "1.#IND",
+    "1.#QNAN", "<NA>", "N/A", "NA", "NULL", "NaN", "None", "n/a", "nan", "null",
+)
 
 
 def is_filename_safe_id(value: object) -> bool:
@@ -78,6 +90,39 @@ def iter_rows(df: pd.DataFrame) -> Iterator[tuple[Hashable, pd.Series]]:
     ``"1.0"`` once stringified). Boxing to object first keeps ints as ints.
     """
     return df.astype(object).iterrows()
+
+
+def read_manifest_csv(path: str | Path) -> pd.DataFrame:
+    """Read a cohort, splits or manifest CSV with its identifier columns as text.
+
+    Type inference would turn ``001`` into ``1`` and the NA vocabulary a patient named
+    ``NA`` into a missing one, so the identifier columns (``sample_id``, ``patient_id``
+    and a tiled manifest's parent ``source_wsi``) are read as the strings they hold and
+    only an empty cell is missing there. Every other column keeps pandas' inference and
+    NA vocabulary.
+    """
+    header = pd.read_csv(path, nrows=0).columns
+    ids = [column for column in _IDENTIFIER_COLUMNS if column in header]
+    frame = pd.read_csv(
+        path,
+        dtype={column: str for column in ids},
+        keep_default_na=False,
+        na_values={column: [""] if column in ids else _PANDAS_NA_VALUES for column in header},
+    )
+    # R's write.csv spells a missing patient NA, and astype(str) spells it nan: those
+    # samples now share one patient of that name, so say so.
+    rows = frame[frame["patient_id"].isin(_PANDAS_NA_VALUES)] if "patient_id" in ids else frame[:0]
+    if not rows.empty:
+        samples = [str(value) for value in rows.get("sample_id", rows.index)]
+        warnings.warn(
+            f"{path}: patient_id value(s) {sorted(set(rows['patient_id']))} are read as "
+            f"patient names, not as missing, for {len(samples)} sample(s): {samples[:20]}"
+            f"{' ...' if len(samples) > 20 else ''}. Leave the cell blank for a sample "
+            "without a patient.",
+            UserWarning,
+            stacklevel=3,
+        )
+    return frame
 
 
 def require_columns(df: pd.DataFrame, columns: set[str] | frozenset[str], *, what: str) -> None:

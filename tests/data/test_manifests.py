@@ -178,3 +178,21 @@ def test_manifests_keep_integer_sample_ids_next_to_float_columns() -> None:
     assert images.sample_ids == ["1", "2"]
     assert images["2"].patient_id == "8"
     assert annotations.sample_ids == ["1", "2"]
+
+
+def test_every_reader_of_one_csv_keeps_its_literal_identifiers(tmp_path: Path) -> None:
+    csv = tmp_path / "dataset.csv"
+    csv.write_text(
+        "sample_id,patient_id,image_path,points_path,label,split\n"
+        "001,0007,/img/1.tif,/ann/1.csv,0,train\n"
+        "NA,0008,/img/2.tif,/ann/2.csv,1,test\n"
+        "1.0,,/img/3.tif,/ann/3.csv,0,test\n"
+    )
+
+    images = ImageManifest.from_csv(csv)
+    annotations = AnnotationManifest.from_csv(csv)
+    cohort = Cohort.from_csv(csv, targets=["label"], unit="sample_id")
+
+    assert images.sample_ids == ["001", "NA", "1.0"] == annotations.sample_ids == cohort.sample_ids
+    assert [entry.patient_id for entry in images] == ["0007", "0008", None]
+    assert annotations["001"].points_path == Path("/ann/1.csv")

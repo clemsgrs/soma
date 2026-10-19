@@ -23,6 +23,7 @@ from soma.data.validation import (
     is_valid_split_name,
     iter_rows,
     optional_text,
+    read_manifest_csv,
     require_columns,
     validate_patient_ids,
     validate_sample_ids,
@@ -187,6 +188,13 @@ def _split_frame(records_df: pd.DataFrame, splits_df: pd.DataFrame | None) -> pd
         columns = ["sample_id", "split"] + (["fold"] if "fold" in records_df.columns else [])
         splits_df = records_df[columns]
     require_columns(splits_df, {"sample_id", "split"}, what="splits table")
+    # Reject blank IDs before any str() conversion turns them into 'nan', a legal literal ID.
+    blank_ids = splits_df["sample_id"].isna()
+    if blank_ids.any():
+        raise ValueError(
+            f"splits table has blank sample_id value(s) at row(s) "
+            f"{splits_df.index[blank_ids].tolist()}"
+        )
     splits_df = splits_df.copy()
     if "fold" not in splits_df.columns:
         splits_df["fold"] = 0
@@ -386,8 +394,8 @@ class Cohort:
         """:meth:`from_frames` over CSV files; expression sidecars sit beside ``records_csv``."""
         records_csv = Path(records_csv)
         return cls.from_frames(
-            pd.read_csv(records_csv),
-            None if splits_csv is None else pd.read_csv(splits_csv),
+            read_manifest_csv(records_csv),
+            None if splits_csv is None else read_manifest_csv(splits_csv),
             targets=targets,
             dtypes=dtypes,
             unit=unit,

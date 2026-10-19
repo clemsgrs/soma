@@ -20,6 +20,7 @@ from soma.data.validation import (
     optional_path,
     optional_text,
     parse_spacing_at_level_0,
+    read_manifest_csv,
     require_columns,
     validate_patient_ids,
     validate_sample_ids,
@@ -149,7 +150,7 @@ class ImageManifest(_Manifest):
 
     @classmethod
     def from_csv(cls, path: str | Path) -> "ImageManifest":
-        return cls.from_frame(pd.read_csv(path))
+        return cls.from_frame(read_manifest_csv(path))
 
     @property
     def supplies_coordinates(self) -> bool:
@@ -226,7 +227,7 @@ class AnnotationManifest(_Manifest):
     def from_csv(
         cls, path: str | Path, *, pixel_mapping: Mapping[str, int] | None = None
     ) -> "AnnotationManifest":
-        return cls.from_frame(pd.read_csv(path), pixel_mapping=pixel_mapping)
+        return cls.from_frame(read_manifest_csv(path), pixel_mapping=pixel_mapping)
 
     @property
     def pixel_mapping(self) -> dict[str, int] | None:
