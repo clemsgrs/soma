@@ -29,7 +29,8 @@ id (``<slide>__x<x>_y<y>``) over its slide's image row, so a relaunch over the s
 slides reuses both the ROIs and their grids.
 
 On a complete cache hit, soma does not load the foundation encoder, except once
-after a slide2vec upgrade (see `Feature identity`_). On a miss,
+after a slide2vec upgrade (see `Feature identity`_). It still checks the encoder's
+code, which needs no encoder. On a miss,
 slide2vec extracts and persists features through its public ``Model`` interfaces.
 For pooled slide encoders, soma passes the artifacts from ``Model.embed_tiles``
 to ``Model.aggregate_tiles``. soma owns cache identity and completeness checks;
@@ -105,27 +106,34 @@ different interpolation kernel, is not detected: delete the affected cache
 directories, or select a fresh ``features.cache.root_dir``, when upgrading slide2vec
 across such a change.
 
+.. _feature-identity:
+
 Feature identity
 ----------------
 
-A pooled cache key covers the encoder name, the output variant, the precision,
-the registry ``input_size`` and the spacing. It does not cover the encoder's
-image transform. A slide2vec release can change that transform (normalization
-statistics, resize, crop) and leave the key unchanged.
+A feature cache key covers the encoder name, the output variant, the precision and
+the geometry. It does not cover the encoder's code or its image transform. An edit
+to the encoder, or a slide2vec release, can change the features and leave the key
+unchanged.
 
-slide2vec records the feature identity of every embedding it writes: the encoder,
-the output variant, the precision, the tile geometry and the image transform.
-When soma writes the first features of a tile, image, hierarchical, slide or
-patient cache, it copies this identity into ``cache_metadata.json`` together
-with the slide2vec version. For example:
+slide2vec records the feature identity of every embedding and grid it writes: the
+encoder and its code, the output variant, the precision, the geometry and the image
+transform. When soma writes the first features of a cache, pooled or dense, it
+copies this identity into ``cache_metadata.json`` together with the slide2vec
+version. For example:
 
 .. code-block:: json
 
    {
      "feature_identity": {
-       "slide2vec_version": "7.0.0",
+       "slide2vec_version": "7.1.4",
        "identity": {
          "encoder_name": "uni2",
+         "encoder_code": {
+           "object": "slide2vec.encoders.models.uni.UNI2",
+           "fingerprint": "9b7499239d726642d6ab623084cfb5fe66935755ad062176a9193685cf14441b",
+           "source": "MahmoodLab/UNI2-h"
+         },
          "output_variant": "default",
          "precision": "fp16",
          "feature_dtype": "fp16",
@@ -138,31 +146,55 @@ with the slide2vec version. For example:
      }
    }
 
-A slide or patient cache records the identity of the tile cache it is aggregated
-from, so its record includes the transform of the tile encoder. soma aggregates
-only tiles whose cache records an identity.
+``encoder_code`` names the encoder's class (``object``) and its ``fingerprint``:
+the SHA-256 of the file that defines the class, or the version of the installed
+plugin package that holds it. A slide or patient cache records the identity of
+the tile cache it is aggregated from, so its record also holds the transform and
+the code of the tile encoder (``tile_encoder_code``). soma aggregates only tiles
+whose cache records an identity. A dense record also holds the read settings of
+one sample; they are not compared.
 
-When a pooled cache already holds features, soma checks the record before it
-reuses the cache or adds samples to it:
+When a cache already holds features, soma checks the record before it reuses the
+cache or adds samples to it. Two checks run.
 
-- The recorded slide2vec version is the installed one. soma reuses the cache and
-  does not load the encoder.
-- The versions differ. soma loads the encoder once, on CPU, and compares the
-  recorded identity with the one the installed slide2vec produces.
+- **The encoder's code, on every run.** soma compares the recorded
+  ``encoder_code`` with the code the encoder registry holds now, and, for a slide
+  or patient cache, the recorded ``tile_encoder_code`` with the code of the tile
+  encoder. This check reads the registry and hashes one file: it does not load
+  the encoder.
+- **The whole identity, after a slide2vec upgrade.** When the recorded slide2vec
+  version is not the installed one, soma loads the encoder once, on CPU, and
+  compares the recorded identity with the one the installed slide2vec produces.
+  When no field differs, soma records the installed version, so later runs skip
+  this comparison.
 
-  - No field differs: soma reuses the cache and records the installed version,
-    so later runs do not load the encoder.
-  - A field differs, or the record lacks a field the installed slide2vec
-    requires (reported as ``MISSING_FIELD``): the run stops with
-    ``CacheFeatureIdentityMismatch``, which names the fields. Set
-    ``features.cache.on_identity_mismatch: reextract`` to delete the cache and extract it
-    again instead.
+When a check finds a difference, the run stops with
+``CacheFeatureIdentityMismatch``. The error names the fields, or, for the code,
+the encoder, its class and both fingerprints. Set
+``features.cache.on_identity_mismatch: reextract`` to delete the cache and
+extract it again instead.
 
-A pooled cache that holds features but records no feature identity cannot be
-verified. soma logs a warning,
-deletes the cache directory and extracts it again. soma never takes an identity
-from existing sidecars to approve such a cache. A cache without features starts
-a new record.
+A record that lacks a field the check needs, such as ``encoder_code`` in a cache
+written before slide2vec 7.1.3, cannot be verified. soma treats it like a
+difference: by default the run stops with an error that says the cache predates
+the field, and ``reextract`` extracts the cache again.
+
+An encoder whose class has no file, for example a class defined in a notebook
+cell, records ``fingerprint: null``. soma reuses its cache and warns once per
+encoder that it cannot detect changes to the encoder's code. Define the encoder
+in a ``.py`` file.
+
+A cache that holds features but records no feature identity cannot be verified:
+
+- A pooled cache is a miss. soma logs a warning, deletes the cache directory and
+  extracts it again.
+- A dense cache, written before dense caches recorded an identity, follows
+  ``on_identity_mismatch``. By default the run stops with an error that names the
+  cache and says it predates the record. Set ``reextract`` to extract it again.
+  soma never deletes the grids without this setting.
+
+soma never takes an identity from existing sidecars to approve such a cache. A
+cache without features starts a new record.
 
 A run that stops before its first commit leaves a pending record (``identity``
 is ``null``). The next run with the same slide2vec version keeps the cache and
@@ -174,9 +206,15 @@ identity, soma raises ``MissingFeatureIdentity`` and does not commit them.
 samples that the current dataset does not use. Do not use it while another job
 reads the cache.
 
-The check runs only when the slide2vec version changes. A transform that changes
-without a slide2vec upgrade, for example after an upgrade of ``timm``, is not
-detected. Dense caches are not checked.
+Some changes stay undetected:
+
+- the encoder's weights, for example new weights at the same path;
+- code that the encoder class inherits or imports from other files;
+- a transform that changes without a slide2vec upgrade or an edit to the
+  encoder's file, for example after an upgrade of ``timm``.
+
+After such a change, delete the affected cache directories, or select a fresh
+``features.cache.root_dir``.
 
 Dense cache key
 ---------------

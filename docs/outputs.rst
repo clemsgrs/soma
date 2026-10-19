@@ -141,11 +141,12 @@ Runs without a component record are not compared. When an external component
 has no fingerprint (no source file and no installed version), the run warns at
 start that neither check can detect edits to it.
 
-The checks cover runs, not the feature cache. A custom encoder is an external
-component, so the record and both checks see an edit to it. The feature cache,
-however, does not check an encoder's code or weights: after an edit, a new run
-reuses the features of the old model while it records the new fingerprint.
-After you change an encoder, delete its feature cache directory (see
+The checks cover runs. The feature cache has a check of its own. A custom encoder
+is an external component, so the record and both checks see an edit to it. Its
+feature cache records the same fingerprint, and refuses to reuse features that
+other code extracted (see :ref:`feature-identity`). The cache does not see the
+encoder's weights, or code that the encoder class inherits or imports from other
+files. After you change these, delete the encoder's feature cache directory (see
 :doc:`caching`).
 
 .. _model-bundle:

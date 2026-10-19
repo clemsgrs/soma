@@ -808,13 +808,15 @@ def test_the_custom_aggregator_example_runs_as_written(monkeypatch) -> None:
     assert example.config.learner.params["aggregator"].name == "projected_mean"
 
 
-def test_the_custom_encoder_example_runs_as_written(monkeypatch) -> None:
-    """The in-script encoder of ``extending.rst`` runs as the page prints it: slide2vec
-    registers it, soma lists it, and the config naming it on one GPU passes ``check``."""
+def test_the_custom_encoder_example_runs_as_written(monkeypatch, tmp_path, request) -> None:
+    """The two-file encoder example of ``extending.rst`` runs as the page prints it: the
+    run script imports ``my_encoder.py``, slide2vec registers the encoder and fingerprints
+    that file, soma lists it, and the config naming it on one GPU passes ``check``."""
+    import hashlib
     import sys
     import types
 
-    from slide2vec.encoders import encoder_registry
+    from slide2vec.encoders import encoder_code, encoder_registry
 
     import soma
 
@@ -832,12 +834,20 @@ def test_the_custom_encoder_example_runs_as_written(monkeypatch) -> None:
 
     monkeypatch.setattr(soma, "Pipeline", RecordingPipeline)
     page = (Path(__file__).resolve().parents[2] / "docs" / "extending.rst").read_text(encoding="utf-8")
-    (source,) = [source for _, source, _ in _python_snippets(page) if "register_encoder(" in source]
+    snippets = [source for _, source, _ in _python_snippets(page)]
+    (module_source,) = [source for source in snippets if "register_encoder(" in source]
+    (script_source,) = [source for source in snippets if "import my_encoder" in source]
+    module_path = tmp_path / "my_encoder.py"
+    module_path.write_text(module_source + "\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    request.addfinalizer(lambda: sys.modules.pop("my_encoder", None))
     example = types.ModuleType("extending_encoder_example")
     monkeypatch.setitem(sys.modules, example.__name__, example)
-    exec(compile(source, "docs/extending.rst", "exec"), example.__dict__)
+    exec(compile(script_source, "docs/extending.rst", "exec"), example.__dict__)
 
     assert "my-tile-model" in [entry["name"] for entry in soma.components("encoders")]
+    assert encoder_code("my-tile-model")["object"] == "my_encoder.MyTileModel"
+    assert encoder_code("my-tile-model")["fingerprint"] == hashlib.sha256(module_path.read_bytes()).hexdigest()
     assert launched == [example.config]
     assert example.config.features.encoder.name == "my-tile-model"
     assert example.config.features.execution.num_gpus == 1

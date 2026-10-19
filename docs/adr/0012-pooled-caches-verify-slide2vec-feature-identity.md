@@ -1,5 +1,7 @@
 # Pooled feature caches record slide2vec's feature identity and verify it after an upgrade
 
+> Superseded in part by [ADR 0024](0024-feature-caches-check-the-encoder-code-on-every-hit.md): every cache hit now compares the encoder's code it records with the code in the registry, so "Hits stay cheap" no longer means that a hit checks nothing, and encoder code leaves the list of undetectable changes (weights stay on it). Dense caches are no longer out of scope: they record the same identity and get the same checks. A record that lacks a required field is reported as unverifiable, not as a difference. The pooled record, its states and the upgrade comparison below are unchanged.
+
 A pooled feature cache records, in `cache_metadata.json`, the feature identity slide2vec wrote with its first features and the slide2vec version it was last verified with. When a cache that holds features is resolved under another slide2vec version, soma compares the recorded identity with the current one before it reuses the cache or hands missing samples to slide2vec. A difference is a hard error that names the fields; `cache.on_identity_mismatch: reextract` deletes the cache and extracts it again. This supersedes two points of ADR 0008: the "accepted standing risk", for the encoder's image transform, and "no escape-hatch config".
 
 ## Why

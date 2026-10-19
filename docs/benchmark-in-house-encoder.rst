@@ -8,15 +8,29 @@ Its normalization transform must preserve geometry (no resize or crop).
 From your own script
 --------------------
 
-The simplest way needs no package: register the encoder in your script with
-``slide2vec.register_encoder`` (see :ref:`custom-encoder`), then run each benchmark
-from the same script with ``soma.benchmark.run_benchmark``:
+The simplest way needs no package. Write the encoder class in a file of its own,
+``my_encoder.py``, and register it with ``slide2vec.register_encoder`` (see
+:ref:`custom-encoder` for a full class):
 
 .. code-block:: python
+   :caption: my_encoder.py
+
+   from slide2vec import TorchTileEncoder, register_encoder
+
+
+   @register_encoder("my-private-encoder", encode_dim=768, input_size=224, supported_spacing_um=0.5)
+   class MyPrivateEncoder(TorchTileEncoder):
+       ...
+
+Then import the file in the script that runs each benchmark with
+``soma.benchmark.run_benchmark``:
+
+.. code-block:: python
+   :caption: run_benchmarks.py
 
    from soma.benchmark import run_benchmark
 
-   import my_encoder  # registers "my-private-encoder" with slide2vec.register_encoder
+   import my_encoder  # registers "my-private-encoder"
 
    for encoder in ("my-private-encoder", "uni2"):
        run_benchmark(
@@ -26,6 +40,10 @@ from the same script with ``soma.benchmark.run_benchmark``:
            output_root="runs/eva-bach",
            seeds=1,
        )
+
+Keep the class out of the run script. The feature cache checks the file that
+defines the encoder class on every run (see :ref:`feature-identity`). If the class
+is in the run script, any edit to the script fails that check.
 
 The registration exists only in the process that ran your script. slide2vec starts
 one worker process per visible GPU, and those processes never import it, so make one

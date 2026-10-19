@@ -14,7 +14,9 @@ __all__ = ["CacheOptions"]
 class CacheOptions(Editable):
     """``features.cache``: the feature and tiling cache policy. ``dtype`` (``None``
     follows the compute precision) enters every cache key; ``on_identity_mismatch``
-    (``error`` or ``reextract``) handles a pooled cache from another slide2vec identity."""
+    (``error`` or ``reextract``) handles a feature cache whose recorded feature
+    identity, encoder code included, differs from the current one or cannot be
+    verified."""
 
     enabled: bool = True
     root_dir: str | Path | None = None
