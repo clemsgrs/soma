@@ -9,7 +9,9 @@ import pandas as pd
 import pytest
 from PIL import Image
 
+from soma.benchmark.detection import resolve_stratify_maps
 from soma.benchmark.tiles import cover_origins, tile_detection_manifest
+from soma.data import Cohort
 
 
 def test_cover_origins_edge_flush():
@@ -187,20 +189,29 @@ def test_zero_padded_roi_and_patient_ids_are_kept_literally(tmp_path):
     )
     dataset = pd.read_csv(curated / "dataset.csv", dtype=str)
     dataset["patient_id"] = ["0007", "0008"]
+    dataset["scanner"] = ["s1", "s2"]
     dataset.to_csv(curated / "dataset.csv", index=False)
 
-    tile_detection_manifest(curated, tmp_path / "tiled", tile_size=128, overlap=32)
+    tiled = tmp_path / "tiled"
+    tile_detection_manifest(curated, tiled, tile_size=128, overlap=32)
 
-    tiles = pd.read_csv(tmp_path / "tiled" / "dataset.csv", dtype=str)
+    tiles = pd.read_csv(tiled / "dataset.csv", dtype=str)
     assert tiles[["sample_id", "source_wsi", "patient_id"]].values.tolist() == [
         ["001_t0000", "001", "0007"],
         ["002_t0000", "002", "0008"],
     ]
-    splits = pd.read_csv(tmp_path / "tiled" / "splits.csv", dtype=str)
+    splits = pd.read_csv(tiled / "splits.csv", dtype=str)
     assert splits[["sample_id", "split"]].values.tolist() == [
         ["001_t0000", "train"],
         ["002_t0000", "test"],
     ]
+
+    # Reloaded, a tile still names its parent ROI as supplied, so stitching keys the ROI
+    # the same way stratification does.
+    cohort = Cohort.from_csv(tiled / "dataset.csv", tiled / "splits.csv", allow_missing_test=True)
+    parents = [cohort.record(f"{roi}_t0000").metadata["source_wsi"] for roi in ("001", "002")]
+    assert parents == ["001", "002"]
+    assert resolve_stratify_maps(tiled / "dataset.csv") == {"scanner": {"001": "s1", "002": "s2"}}
 
 
 # --- F2: uniform spacing -------------------------------------------------------------

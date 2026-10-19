@@ -37,8 +37,9 @@ SPLIT_TRAIN = "train"
 SPLIT_TUNE = "tune"
 SPLIT_TEST_PREFIX = "test"
 
-#: Identifier columns every CSV reader parses as literal strings.
-_IDENTIFIER_COLUMNS = ("sample_id", "patient_id")
+#: Identifier columns every CSV reader parses as literal strings. ``source_wsi`` is the
+#: parent ROI's ``sample_id`` on each row of a tiled detection manifest.
+_IDENTIFIER_COLUMNS = ("sample_id", "patient_id", "source_wsi")
 #: pandas' default NA spellings (``pandas._libs.parsers.STR_NA_VALUES``), which a
 #: per-column ``na_values`` must restate for the columns that keep them.
 _PANDAS_NA_VALUES = (
@@ -92,12 +93,13 @@ def iter_rows(df: pd.DataFrame) -> Iterator[tuple[Hashable, pd.Series]]:
 
 
 def read_manifest_csv(path: str | Path) -> pd.DataFrame:
-    """Read a cohort, splits or manifest CSV with ``sample_id`` / ``patient_id`` as text.
+    """Read a cohort, splits or manifest CSV with its identifier columns as text.
 
     Type inference would turn ``001`` into ``1`` and the NA vocabulary a patient named
-    ``NA`` into a missing one, so the identifier columns are read as the strings they
-    hold and only an empty cell is missing there. Every other column keeps pandas'
-    inference and NA vocabulary.
+    ``NA`` into a missing one, so the identifier columns (``sample_id``, ``patient_id``
+    and a tiled manifest's parent ``source_wsi``) are read as the strings they hold and
+    only an empty cell is missing there. Every other column keeps pandas' inference and
+    NA vocabulary.
     """
     header = pd.read_csv(path, nrows=0).columns
     ids = [column for column in _IDENTIFIER_COLUMNS if column in header]
