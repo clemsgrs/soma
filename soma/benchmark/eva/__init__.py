@@ -49,6 +49,7 @@ from soma.benchmark.registry import (
     ReferenceRow,
     expected_rows,
     register_benchmark,
+    require_tile_encoder,
     score_from_summary,
 )
 from dataclasses import replace as _replace
@@ -254,7 +255,9 @@ class EvaTileClassificationBenchmark:
         ``dataset_csv`` / ``splits_csv`` / ``output_root`` come from the curated Manifest;
         ``max_steps`` defaults to eva's fixed :data:`MAX_STEPS` optimizer-step budget.
         ``overrides`` carries the CLI's shared feature-cache block (``{"cache": {...}}``).
+        A slide- or patient-level encoder is refused.
         """
+        require_tile_encoder(self.name, encoder, "a frozen tile encoder, one tile image per sample")
         return _build_eva_config(
             dataset=self.dataset,
             encoder=encoder,

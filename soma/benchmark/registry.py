@@ -33,6 +33,8 @@ from typing import Any, Protocol, runtime_checkable
 
 from soma.config import ExperimentConfig
 from soma.benchmark.curation import CuratedManifest
+from soma.models.encoders import encoder_registry
+from soma.plan import encoder_level
 from soma.registry import Registry, signature_params
 
 # The fixed, non-key columns every reference table MUST carry, in canonical order.
@@ -199,6 +201,28 @@ def get_ranking_metrics(benchmark: Benchmark) -> tuple[str, ...]:
             f"Benchmark {benchmark.name!r}: Ranking metrics are not Reported: {names}."
         )
     return metrics
+
+
+# --- the encoder axis ----------------------------------------------------------------
+
+
+def require_tile_encoder(benchmark: str, encoder: str, scores: str) -> None:
+    """Refuse ``encoder`` unless it is a tile-level encoder (:func:`soma.plan.encoder_level`).
+
+    For a benchmark whose protocol ``scores`` a frozen tile encoder: the error names the
+    benchmark, what it scores and the encoder's level, and points to the tile encoders.
+    A benchmark calls it before it builds its config, so a user never sees a preset's
+    advice to switch presets. An encoder name that is not registered passes here, for the
+    config to refuse with the error every unknown encoder gets.
+    """
+    if encoder not in encoder_registry:
+        return
+    level = encoder_level(encoder)
+    if level != "tile":
+        raise ValueError(
+            f"{benchmark} scores {scores}; encoder '{encoder}' is {level}-level. "
+            "Choose a tile-level encoder: soma list encoders --level tile"
+        )
 
 
 # --- registry ------------------------------------------------------------------------

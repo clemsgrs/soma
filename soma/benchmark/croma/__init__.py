@@ -17,6 +17,7 @@ from soma.benchmark.registry import (
     ReferenceRow,
     expected_rows,
     register_benchmark,
+    require_tile_encoder,
     score_from_summary,
 )
 from slide2vec import ExecutionOptions
@@ -209,6 +210,7 @@ class CromaBenchmark:
         overrides: dict[str, Any] | None = None,
         encoder_batch_size: int = 32,
     ) -> ExperimentConfig:
+        require_tile_encoder(self.name, encoder, "the robustness of a frozen tile encoder's tile embeddings")
         panel_spec = _PANEL_BY_ENCODER.get(encoder)
         if panel_spec is not None:
             validate_croma_0_3_encoder_panel(encoders=[encoder])
