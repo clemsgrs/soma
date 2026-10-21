@@ -60,15 +60,38 @@ def test_detection_head_conforms_on_its_points():
         geometry=compute_dense_geometry(target_size=32, patch_size=4),
         spacing_um=0.5,
         match_distance=2.0,
-        validation_threshold=0.3,
         metrics=["mean_f1", "f1_per_class", "precision", "recall", "mean_f1_per_image"],
     )
+    check_task_head(head, _grid_batch(_detection_targets(), 2))
+
+
+def _detection_targets() -> dict[str, torch.Tensor]:
     points = torch.full((3, 4, 3), float("nan"))
     points[0, :3] = torch.tensor([[5.0, 6.0, 0.0], [20.0, 21.0, 1.0], [12.0, 28.0, 0.0]])
     points[1, :1] = torch.tensor([[30.0, 2.0, 1.0]])
     ignore = torch.zeros(3, 32, 32, dtype=torch.bool)
     ignore[2, 16:] = True
-    check_task_head(head, _grid_batch({"points": points, "ignore": ignore}, 2))
+    return {"points": points, "ignore": ignore}
+
+
+def test_a_detection_head_monitoring_a_fixed_cut_is_refused():
+    from soma.evaluation.detection.matching import counts_at_thresholds, histogram_thresholds, reduce_f1
+
+    class FixedCut(DetectionHead):  # the pre-sweep monitor: every class read at 0.5
+        def finalize_eval_metrics(self, histograms):
+            k = int(np.searchsorted(histogram_thresholds(), 0.5))
+            metrics = reduce_f1(torch.from_numpy(counts_at_thresholds(histograms)[:, :, k]), num_classes=2)
+            return {"mean_f1": metrics["mean_f1"], "threshold_class_0": 0.5, "threshold_class_1": 0.5}
+
+    head = FixedCut(
+        num_classes=2,
+        geometry=compute_dense_geometry(target_size=32, patch_size=4),
+        spacing_um=0.5,
+        match_distance=2.0,
+        metrics=["mean_f1"],
+    )
+    with pytest.raises(ConformanceError, match="threshold_class_"):
+        check_task_head(head, _grid_batch(_detection_targets(), 2))
 
 
 def test_a_grid_head_whose_metrics_disagree_with_evaluate_is_refused():

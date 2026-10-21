@@ -683,6 +683,10 @@ def sweep_threshold(
     the candidates are score quantiles and a uniform grid over the observed scores,
     plus (per class) quantiles of the scores of points within δ of a same-class
     annotation, bracketed by keep-all and drop-all. Ties keep the higher threshold.
+    A per-class sweep with ``matching="greedy"`` and no ``grid`` is instead exact on
+    the ``1 / SCORE_BINS`` grid over ``[0, 1]`` (scores must lie there): one greedy
+    matching pass gives the F1 at every threshold, as in the detection head's
+    training-time validation.
     """
     from soma.evaluation.detection.matching import sweep_score_thresholds
     from soma.evaluation.metrics import metric_registry

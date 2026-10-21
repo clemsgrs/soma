@@ -108,7 +108,9 @@ def test_live_segmentation_through_the_verbs(tmp_path, new_artifact):
 def test_live_detection_through_the_verbs(tmp_path, new_artifact):
     """Live detection works by construction: pixels in, level-0 points as targets, the
     head renders its heatmap at loss time; the threshold is swept on tune as a frame
-    operation and applied unchanged to test."""
+    operation and applied unchanged to test. Every epoch's history carries the tune
+    metrics at the per-class thresholds a greedy sweep picks: at the selected epoch they
+    are what ``sweep_threshold(matching="greedy")`` reaches on the tune predictions."""
     artifact = new_artifact("grid_live_detection")
     cohort, images, annotations = _sources(tmp_path, "detection")
     stage = FakeEncoder(target_size=ROI_PX, patch_size=8)
@@ -138,6 +140,10 @@ def test_live_detection_through_the_verbs(tmp_path, new_artifact):
     split = cohort.folds[0]
     tune = soma.predict(result.learner, fold.tune)
     threshold, tune_evaluation = sweep_threshold(tune, points.subset(split.tune), per_class=True)
+    greedy, greedy_tune = sweep_threshold(tune, points.subset(split.tune), per_class=True, matching="greedy")
+    history = result.history
+    selected = history[history["epoch"] == result.selected_epoch].iloc[0]
+    swept = ["mean_f1", "f1_class_0", "f1_class_1", "threshold_class_0", "threshold_class_1"]
     test = soma.predict(result.learner, fold.tests["test"])
     evaluation = soma.evaluate(test.with_threshold(threshold), points.subset(split.tests["test"]))
 
@@ -148,6 +154,15 @@ def test_live_detection_through_the_verbs(tmp_path, new_artifact):
     artifact.check_equal("predictions/type", type(test).__name__, "PointPredictions")
     artifact.check_equal("predictions/ids", sorted(test.sample_ids), sorted(split.tests["test"]))
     artifact.check_equal("threshold/classes", sorted(threshold), [0, 1])
+    artifact.check_equal("history/swept_every_epoch", bool(history[swept].notna().all().all()), True)
+    artifact.check_equal(
+        "history/selected/thresholds",
+        [float(selected[f"threshold_class_{c}"]) for c in (0, 1)],
+        [greedy[0], greedy[1]],
+    )
+    artifact.check_equal(
+        "history/selected/mean_f1", round(float(selected["mean_f1"]), 9), round(greedy_tune.metrics["mean_f1"], 9)
+    )
     artifact.check_equal(
         "predictions/match_distance_px", test.match_distance_px, 3.0 / SPACING_UM
     )

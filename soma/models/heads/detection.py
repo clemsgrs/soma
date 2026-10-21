@@ -12,9 +12,11 @@ bounded ``[0, 1]`` regression target. Beyond geometry it owns the detection cont
   peak Gaussians on the logits' device at loss time; nothing is precomputed per sample.
 * **loss** (``compute_loss``) — foreground-weighted MSE against the peak heatmap,
   averaged over the supervised pixels.
-* **training-time validation** (``dense_stats`` / ``finalize_eval_metrics``) — peaks at
-  the fixed ``validation_threshold``, class-aware F1@δ against the in-frame points, so
-  ``EarlyStopping``'s hold-at-floor logic sees a stable operating point.
+* **training-time validation** (``dense_stats`` / ``finalize_eval_metrics``) — every peak
+  above ``min_score`` matched greedily, once, against the in-frame points; per class, the
+  threshold with the best F1 is picked, so ``mean_f1`` is the tune score the
+  post-training sweep reaches (the one-pass sweep of
+  :mod:`soma.evaluation.detection.matching`).
 * **predictions** (``postprocess``) — every peak above ``min_score``, mapped back to
   level-0 pixels. Choosing an operating threshold is a frame operation on the
   predictions (:meth:`~soma.evaluation.PointPredictions.with_threshold`,
@@ -38,7 +40,12 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from soma.models.detection_targets import points_on_valid
-from soma.evaluation.detection.matching import VALID_MATCHING, match_points, reduce_f1
+from soma.evaluation.detection.matching import (
+    VALID_MATCHING,
+    greedy_score_histogram,
+    reduce_f1,
+    sweep_score_histograms,
+)
 from soma.evaluation.detection.peaks import extract_peaks
 from soma.evaluation.metrics import resolve_metrics
 from soma._internal.params import check_choice, check_non_negative, check_positive, check_probability, run_decided
@@ -71,7 +78,7 @@ class DetectionParams:
     sigma: float | None = None
     nms_distance: float | None = None
     min_score: float = 0.01
-    validation_threshold: float = 0.5
+    fixed_threshold: float = 0.5
     foreground_weight: float = 10.0
     matching: str = "hungarian"
     truncate: float = 3.0
@@ -81,7 +88,7 @@ class DetectionParams:
         for name in ("match_distance", "sigma", "nms_distance"):
             check_positive(name, getattr(self, name), optional=True)
         check_probability("min_score", self.min_score)
-        check_probability("validation_threshold", self.validation_threshold)
+        check_probability("fixed_threshold", self.fixed_threshold)
         check_non_negative("foreground_weight", self.foreground_weight)
         check_choice("matching", self.matching, VALID_MATCHING)
 
@@ -103,13 +110,15 @@ class DetectionHead(TaskHead):
             cannot both satisfy one ground-truth point).
         min_score: Floor on the peaks :meth:`postprocess` emits. Keep it low: thresholds
             are chosen afterwards on the predictions.
-        validation_threshold: Fixed peak threshold of the training-time validation
-            metrics (``dense_stats``).
+        fixed_threshold: The operating threshold of a run without a tune split (train
+            stands in, so a sweep there would pick an in-sample cut) and the default
+            threshold of the detection overlays.
         foreground_weight: Up-weights the MSE on near-peak target pixels to fight the
             background imbalance; per-pixel weight ``1 + fw * target``.
         matching: ``"hungarian"`` (optimal one-to-one) or ``"greedy"`` (by confidence,
-            OCELOT-official); the training-time validation matcher and the default the
-            pipeline scores with.
+            OCELOT-official); the matcher the pipeline sweeps and scores with. The
+            training-time validation always matches greedily: that is what makes its
+            one-pass sweep over every threshold exact.
         truncate: Render each target Gaussian within ``truncate * sigma``.
         metrics: Metric names (validated against the ``detection`` family).
         class_names: One name per class index, carried by the predictions.
@@ -131,7 +140,7 @@ class DetectionHead(TaskHead):
         sigma: float | None = None,
         nms_distance: float | None = None,
         min_score: float = 0.01,
-        validation_threshold: float = 0.5,
+        fixed_threshold: float = 0.5,
         foreground_weight: float = 10.0,
         matching: str = "hungarian",
         truncate: float = 3.0,
@@ -147,8 +156,8 @@ class DetectionHead(TaskHead):
             raise ValueError(f"foreground_weight must be >= 0, got {foreground_weight}")
         if not 0.0 <= float(min_score) <= 1.0:
             raise ValueError(f"min_score must be in [0, 1], got {min_score}")
-        if not 0.0 <= float(validation_threshold) <= 1.0:
-            raise ValueError(f"validation_threshold must be in [0, 1], got {validation_threshold}")
+        if not 0.0 <= float(fixed_threshold) <= 1.0:
+            raise ValueError(f"fixed_threshold must be in [0, 1], got {fixed_threshold}")
         self.num_classes = int(num_classes)
         self.spacing_um = _positive("spacing_um", spacing_um)
         self.match_distance = _positive("match_distance", match_distance)
@@ -162,7 +171,7 @@ class DetectionHead(TaskHead):
             else _positive("nms_distance", nms_distance) / self.spacing_um
         )
         self.min_score = float(min_score)
-        self.validation_threshold = float(validation_threshold)
+        self.fixed_threshold = float(fixed_threshold)
         self.foreground_weight = float(foreground_weight)
         self.matching = matching
         self.truncate = float(truncate)
@@ -331,26 +340,36 @@ class DetectionHead(TaskHead):
         return extract_peaks(heatmap, min_distance=self.nms_distance_px, score_threshold=threshold)
 
     def dense_stats(self, raw_output: Tensor, targets: dict[str, Tensor]) -> Tensor:
-        """Per-image, per-class ``(B, C, 3)`` TP/FP/FN at ``validation_threshold``."""
-        _, valid, frames = self.encode_targets(targets)
+        """Per-image greedy score histograms ``(B, C, 2 * S + 1)`` of every peak above
+        ``min_score`` (see :func:`~soma.evaluation.detection.matching.greedy_score_histogram`);
+        predictions on ignored pixels are left out."""
+        points, ignore = targets["points"], targets.get("ignore")
         rows = []
         for b in range(raw_output.shape[0]):
-            pred_xy, pred_cls, pred_score = self._peaks(raw_output[b], self.validation_threshold)
-            if pred_xy.shape[0]:
-                keep = points_on_valid(pred_xy, valid[b].detach().cpu().numpy())
+            pred_xy, pred_cls, pred_score = self._peaks(raw_output[b], self.min_score)
+            if ignore is not None and pred_xy.shape[0]:
+                keep = points_on_valid(pred_xy, ~ignore[b].detach().to(torch.bool).cpu().numpy())
                 pred_xy, pred_cls, pred_score = pred_xy[keep], pred_cls[keep], pred_score[keep]
-            gt_xy, gt_cls = frames[b]
-            counts = match_points(
+            gt_xy, gt_cls = self.frame_points(points[b], None if ignore is None else ignore[b])
+            histogram = greedy_score_histogram(
                 pred_xy, pred_cls, pred_score,
                 gt_xy.detach().cpu().numpy().astype(np.float64),
                 gt_cls.detach().cpu().numpy().astype(np.int64),
-                num_classes=self.num_classes, delta=self.delta_px, method=self.matching,
+                num_classes=self.num_classes, delta=self.delta_px,
             )
-            rows.append(torch.from_numpy(counts).to(torch.long))
+            rows.append(torch.from_numpy(histogram))
         return torch.stack(rows, dim=0)
 
-    def finalize_eval_metrics(self, counts: Tensor) -> dict[str, float]:
-        """Reduce accumulated ``(N, C, 3)`` counts to the selected detection metrics."""
+    def finalize_eval_metrics(self, histograms: Tensor) -> dict[str, float]:
+        """The selected detection metrics at the per-class thresholds a tune sweep picks.
+
+        Per class, the threshold (on the ``1 / SCORE_BINS`` grid) with the best
+        dataset-global F1 over the accumulated ``(N, C, 2 * S + 1)`` histograms, so
+        ``mean_f1`` is the tune ``mean_f1`` the post-training sweep reaches with greedy
+        matching. Every metric is read at those thresholds, which are reported as
+        ``threshold_class_<c>``.
+        """
+        thresholds, counts = sweep_score_histograms(histograms)
         glob = reduce_f1(counts, num_classes=self.num_classes, aggregation="dataset_global")
         selected: dict[str, float] = {}
         if "mean_f1" in self.metrics:
@@ -367,6 +386,8 @@ class DetectionHead(TaskHead):
         if "mean_f1_per_image" in self.metrics:
             macro = reduce_f1(counts, num_classes=self.num_classes, aggregation="per_image_macro")
             selected["mean_f1_per_image"] = macro["mean_f1"]
+        for c in range(self.num_classes):
+            selected[f"threshold_class_{c}"] = float(thresholds[c])
         return selected
 
     def compute_metrics(self, raw_output: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:

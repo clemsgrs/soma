@@ -7,7 +7,7 @@ detections, which the class-aware matcher then resolves):
 
 1. **Local-maxima prefilter** — a pixel is a candidate iff it equals the maximum in
    its ``(2*min_distance+1)`` neighbourhood (the CenterNet max-pool trick), cutting
-   the field to a handful of modes before the (quadratic) NMS.
+   the field to a handful of modes before the NMS.
 2. **Greedy NMS + threshold** — keep candidates ``>= score_threshold``, sort by score
    descending, accept a peak only if no already-accepted peak of the same class lies
    within ``min_distance`` pixels.
@@ -17,19 +17,48 @@ Pure / weight-free so it unit-tests on tiny hand-built maps.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import torch
 import torch.nn.functional as F
+from scipy.spatial import cKDTree
 from torch import Tensor
 
 __all__ = ["extract_peaks"]
 
 
-#: Hard ceiling on candidates per class fed to the quadratic NMS loop. Real heatmaps
+#: Hard ceiling on candidates per class fed to the NMS. Real heatmaps
 #: yield a handful of modes; this only bites on degenerate near-uniform predictions
 #: (e.g. an untrained net's flat output), where it bounds the loop instead of letting it
 #: hang/OOM. The highest-scoring candidates are kept.
 MAX_CANDIDATES_PER_CLASS = 10000
+
+
+def _nms_keep(xs: np.ndarray, ys: np.ndarray, md_sq: float) -> np.ndarray:
+    """Greedy NMS keep-mask over candidates sorted by descending score: a candidate is
+    kept unless a kept, higher-ranked one lies closer than ``sqrt(md_sq)``.
+
+    Candidates are walked in rank order. Each one still kept when reached asks a KD-tree
+    for its neighbours and suppresses the lower-ranked ones closer than the radius, so
+    memory stays bounded by one neighbourhood, even on a dense plateau.
+    """
+    keep = np.ones(xs.shape[0], dtype=bool)
+    if xs.shape[0] < 2:
+        return keep
+    pts = np.stack([xs, ys], axis=1)
+    tree = cKDTree(pts)
+    radius = math.sqrt(md_sq) * (1 + 1e-9) + 1e-9  # a hair wide; the strict test is below
+    for i in range(xs.shape[0]):
+        if not keep[i]:
+            continue
+        nb = tree.query_ball_point(pts[i], radius)
+        if len(nb) < 2:  # only itself: the common case on real heatmaps
+            continue
+        nb = np.asarray(nb, dtype=np.int64)
+        nb = nb[nb > i]
+        keep[nb[(xs[nb] - xs[i]) ** 2 + (ys[nb] - ys[i]) ** 2 < md_sq]] = False
+    return keep
 
 
 def extract_peaks(
@@ -48,7 +77,7 @@ def extract_peaks(
         score_threshold: Minimum peak score to keep — a scalar (shared) or a
             per-class list of length ``C`` (the tune-split-frozen thresholds).
         max_candidates: Per-class ceiling on candidates entering NMS; the top-scoring
-            ones are kept (guards the quadratic loop on degenerate flat predictions).
+            ones are kept (bounds the work on degenerate flat predictions).
 
     Returns:
         ``(points_xy (M, 2), classes (M,), scores (M,))``: detected peak centres
@@ -98,23 +127,11 @@ def extract_peaks(
         xs_n = xs[order].cpu().numpy().astype(np.float64)
         ys_n = ys[order].cpu().numpy().astype(np.float64)
         scores_n = scores[order].cpu().numpy().astype(np.float64)
-        kept_x: list[float] = []
-        kept_y: list[float] = []
-        kept_s: list[float] = []
-        for x, y, s in zip(xs_n, ys_n, scores_n):
-            ok = True
-            for kx, ky in zip(kept_x, kept_y):
-                if (x - kx) ** 2 + (y - ky) ** 2 < md_sq:
-                    ok = False
-                    break
-            if ok:
-                kept_x.append(float(x))
-                kept_y.append(float(y))
-                kept_s.append(float(s))
-        if kept_x:
-            all_xy.append(np.stack([kept_x, kept_y], axis=1))
-            all_cls.append(np.full(len(kept_x), c, dtype=np.int64))
-            all_score.append(np.asarray(kept_s, dtype=np.float64))
+        keep = _nms_keep(xs_n, ys_n, md_sq)
+        if keep.any():
+            all_xy.append(np.stack([xs_n[keep], ys_n[keep]], axis=1))
+            all_cls.append(np.full(int(keep.sum()), c, dtype=np.int64))
+            all_score.append(scores_n[keep])
 
     if not all_xy:
         return np.zeros((0, 2), dtype=np.float64), np.zeros((0,), dtype=np.int64), np.zeros((0,), dtype=np.float64)

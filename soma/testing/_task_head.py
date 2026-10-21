@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import torch
 
-from soma.evaluation import Baseline, Predictions, evaluate
+from soma.evaluation import Baseline, Predictions, evaluate, sweep_threshold
 from soma.evaluation.predictions import PLACEHOLDER_COLUMN, family_target_keys
 from soma.testing._errors import ConformanceError
 
@@ -140,21 +140,39 @@ def _check_grid_head(head, batch: Any, *, tolerance: float) -> None:
         raise ConformanceError("assemble_predictions", f"must return {noun.__name__}, got {type(predictions).__name__}")
     if sorted(predictions.sample_ids) != sorted(sample_ids):
         raise ConformanceError("assemble_predictions", "the predictions must carry every sample id of the batch")
+    targets = _grid_targets(head, batch, sample_ids)
+    swept: dict[str, float] = {}
     with tempfile.TemporaryDirectory() as tmp:
         if noun is LabelMapPredictions:
             reread = LabelMapPredictions.load(predictions.save(Path(tmp) / "label_maps"))
             metrics = [{"name": name} for name in head.metrics]
         else:
             reread = PointPredictions.from_parquet(predictions.to_parquet(Path(tmp) / "points.parquet"))
-            reread = reread.with_threshold(head.validation_threshold)
-            metrics = [{"name": name, "params": {"matching": head.matching}} for name in head.metrics]
+            # Training-time validation scores the operating point the post-training sweep
+            # picks: per-class thresholds swept with greedy matching.
+            try:
+                threshold, _ = sweep_threshold(reread, targets, per_class=True, matching="greedy")
+            except Exception as error:  # noqa: BLE001
+                raise ConformanceError("sweep_threshold", f"raised {error!r} on the round-trip") from error
+            swept = {f"threshold_class_{c}": float(t) for c, t in threshold.items()}
+            reread = reread.with_threshold(threshold)
+            metrics = [{"name": name, "params": {"matching": "greedy"}} for name in head.metrics]
     try:
-        evaluation = evaluate(reread, _grid_targets(head, batch, sample_ids), metrics=metrics)
+        evaluation = evaluate(reread, targets, metrics=metrics)
     except ConformanceError:
         raise
     except Exception as error:  # noqa: BLE001
         raise ConformanceError("evaluate", f"raised {error!r} on the round-trip") from error
+    for name, want in swept.items():
+        got = expected.get(name)
+        if got is None or not _agree(float(got), want, tolerance):
+            raise ConformanceError(
+                "compute_metrics",
+                f"'{name}' is {got} from compute_metrics but sweep_threshold picks {want} on the round-trip",
+            )
     for name, want in expected.items():
+        if name in swept:
+            continue
         if name not in evaluation.metrics:
             raise ConformanceError("compute_metrics", f"'{name}' has no evaluate counterpart")
         got = float(evaluation.metrics[name])
@@ -181,8 +199,10 @@ def check_task_head(head, batch: Any, *, tolerance: float = 1e-6) -> None:
     ``features`` are decoder logits and whose ``targets`` hold the raw supervision
     (points inside the frame). Asserts: logits land on the target size; ``to_columns``
     holds one value per sample; ``assemble_predictions`` builds the head's noun over
-    every id; and :func:`~soma.evaluate` on its disk round-trip (points at the head's
-    ``validation_threshold`` and matcher) agrees with ``compute_metrics``.
+    every id; and :func:`~soma.evaluate` on its disk round-trip agrees with
+    ``compute_metrics``. Points are scored with greedy matching at the per-class thresholds
+    :func:`~soma.evaluation.sweep_threshold` picks on the round-trip, which
+    ``compute_metrics`` must report as ``threshold_class_<c>``.
     """
     if getattr(head, "target_kind", None) is not None:
         _check_grid_head(head, batch, tolerance=tolerance)
