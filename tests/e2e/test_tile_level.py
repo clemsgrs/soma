@@ -2,7 +2,21 @@
 
 from __future__ import annotations
 
-from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, trainer_section
+import numpy as np
+import pandas as pd
+import yaml
+from PIL import Image
+
+from tests.e2e.harness import (
+    CPU_EXECUTION,
+    CPU_LOADER,
+    PROBE_SCENARIO_LR,
+    init_config,
+    learner_section,
+    run_preset,
+    run_soma,
+    trainer_section,
+)
 from tests.e2e.synthetic import make_tile_dataset
 
 #: The tile feature cache key of the tile scenario (pinned in slice 6c; moved once in
@@ -81,4 +95,46 @@ def test_tile_multi_output_regression_is_learned(tmp_path, encoder_name, new_art
         "predictions/columns", [c for c in predictions.columns if c.startswith("value")], ["value_0", "value_1"]
     )
     artifact.check_at_least("test/mean_pearson", run.summary["test/mean_pearson"], 0.8)
+    artifact.assert_passed()
+
+
+def test_the_tile_regression_preset_runs_from_the_command_line(tmp_path, encoder_name, encoded_images, new_artifact):
+    """``soma run --preset tile_regression`` with the ``fake`` encoder: each image is one
+    sample, embedded whole, and a ``regression`` head learns its ``value`` (a function of
+    the image's colour) with no aggregator, in batches of 256. Every test image is scored.
+
+    The preset's probe recipe (AdamW at lr 3e-4) takes one step per epoch on the 16
+    training images, which barely moves a head over three features in 50 epochs. So the
+    same preset, printed by ``soma init`` with only the learning rate raised, runs next: it
+    reads the first run's features from the cache (zero images encoded), its loss falls
+    and its metric thresholds hold.
+    """
+    artifact = new_artifact("tile_preset_regression")
+    dataset_csv, splits_csv = make_tile_dataset(tmp_path / "data")
+    frame = pd.read_csv(dataset_csv).drop(columns="label")
+    red = np.array([np.asarray(Image.open(path), dtype=np.float64)[..., 0].mean() for path in frame["image_path"]])
+    frame["value"] = np.round((red - 155.0) / 30.0, 4)  # about -2 (dark) to 2 (light)
+    frame.to_csv(dataset_csv, index=False)
+    out = tmp_path / "runs"
+
+    shipped = run_preset("tile_regression", ["--encoder", encoder_name], dataset_csv, splits_csv, out)
+    artifact.record_run("preset", shipped)
+    artifact.check_equal("preset/tiles_encoded", sum(encoded_images), 32)
+    plan = yaml.safe_load((shipped.run_dir / "plan.yaml").read_text())
+    model = plan["learner"]["params"]
+    artifact.check_equal("preset/plan/aggregator", model.get("aggregator"), None)
+    artifact.check_equal("preset/plan/batch_size", plan["loaders"]["batch_size"], 256)
+    artifact.check_equal("preset/plan/head", model["head"]["name"], "regression")
+    artifact.check_equal("preset/test/num_samples", shipped.summary["test/num_samples"], 8.0)
+
+    encoded_images.clear()
+    config = init_config("tile_regression", "--encoder", encoder_name)
+    config["cohort"].update(records=str(dataset_csv), splits=str(splits_csv))
+    config["run"]["output_dir"] = str(out)
+    config["learner"]["params"]["optimizer"]["params"]["lr"] = PROBE_SCENARIO_LR
+    run = run_soma(config, tmp_path / "config.yaml")
+    artifact.record_run("run", run)
+    artifact.check_equal("run/tiles_encoded", sum(encoded_images), 0)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("run/test/r2", run.summary["test/r2"], 0.8)
     artifact.assert_passed()

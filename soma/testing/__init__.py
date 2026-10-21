@@ -6,7 +6,9 @@ path's encoder stage, :class:`soma.learn.Learner`, :class:`soma.models.heads.Tas
 
 Importing this module (``import soma`` does) registers ``fake`` with slide2vec: the
 :class:`FakeEncoder` pooling as a tile encoder, so ``encoder="fake"`` runs extraction,
-caching and the live path with no weights, no GPU and no network.
+caching and the live path with no weights, no GPU and no network. It also registers
+``fake-slide``, a slide encoder whose embedding of a slide is the mean of its tiles'
+``fake`` embeddings.
 
 Plain functions usable from pytest or a notebook. soma runs them on its own
 implementations; users run them on custom classes. Each raises

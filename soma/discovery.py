@@ -32,14 +32,16 @@ def components(kind: str | None = None) -> list[str] | list[dict[str, Any]]:
     """The component kinds, or one kind's entries.
 
     Without ``kind``: the names of the kinds whose registry is built. With ``kind``: one
-    dict per registered entry, sorted by name, holding its ``name``, its dotted ``class``,
-    its ``params`` (each field mapped to its default; ``None`` for an entry registered
-    without params) and its registration metadata.
+    dict per registered entry, sorted by name (the presets keep the order they are
+    registered in), holding its ``name``, its dotted ``class``, its ``params`` (each field
+    mapped to its default; ``None`` for an entry registered without params) and its
+    registration metadata.
     """
     if kind is None:
         return sorted(kinds())
     domain = registry(kind)
-    return [domain.info(name) for name in sorted(domain.list())]
+    names = domain.list()
+    return [domain.info(name) for name in (sorted(names) if domain.listed_by_name else names)]
 
 
 def register(

@@ -1,5 +1,5 @@
-"""``FakeEncoder``, the ``fake`` encoder, and the conformance suites for the live grid
-path's stage and pixels."""
+"""``FakeEncoder``, the ``fake`` and ``fake-slide`` encoders, and the conformance suites for
+the live grid path's stage and pixels."""
 
 from __future__ import annotations
 
@@ -8,16 +8,25 @@ from dataclasses import dataclass
 
 import torch
 import torch.nn.functional as F
-from slide2vec.encoders.base import TileEncoder
+from slide2vec.encoders.base import SlideEncoder, TileEncoder
 from torch import Tensor, nn
 
 from soma.data.geometry import GridGeometry
 from soma.testing._errors import ConformanceError
 
-__all__ = ["FAKE_ENCODER", "FakeEncoder", "check_encoder_stage", "check_image_source", "register_fake_encoder"]
+__all__ = [
+    "FAKE_ENCODER",
+    "FAKE_SLIDE_ENCODER",
+    "FakeEncoder",
+    "check_encoder_stage",
+    "check_image_source",
+    "register_fake_encoder",
+]
 
 #: The slide2vec encoder name :func:`register_fake_encoder` gives :class:`FakeTileEncoder`.
 FAKE_ENCODER = "fake"
+#: The slide2vec encoder name :func:`register_fake_encoder` gives :class:`FakeSlideEncoder`.
+FAKE_SLIDE_ENCODER = "fake-slide"
 #: How both fakes normalise pixels, as a real encoder normalises them: mean 0.5, std 0.25.
 _MEAN, _STD = 0.5, 0.25
 #: The side of the pixel block one token of the ``fake`` encoder averages.
@@ -125,32 +134,63 @@ class FakeTileEncoder(TileEncoder):
         return F.avg_pool2d(batch.float(), kernel_size=_FAKE_PATCH_SIZE, stride=_FAKE_PATCH_SIZE)
 
 
-def register_fake_encoder() -> str:
-    """Register :class:`FakeTileEncoder` with slide2vec as ``fake`` (once); return the name.
+class FakeSlideEncoder(SlideEncoder):
+    """A weight-free slide encoder, registered as ``fake-slide``: a slide's embedding is the
+    mean of its tiles' ``fake`` embeddings (so the mean normalised RGB of its tissue).
 
-    :mod:`soma.testing` calls it on import, so ``encoder="fake"`` works wherever soma does.
+    Its tile encoder is ``fake``, so a slide is tiled as for ``fake`` (32 px tiles at
+    0.5 µm/px by default), and the slide-encoder path (tile features cached, then pooled
+    into one cached vector per slide) runs with no weights, no GPU and no network.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        self._device = torch.device("cpu")
+
+    @property
+    def encode_dim(self) -> int:
+        return 3
+
+    @property
+    def device(self) -> torch.device:
+        return self._device
+
+    def to(self, device) -> FakeSlideEncoder:
+        self._device = torch.device(device)
+        return self
+
+    def encode_slide(self, tile_features: Tensor, coordinates: Tensor | None = None, *, tile_size_lv0=None) -> Tensor:
+        return tile_features.float().mean(dim=0)
+
+
+#: What the two fakes share: three features, fp32, 0.25 or 0.5 µm/px (0.5 by default) and
+#: no weights to download.
+_FAKE_METADATA = {
+    "output_variants": {"default": {"encode_dim": 3}},
+    "default_output_variant": "default",
+    "supported_spacing_um": [0.25, 0.5],
+    "default_spacing_um": 0.5,
+    "precision": "fp32",
+    "source": "",
+}
+
+
+def register_fake_encoder() -> str:
+    """Register :class:`FakeTileEncoder` as ``fake`` and :class:`FakeSlideEncoder` as
+    ``fake-slide`` with slide2vec (once); return the tile encoder's name.
+
+    :mod:`soma.testing` calls it on import, so ``encoder="fake"`` and
+    ``encoder="fake-slide"`` work wherever soma does.
     """
     from slide2vec.encoders.registry import encoder_registry
 
-    try:
-        encoder_registry.register(
-            FAKE_ENCODER,
-            FakeTileEncoder,
-            metadata={
-                "level": "tile",
-                "input_size": 32,
-                "patch_size": _FAKE_PATCH_SIZE,
-                "supports_variable_input_size": True,
-                "output_variants": {"default": {"encode_dim": 3}},
-                "default_output_variant": "default",
-                "supported_spacing_um": [0.25, 0.5],
-                "default_spacing_um": 0.5,
-                "precision": "fp32",
-                "source": "",  # no weights to download
-            },
-        )
-    except ValueError:  # registered already: this module was imported again
-        pass
+    tile = {"level": "tile", "input_size": 32, "patch_size": _FAKE_PATCH_SIZE, "supports_variable_input_size": True}
+    slide = {"level": "slide", "tile_encoder": FAKE_ENCODER, "tile_encoder_output_variant": "default"}
+    for name, cls, metadata in (
+        (FAKE_ENCODER, FakeTileEncoder, tile),
+        (FAKE_SLIDE_ENCODER, FakeSlideEncoder, slide),
+    ):
+        if name not in encoder_registry:  # registered already: this module was imported again
+            encoder_registry.register(name, cls, metadata={**metadata, **_FAKE_METADATA})
     return FAKE_ENCODER
 
 def _fail(method: str, message: str, sample_id: str | None = None) -> ConformanceError:

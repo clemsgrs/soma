@@ -130,22 +130,61 @@ Presets
 -------
 
 A preset returns a complete config for a common task (see :ref:`presets`);
-``soma.components("presets")`` lists them with their arguments. A choice that
-changes the model has no default: you name the aggregator of a slide preset, the
-``loss`` of ``mil_survival`` (``"nll"`` or ``"cox"``, and ``num_bins`` for ``"nll"``)
-and the ``num_classes`` of ``segmentation`` and ``detection``.
+``soma.components("presets")`` lists them with their arguments. A preset is named
+after what its head trains on:
 
-The slide presets, ``mil_classification``, ``mil_regression`` and ``mil_survival``,
-take the tiling as arguments: ``spacing`` (µm per pixel) and ``tile_size``
-(pixels). An argument you leave out takes the encoder's recommended value, and the
-preset keeps its tiles with at least 10% tissue:
+.. list-table::
+   :header-rows: 1
+
+   * - The head trains on
+     - Encoder level
+     - Classification
+     - Regression
+     - Survival
+   * - one tile image's embedding
+     - tile
+     - ``tile_classification``
+     - ``tile_regression``
+     - none
+   * - an aggregator's pooling of a slide's tiles
+     - tile
+     - ``mil_classification``
+     - ``mil_regression``
+     - ``mil_survival``
+   * - a pretrained slide encoder's embedding
+     - slide
+     - ``slide_classification``
+     - ``slide_regression``
+     - ``slide_survival``
+
+``segmentation`` and ``detection`` decode each tile's token grid, so they take a
+tile-level encoder too. Each preset checks the level of its encoder when it is
+built, and refuses an encoder of another level by naming the preset to use:
+``presets.tile_classification("titan")`` asks for ``slide_classification``, and
+``presets.slide_classification("uni2")`` for ``mil_classification`` or
+``tile_classification``. No preset covers patient-level encoders (``moozy``) yet.
+
+A choice that changes the model has no default: you name the aggregator of a
+``mil_*`` preset, the ``loss`` of ``mil_survival`` and ``slide_survival``
+(``"nll"`` or ``"cox"``, and ``num_bins`` for ``"nll"``) and the
+``num_classes`` of ``segmentation`` and ``detection``.
+
+The ``mil_*`` presets take the tiling as arguments: ``spacing`` (µm per pixel)
+and ``tile_size`` (pixels). An argument you leave out takes the encoder's
+recommended value, and the preset keeps its tiles with at least 10% tissue:
 
 .. code-block:: python
 
    config = presets.mil_classification("uni2", "abmil", spacing=0.5, tile_size=224)
 
 On the command line, they are the ``--spacing`` and ``--tile-size`` flags of
-``soma init`` and ``soma run --preset``.
+``soma init`` and ``soma run --preset``. The ``slide_*`` presets keep the same
+tissue, at the slide encoder's own tiling: a slide encoder is tied to the tile
+size and spacing of its tile encoder, so they take no tiling arguments.
+
+.. autofunction:: soma.presets.tile_classification
+
+.. autofunction:: soma.presets.tile_regression
 
 .. autofunction:: soma.presets.mil_classification
 
@@ -153,7 +192,11 @@ On the command line, they are the ``--spacing`` and ``--tile-size`` flags of
 
 .. autofunction:: soma.presets.mil_survival
 
-.. autofunction:: soma.presets.tile_classification
+.. autofunction:: soma.presets.slide_classification
+
+.. autofunction:: soma.presets.slide_regression
+
+.. autofunction:: soma.presets.slide_survival
 
 .. autofunction:: soma.presets.segmentation
 

@@ -9,7 +9,7 @@ Manifest; it does not depend on the ``hest`` library or TRIDENT. The benchmark c
 soma's verbs itself (:meth:`HestBenchmark.run`): extract a rank-1 tile set source, fit the
 probe on each fold's train spots, predict its test spots, and ``soma.evaluate`` the
 predictions with ``mean_pearson`` plus one Pearson per gene. Its config starts from the
-:func:`~soma.presets.tile_classification` preset (a tile encoder, no aggregator) and swaps
+:func:`~soma.presets.tile_regression` preset (a tile encoder, no aggregator) and swaps
 the learner for the probe.
 
 All 9 HEST-Benchmark tasks are registered as ``hest/<task>`` (:data:`HEST_TASKS`), mirroring
@@ -238,7 +238,7 @@ class HestBenchmark:
         Preprocessing pins HEST's tile geometry (:data:`TILE_SIZE_PX` px @ :data:`SPACING_UM`
         µm/px) for every encoder, so the encoder axis varies the encoder and nothing else.
         """
-        cfg = presets.tile_classification(encoder)
+        cfg = presets.tile_regression(encoder)
         cfg.run = RunConfig(
             output_dir=Path(output_root) if output_root is not None else Path("output/hest"),
             seed=0 if seed is None else int(seed),

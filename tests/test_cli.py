@@ -286,14 +286,18 @@ def test_init_output_resolves_to_the_preset_s_plan(tmp_path: Path, capsys):
 
 
 @pytest.mark.parametrize(
-    "name", ["mil_classification", "mil_regression", "tile_classification", "mil_survival", "segmentation", "detection"]
+    "name",
+    [
+        "tile_classification", "tile_regression", "mil_classification", "mil_regression", "mil_survival",
+        "slide_classification", "slide_regression", "slide_survival", "segmentation", "detection",
+    ],
 )
 def test_init_output_of_every_preset_passes_check(capsys, name):
     arguments = {"aggregator": "abmil", "loss": "cox", "decoder": "lightweight_conv", "num_classes": "2"}
     from soma import components
 
     entry = next(entry for entry in components("presets") if entry["name"] == name)
-    flags = ["--encoder", "uni2"] + [
+    flags = ["--encoder", "titan" if name.startswith("slide_") else "uni2"] + [
         token for key in entry["params"] if key in arguments for token in (f"--{key.replace('_', '-')}", arguments[key])
     ]
     check(ExperimentConfig.from_dict(yaml.safe_load(_init([name, *flags], capsys))))
@@ -551,8 +555,14 @@ def test_list_presets_prints_the_registered_presets(capsys):
     main(["list", "presets"])
 
     names = [row[0] for row in _rows(capsys.readouterr().out)]
-    assert {"mil_classification", "mil_regression", "mil_survival"} <= set(names)
-    assert "survival" not in names
+    # Grouped by what the head trains on: tile images, a slide's pooled tiles, a slide
+    # encoder's embedding, then the dense presets.
+    assert names == [
+        "tile_classification", "tile_regression",
+        "mil_classification", "mil_regression", "mil_survival",
+        "slide_classification", "slide_regression", "slide_survival",
+        "segmentation", "detection",
+    ]
 
 
 def test_list_encoders_filters_by_level(capsys):

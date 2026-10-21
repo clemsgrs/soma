@@ -101,10 +101,13 @@ class Registry:
     (ADR 0022); a dotted path imports its module itself.
     """
 
-    def __init__(self, domain: str) -> None:
+    def __init__(self, domain: str, *, listed_by_name: bool = True) -> None:
         if _KINDS.get(domain) is not None:
             raise ValueError(f"the {domain!r} kind already has a registry")
         self._domain = domain
+        #: Whether :func:`soma.components` lists the entries by name, or else in the order
+        #: they were registered.
+        self.listed_by_name = listed_by_name
         self._entries: dict[str, _Entry] = {}
         self._warned: set[str] = set()
         _KINDS[domain] = self
