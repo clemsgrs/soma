@@ -73,7 +73,7 @@ The YAML has the same seven sections as `ExperimentConfig` (`run`, `cohort`, `fe
 
 - [How soma works](https://clemsgrs.github.io/soma/how-soma-works.html): pipeline components and experiment design.
 - [Modeling paths](https://clemsgrs.github.io/soma/modeling.html): tile, slide, patient, and dense prediction workflows.
-- [Use cases](https://clemsgrs.github.io/soma/how-soma-works.html#use-cases): the preset and end-to-end scenario of each path.
+- [Use cases](https://clemsgrs.github.io/soma/how-soma-works.html#use-cases): the preset for each encoder and task.
 - [Benchmarking](https://clemsgrs.github.io/soma/benchmarking.html): fixed protocols and encoder comparisons, including [task-free CRoMa evaluation](https://clemsgrs.github.io/soma/api.html#task-free-representation-evaluation).
 - [Caching](https://clemsgrs.github.io/soma/caching.html) and [run outputs](https://clemsgrs.github.io/soma/outputs.html): feature reuse and experiment provenance.
 

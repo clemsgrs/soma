@@ -93,60 +93,34 @@ and comparing encoders.
 Use cases
 ---------
 
-Each use case is a preset over one source shape.
-The end-to-end scenarios in the last column run it in soma's test suite, on synthetic
-images with a weight-free encoder; `tests/e2e/README.md
-<https://github.com/clemsgrs/soma/blob/main/tests/e2e/README.md>`_ lists what each
-scenario checks.
+Each common task has a preset, named after what its model trains on. Find the row
+that matches your encoder and the column that matches your task:
 
 .. list-table::
    :header-rows: 1
-   :widths: 18 34 22 26
+   :stub-columns: 1
+   :widths: 31 23 23 23
 
-   * - Use case
-     - Preset or head
-     - Source
-     - End-to-end scenario
-   * - Tile-level classification
-     - ``tile_classification(encoder)``
-     - One embedding per image
-     - ``tile_binary_classification``
-   * - Tile-level regression
-     - ``tile_regression(encoder)``
-     - One embedding per image
-     - ``tile_preset_regression``
-   * - Slide classification
-     - ``mil_classification(encoder, aggregator, spacing=None, tile_size=None)``
-     - Bags of tile features
-     - ``slide_mil_binary_classification``, ``slide_mil_multiclass_classification``
-   * - Regression
-     - ``mil_regression(encoder, aggregator, spacing=None, tile_size=None)``
-     - Bags of tile features
-     - ``slide_mil_regression``
-   * - Survival
-     - ``mil_survival(encoder, aggregator, loss, num_bins=None, spacing=None, tile_size=None)`` with ``loss="nll"`` (and ``num_bins``) or ``loss="cox"``
-     - Bags of tile features
-     - ``slide_mil_survival_nll``, ``slide_mil_survival_nll_train_quantiles``, ``slide_mil_survival_cox``
-   * - Slide classification with a slide encoder
-     - ``slide_classification(encoder)``
-     - One slide-encoder embedding per slide
-     - ``slide_preset_classification``
-   * - Regression with a slide encoder
-     - ``slide_regression(encoder)``
-     - One slide-encoder embedding per slide
-     - none
-   * - Survival with a slide encoder
-     - ``slide_survival(encoder, loss, num_bins=None)`` with ``loss="nll"`` (and ``num_bins``) or ``loss="cox"``
-     - One slide-encoder embedding per slide
-     - ``slide_preset_survival_cox``
-   * - Segmentation
-     - ``segmentation(encoder, decoder, num_classes)``
-     - Dense token grids
-     - ``dense_segmentation``, ``dense_preset_segmentation``, ``grid_live_segmentation``
-   * - Detection
-     - ``detection(encoder, decoder, num_classes, match_distance=3.0)``
-     - Dense token grids
-     - ``dense_detection``, ``dense_preset_detection``, ``grid_live_detection``
+   * - The model trains on
+     - Classification
+     - Regression
+     - Survival
+   * - one tile image's embedding (tile encoder)
+     - :func:`~soma.presets.tile_classification`
+     - :func:`~soma.presets.tile_regression`
+     -
+   * - a slide's tiles, pooled by an aggregator (tile encoder)
+     - :func:`~soma.presets.mil_classification`
+     - :func:`~soma.presets.mil_regression`
+     - :func:`~soma.presets.mil_survival`
+   * - a slide encoder's embedding
+     - :func:`~soma.presets.slide_classification`
+     - :func:`~soma.presets.slide_regression`
+     - :func:`~soma.presets.slide_survival`
+
+:func:`~soma.presets.segmentation` and :func:`~soma.presets.detection` train a
+decoder on the dense token grids of a tile encoder. The :ref:`configuration reference
+<configuration-presets>` lists each preset's arguments.
 
 Next: :doc:`install soma <installation>`, then run the :doc:`getting-started
 notebook <getting-started>`.

@@ -36,10 +36,5 @@ trainable aggregator.
 The :doc:`tasks` page defines the prediction target, loss, and compatible
 metrics. :doc:`training` controls optimization and checkpoint selection, then
 executes the folds defined by the data splits. These contracts stay consistent
-when an aggregator, decoder, or task head is replaced.
-
-Explore a path
---------------
-
-The :ref:`use-case table <use-cases>` names the end-to-end scenarios that run each
-path on a small synthetic dataset.
+when an aggregator, decoder, or task head is replaced. The :ref:`use-case table
+<use-cases>` gives the preset for each path.
