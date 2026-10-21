@@ -513,8 +513,21 @@ def test_a_preset_annotation_that_does_not_evaluate_leaves_the_flags_working(cap
 
 
 def _rows(out: str) -> list[list[str]]:
-    """The cells of each table row ``soma list`` printed."""
-    return [[cell.strip() for cell in line.split("│")[1:-1]] for line in out.splitlines() if line.startswith("│")]
+    """The cells of each table row ``soma list`` printed, whatever the terminal width.
+
+    A cell too long for the width wraps onto continuation lines whose name cell is empty
+    (the name column never wraps); each one is joined back onto the row it continues.
+    """
+    rows: list[list[str]] = []
+    for line in out.splitlines():
+        if not line.startswith("│"):
+            continue
+        cells = [cell.strip() for cell in line.split("│")[1:-1]]
+        if rows and not cells[0]:
+            rows[-1] = [" ".join(part for part in pair if part) for pair in zip(rows[-1], cells)]
+        else:
+            rows.append(cells)
+    return rows
 
 
 def test_list_without_a_kind_prints_the_kinds(capsys):
@@ -534,7 +547,7 @@ def test_list_a_kind_prints_its_components_and_params(capsys):
 
     out = capsys.readouterr().out
     assert "Aggregators" in out
-    rows = {row[0]: row[1] for row in _rows(out) if row[0]}
+    rows = {row[0]: row[1] for row in _rows(out)}
     assert {"abmil", "clam_sb", "mean_pool", "transmil"} <= set(rows)
     assert "hidden_dim=128" in rows["abmil"]
 
@@ -573,7 +586,7 @@ def test_list_encoders_filters_by_level(capsys):
 
     out = capsys.readouterr().out
     assert "Encoders (slide)" in out
-    printed = {row[0] for row in _rows(out) if row[0]}
+    printed = {row[0] for row in _rows(out)}
     expected = {entry["name"] for entry in components("encoders") if entry["level"] == "slide"}
     assert printed == expected
 
