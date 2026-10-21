@@ -431,6 +431,30 @@ def test_patient_runs_take_no_aggregator(files):
         check(experiment(*files, aggregator="abmil", cohort={"collapse": "patient_id"}))
 
 
+def test_a_slide_encoder_takes_no_aggregator():
+    # titan gives one vector per slide: there is no bag to pool, and check says so before
+    # any slide is tiled or embedded.
+    config = presets.mil_classification("titan", "abmil")
+    with pytest.raises(
+        ValueError, match=r"encoder 'titan' gives one vector per slide.*drop learner\.params\.aggregator"
+    ):
+        check(config)
+    del config.learner.params["aggregator"]
+    check(config)
+
+
+@pytest.mark.parametrize(
+    ("preset", "encoder", "num_classes", "level"),
+    [("segmentation", "titan", 2, "slide"), ("detection", "titan", 1, "slide"), ("segmentation", "moozy", 2, "patient")],
+)
+def test_a_dense_run_needs_a_tile_level_encoder(preset, encoder, num_classes, level):
+    # A grid run encodes each tile into a token grid, which a slide or patient encoder cannot.
+    with pytest.raises(
+        ValueError, match=rf"encoder '{encoder}' gives one vector per {level}.*a dense run needs a tile-level encoder"
+    ):
+        check(getattr(presets, preset)(encoder, "linear", num_classes))
+
+
 def test_the_feature_adaptor_is_refused_where_it_cannot_fit(files):
     with pytest.raises(ValueError, match="tile-level features"):
         check(experiment(*files, features=FeaturesConfig(encoder="uni2"), normalization={"method": "zscore"}))

@@ -353,6 +353,12 @@ def _check(config: ExperimentConfig) -> None:
             raise ValueError(f"a {family} run needs a decoder (e.g. learner.params.decoder: {{name: lightweight_conv}}).")
         if aggregator is not None:
             raise ValueError(f"a {family} run is dense per-pixel: it takes a decoder, not an aggregator.")
+        level = None if features.encoder is None else _encoder_level(features.encoder.name)
+        if level not in (None, "tile"):
+            raise ValueError(
+                f"encoder '{features.encoder.name}' gives one vector per {level}, but a {family} run "
+                "encodes each tile into a token grid: a dense run needs a tile-level encoder."
+            )
     else:
         if family in grid_families:
             raise ValueError(f"a {family} head trains the grid shape: use learner {{name: dense}}.")
@@ -363,6 +369,11 @@ def _check(config: ExperimentConfig) -> None:
         raise ValueError("cohort.collapse: patient_id trains on patient embeddings, which take no aggregator.")
     if features.encoder is not None and not features.is_composite and _encoder_level(features.encoder.name) == "patient" and unit != "patient":
         raise ValueError(f"encoder '{features.encoder.name}' embeds patients: set cohort.collapse: patient_id.")
+    if aggregator is not None and features.encoder is not None and _encoder_level(features.encoder.name) == "slide":
+        raise ValueError(
+            f"encoder '{features.encoder.name}' gives one vector per slide, so there is no bag for an "
+            "aggregator to pool: drop learner.params.aggregator or use a tile-level encoder."
+        )
     masks = features.extraction.masks
     if family == "segmentation":
         annotation = is_annotation_sampling(masks)

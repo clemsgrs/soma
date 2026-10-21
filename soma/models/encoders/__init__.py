@@ -8,7 +8,6 @@ from typing import Any
 
 from slide2vec import Model
 from slide2vec.encoders.registry import encoder_registry as _slide2vec_encoders
-from slide2vec.encoders.registry import resolve_encoder_level
 
 from soma.models.encoders.composite import CompositeMember, CompositeParams
 from soma.models.encoders.validation import resolve_encoder_precision, resolve_preprocessing_config
@@ -99,31 +98,6 @@ class EncoderRegistry(Registry):
 encoder_registry = EncoderRegistry()
 
 
-def resolve_aggregator(
-    encoder_name: str,
-    tile_recipe: Component,
-) -> Component | None:
-    """Resolve a slide benchmark's aggregation mechanism from encoder metadata."""
-    try:
-        metadata = _slide2vec_encoders.info(encoder_name)
-    except KeyError as exc:
-        available = ", ".join(sorted(_slide2vec_encoders.names())) or "(none)"
-        raise ValueError(
-            f"Unknown encoder name '{encoder_name}'. Available encoders: {available}"
-        ) from exc
-    level = resolve_encoder_level(encoder_name, metadata)
-    if level == "tile":
-        return tile_recipe
-    if level == "slide":
-        return None
-    if level == "patient":
-        raise ValueError(
-            "Slide-level benchmarks cannot consume patient-level representations "
-            f"from encoder '{encoder_name}'; choose a tile- or slide-level encoder."
-        )
-    raise ValueError(f"Cannot resolve an aggregator for encoder level '{level}'")
-
-
 __all__ = [
     "COMPOSITE",
     "CompositeMember",
@@ -131,7 +105,6 @@ __all__ = [
     "EncoderParams",
     "EncoderRegistry",
     "encoder_registry",
-    "resolve_aggregator",
     "resolve_encoder_precision",
     "resolve_preprocessing_config",
 ]

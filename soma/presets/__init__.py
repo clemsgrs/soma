@@ -36,9 +36,9 @@ __all__ = [
     "detection",
     "mil_classification",
     "mil_regression",
+    "mil_survival",
     "preset_registry",
     "segmentation",
-    "survival",
     "tile_classification",
 ]
 
@@ -150,27 +150,7 @@ def mil_regression(
 
 
 @_register
-def tile_classification(encoder: str) -> ExperimentConfig:
-    """Classify tile images: a linear probe on a frozen tile encoder's embeddings.
-
-    Each row of the cohort is one image, embedded whole by ``encoder`` (no tiling, no
-    aggregator), and a ``multiclass_classification`` head learns the cohort's ``label``
-    column. Batches of 256 embeddings, AdamW (lr 3e-4) without a schedule, 50 epochs,
-    the best tune-loss checkpoint and early stopping after 10 epochs without improvement.
-    """
-    return ExperimentConfig(
-        cohort=_cohort(),
-        features=FeaturesConfig(encoder=encoder),
-        loaders=LoadersConfig(batch_size=256),
-        learner=LearnerConfig(
-            "mil",
-            {"head": Component("multiclass_classification"), "optimizer": Component("adamw", {"lr": 3e-4})},
-        ),
-    )
-
-
-@_register
-def survival(
+def mil_survival(
     encoder: str,
     aggregator: str,
     loss: Literal["nll", "cox"],
@@ -212,6 +192,26 @@ def survival(
     else:
         raise ValueError(f"loss must be one of 'nll', 'cox', got {loss!r}.")
     return _mil(encoder, aggregator, spacing, tile_size, head)
+
+
+@_register
+def tile_classification(encoder: str) -> ExperimentConfig:
+    """Classify tile images: a linear probe on a frozen tile encoder's embeddings.
+
+    Each row of the cohort is one image, embedded whole by ``encoder`` (no tiling, no
+    aggregator), and a ``multiclass_classification`` head learns the cohort's ``label``
+    column. Batches of 256 embeddings, AdamW (lr 3e-4) without a schedule, 50 epochs,
+    the best tune-loss checkpoint and early stopping after 10 epochs without improvement.
+    """
+    return ExperimentConfig(
+        cohort=_cohort(),
+        features=FeaturesConfig(encoder=encoder),
+        loaders=LoadersConfig(batch_size=256),
+        learner=LearnerConfig(
+            "mil",
+            {"head": Component("multiclass_classification"), "optimizer": Component("adamw", {"lr": 3e-4})},
+        ),
+    )
 
 
 @_register
