@@ -45,6 +45,7 @@ from soma.benchmark.registry import (
     ReferenceRow,
     expected_rows,
     register_benchmark,
+    require_tile_encoder,
     score_from_summary,
 )
 from hs2p import TilingConfig
@@ -237,7 +238,9 @@ class HestBenchmark:
 
         Preprocessing pins HEST's tile geometry (:data:`TILE_SIZE_PX` px @ :data:`SPACING_UM`
         µm/px) for every encoder, so the encoder axis varies the encoder and nothing else.
+        A slide- or patient-level encoder is refused.
         """
+        require_tile_encoder(self.name, encoder, "a frozen tile encoder, one spot per tile")
         cfg = presets.tile_regression(encoder)
         cfg.run = RunConfig(
             output_dir=Path(output_root) if output_root is not None else Path("output/hest"),

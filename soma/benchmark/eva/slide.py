@@ -65,6 +65,7 @@ from soma.benchmark.registry import (
     ReferenceRow,
     expected_rows,
     register_benchmark,
+    require_tile_encoder,
     score_from_summary,
 )
 from dataclasses import replace as _replace
@@ -482,7 +483,11 @@ class EvaSlideClassificationBenchmark:
         encoder_batch_size: int = 32,
         execution: ExecutionOptions | None = None,
     ) -> ExperimentConfig:
-        """Build the EVA-faithful config for this dataset and the ``encoder`` axis."""
+        """Build the EVA-faithful config for this dataset and the ``encoder`` axis.
+
+        A slide- or patient-level encoder is refused.
+        """
+        require_tile_encoder(self.name, encoder, "a frozen tile encoder over each slide's pooled tiles")
         return _build_eva_slide_config(
             dataset=self.dataset,
             encoder=encoder,
