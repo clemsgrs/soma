@@ -39,24 +39,25 @@ def _nms_keep(xs: np.ndarray, ys: np.ndarray, md_sq: float) -> np.ndarray:
     """Greedy NMS keep-mask over candidates sorted by descending score: a candidate is
     kept unless a kept, higher-ranked one lies closer than ``sqrt(md_sq)``.
 
-    Only the close pairs (a KD-tree query) are visited, in rank order, so the common case
-    (local maxima already far apart) costs no Python loop.
+    Candidates are walked in rank order. Each one still kept when reached asks a KD-tree
+    for its neighbours and suppresses the lower-ranked ones closer than the radius, so
+    memory stays bounded by one neighbourhood, even on a dense plateau.
     """
     keep = np.ones(xs.shape[0], dtype=bool)
     if xs.shape[0] < 2:
         return keep
-    radius = math.sqrt(md_sq)
-    pairs = cKDTree(np.stack([xs, ys], axis=1)).query_pairs(r=radius * (1 + 1e-9) + 1e-9, output_type="ndarray")
-    if pairs.size == 0:
-        return keep
-    first, second = pairs[:, 0], pairs[:, 1]  # first < second: first ranks higher
-    close = (xs[first] - xs[second]) ** 2 + (ys[first] - ys[second]) ** 2 < md_sq
-    order = np.argsort(first[close], kind="stable")
-    for higher, lower in zip(first[close][order].tolist(), second[close][order].tolist()):
-        # Pairs are visited by ascending rank of their higher candidate, whose fate every
-        # earlier pair has already settled.
-        if keep[higher]:
-            keep[lower] = False
+    pts = np.stack([xs, ys], axis=1)
+    tree = cKDTree(pts)
+    radius = math.sqrt(md_sq) * (1 + 1e-9) + 1e-9  # a hair wide; the strict test is below
+    for i in range(xs.shape[0]):
+        if not keep[i]:
+            continue
+        nb = tree.query_ball_point(pts[i], radius)
+        if len(nb) < 2:  # only itself: the common case on real heatmaps
+            continue
+        nb = np.asarray(nb, dtype=np.int64)
+        nb = nb[nb > i]
+        keep[nb[(xs[nb] - xs[i]) ** 2 + (ys[nb] - ys[i]) ** 2 < md_sq]] = False
     return keep
 
 

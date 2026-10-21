@@ -206,6 +206,24 @@ def test_extract_peaks_flat_heatmap_yields_no_peaks():
     assert xy.shape == (0, 2) and classes.shape == (0,) and scores.shape == (0,)
 
 
+def test_extract_peaks_nms_on_dense_plateau_keeps_a_maximal_spread_set():
+    # One dip in a flat 0.5 map makes every plateau pixel whose window holds the dip a
+    # tied local maximum: 61*61 - 1 candidates, almost all within min_distance of each
+    # other. Greedy NMS must keep a set that is spread out (no two kept peaks closer than
+    # min_distance) and maximal (every candidate lies closer than that to a kept peak).
+    hm = torch.full((1, 96, 96), 0.5)
+    hm[0, 48, 48] = 0.49
+    xy, _, scores = extract_peaks(hm, min_distance=30, score_threshold=0.0)
+    assert xy.shape[0] >= 1 and np.all(scores == 0.5)
+    pair_d2 = ((xy[:, None, :] - xy[None, :, :]) ** 2).sum(-1)
+    assert np.all(pair_d2[~np.eye(xy.shape[0], dtype=bool)] >= 30**2)
+    gy, gx = np.mgrid[18:79, 18:79]
+    cand = np.stack([gx.ravel(), gy.ravel()], axis=1).astype(np.float64)
+    cand = cand[~((cand[:, 0] == 48) & (cand[:, 1] == 48))]
+    cand_d2 = ((cand[:, None, :] - xy[None, :, :]) ** 2).sum(-1)
+    assert np.all(cand_d2.min(axis=1) < 30**2)
+
+
 # --------------------------------------------------------------------------- #
 # F1@δ matching
 # --------------------------------------------------------------------------- #
