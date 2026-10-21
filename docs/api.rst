@@ -445,7 +445,5 @@ Runnable demonstrations live in ``examples/``
 * ``examples/external_benchmark_spec.py`` — build and execute a ``BenchmarkSpec``;
 * ``examples/fixed_step_training.py`` — fixed optimizer-step training budgets
   (``TrainerConfig(max_steps=N)``);
-* ``examples/aggregator_resolution.py`` — resolve one fixed MIL recipe for
-  tile- and slide-level encoders with ``soma.models.encoders.resolve_aggregator``;
 * ``examples/portable_identity.py`` — manifest identity is portable across
   storage roots.

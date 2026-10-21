@@ -286,7 +286,7 @@ def test_init_output_resolves_to_the_preset_s_plan(tmp_path: Path, capsys):
 
 
 @pytest.mark.parametrize(
-    "name", ["mil_classification", "mil_regression", "tile_classification", "survival", "segmentation", "detection"]
+    "name", ["mil_classification", "mil_regression", "tile_classification", "mil_survival", "segmentation", "detection"]
 )
 def test_init_output_of_every_preset_passes_check(capsys, name):
     arguments = {"aggregator": "abmil", "loss": "cox", "decoder": "lightweight_conv", "num_classes": "2"}
@@ -306,7 +306,7 @@ def test_init_takes_the_tiling_as_typed_flags(capsys):
     tiling = yaml.safe_load(out)["features"]["extraction"]["tiling"]
     assert (tiling["requested_spacing_um"], tiling["requested_tile_size_px"]) == (0.5, 224)
     out = _init(
-        ["survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "nll", "--num-bins", "4", "--tile-size", "224"],
+        ["mil_survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "nll", "--num-bins", "4", "--tile-size", "224"],
         capsys,
     )
     tiling = yaml.safe_load(out)["features"]["extraction"]["tiling"]
@@ -339,17 +339,17 @@ def test_init_requires_the_preset_s_arguments(capsys):
 def test_init_takes_the_survival_loss_from_its_choices(capsys):
     from soma.cli import main
 
-    head = yaml.safe_load(_init(["survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "cox"], capsys))[
+    head = yaml.safe_load(_init(["mil_survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "cox"], capsys))[
         "learner"
     ]["params"]["head"]
     assert (head["name"], head["params"]["cox_window"]) == ("cox_survival", 32)
     with pytest.raises(SystemExit) as exc_info:
-        main(["init", "survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "coxph"])
+        main(["init", "mil_survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "coxph"])
     assert exc_info.value.code == 2
     err = capsys.readouterr().err
     assert "argument --loss: invalid choice: 'coxph'" in err and "nll" in err and "cox" in err
     with pytest.raises(SystemExit) as exc_info:
-        main(["init", "survival", "--help"])
+        main(["init", "mil_survival", "--help"])
     assert exc_info.value.code == 0
     assert "--loss {nll,cox}" in capsys.readouterr().out
 
@@ -358,7 +358,7 @@ def test_init_refuses_arguments_that_make_an_invalid_config(capsys):
     from soma.cli import main
 
     with pytest.raises(SystemExit) as exc_info:
-        main(["init", "survival", "--encoder", "uni2", "--aggregator", "clam_sb", "--loss", "nll", "--num-bins", "4"])
+        main(["init", "mil_survival", "--encoder", "uni2", "--aggregator", "clam_sb", "--loss", "nll", "--num-bins", "4"])
     assert exc_info.value.code == 2
     assert "not supported for survival" in capsys.readouterr().err
 
@@ -366,13 +366,13 @@ def test_init_refuses_arguments_that_make_an_invalid_config(capsys):
 def test_init_takes_the_survival_bin_count_as_a_typed_flag(capsys):
     from soma.cli import main
 
-    args = ["survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "nll"]
+    args = ["mil_survival", "--encoder", "uni2", "--aggregator", "abmil", "--loss", "nll"]
     head = yaml.safe_load(_init([*args, "--num-bins", "4"], capsys))["learner"]["params"]["head"]
     assert (head["name"], head["params"]["binning"], head["params"]["num_bins"]) == ("discrete_survival", "train_quantiles", 4)
     with pytest.raises(SystemExit) as exc_info:
         main(["init", *args])
     assert exc_info.value.code == 2
-    assert "preset survival: loss 'nll' needs num_bins" in capsys.readouterr().err
+    assert "preset mil_survival: loss 'nll' needs num_bins" in capsys.readouterr().err
 
 
 # --- a preset registered through soma.register ---
@@ -542,6 +542,16 @@ def test_list_heads_prints_the_registered_heads(capsys):
 
     names = [row[0] for row in _rows(capsys.readouterr().out)]
     assert {"binary_classification", "segmentation", "discrete_survival", "cox_survival"} <= set(names)
+    assert "survival" not in names
+
+
+def test_list_presets_prints_the_registered_presets(capsys):
+    from soma.cli import main
+
+    main(["list", "presets"])
+
+    names = [row[0] for row in _rows(capsys.readouterr().out)]
+    assert {"mil_classification", "mil_regression", "mil_survival"} <= set(names)
     assert "survival" not in names
 
 

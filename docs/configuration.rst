@@ -132,10 +132,10 @@ Presets
 A preset returns a complete config for a common task (see :ref:`presets`);
 ``soma.components("presets")`` lists them with their arguments. A choice that
 changes the model has no default: you name the aggregator of a slide preset, the
-``loss`` of ``survival`` (``"nll"`` or ``"cox"``, and ``num_bins`` for ``"nll"``)
+``loss`` of ``mil_survival`` (``"nll"`` or ``"cox"``, and ``num_bins`` for ``"nll"``)
 and the ``num_classes`` of ``segmentation`` and ``detection``.
 
-The slide presets, ``mil_classification``, ``mil_regression`` and ``survival``,
+The slide presets, ``mil_classification``, ``mil_regression`` and ``mil_survival``,
 take the tiling as arguments: ``spacing`` (µm per pixel) and ``tile_size``
 (pixels). An argument you leave out takes the encoder's recommended value, and the
 preset keeps its tiles with at least 10% tissue:
@@ -151,9 +151,9 @@ On the command line, they are the ``--spacing`` and ``--tile-size`` flags of
 
 .. autofunction:: soma.presets.mil_regression
 
-.. autofunction:: soma.presets.tile_classification
+.. autofunction:: soma.presets.mil_survival
 
-.. autofunction:: soma.presets.survival
+.. autofunction:: soma.presets.tile_classification
 
 .. autofunction:: soma.presets.segmentation
 

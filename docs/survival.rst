@@ -22,7 +22,7 @@ Two heads model time-to-event with right censoring; the head selects the loss:
     trainer forwards ``cox_window`` bags un-padded and computes one Cox loss and
     one optimizer step per window.
 
-Both losses rank with Harrell's C-index via scikit-survival. The ``survival``
+Both losses rank with Harrell's C-index via scikit-survival. The ``mil_survival``
 preset takes the loss as its ``loss`` argument: ``"nll"`` builds the
 ``discrete_survival`` head with ``binning: train_quantiles`` and the preset's
 ``num_bins`` (required), and ``"cox"`` the ``cox_survival`` head in
