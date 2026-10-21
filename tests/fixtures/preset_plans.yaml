@@ -111,6 +111,7 @@ detection@uni2+lightweight_conv:
         params:
           classes: null
           drop: null
+          fixed_threshold: 0.5
           foreground_weight: 10.0
           match_distance: 3.0
           matching: hungarian
@@ -120,7 +121,6 @@ detection@uni2+lightweight_conv:
           sigma: null
           targets: {}
           truncate: 3.0
-          validation_threshold: 0.5
       normalization:
         eps: 1.0e-06
         method: none

@@ -382,7 +382,8 @@ def test_detection_counts_shape_and_axis():
     assert row.dtype == torch.long
 
 
-def test_sweep_thresholds_picks_separating_value():
+@pytest.mark.parametrize("method", ["hungarian", "greedy"])
+def test_sweep_thresholds_picks_separating_value(method):
     # One image: a true peak at high score, a false peak at low score, far from GT.
     pred_xy = [np.array([[5.0, 5.0], [0.0, 0.0]])]
     pred_cls = [np.array([0, 0])]
@@ -390,13 +391,14 @@ def test_sweep_thresholds_picks_separating_value():
     gt_xy = [np.array([[5.0, 5.0]])]
     gt_cls = [np.array([0])]
     thr = sweep_score_thresholds(
-        pred_xy, pred_cls, pred_score, gt_xy, gt_cls, num_classes=1, delta=2.0
+        pred_xy, pred_cls, pred_score, gt_xy, gt_cls, num_classes=1, delta=2.0, method=method
     )
     # Optimal threshold drops the 0.2 false peak but keeps the 0.9 true peak.
     assert 0.2 < thr[0] <= 0.9
 
 
-def test_sweep_thresholds_survives_junk_dominated_candidate_pool():
+@pytest.mark.parametrize("method", ["hungarian", "greedy"])
+def test_sweep_thresholds_survives_junk_dominated_candidate_pool(method):
     # Threshold-0 decoding floods the pool with near-zero junk peaks (MIDOG regression):
     # with quantile-only candidates every quantile lands in the junk mass, the mid-range
     # where F1 peaks is never evaluated, and the sweep freezes a near-zero threshold.
@@ -417,13 +419,14 @@ def test_sweep_thresholds_survives_junk_dominated_candidate_pool():
         gt_xy.append(np.array([[5.0, 5.0]]))
         gt_cls.append(np.array([0]))
     thr = sweep_score_thresholds(
-        pred_xy, pred_cls, pred_score, gt_xy, gt_cls, num_classes=1, delta=2.0
+        pred_xy, pred_cls, pred_score, gt_xy, gt_cls, num_classes=1, delta=2.0, method=method
     )
     # Any threshold in (0.01, 0.5] keeps all 40 true peaks and no junk -> F1 = 1.0.
     assert 0.01 < thr[0] <= 0.5
 
 
-def test_sweep_thresholds_suppresses_all_false_positive_class():
+@pytest.mark.parametrize("method", ["hungarian", "greedy"])
+def test_sweep_thresholds_suppresses_all_false_positive_class(method):
     # A class with GT but whose only predictions are far-away false positives: the best
     # operating point emits nothing, so the chosen threshold must drop every prediction.
     pred_xy = [np.array([[0.0, 0.0], [1.0, 1.0]])]
@@ -432,9 +435,20 @@ def test_sweep_thresholds_suppresses_all_false_positive_class():
     gt_xy = [np.array([[50.0, 50.0]])]
     gt_cls = [np.array([0])]
     thr = sweep_score_thresholds(
-        pred_xy, pred_cls, pred_score, gt_xy, gt_cls, num_classes=1, delta=2.0
+        pred_xy, pred_cls, pred_score, gt_xy, gt_cls, num_classes=1, delta=2.0, method=method
     )
     assert thr[0] > 0.9  # above the max score -> keeps nothing (score >= thr is False)
+
+
+@pytest.mark.parametrize("method", ["hungarian", "greedy"])
+def test_sweep_thresholds_keep_every_prediction_of_a_class_never_predicted(method):
+    # Class 1 has annotated points but no prediction on tune: nothing to tune, threshold 0.
+    thr = sweep_score_thresholds(
+        [np.array([[5.0, 5.0]])], [np.array([0])], [np.array([0.9])],
+        [np.array([[5.0, 5.0], [20.0, 20.0]])], [np.array([0, 1])],
+        num_classes=2, delta=2.0, method=method,
+    )
+    assert thr[1] == 0.0
 
 
 # --------------------------------------------------------------------------- #
@@ -515,7 +529,7 @@ def test_head_refuses_a_class_outside_its_classes():
 
 
 def test_head_eval_roundtrip_perfect_on_gt_heatmap():
-    head = _make_head(validation_threshold=0.5, metrics=["mean_f1"])
+    head = _make_head(fixed_threshold=0.5, metrics=["mean_f1"])
     rows = [[10.0, 12.0, 0.0], [20.0, 8.0, 1.0]]
     heatmap, _, _ = head.encode_targets({"points": _points(rows)})
     metrics = head.compute_metrics(heatmap, {"points": _points(rows)})
@@ -642,14 +656,16 @@ def test_point_source_dropped_point_becomes_negative_supervision(tmp_path):
     source = _point_source(tmp_path, "10,12,0\n20,8,2\n", class_remap={0: 0}, drop=[2])
     points = source.load("s")
     assert points.xy.tolist() == [[10.0, 12.0]]
-    # A prediction on the kept point and one on the dropped point: 1 TP, 1 FP, 0 FN.
-    head = _make_head(num_classes=1)
+    # A prediction on the kept point and one on the dropped point, tied in score: the best
+    # operating point keeps both, 1 TP and 1 FP.
+    head = _make_head(num_classes=1, metrics=["precision", "recall"])
     batch = {"points": torch.cat([points.xy, points.classes[:, None].float()], dim=1)[None].float()}
     predicted = render_peak_heatmap(
         np.array([[10.0, 12.0], [20.0, 8.0]]), np.array([0, 0]),
         target_size=(32, 32), num_classes=1, sigma=1.5,
     )
-    assert head.dense_stats(predicted.unsqueeze(0), batch).tolist() == [[[1, 1, 0]]]
+    metrics = head.compute_metrics(predicted.unsqueeze(0), batch)
+    assert (metrics["precision_class_0"], metrics["recall_class_0"]) == (0.5, 1.0)
 
 
 def test_point_source_rejects_a_point_id_declared_nowhere(tmp_path):
@@ -822,15 +838,148 @@ def test_head_loss_averages_over_valid_pixels_of_every_channel():
     assert float(head.compute_loss(pred, targets)) == 0.5
 
 
-def test_head_dense_stats_drops_predictions_on_ignored_pixels():
-    head = _make_head(num_classes=1)
+def test_head_validation_drops_predictions_on_ignored_pixels():
+    head = _make_head(num_classes=1, metrics=["precision", "recall"])
     ignore = torch.zeros(1, 32, 32, dtype=torch.bool)
     ignore[:, :, 16:] = True
     # One prediction on the supervised point, one on the ignored point, one on an ignored
-    # pixel with no point at all: only the first is scored (1 TP, 0 FP, 0 FN).
+    # pixel with no point at all, all three tied in score: only the first is scored (1 TP,
+    # 0 FP, 0 FN).
     predicted = render_peak_heatmap(
         np.array([[10.0, 12.0], [20.0, 8.0], [28.0, 28.0]]), np.array([0, 0, 0]),
         target_size=(32, 32), num_classes=1, sigma=1.5,
     )
     targets = {"points": _points([[10.0, 12.0, 0.0], [20.0, 8.0, 0.0]]), "ignore": ignore}
-    assert head.dense_stats(predicted.unsqueeze(0), targets).tolist() == [[[1, 0, 0]]]
+    metrics = head.compute_metrics(predicted.unsqueeze(0), targets)
+    assert (metrics["precision_class_0"], metrics["recall_class_0"]) == (1.0, 1.0)
+
+
+# --------------------------------------------------------------------------- #
+# Training-time validation: the one-pass greedy sweep
+# --------------------------------------------------------------------------- #
+
+
+def _bumps(head, peaks) -> torch.Tensor:
+    """A ``(C, H, W)`` heatmap with a Gaussian bump of height ``h`` at each ``(x, y, c, h)``."""
+    height, width = head.geometry.target_size
+    heat = torch.zeros(head.num_classes, height, width)
+    rows = torch.tensor(peaks, dtype=torch.float32)
+    for h in torch.unique(rows[:, 3]):
+        level = rows[rows[:, 3] == h]
+        heat = torch.maximum(heat, head.render_heatmap(level[:, :2], level[:, 2].long()) * h)
+    return heat
+
+
+def _sweep_scene(head, *, num_images: int, seed: int):
+    """Synthetic multi-class images: jittered predictions around most annotated points,
+    false bumps, scores drawn from a few values (so many tie), order-sensitive pairs (two
+    tied predictions between two annotated points: A-then-B matches both, B-then-A one),
+    and ignore regions."""
+    rng = np.random.default_rng(seed)
+    size = head.geometry.target_size[0]
+    levels = [0.2, 0.4, 0.4, 0.6, 0.6, 0.7, 1.0]  # 0.7 is just below the 0.7 edge in float32
+    cells = [(12 * i + 6.0, 12 * j + 6.0) for i in range(size // 12) for j in range(size // 12)]
+    heatmaps, points, ignores = [], [], []
+    for n in range(num_images):
+        peaks, gt = [], []
+        for c in range(head.num_classes):
+            order = rng.permutation(len(cells))
+            pairs, jittered, false = order[:12], order[12:72], order[72:96]
+            for k in pairs:
+                ax, ay = cells[k]
+                gt += [(ax, ay, c), (ax + 4.5, ay, c)]
+                tie = float(rng.choice(levels[1:3]))
+                peaks += [(ax - 2.0, ay, c, tie), (ax + 2.0, ay, c, tie)]
+            for k in jittered:
+                x, y = np.asarray(cells[k]) + rng.uniform(-1.0, 1.0, 2)
+                gt.append((x, y, c))
+                if rng.random() < 0.75:  # a prediction, sometimes beyond delta
+                    # On a pixel centre, so its peak scores exactly its level.
+                    px, py = np.rint([x, y] + rng.uniform(-2.5, 2.5, 2))
+                    peaks.append((px, py, c, float(rng.choice(levels))))
+            for k in false:  # false bumps far from every annotated point of c
+                x, y = cells[k]
+                peaks.append((x, y, c, float(rng.choice(levels))))
+        heatmaps.append(_bumps(head, peaks))
+        points.append(torch.tensor(gt, dtype=torch.float32))
+        ignore = torch.zeros(size, size, dtype=torch.bool)
+        if n % 2 == 0:
+            ignore[:, size - 20 :] = True  # a band holding points and predictions
+        ignores.append(ignore)
+    padded = torch.full((num_images, max(p.shape[0] for p in points), 3), float("nan"))
+    for n, p in enumerate(points):
+        padded[n, : p.shape[0]] = p
+    return torch.stack(heatmaps), {"points": padded, "ignore": torch.stack(ignores)}
+
+
+def _brute_force_greedy(head, predictions, targets, threshold: float) -> np.ndarray:
+    """Pooled ``(C, 3)`` TP/FP/FN of greedy matching on the predictions scoring at least
+    ``threshold``, with predictions and annotated points on ignored pixels left out."""
+    total = np.zeros((head.num_classes, 3), dtype=np.int64)
+    for n, rows in enumerate(predictions):
+        ignore = targets["ignore"][n].numpy()
+        rows = rows[rows[:, 3] >= threshold]
+        on_ignored = ignore[np.rint(rows[:, 1]).astype(int), np.rint(rows[:, 0]).astype(int)]
+        rows = rows[~on_ignored]
+        gt = targets["points"][n].numpy()
+        gt = gt[~np.isnan(gt).any(axis=1)]
+        gt = gt[~ignore[np.rint(gt[:, 1]).astype(int), np.rint(gt[:, 0]).astype(int)]]
+        total += match_points(
+            rows[:, :2], rows[:, 2], rows[:, 3], gt[:, :2], gt[:, 2],
+            num_classes=head.num_classes, delta=head.delta_px, method="greedy",
+        )
+    return total
+
+
+def test_one_pass_sweep_matches_brute_force_greedy_at_every_threshold():
+    from soma.data import GridGeometry
+    from soma.evaluation.detection.matching import counts_at_thresholds, histogram_thresholds
+
+    head = _make_head(
+        num_classes=3, sigma=1.0, geometry=GridGeometry.from_sizes(target_size=144, patch_size=4)
+    )
+    heatmaps, targets = _sweep_scene(head, num_images=2, seed=0)
+    swept = counts_at_thresholds(head.dense_stats(heatmaps, targets).sum(dim=0).numpy())
+
+    thresholds = histogram_thresholds()
+    predictions = head.postprocess(heatmaps)["points"]
+    scores = np.concatenate([rows[:, 3] for rows in predictions])
+    assert len(scores) - len(np.unique(scores)) > 100  # many ties in score
+    assert swept.shape == (3, len(thresholds), 3)
+    brute: dict[int, np.ndarray] = {}  # keyed by the kept set, which only its size identifies
+    for k, threshold in enumerate(thresholds):
+        kept = int((scores >= threshold).sum())
+        if kept not in brute:
+            brute[kept] = _brute_force_greedy(head, predictions, targets, threshold)
+        np.testing.assert_array_equal(swept[:, k], brute[kept], err_msg=f"t={threshold}")
+    assert len(brute) == len(np.unique(scores)) + 1  # every distinct operating point checked
+
+
+def test_validation_metrics_are_the_best_f1_per_class_over_every_threshold():
+    from soma.data import GridGeometry
+
+    head = _make_head(
+        num_classes=3,
+        sigma=1.0,
+        geometry=GridGeometry.from_sizes(target_size=144, patch_size=4),
+        metrics=["mean_f1", "f1_per_class", "precision", "recall"],
+    )
+    heatmaps, targets = _sweep_scene(head, num_images=2, seed=1)
+    metrics = head.compute_metrics(heatmaps, targets)
+
+    predictions = head.postprocess(heatmaps)["points"]
+    scores = np.concatenate([rows[:, 3] for rows in predictions])
+    candidates = [*np.unique(scores), np.inf]  # every distinct operating point, and none kept
+
+    def f1(counts):
+        tp, fp, fn = counts
+        return 2 * tp / (2 * tp + fp + fn)
+
+    best = [max(f1(_brute_force_greedy(head, predictions, targets, t)[c]) for t in candidates) for c in range(3)]
+    assert metrics["mean_f1"] == pytest.approx(np.mean(best))
+    for c in range(3):
+        tp, fp, fn = _brute_force_greedy(head, predictions, targets, metrics[f"threshold_class_{c}"])[c]
+        assert metrics[f"f1_class_{c}"] == pytest.approx(best[c])
+        assert metrics[f"f1_class_{c}"] == pytest.approx(f1((tp, fp, fn)))
+        assert metrics[f"precision_class_{c}"] == pytest.approx(tp / (tp + fp))
+        assert metrics[f"recall_class_{c}"] == pytest.approx(tp / (tp + fn))

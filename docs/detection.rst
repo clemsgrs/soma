@@ -203,12 +203,12 @@ The head's other parameters are:
 
 - ``min_score`` (default ``0.01``): the lowest peak score the head emits. Keep
   it low; the operating threshold is chosen afterwards on the predictions.
-- ``validation_threshold`` (default ``0.5``): the fixed peak threshold of the
-  validation metrics computed during training, which drive checkpoint selection
-  and early stopping.
+- ``fixed_threshold`` (default ``0.5``): the operating threshold of a run without
+  a tune split, and the default threshold of the detection overlays.
 - ``foreground_weight`` (default ``10``): the MSE up-weight on near-peak pixels.
-- ``matching``: ``hungarian`` (default) or ``greedy``, used for training-time
-  validation and for scoring.
+- ``matching``: ``hungarian`` (default) or ``greedy``, used for the threshold sweep
+  and for scoring. Validation during training always matches greedily (see
+  below).
 - ``classes`` / ``drop``: the class scheme; see :ref:`detection-classes`.
 
 Detection also runs with ``features.kind: live``, which re-encodes the tiles
@@ -259,9 +259,19 @@ unmatched GT FN.
 * **Score threshold** — the pipeline sweeps one threshold per class on the **tune**
   predictions to maximise F1 (:func:`soma.evaluation.sweep_threshold` with
   ``per_class=True``) and applies it unchanged to every test split (no test
-  leakage). A run without a tune split (``cohort.allow_missing_tune``) scores at
-  ``validation_threshold`` instead: train stands in for tune there, and a sweep on
-  the training samples would pick an in-sample cut.
+  leakage). With greedy matching the sweep is exact on a grid of 0.001: one
+  matching pass gives the F1 at every threshold. With Hungarian matching it tries
+  a grid of candidates built from the scores. A run without a tune split
+  (``cohort.allow_missing_tune``) scores at ``fixed_threshold`` instead: train
+  stands in for tune there, and a sweep on the training samples would pick an
+  in-sample cut.
+* **Validation during training** — at each validation epoch, the head takes, for
+  each class, the best tune F1 over every threshold at or above ``min_score``
+  (the same one-pass sweep, so with greedy matching). ``mean_f1`` is the mean of
+  these per-class bests: the tune ``mean_f1`` the sweep above would reach for that
+  epoch, which ``checkpoint`` and ``early_stopping`` monitor. The per-class F1,
+  precision and recall in the training history are read at those thresholds, and
+  the history logs each class's threshold as ``threshold_class_<c>``.
 * **Aggregation** — the headline ``mean_f1`` is **dataset-global** (counts pooled per
   class → one F1 per class → mean across classes, OCELOT-faithful). ``mean_f1_per_image``
   is available as a secondary (per-image macro). Per-class F1 / precision / recall are

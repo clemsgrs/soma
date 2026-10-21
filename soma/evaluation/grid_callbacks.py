@@ -84,7 +84,7 @@ class SaveOverlays:
     Segmentation writes ``<directory>/pred/<id>.png`` (foreground classes blended at
     ``alpha``) and ``<directory>/gt/<id>.png`` from the batch's label map. Detection
     draws the points scoring at least ``threshold`` (default: the head's
-    ``validation_threshold``) as class-coloured dots in ``pred/`` and the annotated
+    ``fixed_threshold``) as class-coloured dots in ``pred/`` and the annotated
     points in ``gt/``. Pixels come from the batch when it carries raw uint8 pixels at the
     frame size, else from ``images`` (an :class:`~soma.data.ImageSource`); without
     either the overlay is skipped.
@@ -146,7 +146,7 @@ class SaveOverlays:
     def _points(self, sample_id, pixels, rows, batch, index) -> None:
         head = self._head
         rows = np.asarray(rows, dtype=np.float64).reshape(-1, 4)
-        threshold = head.validation_threshold if self._threshold is None else float(self._threshold)
+        threshold = head.fixed_threshold if self._threshold is None else float(self._threshold)
         rows = rows[rows[:, 3] >= threshold]
         xy = head.to_frame(torch.from_numpy(rows[:, :2])).numpy() if rows.shape[0] else np.zeros((0, 2))
         self._save("pred", sample_id, self._draw(pixels, xy, rows[:, 2].astype(np.int64)))

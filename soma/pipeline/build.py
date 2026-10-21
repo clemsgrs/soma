@@ -1281,7 +1281,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
     The source is a :class:`~soma.data.GridSource` (cached grids) or, with the run's
     frozen encoder stage, an :class:`~soma.data.ImageSource` re-encoded every step, where
     ``loaders.augment`` augments the train split. Detection sweeps its per-class threshold
-    on tune (without a tune split it scores at the head's ``validation_threshold``).
+    on tune (without a tune split it scores at the head's ``fixed_threshold``).
     """
     plan, feature_store, stage = inputs.plan, inputs.source, inputs.encoder_stage
     evaluation, decoder = inputs.evaluation, plan.learner.params["decoder"]
@@ -1443,9 +1443,9 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
 
     def tune_step(predictions, split: SplitPlan, head):
         # Without a tune split, train stands in and a sweep there would pick an in-sample
-        # cut: score at the head's fixed validation threshold instead.
+        # cut: score at the head's fixed threshold instead.
         if fold_plan.tune_from_train:
-            return head.validation_threshold
+            return head.fixed_threshold
         from soma.evaluation import sweep_threshold
 
         threshold, _ = sweep_threshold(predictions, split.targets, per_class=True, matching=head.matching)

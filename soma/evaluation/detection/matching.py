@@ -13,6 +13,12 @@ compact ``(C, 3)`` per-image stat the streaming evaluator accumulates;
 per-image-macro mF1; :func:`sweep_score_thresholds` picks the per-class score
 threshold on the tune split.
 
+**One-pass greedy sweep.** Under greedy matching, whether a prediction is a hit does not
+depend on the threshold: lowering it only appends lower-scored predictions after the
+higher ones. So one matching pass over every prediction, binned by score
+(:func:`greedy_score_histogram`), gives the exact counts at every threshold
+(:func:`counts_at_thresholds`) and the per-class best F1 (:func:`sweep_score_histograms`).
+
 All distances are in the same (target-frame) pixel units as ``delta`` — the head
 resolves ``delta`` from µm/px via the run spacing before calling in.
 """
@@ -34,10 +40,18 @@ __all__ = [
     "detection_counts",
     "reduce_f1",
     "sweep_score_thresholds",
+    "greedy_score_histogram",
+    "counts_at_thresholds",
+    "sweep_score_histograms",
+    "histogram_thresholds",
+    "SCORE_BINS",
     "VALID_MATCHING",
 ]
 
 VALID_MATCHING = ("hungarian", "greedy")
+
+#: Score bins of the one-pass greedy sweep: its candidate thresholds are ``k / SCORE_BINS``.
+SCORE_BINS = 1000
 
 
 @dataclass(frozen=True)
@@ -108,8 +122,12 @@ def match_single_class(
         pairs = [(int(r), int(c)) for r, c in zip(rows, cols) if within[r, c]]
     elif method == "greedy":
         # Sort predictions by descending score; each claims the nearest unclaimed
-        # in-δ GT. OCELOT's official convention.
-        order = np.argsort(-pred_score)
+        # in-δ GT. OCELOT's official convention. The sort is stable (ties claim in input
+        # order), so the predictions above any threshold claim exactly as they do in the
+        # full set: what makes the one-pass sweep exact. A prediction with no GT in reach
+        # claims nothing, so only the others enter the loop.
+        order = np.argsort(-pred_score, kind="stable")
+        order = order[within[order].any(axis=1)]
         claimed = np.zeros(n_gt, dtype=bool)
         pairs = []
         for r in order:
@@ -308,7 +326,11 @@ def sweep_score_thresholds(
 ) -> list[float]:
     """Pick the per-class score threshold maximizing dataset-global per-class F1.
 
-    Run on the **tune** split: for each class the candidate grid unions three sources —
+    Run on the **tune** split. With ``method="greedy"`` this is the exact one-pass sweep
+    (:func:`sweep_score_histograms`, scores in ``[0, 1]``, thresholds on its
+    ``1 / SCORE_BINS`` grid): the same function the detection head's training-time
+    validation reads its monitor from. With ``hungarian``, for each class the candidate
+    grid unions three sources —
     quantiles of that class's predicted scores, a uniform grid over the observed score
     range, and quantiles of the scores of predictions lying within ``delta`` of a
     same-class GT point. At each candidate, predictions below it are dropped (all
@@ -327,6 +349,20 @@ def sweep_score_thresholds(
     per-class F1 only depends on that class's own predictions (class-aware matching).
     """
     n_images = len(per_image_pred_xy)
+    if method == "greedy":
+        if n_images == 0:
+            return [0.0] * int(num_classes)
+        histograms = np.stack(
+            [
+                greedy_score_histogram(*image, num_classes=num_classes, delta=delta)
+                for image in zip(
+                    per_image_pred_xy, per_image_pred_class, per_image_pred_score,
+                    per_image_gt_xy, per_image_gt_class,
+                )
+            ]
+        )
+        swept, _ = sweep_score_histograms(histograms)
+        return [float(t) for t in swept]
     delta_sq = float(delta) * float(delta)
     thresholds: list[float] = []
     for c in range(int(num_classes)):
@@ -402,3 +438,119 @@ def sweep_score_thresholds(
                 best_f1, best_thr = f1, float(thr)
         thresholds.append(best_thr)
     return thresholds
+
+
+# --------------------------------------------------------------------------------------
+# One-pass greedy sweep
+# --------------------------------------------------------------------------------------
+
+
+def histogram_thresholds(bins: int = SCORE_BINS) -> np.ndarray:
+    """The thresholds the one-pass sweep reads: ``k / bins`` for ``k = 0 .. bins + 1``.
+
+    A prediction is kept at threshold ``t`` when its score is ``>= t``. Scores lie in
+    ``[0, 1]``, so the last threshold (``1 + 1 / bins``) keeps no prediction.
+    """
+    return np.arange(int(bins) + 2, dtype=np.float64) / int(bins)
+
+
+def greedy_score_histogram(
+    pred_xy: np.ndarray,
+    pred_class: np.ndarray,
+    pred_score: np.ndarray,
+    gt_xy: np.ndarray,
+    gt_class: np.ndarray,
+    *,
+    num_classes: int,
+    delta: float,
+    bins: int = SCORE_BINS,
+) -> np.ndarray:
+    """One image's greedy matching as per-class score histograms, ``(C, 2 * S + 1)``.
+
+    ``S = bins + 1`` score slots: slot ``k`` holds the scores in ``[t_k, t_(k+1))`` of
+    :func:`histogram_thresholds` (the last slot holds a score of exactly 1). Per class,
+    the row is ``[predictions per slot | hits per slot | annotated points]``. Every
+    prediction is matched once, greedily; summed over images and read by
+    :func:`counts_at_thresholds`, the rows give the exact counts at every threshold.
+    Scores must lie in ``[0, 1]`` (the head's peaks are sigmoid outputs).
+    """
+    pred_score = np.asarray(pred_score, dtype=np.float64).reshape(-1)
+    if pred_score.size and not (np.all(pred_score >= 0.0) and np.all(pred_score <= 1.0)):
+        raise ValueError(
+            "the one-pass greedy sweep bins scores over [0, 1]; got scores in "
+            f"[{np.nanmin(pred_score)}, {np.nanmax(pred_score)}]"
+        )
+    pred_class = np.asarray(pred_class).reshape(-1).astype(np.int64)
+    num_classes = int(num_classes)
+    matches = match_assignment(
+        pred_xy, pred_class, pred_score, gt_xy, gt_class,
+        num_classes=num_classes, delta=delta, method="greedy",
+    )
+    slots = int(bins) + 1
+    hit = np.zeros(pred_score.shape[0], dtype=bool)
+    for m in matches:
+        hit[m.pairs[:, 0]] = True
+    known = (pred_class >= 0) & (pred_class < num_classes)
+    slot = np.searchsorted(histogram_thresholds(bins), pred_score, side="right") - 1
+    flat = pred_class * slots + slot
+    size = num_classes * slots
+    out = np.zeros((num_classes, 2 * slots + 1), dtype=np.int64)
+    out[:, :slots] = np.bincount(flat[known], minlength=size).reshape(num_classes, slots)
+    out[:, slots : 2 * slots] = np.bincount(flat[known & hit], minlength=size).reshape(num_classes, slots)
+    out[:, -1] = [m.n_gt for m in matches]
+    return out
+
+
+def _slots(histogram: np.ndarray) -> int:
+    width = int(histogram.shape[-1])
+    if width < 3 or (width - 1) % 2:
+        raise ValueError(f"a score histogram row is 2 * S + 1 wide, got {width}")
+    return (width - 1) // 2
+
+
+def counts_at_thresholds(histogram) -> np.ndarray:
+    """Score histograms ``(..., C, 2 * S + 1)`` -> TP/FP/FN at every threshold.
+
+    Returns ``(..., C, S + 1, 3)``: entry ``k`` holds the ``(tp, fp, fn)`` of the
+    predictions scoring at least ``histogram_thresholds()[k]`` (reverse cumulative sums
+    over the score slots). Sum the per-image rows first for the pooled counts.
+    """
+    h = np.asarray(histogram, dtype=np.int64)
+    slots = _slots(h)
+    zero = np.zeros(h.shape[:-1] + (1,), dtype=np.int64)
+
+    def at_or_above(counts: np.ndarray) -> np.ndarray:
+        return np.concatenate([np.cumsum(counts[..., ::-1], axis=-1)[..., ::-1], zero], axis=-1)
+
+    kept = at_or_above(h[..., :slots])
+    tp = at_or_above(h[..., slots : 2 * slots])
+    return np.stack([tp, kept - tp, h[..., -1:] - tp], axis=-1)
+
+
+def sweep_score_histograms(histograms) -> tuple[np.ndarray, Tensor]:
+    """Per-class best threshold of per-image score histograms ``(N, C, 2 * S + 1)``.
+
+    For each class, the threshold of :func:`histogram_thresholds` whose dataset-global
+    F1 is highest (ties keep the higher threshold: fewer false positives at equal F1; a
+    class whose every threshold scores 0 keeps no prediction). A class with no prediction
+    at all has nothing to tune and gets threshold 0. Tuning each class alone is
+    exact for the dataset-global metric (class-aware matching). Returns the ``(C,)``
+    thresholds and the per-image ``(N, C, 3)`` TP/FP/FN at them, ready for
+    :func:`reduce_f1`.
+    """
+    h = np.asarray(histograms, dtype=np.int64)
+    if h.ndim != 3:
+        raise ValueError(f"histograms must be (N, C, 2 * S + 1), got {tuple(h.shape)}")
+    slots = _slots(h)
+    pooled = counts_at_thresholds(h.sum(axis=0))  # (C, S + 1, 3)
+    tp, fp, fn = pooled[..., 0], pooled[..., 1], pooled[..., 2]
+    denom = 2 * tp + fp + fn
+    f1 = np.where(denom > 0, 2.0 * tp / np.maximum(denom, 1), 0.0)
+    best = f1.shape[1] - 1 - np.argmax(f1[:, ::-1], axis=1)  # the last (highest) maximum
+    best = np.where(tp[:, 0] + fp[:, 0] == 0, 0, best)
+    counts = np.zeros((h.shape[0], h.shape[1], 3), dtype=np.int64)
+    for c, k in enumerate(best):
+        kept = h[:, c, k:slots].sum(axis=1)
+        hits = h[:, c, slots + k : 2 * slots].sum(axis=1)
+        counts[:, c] = np.stack([hits, kept - hits, h[:, c, -1] - hits], axis=1)
+    return histogram_thresholds(slots - 1)[best], torch.from_numpy(counts)

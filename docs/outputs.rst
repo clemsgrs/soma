@@ -262,7 +262,7 @@ artifacts follow ``evaluation`` settings:
      - ``false``
    * - ``save_overlays`` (detection)
      - ``overlays/<split>/pred/`` and ``overlays/<split>/gt/``: predicted
-       points (at ``validation_threshold``) and annotated points drawn over
+       points (at ``fixed_threshold``) and annotated points drawn over
        each tile
      - ``true``
    * - ``save_heatmaps`` (detection)
