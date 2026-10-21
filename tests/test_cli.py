@@ -286,14 +286,18 @@ def test_init_output_resolves_to_the_preset_s_plan(tmp_path: Path, capsys):
 
 
 @pytest.mark.parametrize(
-    "name", ["mil_classification", "mil_regression", "tile_classification", "mil_survival", "segmentation", "detection"]
+    "name",
+    [
+        "tile_classification", "tile_regression", "mil_classification", "mil_regression", "mil_survival",
+        "slide_classification", "slide_regression", "slide_survival", "segmentation", "detection",
+    ],
 )
 def test_init_output_of_every_preset_passes_check(capsys, name):
     arguments = {"aggregator": "abmil", "loss": "cox", "decoder": "lightweight_conv", "num_classes": "2"}
     from soma import components
 
     entry = next(entry for entry in components("presets") if entry["name"] == name)
-    flags = ["--encoder", "uni2"] + [
+    flags = ["--encoder", "titan" if name.startswith("slide_") else "uni2"] + [
         token for key in entry["params"] if key in arguments for token in (f"--{key.replace('_', '-')}", arguments[key])
     ]
     check(ExperimentConfig.from_dict(yaml.safe_load(_init([name, *flags], capsys))))
@@ -509,8 +513,21 @@ def test_a_preset_annotation_that_does_not_evaluate_leaves_the_flags_working(cap
 
 
 def _rows(out: str) -> list[list[str]]:
-    """The cells of each table row ``soma list`` printed."""
-    return [[cell.strip() for cell in line.split("│")[1:-1]] for line in out.splitlines() if line.startswith("│")]
+    """The cells of each table row ``soma list`` printed, whatever the terminal width.
+
+    A cell too long for the width wraps onto continuation lines whose name cell is empty
+    (the name column never wraps); each one is joined back onto the row it continues.
+    """
+    rows: list[list[str]] = []
+    for line in out.splitlines():
+        if not line.startswith("│"):
+            continue
+        cells = [cell.strip() for cell in line.split("│")[1:-1]]
+        if rows and not cells[0]:
+            rows[-1] = [" ".join(part for part in pair if part) for pair in zip(rows[-1], cells)]
+        else:
+            rows.append(cells)
+    return rows
 
 
 def test_list_without_a_kind_prints_the_kinds(capsys):
@@ -530,7 +547,7 @@ def test_list_a_kind_prints_its_components_and_params(capsys):
 
     out = capsys.readouterr().out
     assert "Aggregators" in out
-    rows = {row[0]: row[1] for row in _rows(out) if row[0]}
+    rows = {row[0]: row[1] for row in _rows(out)}
     assert {"abmil", "clam_sb", "mean_pool", "transmil"} <= set(rows)
     assert "hidden_dim=128" in rows["abmil"]
 
@@ -551,8 +568,14 @@ def test_list_presets_prints_the_registered_presets(capsys):
     main(["list", "presets"])
 
     names = [row[0] for row in _rows(capsys.readouterr().out)]
-    assert {"mil_classification", "mil_regression", "mil_survival"} <= set(names)
-    assert "survival" not in names
+    # Grouped by what the head trains on: tile images, a slide's pooled tiles, a slide
+    # encoder's embedding, then the dense presets.
+    assert names == [
+        "tile_classification", "tile_regression",
+        "mil_classification", "mil_regression", "mil_survival",
+        "slide_classification", "slide_regression", "slide_survival",
+        "segmentation", "detection",
+    ]
 
 
 def test_list_encoders_filters_by_level(capsys):
@@ -563,7 +586,7 @@ def test_list_encoders_filters_by_level(capsys):
 
     out = capsys.readouterr().out
     assert "Encoders (slide)" in out
-    printed = {row[0] for row in _rows(out) if row[0]}
+    printed = {row[0] for row in _rows(out)}
     expected = {entry["name"] for entry in components("encoders") if entry["level"] == "slide"}
     assert printed == expected
 

@@ -57,12 +57,16 @@ Available commands
    --help`` lists them), its required ones are required, and ``--seed``
    defaults to 0. The registered presets:
 
-   * ``detection(encoder, decoder, num_classes, match_distance=3.0)`` — Detect cells: a decoder over a frozen encoder's dense token grid, one heatmap per class.
+   * ``tile_classification(encoder)`` — Classify tile images: a linear probe on a frozen tile encoder's embeddings.
+   * ``tile_regression(encoder)`` — Regress a value from tile images: a linear probe on a frozen tile encoder's embeddings.
    * ``mil_classification(encoder, aggregator, spacing=None, tile_size=None)`` — Classify whole slides: a frozen tile encoder, a MIL aggregator and a classifier.
    * ``mil_regression(encoder, aggregator, spacing=None, tile_size=None)`` — Regress a value from whole slides: a frozen tile encoder, a MIL aggregator and a regressor.
    * ``mil_survival(encoder, aggregator, loss, num_bins=None, spacing=None, tile_size=None)`` — Predict survival from whole slides: a MIL bag and a discrete-time or Cox head.
+   * ``slide_classification(encoder)`` — Classify whole slides: a linear probe on a frozen slide encoder's embeddings.
+   * ``slide_regression(encoder)`` — Regress a value from whole slides: a linear probe on a frozen slide encoder's embeddings.
+   * ``slide_survival(encoder, loss, num_bins=None)`` — Predict survival from whole slides: a discrete-time or Cox head on a slide encoder's embeddings.
    * ``segmentation(encoder, decoder, num_classes)`` — Segment tissue: a decoder over a frozen encoder's dense token grid.
-   * ``tile_classification(encoder)`` — Classify tile images: a linear probe on a frozen tile encoder's embeddings.
+   * ``detection(encoder, decoder, num_classes, match_distance=3.0)`` — Detect cells: a decoder over a frozen encoder's dense token grid, one heatmap per class.
 
 ``soma init NAME [PRESET ARGUMENTS]``
    Print the preset as an editable YAML config with every component's

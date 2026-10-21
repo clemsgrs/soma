@@ -37,6 +37,7 @@ __all__ = [
     "Plan",
     "check",
     "component_leaves",
+    "encoder_level",
     "expand",
     "head_family",
     "learner_shape",
@@ -219,7 +220,9 @@ def head_family(config: ExperimentConfig) -> str | None:
     return str(task_head_class(head.name).task_family)
 
 
-def _encoder_level(name: str) -> str:
+def encoder_level(name: str) -> str:
+    """What the encoder ``name`` embeds: ``tile``, ``slide`` or ``patient``, as slide2vec
+    resolves it. The ``composite`` encoder concatenates tile encoders, so it is ``tile``."""
     if name == "composite":
         return "tile"
     from slide2vec.encoders.registry import encoder_registry, resolve_encoder_level
@@ -236,7 +239,7 @@ def sample_unit(config: ExperimentConfig) -> str:
         return "tile"
     encoder = config.features.encoder
     aggregator = None if config.learner is None else config.learner.params.get("aggregator")
-    if aggregator is None and encoder is not None and _encoder_level(encoder.name) == "tile":
+    if aggregator is None and encoder is not None and encoder_level(encoder.name) == "tile":
         return "tile"
     return "slide"
 
@@ -353,7 +356,7 @@ def _check(config: ExperimentConfig) -> None:
             raise ValueError(f"a {family} run needs a decoder (e.g. learner.params.decoder: {{name: lightweight_conv}}).")
         if aggregator is not None:
             raise ValueError(f"a {family} run is dense per-pixel: it takes a decoder, not an aggregator.")
-        level = None if features.encoder is None else _encoder_level(features.encoder.name)
+        level = None if features.encoder is None else encoder_level(features.encoder.name)
         if level not in (None, "tile"):
             raise ValueError(
                 f"encoder '{features.encoder.name}' gives one vector per {level}, but a {family} run "
@@ -367,9 +370,9 @@ def _check(config: ExperimentConfig) -> None:
     unit = sample_unit(config)
     if unit == "patient" and aggregator is not None:
         raise ValueError("cohort.collapse: patient_id trains on patient embeddings, which take no aggregator.")
-    if features.encoder is not None and not features.is_composite and _encoder_level(features.encoder.name) == "patient" and unit != "patient":
+    if features.encoder is not None and not features.is_composite and encoder_level(features.encoder.name) == "patient" and unit != "patient":
         raise ValueError(f"encoder '{features.encoder.name}' embeds patients: set cohort.collapse: patient_id.")
-    if aggregator is not None and features.encoder is not None and _encoder_level(features.encoder.name) == "slide":
+    if aggregator is not None and features.encoder is not None and encoder_level(features.encoder.name) == "slide":
         raise ValueError(
             f"encoder '{features.encoder.name}' gives one vector per slide, so there is no bag for an "
             "aggregator to pool: drop learner.params.aggregator or use a tile-level encoder."
@@ -528,7 +531,7 @@ def _check_representation(config: ExperimentConfig) -> None:
         )
     if features.kind != "cached" or features.is_composite:
         raise ValueError("representation v1 reads cached single-encoder features (features.kind 'cached').")
-    if features.encoder is not None and _encoder_level(features.encoder.name) != "tile":
+    if features.encoder is not None and encoder_level(features.encoder.name) != "tile":
         raise ValueError("representation v1 scores tile embeddings: use a tile-level encoder.")
     if config.loaders.augment is not None:
         raise ValueError("representation v1 takes no augmentation.")

@@ -5,7 +5,8 @@ Each scenario writes synthetic images to disk, then runs them through the real
 evaluation. Nothing is mocked except the encoder, which is weight-free: it returns
 the mean normalised RGB of each tile or 8x8 patch (`soma.testing`'s `fake` encoder, or
 `soma.testing.FakeEncoder`, the same pooling, as the frozen encoder stage of the live grid
-path). The whole-slide cohort is `soma.testing.synthetic_cohort`. The
+path). Its slide-level counterpart, `fake-slide`, embeds a slide as the mean of its tiles'
+`fake` embeddings. The whole-slide cohort is `soma.testing.synthetic_cohort`. The
 synthetic labels are a function of tissue colour, so the model can only score well
 if the correct pixels, features and labels reach it.
 
@@ -20,6 +21,8 @@ if the correct pixels, features and labels reach it.
 | `mil_aggregator_<name>` | every registered aggregator on a rigged task (a slide is positive iff it has marker tiles): test accuracy and AUROC must be exactly 1, and re-scoring the trained model must give the same logits alone, in one padded batch, with garbage in the padding, and (for set-function aggregators) with tiles shuffled |
 | `mil_aggregator_control` | the same cohort with labels independent of the markers must stay near chance, so the perfect scores above cannot come from a label leak |
 | `tile_binary_classification` | a tile encoder with `learner: {name: mil, params: {head: …}}` and no `aggregator` leaf: each image is one sample, with no bag |
+| `tile_preset_regression` | `soma run --preset tile_regression`: each image is one sample, with no aggregator, in batches of 256, and every test image is scored. Then the same preset printed by `soma init`, with only the learning rate raised (the preset's 3e-4 takes one step per epoch on 16 training images): a full cache hit, and R² ≥ 0.8 |
+| `slide_preset_{classification,survival_cox}` | `soma run --preset slide_classification` and `--preset slide_survival --loss cox` with the weight-free `fake-slide` slide encoder (the mean of its tiles' `fake` embeddings): the plan has no aggregator, batches of 32, the 10% tissue mask and, for Cox, padded mode (`cox_window` 1, the batch is the risk set); every test slide is scored. Then the same preset printed by `soma init`, with only the learning rate raised: a full cache hit (zero tiles encoded), and the metric thresholds hold |
 | `dense_segmentation` | ROI → dense token grid → decoder → Dice / IoU; the label maps of tune and test land in `predictions_tune/` / `predictions_test/` |
 | `dense_detection` | ROI → dense token grid → heatmap decoder → F1 at a matching distance; the points land in `predictions_test.parquet` and no `detection_thresholds.json` is written |
 | `dense_preset_{segmentation,detection}` | `soma run --preset segmentation\|detection` with only the preset's own flags (`--num-classes`, `--match-distance`) on ROIs at the encoder's recommended tile size: the plan's head carries the flags, the run trains (loss falls) and is scored on test |

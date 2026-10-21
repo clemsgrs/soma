@@ -107,22 +107,38 @@ scenario checks.
      - Preset or head
      - Source
      - End-to-end scenario
-   * - Slide classification
-     - ``mil_classification(encoder, aggregator, spacing=None, tile_size=None)``
-     - Bags of tile features
-     - ``slide_mil_binary_classification``, ``slide_mil_multiclass_classification``
-   * - Survival
-     - ``mil_survival(encoder, aggregator, loss, num_bins=None, spacing=None, tile_size=None)`` with ``loss="nll"`` (and ``num_bins``) or ``loss="cox"``
-     - Bags of tile features
-     - ``slide_mil_survival_nll``, ``slide_mil_survival_nll_train_quantiles``, ``slide_mil_survival_cox``
-   * - Regression
-     - ``mil_regression(encoder, aggregator, spacing=None, tile_size=None)``
-     - Bags of tile features
-     - ``slide_mil_regression``
    * - Tile-level classification
      - ``tile_classification(encoder)``
      - One embedding per image
      - ``tile_binary_classification``
+   * - Tile-level regression
+     - ``tile_regression(encoder)``
+     - One embedding per image
+     - ``tile_preset_regression``
+   * - Slide classification
+     - ``mil_classification(encoder, aggregator, spacing=None, tile_size=None)``
+     - Bags of tile features
+     - ``slide_mil_binary_classification``, ``slide_mil_multiclass_classification``
+   * - Regression
+     - ``mil_regression(encoder, aggregator, spacing=None, tile_size=None)``
+     - Bags of tile features
+     - ``slide_mil_regression``
+   * - Survival
+     - ``mil_survival(encoder, aggregator, loss, num_bins=None, spacing=None, tile_size=None)`` with ``loss="nll"`` (and ``num_bins``) or ``loss="cox"``
+     - Bags of tile features
+     - ``slide_mil_survival_nll``, ``slide_mil_survival_nll_train_quantiles``, ``slide_mil_survival_cox``
+   * - Slide classification with a slide encoder
+     - ``slide_classification(encoder)``
+     - One slide-encoder embedding per slide
+     - ``slide_preset_classification``
+   * - Regression with a slide encoder
+     - ``slide_regression(encoder)``
+     - One slide-encoder embedding per slide
+     - none
+   * - Survival with a slide encoder
+     - ``slide_survival(encoder, loss, num_bins=None)`` with ``loss="nll"`` (and ``num_bins``) or ``loss="cox"``
+     - One slide-encoder embedding per slide
+     - ``slide_preset_survival_cox``
    * - Segmentation
      - ``segmentation(encoder, decoder, num_classes)``
      - Dense token grids

@@ -212,9 +212,12 @@ Slide-level encoders
      - 768
 
 A slide-level encoder gives one vector per slide, which goes straight to the task
-head: the run takes no aggregator. :func:`soma.plan.check` refuses an aggregator with a
-slide-level encoder. It also refuses a slide- or patient-level encoder in a segmentation
-or detection run, which encodes tiles and needs a tile-level encoder.
+head: the run takes no aggregator. The ``slide_classification``, ``slide_regression``
+and ``slide_survival`` presets train on it (see :ref:`presets`); the other presets
+refuse a slide-level encoder and name the one to use. :func:`soma.plan.check` refuses
+an aggregator with a slide-level encoder. It also refuses a slide- or patient-level
+encoder in a segmentation or detection run, which encodes tiles and needs a tile-level
+encoder.
 
 Patient-level encoders
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -230,6 +233,9 @@ Patient-level encoders
      - `MOOZY <https://huggingface.co/AtlasAnalyticsLab/MOOZY>`_
      - ``lunit``
      - 768
+
+A patient-level encoder gives one vector per patient: set ``cohort.collapse:
+patient_id``. No preset covers patient-level encoders yet, so write the config.
 
 Set ``features.extraction.tiling.requested_spacing_um`` explicitly for encoders with multiple
 recommended spacings. For a single recommended spacing, soma can fill it in.

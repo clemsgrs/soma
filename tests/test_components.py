@@ -48,7 +48,10 @@ def test_every_domain_lists_named_entries(kind):
     entries = soma.components(kind)
 
     assert entries
-    assert [entry["name"] for entry in entries] == sorted(entry["name"] for entry in entries)
+    names = [entry["name"] for entry in entries]
+    # The presets keep the order they are registered in, which groups them by what their
+    # head trains on; every other kind lists by name.
+    assert names == (soma.discovery.registry(kind).list() if kind == "presets" else sorted(names))
     assert all({"name", "class", "params"} <= set(entry) for entry in entries)
 
 

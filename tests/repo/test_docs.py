@@ -541,7 +541,10 @@ def test_the_use_case_table_names_scenarios_the_e2e_suite_runs() -> None:
     rows = [row for row in table.split("   * - ")[2:]]
     use_cases = [row.splitlines()[0].strip() for row in rows]
     assert use_cases == [
-        "Slide classification", "Survival", "Regression", "Tile-level classification", "Segmentation", "Detection",
+        "Tile-level classification", "Tile-level regression",
+        "Slide classification", "Regression", "Survival",
+        "Slide classification with a slide encoder", "Regression with a slide encoder", "Survival with a slide encoder",
+        "Segmentation", "Detection",
     ]
     named = {name for row in rows for name in re.findall(r"``(\w+)``", row.split("     - ")[-1])}
     assert named and named <= _e2e_scenarios()

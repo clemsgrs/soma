@@ -9,9 +9,12 @@ a regression check in its own right.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,6 +34,10 @@ CPU_EXECUTION = {
     "precision": "fp32",
 }
 CPU_LOADER = {"num_workers": 0, "pin_memory": False, "persistent_workers": False}
+#: The learning rate a probe preset's scenario raises the preset's 3e-4 to: on 16 training
+#: samples the preset takes one step per epoch, too few at 3e-4 to move a head over the
+#: fake encoders' three features in its 50 epochs.
+PROBE_SCENARIO_LR = 5e-2
 
 
 def learner_section(name: str, model: dict[str, Any], *, learning_rate: float, **params: Any) -> dict[str, Any]:
@@ -91,11 +98,38 @@ def run_soma(config: dict[str, Any], config_path: Path, *cli_args: str) -> Run:
     before = set(output_root.glob("experiments/*/runs/*"))
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     soma_main(["run", str(config_path), *cli_args])
+    return _new_run(output_root, before, config_path)
+
+
+def run_preset(preset: str, flags: Sequence[str], records: Path, splits: Path, output_root: Path) -> Run:
+    """``soma run --preset PRESET`` with the preset's own ``flags`` on a cohort: the run as
+    the preset builds it, with nothing edited."""
+    before = set(output_root.glob("experiments/*/runs/*"))
+    soma_main(
+        [
+            "run", "--preset", preset, *flags,
+            "--cohort", str(records), "--splits", str(splits), "--out", str(output_root),
+        ]
+    )
+    return _new_run(output_root, before, None)
+
+
+def init_config(preset: str, *flags: str) -> dict[str, Any]:
+    """The config ``soma init PRESET`` prints with the preset's own ``flags``, to edit."""
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+        soma_main(["init", preset, *flags])
+    return yaml.safe_load(printed.getvalue())
+
+
+def _new_run(output_root: Path, before: set[Path], config_path: Path | None) -> Run:
+    """The one run dir created under ``output_root`` since ``before``; its config is
+    ``config_path``, or else the copy the run wrote."""
     created = sorted(set(output_root.glob("experiments/*/runs/*")) - before)
     assert len(created) == 1, f"expected one new run dir, found {created}"
     run_dir = created[0]
     summary = json.loads((run_dir / "summary.json").read_text())
-    return Run(run_dir=run_dir, summary=summary, config_path=config_path)
+    return Run(run_dir=run_dir, summary=summary, config_path=config_path or run_dir / "config.yaml")
 
 
 def sha256(path: Path) -> str:

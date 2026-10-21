@@ -120,7 +120,7 @@ def test_every_registered_benchmark_config_passes_check(benchmark, encoder):
         ("eva/bach", "tile_classification", ("uni2",)),
         ("eva/camelyon16_small", "mil_classification", ("uni2",)),
         ("eva/monusac", "segmentation", ("uni2",)),
-        ("hest/IDC", "tile_classification", ("uni2",)),
+        ("hest/IDC", "tile_regression", ("uni2",)),
         ("croma/camelyon", "tile_classification", ("uni2",)),
     ],
 )

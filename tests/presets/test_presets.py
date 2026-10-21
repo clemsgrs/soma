@@ -1,4 +1,4 @@
-"""``soma.presets``: six registered functions, each a complete experiment from a few
+"""``soma.presets``: ten registered functions, each a complete experiment from a few
 typed arguments, edited by assigning fields (design §8.4)."""
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ PRESETS = [
     ("mil_classification", {"encoder": "uni2", "aggregator": "abmil"}, "set", "multiclass_classification", "slide", "abmil"),
     ("mil_regression", {"encoder": "uni2", "aggregator": "mean_pool"}, "set", "regression", "slide", "mean_pool"),
     ("tile_classification", {"encoder": "uni2"}, "set", "multiclass_classification", "tile", None),
+    ("tile_regression", {"encoder": "uni2"}, "set", "regression", "tile", None),
     ("mil_survival", {"encoder": "uni2", "aggregator": "transmil", "loss": "nll", "num_bins": 4}, "set", "survival", "slide", "transmil"),
     ("mil_survival", {"encoder": "uni2", "aggregator": "abmil", "loss": "cox"}, "set", "survival", "slide", "abmil"),
     (
@@ -44,16 +45,24 @@ def _cohort(root: Path, **columns) -> tuple[Path, Path]:
     return records, splits
 
 
-def test_components_lists_the_six_presets_with_their_arguments():
+def test_components_lists_the_ten_presets_by_what_their_head_trains_on():
     assert "presets" in soma.components()
     entries = {entry["name"]: entry for entry in soma.components("presets")}
-    assert sorted(entries) == [
-        "detection", "mil_classification", "mil_regression", "mil_survival", "segmentation", "tile_classification",
+    # Tile images, a slide's pooled tiles, a slide encoder's embedding, then the dense presets.
+    assert list(entries) == [
+        "tile_classification", "tile_regression",
+        "mil_classification", "mil_regression", "mil_survival",
+        "slide_classification", "slide_regression", "slide_survival",
+        "segmentation", "detection",
     ]
+    for name in ("tile_classification", "tile_regression", "slide_classification", "slide_regression"):
+        assert (entries[name]["params"], entries[name]["required"]) == ({"encoder": None}, ["encoder"])
+    # A slide encoder is tied to its tile encoder's tiling: no spacing or tile_size.
+    assert entries["slide_survival"]["params"] == {"encoder": None, "loss": None, "num_bins": None}
+    assert entries["slide_survival"]["required"] == ["encoder", "loss"]
     for name in ("mil_classification", "mil_regression"):
         assert entries[name]["params"] == {"encoder": None, "aggregator": None, "spacing": None, "tile_size": None}
         assert entries[name]["required"] == ["encoder", "aggregator"]
-    assert entries["tile_classification"]["params"] == {"encoder": None}
     assert entries["mil_survival"]["params"] == {
         "encoder": None, "aggregator": None, "loss": None, "num_bins": None, "spacing": None, "tile_size": None,
     }
@@ -84,6 +93,34 @@ def test_a_preset_builds_a_complete_config(name, arguments, shape, family, unit,
     assert (None if leaf is None else leaf.name) == pooling
 
 
+#: The presets that train on a slide encoder's embedding: ``(preset, arguments, task family)``.
+SLIDE_ENCODER_PRESETS = [
+    ("slide_classification", {"encoder": "titan"}, "multiclass_classification"),
+    ("slide_regression", {"encoder": "prism"}, "regression"),
+    ("slide_survival", {"encoder": "titan", "loss": "nll", "num_bins": 4}, "survival"),
+    ("slide_survival", {"encoder": "titan", "loss": "cox"}, "survival"),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "family"),
+    SLIDE_ENCODER_PRESETS,
+    ids=[f"{p[0]}-{p[1]['loss']}" if "loss" in p[1] else p[0] for p in SLIDE_ENCODER_PRESETS],
+)
+def test_a_slide_encoder_preset_trains_its_head_on_one_embedding_per_slide(name, arguments, family):
+    config = getattr(presets, name)(**arguments)
+    check(config)
+    assert (learner_shape(config), head_family(config), sample_unit(config)) == ("set", family, "slide")
+    assert "aggregator" not in config.learner.params
+    # The MIL presets' tissue tiles, at the slide encoder's own tiling.
+    mil = presets.mil_classification("uni2", "abmil").features.extraction
+    assert (config.features.extraction.tiling, config.features.extraction.masks) == (None, mil.masks)
+    # The probe recipe at a batch size for a cohort of a few hundred slides.
+    assert config.loaders.batch_size == 32
+    assert config.learner.params["optimizer"] == Component("adamw", {"lr": 3e-4})
+    assert "scheduler" not in config.learner.params
+
+
 @pytest.mark.parametrize(
     ("name", "arguments"),
     [
@@ -98,6 +135,17 @@ def test_a_preset_has_no_default_for_a_choice_that_changes_the_model(name, argum
     # The aggregator, the survival loss and the class count are the user's to name.
     with pytest.raises(TypeError, match="missing 1 required positional argument"):
         getattr(presets, name)(*arguments)
+
+
+def test_tile_regression_is_the_tile_probe_with_a_regression_head():
+    config = presets.tile_regression("uni2")
+    assert config.learner.params["head"] == Component("regression")
+    # Batches of 256 embeddings, AdamW (lr 3e-4) without a schedule: tile_classification's recipe.
+    assert (config.loaders.batch_size, config.learner.params["optimizer"]) == (256, Component("adamw", {"lr": 3e-4}))
+    assert "scheduler" not in config.learner.params
+    probe = presets.tile_classification("uni2")
+    del config.learner.params["head"], probe.learner.params["head"]
+    assert config == probe
 
 
 def test_the_survival_loss_picks_the_head():
@@ -116,11 +164,81 @@ def test_the_survival_loss_picks_the_head():
         presets.mil_survival("uni2", "abmil", "coxph")
 
 
-def test_the_survival_bin_count_belongs_to_nll_alone():
+@pytest.mark.parametrize(
+    ("name", "arguments"), [("mil_survival", ("uni2", "abmil")), ("slide_survival", ("titan",))]
+)
+def test_the_survival_bin_count_belongs_to_nll_alone(name, arguments):
     with pytest.raises(ValueError, match="loss 'nll' needs num_bins"):
-        presets.mil_survival("uni2", "abmil", "nll")
+        getattr(presets, name)(*arguments, "nll")
     with pytest.raises(ValueError, match="loss 'cox' takes no num_bins"):
-        presets.mil_survival("uni2", "abmil", "cox", num_bins=4)
+        getattr(presets, name)(*arguments, "cox", num_bins=4)
+
+
+def test_slide_survival_takes_its_cox_risk_set_from_the_batch():
+    assert presets.slide_survival("titan", "nll", num_bins=4).learner.params["head"] == Component(
+        "discrete_survival", {"binning": "train_quantiles", "num_bins": 4}
+    )
+    # One embedding per slide: Cox runs in padded mode, its risk set the batch of 32
+    # slides (no cox_window, which accumulates variable-size MIL bags).
+    config = presets.slide_survival("titan", "cox")
+    assert (config.learner.params["head"], config.loaders.batch_size) == (Component("cox_survival"), 32)
+    with pytest.raises(ValueError, match="loss must be one of 'nll', 'cox', got 'coxph'"):
+        presets.slide_survival("titan", "coxph")
+
+
+#: ``(preset, arguments after the encoder, what its refusal of a slide encoder says)``.
+TILE_ENCODER_PRESETS = [
+    ("tile_classification", (), "use slide_classification"),
+    ("tile_regression", (), "use slide_regression"),
+    ("mil_classification", ("abmil",), "use slide_classification"),
+    ("mil_regression", ("abmil",), "use slide_regression"),
+    ("mil_survival", ("abmil", "cox"), "use slide_survival"),
+    ("segmentation", ("linear", 2), "decodes each tile's token grid"),
+    ("detection", ("linear", 1), "decodes each tile's token grid"),
+]
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "instead"), TILE_ENCODER_PRESETS, ids=[p[0] for p in TILE_ENCODER_PRESETS]
+)
+def test_a_tile_encoder_preset_refuses_a_slide_encoder_when_built(name, arguments, instead):
+    # Without an aggregator, a slide encoder would make each sample a slide, under a
+    # preset whose name says tiles; with one, there is no bag to pool.
+    message = rf"encoder 'titan' is slide-level, but this preset needs a tile-level encoder: .*{instead}"
+    with pytest.raises(ValueError, match=message):
+        getattr(presets, name)("titan", *arguments)
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "instead"),
+    [
+        (
+            "slide_classification", (),
+            "use mil_classification to pool its tiles with an aggregator, or tile_classification",
+        ),
+        ("slide_regression", (), "use mil_regression to pool its tiles with an aggregator, or tile_regression"),
+        # No preset trains survival on single tiles.
+        ("slide_survival", ("cox",), r"use mil_survival to pool its tiles with an aggregator\.$"),
+    ],
+)
+def test_a_slide_encoder_preset_refuses_a_tile_encoder_naming_the_presets_to_use(name, arguments, instead):
+    message = rf"encoder 'uni2' is tile-level, but this preset needs a slide-level encoder: {instead}"
+    with pytest.raises(ValueError, match=message):
+        getattr(presets, name)("uni2", *arguments)
+
+
+PATIENT_ENCODER_CALLS = [(name, arguments) for name, arguments, _ in TILE_ENCODER_PRESETS] + [
+    ("slide_classification", ()),
+    ("slide_regression", ()),
+    ("slide_survival", ("cox",)),
+]
+
+
+@pytest.mark.parametrize(("name", "arguments"), PATIENT_ENCODER_CALLS, ids=[p[0] for p in PATIENT_ENCODER_CALLS])
+def test_every_preset_refuses_a_patient_encoder(name, arguments):
+    message = "encoder 'moozy' is patient-level: no preset covers patient-level encoders yet"
+    with pytest.raises(ValueError, match=message):
+        getattr(presets, name)("moozy", *arguments)
 
 
 def test_each_call_returns_a_config_of_its_own():

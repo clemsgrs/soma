@@ -8,10 +8,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 from soma.cli import main as soma_main
 
-from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, sha256, trainer_section
+from tests.e2e.harness import (
+    CPU_EXECUTION,
+    CPU_LOADER,
+    PROBE_SCENARIO_LR,
+    init_config,
+    learner_section,
+    run_preset,
+    run_soma,
+    sha256,
+    trainer_section,
+)
 from soma.data import CachedSetSource
 from soma.extract.preprocessing.supplied_coordinates import coordinates_meta_path
 from tests.e2e.synthetic import (
@@ -236,6 +247,65 @@ def test_survival_bins_are_derived_from_the_training_split(
     plan_head = yaml.safe_load((run.run_dir / "plan.yaml").read_text())["learner"]["params"]["head"]["params"]
     artifact.check_equal("plan/head/binning", (plan_head["binning"], plan_head["num_bins"]), ("train_quantiles", 4))
     artifact.check_equal("plan/head/no_bin_edges", "bin_edges" in plan_head, False)
+    artifact.assert_passed()
+
+
+@pytest.mark.parametrize(
+    ("scenario", "preset", "flags", "task", "head", "thresholds"),
+    [
+        (
+            "classification", "slide_classification", [], "binary_classification",
+            {"name": "multiclass_classification"}, {"balanced_accuracy": 0.8, "auroc_macro": 0.95},
+        ),
+        (
+            "survival_cox", "slide_survival", ["--loss", "cox"], "survival",
+            {"name": "cox_survival", "cox_window": 1}, {"c_index": 0.75},
+        ),
+    ],
+    ids=["classification", "survival_cox"],
+)
+def test_a_slide_encoder_preset_runs_from_the_command_line(
+    scenario, preset, flags, task, head, thresholds, cohort, tmp_path, encoded_images, new_artifact
+):
+    """``soma run --preset slide_classification|slide_survival --loss cox`` with the
+    weight-free ``fake-slide`` encoder: each slide is tiled at ``fake``'s 32 px and 0.5 µm,
+    its tiles with 10% tissue are embedded by ``fake`` and pooled by ``fake-slide`` into one
+    vector, and the head trains on that vector with no aggregator, in batches of 32 (for
+    Cox, the batch is the risk set: padded mode, ``cox_window`` 1). Every test slide is
+    scored.
+
+    The preset's probe recipe (AdamW at lr 3e-4) takes one step per epoch on the 16
+    training slides, which barely moves a head over three features in 50 epochs. So the
+    same preset, printed by ``soma init`` with only the learning rate raised, runs next: it
+    reads the first run's features from the cache (zero tiles encoded), its loss falls and
+    its metric thresholds hold.
+    """
+    artifact = new_artifact(f"slide_preset_{scenario}")
+    records, out = cohort.manifest(task), tmp_path / "runs"
+
+    shipped = run_preset(preset, ["--encoder", "fake-slide", *flags], records, cohort.splits_csv, out)
+    artifact.record_run("preset", shipped)
+    artifact.check_at_least("preset/tiles_encoded", sum(encoded_images), 1)
+    plan = yaml.safe_load((shipped.run_dir / "plan.yaml").read_text())
+    model = plan["learner"]["params"]
+    artifact.check_equal("preset/plan/aggregator", model.get("aggregator"), None)
+    artifact.check_equal("preset/plan/batch_size", plan["loaders"]["batch_size"], 32)
+    artifact.check_equal("preset/plan/tissue", plan["features"]["extraction"]["masks"]["min_coverage"], {"tissue": 0.1})
+    planned_head = {"name": model["head"]["name"], **model["head"]["params"]}
+    artifact.check_equal("preset/plan/head", {key: planned_head[key] for key in head}, head)
+    artifact.check_equal("preset/test/num_samples", shipped.summary["test/num_samples"], 8.0)
+
+    encoded_images.clear()
+    config = init_config(preset, "--encoder", "fake-slide", *flags)
+    config["cohort"].update(records=str(records), splits=str(cohort.splits_csv))
+    config["run"]["output_dir"] = str(out)
+    config["learner"]["params"]["optimizer"]["params"]["lr"] = PROBE_SCENARIO_LR
+    run = run_soma(config, tmp_path / "config.yaml")
+    artifact.record_run("run", run)
+    artifact.check_equal("run/tiles_encoded", sum(encoded_images), 0)
+    artifact.check_training_reduced_loss("run", run)
+    for metric, threshold in thresholds.items():
+        artifact.check_at_least(f"run/test/{metric}", run.summary[f"test/{metric}"], threshold)
     artifact.assert_passed()
 
 
