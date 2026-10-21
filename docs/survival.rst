@@ -50,7 +50,8 @@ Time bins
 ---------
 
 The ``discrete_survival`` head's ``binning`` param says where each sample's bin
-comes from.
+comes from: ``train_quantiles``, ``fixed`` or ``column``. You always set it
+yourself: no other param changes it.
 
 ``binning: train_quantiles`` (recommended) derives the bins in the run, from each
 fold's training split, so the cohort needs only ``time`` and ``event``.
@@ -88,10 +89,56 @@ splits (before any tiling or extraction), and again when each fold is trained.
 
 The fitted cut points are the head's ``bin_edges``. The fold's log prints them,
 and each fold bundle records them in ``model.json``, so :func:`soma.load` rebuilds
-a head that carries them. ``plan.yaml`` records ``binning`` and ``num_bins``,
-never the cut points, because the plan is the same for every fold. A config
-cannot set ``bin_edges``, and with ``binning: train_quantiles`` the cohort may
-not have a ``bin`` column: drop it, or set ``binning: column``.
+a head that carries them. ``plan.yaml`` records ``binning``, ``num_bins`` and
+``bin_edges: null``, never the fitted cut points, because the plan is the same for
+every fold. With ``binning: train_quantiles`` a config cannot set ``bin_edges``
+(choose them with ``binning: fixed``), and the cohort may not have a ``bin``
+column: drop it, or set ``binning: column``.
+
+``binning: fixed`` bins each time with cut points you choose, for example 12, 24
+and 36 months:
+
+.. code-block:: yaml
+
+   head:
+     name: discrete_survival
+     params: {binning: fixed, bin_edges: [12, 24, 36]}
+
+The cohort needs only ``time`` and ``event``, and may not have a ``bin`` column.
+The bins follow the same rules as above: each bin holds its lower cut point, and
+the first and last bins are open. So ``[12, 24, 36]`` makes four bins: ``[0, 12)``,
+``[12, 24)``, ``[24, 36)`` and ``[36, inf)``. The cut points do not depend on the
+data, so nothing is fitted per fold and the tune and test times cannot shape them.
+
+* ``bin_edges`` are in the units of the ``time`` column. Nothing checks this: cut
+  points in months on a ``time`` in years put almost every case in the first bin.
+* ``bin_edges`` is a list of at least one finite number above ``0``, in strictly
+  increasing order. A list out of order or with a repeat is refused, never sorted
+  or deduplicated for you. The cut points are kept as floats, so ``[12, 24, 36]``
+  and ``[12.0, 24.0, 36.0]`` give the same plan.
+* ``num_bins`` is ``len(bin_edges) + 1``. You may leave it out; if you set it, it
+  must be that number. ``plan.yaml`` records ``binning``, ``bin_edges`` and
+  ``num_bins``, and each fold bundle's ``model.json`` records the same cut points.
+
+For each fold, the log counts the training cases and events in each bin, once when
+the run starts and again when the fold is trained:
+
+.. code-block:: text
+
+   Fold 0: discrete_survival fixed bins on 162 training cases:
+     [0, 12): 41 cases, 30 events | [12, 24): 38 cases, 19 events | [24, 36): 22 cases, 8 events | [36, inf): 61 cases, 5 events
+
+A case is one sample the fold trains on: a slide, or a patient in a patient run.
+Empty bins are allowed: clinical cut points on a small cohort often leave the last
+bin empty in some fold, and an empty first or middle bin still learns from the
+samples in later bins, which survived it. A fold whose training cases all fall in
+one bin is refused, because the cut points then decide nothing: check the units of
+``bin_edges`` first. Tune and test are not checked: the outer bins are open, and
+evaluation does not read the bins.
+
+Outside soma, the same bins are a ``bin`` column you compute yourself and read
+with ``binning: column``, for example
+``pd.cut(time, [0, 12, 24, 36, np.inf], right=False, labels=False)``.
 
 ``binning: column`` (the default) reads the bins you computed before the run from
 the cohort's ``bin`` column. Set the head's ``num_bins`` param to fix the head
@@ -99,10 +146,11 @@ width: any subset of indices in ``[0, num_bins)`` is then valid, including empty
 intervals, and indices are never renumbered. Without an explicit width, observed
 bins must be contiguous from zero and ``num_bins`` is inferred as
 ``max(bin) + 1``. Cut points computed on the whole cohort carry information
-about the tune and test times into training; ``train_quantiles`` avoids this.
+about the tune and test times into training; ``train_quantiles`` avoids this, and
+so does ``fixed`` with cut points chosen before looking at the data.
 
 Risk scores, ``time`` and ``event`` are all that prediction and evaluation read;
-neither mode changes them.
+no mode changes them.
 
 Samples and aggregators
 -----------------------

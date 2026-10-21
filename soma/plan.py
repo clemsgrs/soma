@@ -23,6 +23,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from soma._internal.logging import logging_fold
 from soma.config import (
     LEAF_PARAMS,
     Component,
@@ -281,11 +282,12 @@ def load_cohort(config: ExperimentConfig):
         allow_missing_test=config.cohort.tune_is_test,
     )
     head = _head(config)
-    derives_bins = head is not None and head.params.get("binning") == "train_quantiles"
-    if derives_bins and cohort.records and "bin" in cohort.records[0].metadata:
+    binning = None if head is None else head.params.get("binning")
+    derived_from = {"train_quantiles": "the training split", "fixed": "its bin_edges"}
+    if binning in derived_from and cohort.records and "bin" in cohort.records[0].metadata:
         raise ValueError(
-            "cohort.records has a 'bin' column, but the head derives bins from the training split "
-            "(binning: train_quantiles); drop the column or set binning: column."
+            f"cohort.records has a 'bin' column, but the head derives bins from {derived_from[binning]} "
+            f"(binning: {binning}); drop the column or set binning: column."
         )
     return cohort.with_test_from_tune() if config.cohort.tune_is_test else cohort
 
@@ -333,14 +335,6 @@ def _check(config: ExperimentConfig) -> None:
     head_cls = task_head_class(head.name)
     family = str(head_cls.task_family)
     head_params = _head_params(head)
-    if family == "survival" and "bin_edges" in head_params:
-        from soma.models.heads.survival import DiscreteSurvivalHead
-
-        if issubclass(head_cls, DiscreteSurvivalHead):
-            raise ValueError(
-                f"head '{head.name}': bin_edges cannot be set from a config: they are fitted per fold "
-                "on the training split (binning: train_quantiles)."
-            )
     registries["head"].validate(head.name, head_params)
     target_columns(config)
     aggregator, decoder = params.get("aggregator"), params.get("decoder")
@@ -762,11 +756,13 @@ def _resolve_head(config: ExperimentConfig, head: Component, cohort: Any, regist
         )
     params = registry.canonical_params(head.name, {**explicit, **inferred, **given})
     # The head's fit hook runs per fold at train time; a fold it cannot fit (too few
-    # uncensored times for the survival bins) fails here, before anything is extracted.
-    # What it fits stays out of the plan, which is the same for every fold.
+    # uncensored times for the survival bins, or every training case in one fixed bin)
+    # fails here, before anything is extracted. What it fits stays out of the plan, which
+    # is the same for every fold.
     for fold, records in enumerate(_fold_training_records(config, cohort)):
         try:
-            registry.fit(head.name, records, params)
+            with logging_fold(fold):
+                registry.fit(head.name, records, params)
         except ValueError as error:
             raise ValueError(f"Fold {fold}: {error}") from None
     targets, _ = target_columns(config)

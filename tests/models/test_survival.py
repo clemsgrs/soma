@@ -207,6 +207,13 @@ class TestTrainQuantileBins:
             task_registry.fit("discrete_survival", records, {"binning": "train_quantiles", "num_bins": 3})
 
 
+def test_a_fixed_head_needs_its_bin_edges():
+    with pytest.raises(ValueError, match=r"binning 'fixed' needs bin_edges"):
+        DiscreteSurvivalHead(input_dim=8, num_bins=4, binning="fixed")
+    with pytest.raises(ValueError, match=r"bin_edges must be num_bins - 1 = 3 strictly increasing cut points"):
+        DiscreteSurvivalHead(input_dim=8, num_bins=4, binning="fixed", bin_edges=[12.0, 24.0])
+
+
 # ---------------------------------------------------------------------------
 # compute_survival_metrics
 # ---------------------------------------------------------------------------
@@ -472,6 +479,8 @@ def test_a_patient_run_fits_the_bin_edges_on_its_training_patients_once_each(tmp
 
     import json
 
+    import yaml
+
     import soma
 
     bundle = result.run_dir / "bundle"
@@ -479,7 +488,8 @@ def test_a_patient_run_fits_the_bin_edges_on_its_training_patients_once_each(tmp
     assert (head_params["binning"], head_params["bin_edges"]) == ("train_quantiles", [2.0])
     head = soma.load(bundle).model.task_head
     assert (head.binning, head.bin_edges) == ("train_quantiles", [2.0])
-    assert "bin_edges" not in (result.run_dir / "plan.yaml").read_text()
+    plan_head = yaml.safe_load((result.run_dir / "plan.yaml").read_text())["learner"]["params"]["head"]["params"]
+    assert plan_head["bin_edges"] is None
     assert "fitted {'bin_edges': [2.0]} on 4 training patients" in caplog.text
 
 
