@@ -180,7 +180,8 @@ class Registry:
 
         ``infer`` runs once on the whole cohort; ``fit`` runs once per fold on the samples
         that fold trains on, so what it returns may differ between folds and is merged into
-        that fold's params (the survival bin edges). ``params`` are the resolved params.
+        that fold's params (the survival bin edges). A hook that only checks the fold
+        returns ``{}``. ``params`` are the resolved params.
         """
         _, entry = self._lookup(name)
         if entry is None or entry.fit is None:

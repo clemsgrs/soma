@@ -38,6 +38,7 @@ from soma.extract.cache import resolve_cache_root
 from slide2vec import DenseOptions, PreprocessingConfig
 
 from soma._internal.class_scheme import resolve_classes
+from soma._internal.logging import logging_fold
 from soma.config import (
     Component,
     EvaluationConfig,
@@ -982,10 +983,12 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
         # Step 2, after the adaptor: the head's registry ``fit`` hook on the samples the
         # training loader iterates (a patient once, by its representative record), for
         # the constructor params one fold's training split decides (the survival bin edges).
+        # A hook that only checks the split returns nothing and logs for itself.
         patient = plan.unit == "patient"
         population = [records.records_by_id[pid] for pid in records.train] if patient else list(records.train)
         try:
-            fitted = task_registry.fit(head.name, population, head_params(head))
+            with logging_fold(fold):
+                fitted = task_registry.fit(head.name, population, head_params(head))
         except ValueError as error:
             raise ValueError(f"Fold {fold}: {error}") from None
         if fitted:

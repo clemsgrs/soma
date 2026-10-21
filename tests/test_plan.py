@@ -568,7 +568,7 @@ def test_train_quantile_bins_need_num_bins_and_take_no_bin_edges_or_bin_column(f
     with pytest.raises(ValueError, match="binning 'train_quantiles' needs num_bins"):
         check(experiment(*files, head="discrete_survival", aggregator="abmil", head_params={"binning": "train_quantiles"}))
     with pytest.raises(
-        ValueError, match=r"bin_edges cannot be set from a config: .* fitted per fold .*\(binning: train_quantiles\)"
+        ValueError, match=r"binning 'train_quantiles' takes no bin_edges: its fit hook fits them per fold"
     ):
         check(_quantile_survival(files, aggregator="abmil", head_params={"bin_edges": [1.5]}))
     # The head reads no bin, so a targets mapping cannot name one.
@@ -588,12 +588,13 @@ def test_train_quantile_bins_refuse_a_bin_column_at_cohort_load(tmp_path: Path):
     load_cohort(experiment(*files, head="discrete_survival", aggregator="abmil"))
 
 
-def test_the_plan_records_the_binning_and_bin_count_never_the_edges(tmp_path: Path):
+def test_the_plan_records_the_binning_and_bin_count_never_the_fitted_edges(tmp_path: Path):
     files = _cohort_files(tmp_path, time=[float(i) for i in range(1, 9)], event=[1] * 8)
     plan = _resolve(_quantile_survival(files, aggregator="abmil"))
     assert plan.learner.params["head"].params == {
         "num_bins": 2,
         "binning": "train_quantiles",
+        "bin_edges": None,
         "alpha": 0.15,
         "dropout": 0.0,
         "targets": {"time": "time", "event": "event"},
@@ -625,3 +626,69 @@ def test_a_patient_run_counts_each_training_patient_once(tmp_path: Path):
     _resolve(_quantile_survival(files, aggregator="abmil"))  # slides: two uncensored times
     with pytest.raises(ValueError, match=r"^Fold 0: .*num_bins=2 .* 1 uncensored training time\(s\)"):
         _resolve(_quantile_survival(files, cohort={"collapse": "patient_id"}))
+
+
+# --- survival bins fixed in the config (binning: fixed) --------------------------------
+
+
+def _fixed_survival(files, **kwargs) -> ExperimentConfig:
+    params = {"binning": "fixed", "bin_edges": [12, 24, 36], **kwargs.pop("head_params", {})}
+    return experiment(*files, head="discrete_survival", aggregator="abmil", head_params=params, **kwargs)
+
+
+def test_fixed_bins_need_their_bin_edges_and_only_they_take_them(files):
+    with pytest.raises(ValueError, match=r"binning 'fixed' needs bin_edges"):
+        check(_fixed_survival(files, head_params={"bin_edges": None}))
+    # The mode is always explicit: bin_edges never switch the default binning to fixed.
+    with pytest.raises(ValueError, match=r"binning 'column' takes no bin_edges: .* bin column"):
+        check(experiment(*files, head="discrete_survival", aggregator="abmil", head_params={"bin_edges": [12, 24, 36]}))
+
+
+@pytest.mark.parametrize(
+    ("bin_edges", "message"),
+    [
+        ([], r"at least one cut point"),
+        ("12, 24", r"at least one cut point"),
+        ([12, "24"], r"bin_edges must be finite numbers, got '24'"),
+        ([True, 24], r"bin_edges must be finite numbers, got True"),  # YAML's true
+        ([12, float("inf")], r"bin_edges must be finite numbers, got inf"),
+        ([12, float("nan")], r"bin_edges must be finite numbers, got nan"),
+        # Times are >= 0 and bins left-closed: an edge at or below 0 leaves bin 0 empty.
+        ([0, 12], r"bin_edges must be above 0, got 0 .* leaves the first bin empty"),
+        ([-6, 12], r"bin_edges must be above 0, got -6 "),
+        # Never sorted or deduplicated silently.
+        ([24, 12, 36], r"bin_edges must be strictly increasing, got \[24.0, 12.0, 36.0\]"),
+        ([12, 24, 24], r"bin_edges must be strictly increasing, got \[12.0, 24.0, 24.0\]"),
+    ],
+)
+def test_fixed_bin_edges_are_increasing_positive_numbers(files, bin_edges, message):
+    with pytest.raises(ValueError, match=message):
+        check(_fixed_survival(files, head_params={"bin_edges": bin_edges}))
+
+
+def test_a_stated_num_bins_must_match_the_fixed_bin_edges(files):
+    with pytest.raises(ValueError, match=r"num_bins=3 disagrees with bin_edges \[12.0, 24.0, 36.0\], which make 4 bins"):
+        check(_fixed_survival(files, head_params={"num_bins": 3}))
+    check(_fixed_survival(files, head_params={"num_bins": 4}))
+
+
+def test_fixed_bins_refuse_a_bin_column_at_cohort_load(tmp_path: Path):
+    files = _cohort_files(tmp_path, time=[float(i) for i in range(1, 9)], event=[1] * 8, bin=[0, 1] * 4)
+    message = (
+        r"cohort.records has a 'bin' column, but the head derives bins from its bin_edges "
+        r"\(binning: fixed\); drop the column or set binning: column"
+    )
+    with pytest.raises(ValueError, match=message):
+        load_cohort(_fixed_survival(files))
+
+
+def test_resolve_names_the_fold_whose_training_cases_all_fall_in_one_fixed_bin(tmp_path: Path):
+    times = [5.0, 15.0, 30.0, 40.0, 1.0, 2.0, 3.0, 4.0]
+    rows = [(f"s{i}", f"p{i}", time, 1) for i, time in enumerate(times)]
+    roles = ["train"] * 4 + ["tune"] * 2 + ["test"] * 2
+    fold_0 = dict(zip([f"s{i}" for i in range(8)], roles))
+    # Fold 1 trains on s4-s7, all below the first cut point: likely years against month edges.
+    fold_1 = dict(zip([f"s{i}" for i in (4, 5, 6, 7, 0, 1, 2, 3)], roles))
+    files = _survival_folds(tmp_path, rows, [fold_0, fold_1])
+    with pytest.raises(ValueError, match=r"^Fold 1: .*all 4 training cases fall in one bin, \[0, 12\).*units of the time column"):
+        _resolve(_fixed_survival(files))

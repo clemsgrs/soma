@@ -351,10 +351,13 @@ decides, such as a classification head's class count and label map or a survival
 head's bin count; a value set in the config wins. A ``fit(records, params)`` hook
 returns the params one fold's training samples decide, such as the survival head's
 bin edges under ``binning: train_quantiles``: it runs once per fold, and what it
-returns goes into that fold's model, never into the plan. A registration inherits
-nothing from the registration of its base class, so a subclass names the params and
-the hooks it reuses (``infer_num_bins`` and ``fit_bin_edges`` for a survival head);
-all are public. A head named by dotted path gets no hook, so its config sets
+returns goes into that fold's model, never into the plan. A hook may also only check
+a fold and return ``{}``, as the survival head's does under ``binning: fixed``: it
+logs the training cases in each bin and refuses a fold whose cases all fall in one.
+A ``ValueError`` from the hook stops the run when it starts, before anything is
+extracted, and names the fold. A registration inherits nothing from the registration
+of its base class, so a subclass names the params and the hooks it reuses
+(``infer_num_bins`` and ``fit_bin_edges`` for a survival head); all are public. A head named by dotted path gets no hook, so its config sets
 ``num_classes`` and ``label_map`` itself.
 
 :func:`soma.testing.check_task_head` checks a head on one batch: its declared

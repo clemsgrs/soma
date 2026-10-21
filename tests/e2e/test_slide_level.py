@@ -220,7 +220,8 @@ def test_survival_bins_are_derived_from_the_training_split(
 ):
     """``binning: train_quantiles`` on a cohort without a ``bin`` column: the run cuts the
     training split's uncensored times at their quartiles, the bundle carries the cut
-    points and ``soma.load`` rebuilds the head with them; the plan never holds them."""
+    points and ``soma.load`` rebuilds the head with them; the plan's ``bin_edges`` stay
+    null."""
     import yaml
 
     import soma
@@ -246,7 +247,53 @@ def test_survival_bins_are_derived_from_the_training_split(
     artifact.check_equal("bundle/load/bin_edges", soma.load(run.run_dir / "bundle").model.task_head.bin_edges, expected)
     plan_head = yaml.safe_load((run.run_dir / "plan.yaml").read_text())["learner"]["params"]["head"]["params"]
     artifact.check_equal("plan/head/binning", (plan_head["binning"], plan_head["num_bins"]), ("train_quantiles", 4))
-    artifact.check_equal("plan/head/no_bin_edges", "bin_edges" in plan_head, False)
+    artifact.check_equal("plan/head/no_bin_edges", plan_head["bin_edges"], None)
+    artifact.assert_passed()
+
+
+def test_fixed_survival_bins_come_from_the_config(
+    cohort, shared_cache, tmp_path, encoder_name, new_artifact, caplog
+):
+    """``binning: fixed`` with ``bin_edges: [6, 11, 16]`` on a cohort without a ``bin``
+    column: the plan holds the edges as floats and the bin count they make, the bundle and
+    the head ``soma.load`` rebuilds carry the same edges, and the fold's log line counts the
+    training cases and events in each interval."""
+    import soma
+
+    artifact = new_artifact("slide_mil_survival_nll_fixed")
+    head = {"name": "discrete_survival", "params": {"binning": "fixed", "bin_edges": [6, 11, 16]}}
+    config = _config(cohort, tmp_path, encoder_name, head=head, metrics=["c_index"], cache_root=shared_cache)
+    records = pd.read_csv(cohort.manifest("survival")).drop(columns="bin")
+    config["cohort"]["records"] = str(tmp_path / "dataset_survival_times.csv")
+    records.to_csv(config["cohort"]["records"], index=False)
+
+    with caplog.at_level("INFO", logger="soma"):
+        run = run_soma(config, tmp_path / "config.yaml")
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("test/c_index", run.summary["test/c_index"], 0.75)
+
+    edges = [6.0, 11.0, 16.0]
+    plan_head = yaml.safe_load((run.run_dir / "plan.yaml").read_text())["learner"]["params"]["head"]["params"]
+    artifact.check_equal(
+        "plan/head/bins", (plan_head["binning"], plan_head["bin_edges"], plan_head["num_bins"]), ("fixed", edges, 4)
+    )
+    model = json.loads((run.run_dir / "bundle" / "model.json").read_text())
+    artifact.check_equal("bundle/model.json/bin_edges", model["params"]["head"]["params"].get("bin_edges"), edges)
+    artifact.check_equal("bundle/load/bin_edges", soma.load(run.run_dir / "bundle").model.task_head.bin_edges, edges)
+
+    # Count each interval independently of the head: pandas' left-closed cut.
+    train = set(pd.read_csv(cohort.splits_csv).query("split == 'train'")["sample_id"])
+    training = records[records["sample_id"].isin(train)]
+    intervals = pd.cut(training["time"], [0.0, *edges, np.inf], right=False)
+    counts = training.groupby(intervals, observed=False)["event"].agg(["size", "sum"])
+    labels = ["[0, 6)", "[6, 11)", "[11, 16)", "[16, inf)"]
+    line = f"Fold 0: discrete_survival fixed bins on {len(training)} training cases:\n  " + " | ".join(
+        f"{label}: {size} cases, {events} events" for label, (size, events) in zip(labels, counts.itertuples(index=False))
+    )
+    artifact.facts["fold_0_bins"] = line
+    # Once when the plan resolves, once when the fold trains.
+    artifact.check_equal("log/fold_0_bins", caplog.text.count(line), 2)
     artifact.assert_passed()
 
 

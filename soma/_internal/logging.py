@@ -4,13 +4,17 @@ Python drops INFO records when nobody configures logging, so a script that only 
 ``Pipeline(config).run()`` would see none of soma's progress messages. On first use
 soma attaches one stderr handler to the ``soma`` logger, unless the process already
 has a logging setup (a handler on the root or the ``soma`` logger), which soma then
-leaves untouched.
+leaves untouched. :func:`logging_fold` labels the log lines of a hook run once per
+fold with that fold.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import sys
+from collections.abc import Iterator
+from contextvars import ContextVar
 
 _FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 _DATEFMT = "%H:%M:%S"
@@ -82,3 +86,24 @@ def configure_cli_logging() -> None:
     """
     logging.basicConfig(format=_FORMAT, datefmt=_DATEFMT, handlers=[_StderrHandler()])
     logging.getLogger("soma").setLevel(logging.INFO)
+
+
+#: The fold :func:`logging_fold` labels log lines with, or ``None`` outside it.
+_FOLD: ContextVar[int | None] = ContextVar("soma_logging_fold", default=None)
+
+
+@contextlib.contextmanager
+def logging_fold(fold: int) -> Iterator[None]:
+    """Label the log lines of the code run inside with ``fold`` (:func:`fold_prefix`): a
+    registry ``fit`` hook runs once per fold and is not told which."""
+    token = _FOLD.set(fold)
+    try:
+        yield
+    finally:
+        _FOLD.reset(token)
+
+
+def fold_prefix() -> str:
+    """``"Fold N: "`` inside :func:`logging_fold`, else ``""``."""
+    fold = _FOLD.get()
+    return "" if fold is None else f"Fold {fold}: "
