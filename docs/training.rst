@@ -268,11 +268,8 @@ for cached grids:
    )
    result = soma.fit(model, fold.train, fold.tune, max_epochs=50)
 
-:class:`soma.testing.FakeEncoder` is a weight-free stage with the same contract.
-The end-to-end scenarios ``grid_live_segmentation`` and ``grid_live_detection``
-(`tests/e2e/test_grid.py
-<https://github.com/clemsgrs/soma/blob/main/tests/e2e/test_grid.py>`_) run the whole
-grid flow on synthetic tiles with it, from loaders to evaluation.
+:class:`soma.testing.FakeEncoder` is a weight-free stage with the same contract,
+for trying the grid flow without downloading model weights.
 
 .. _runtime-observers:
 

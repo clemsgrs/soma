@@ -13,8 +13,7 @@ Where to cut in
 :class:`soma.Pipeline` calls the public verbs in a fixed order: it builds the
 features once, then runs the same steps for every fold. Random numbers are drawn in
 this order, so a run composed by hand in the same order, with the plan's values,
-gives byte-identical predictions and weights; soma's test suite checks this for a
-MIL, a segmentation and a detection run.
+gives byte-identical predictions and weights.
 
 .. list-table::
    :header-rows: 1
@@ -362,8 +361,7 @@ all are public. A head named by dotted path gets no hook, so its config sets
 ``prediction_columns``, the columns of the family's
 :class:`~soma.evaluation.Baseline`, and that :func:`soma.evaluate` on a disk round
 trip agrees with ``compute_metrics`` (for a grid head, also the logits' size and
-the prediction type it assembles). The end-to-end scenario
-``extension_custom_learner`` trains this head through the CLI.
+the prediction type it assembles).
 
 The head methods worth overriding are:
 
@@ -446,8 +444,7 @@ is not ``(B, output_dim)``, when ``mask=None`` fails or gives another output tha
 mask that marks every tile real, or when padded tiles change a bag's output. It fills
 the padding with large noise, so an aggregator that pools padded tiles fails. In a
 config, the leaf is ``learner.params.aggregator: {name: projected_mean, params:
-{hidden_dim: 128}}``. The end-to-end scenario ``extension_custom_aggregator`` trains a
-registered aggregator through the CLI.
+{hidden_dim: 128}}``.
 
 The other kinds follow the same pattern:
 
@@ -456,8 +453,7 @@ The other kinds follow the same pattern:
   ``num_upsample_blocks`` derived from the grid geometry when it accepts one and the
   config leaves it unset. ``forward`` maps a ``(B, D, h, w)`` grid to class logits
   at any resolution, since the head resizes them to the mask, and ``num_classes``
-  is a property. The end-to-end scenario ``extension_custom_head_decoder`` trains a
-  registered decoder and segmentation head through the CLI.
+  is a property.
 - **Metrics** are ``(predictions, targets) -> float`` callables, passed to
   :func:`soma.evaluate` or by dotted path to ``soma evaluate --metrics``; a config's
   ``evaluation.metrics`` takes the built-in names only (see :doc:`evaluation`).

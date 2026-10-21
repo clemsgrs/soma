@@ -5,9 +5,6 @@ Segmentation predicts a class for every pixel in a tile or region. A frozen
 encoder produces dense feature grids; a trainable :doc:`decoder <decoders>`
 maps them to class logits.
 
-The :ref:`use-case table <use-cases>` names the end-to-end scenarios that run
-the decoder path on a small synthetic dataset.
-
 Input modes
 -----------
 

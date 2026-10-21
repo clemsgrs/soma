@@ -16,6 +16,7 @@ import yaml
 
 from soma.config import ExperimentConfig
 from soma.plan import check
+from soma.presets import preset_registry
 
 def test_documentation_always_spells_soma_lowercase() -> None:
     docs_dir = Path(__file__).resolve().parents[2] / "docs"
@@ -524,30 +525,11 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         assert entries == list(children), filename
 
 
-def _e2e_scenarios() -> set[str]:
-    """The scenario names of ``tests/e2e/README.md``'s table, ``a_{b,c}`` spelled out."""
-    readme = (Path(__file__).resolve().parents[1] / "e2e" / "README.md").read_text(encoding="utf-8")
-    names: set[str] = set()
-    for pattern in re.findall(r"^\| `([^`]+)` \|", readme, flags=re.MULTILINE):
-        match = re.fullmatch(r"(.*)\{([^}]*)\}(.*)", pattern)
-        alternatives = match.group(2).split(",") if match else [""]
-        names |= {f"{match.group(1)}{alt}{match.group(3)}" if match else pattern for alt in alternatives}
-    return names
-
-
-def test_the_use_case_table_names_scenarios_the_e2e_suite_runs() -> None:
+def test_the_use_case_table_names_every_preset() -> None:
     rst = (Path(__file__).resolve().parents[2] / "docs" / "how-soma-works.rst").read_text(encoding="utf-8")
-    table = rst.split(".. _use-cases:", 1)[1].split(".. list-table::", 1)[1]
-    rows = [row for row in table.split("   * - ")[2:]]
-    use_cases = [row.splitlines()[0].strip() for row in rows]
-    assert use_cases == [
-        "Tile-level classification", "Tile-level regression",
-        "Slide classification", "Regression", "Survival",
-        "Slide classification with a slide encoder", "Regression with a slide encoder", "Survival with a slide encoder",
-        "Segmentation", "Detection",
-    ]
-    named = {name for row in rows for name in re.findall(r"``(\w+)``", row.split("     - ")[-1])}
-    assert named and named <= _e2e_scenarios()
+    section = rst.split(".. _use-cases:", 1)[1]
+    named = re.findall(r":func:`~soma\.presets\.(\w+)`", section)
+    assert sorted(named) == sorted(preset_registry.list())
 
 
 def _extract_first_yaml_block(rst: str) -> str:

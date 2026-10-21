@@ -126,39 +126,17 @@ what the experiment identity digests.
 
 .. autoclass:: soma.config.Component
 
+.. _configuration-presets:
+
 Presets
 -------
 
-A preset returns a complete config for a common task (see :ref:`presets`);
-``soma.components("presets")`` lists them with their arguments. A preset is named
-after what its head trains on:
-
-.. list-table::
-   :header-rows: 1
-
-   * - The head trains on
-     - Encoder level
-     - Classification
-     - Regression
-     - Survival
-   * - one tile image's embedding
-     - tile
-     - ``tile_classification``
-     - ``tile_regression``
-     - none
-   * - an aggregator's pooling of a slide's tiles
-     - tile
-     - ``mil_classification``
-     - ``mil_regression``
-     - ``mil_survival``
-   * - a pretrained slide encoder's embedding
-     - slide
-     - ``slide_classification``
-     - ``slide_regression``
-     - ``slide_survival``
+A preset returns a complete config for a common task. The :ref:`use-case table
+<presets>` shows which preset fits your encoder and task, and
+``soma.components("presets")`` lists them with their arguments.
 
 ``segmentation`` and ``detection`` decode each tile's token grid, so they take a
-tile-level encoder too. Each preset checks the level of its encoder when it is
+tile-level encoder. Each preset checks the level of its encoder when it is
 built, and refuses an encoder of another level by naming the preset to use:
 ``presets.tile_classification("titan")`` asks for ``slide_classification``, and
 ``presets.slide_classification("uni2")`` for ``mil_classification`` or
