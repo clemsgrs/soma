@@ -32,6 +32,10 @@ features:
     target_size: 819   # round(1024 × 0.2/0.25); v1 needs target_size == read size
     window_size: 448
     overlap: 0.25
+  cache:
+    # Pinned because the experiment id ignores the cache dtype: the reference numbers
+    # were measured on fp16 features.
+    dtype: fp16
 
 # The decoder upsamples the grid to a full-tile heatmap; batch 1 on a 12 GB card.
 loaders:
@@ -49,12 +53,12 @@ learner:
       params:
         num_classes: 2            # 0 = BC (background cell), 1 = TC (tumor cell)
         match_distance: 3.0       # δ in µm (OCELOT-official)
-        sigma: 1.0                # target Gaussian σ in µm (≈ δ/3)
+        sigma: 2.0                # target Gaussian σ in µm (chosen on tune, #677)
         matching: hungarian       # headline; greedy is OCELOT's official scorer
         foreground_weight: 10.0
     optimizer:
-      name: adam
-      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+      name: adamw
+      params: {lr: 3.0e-4, weight_decay: 1.0e-4}
     scheduler: cosine
 
 trainer:

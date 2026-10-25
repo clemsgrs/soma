@@ -38,7 +38,7 @@ def test_list_benchmarks_shows_ocelot(capsys):
 
 
 def test_reproduce_from_run_dir_passes_within_tolerance(monkeypatch, capsys, tmp_path):
-    # mean_f1 = 0.70 is within 0.6995 +/- 0.02 -> REFERENCE OK. Stub the greedy inner
+    # mean_f1 = 0.70 is within 0.6926 +/- 0.02 -> REFERENCE OK. Stub the greedy inner
     # seam so no data/GPU is touched.
     monkeypatch.setattr(
         "soma.benchmark.ocelot._greedy_report_for_run",
@@ -58,7 +58,7 @@ def test_reproduce_from_run_dir_passes_within_tolerance(monkeypatch, capsys, tmp
         "  Cache-aware: feature extraction is cached and shared across seeds and repeat "
         "runs, so it runs once per encoder.\n"
         "[REFERENCE OK] ocelot mean_f1 = 0.7000  "
-        "(reference 0.6995, Δ +0.0005, tolerance ±0.0200)\n"
+        "(reference 0.6926, Δ +0.0074, tolerance ±0.0200)\n"
     )
 
 
@@ -345,7 +345,7 @@ def test_reproduce_external_anchors_do_not_override_comparable_reference(
     monkeypatch, capsys, tmp_path
 ):
     # OCELOT's CSV carries external anchors (0.70, 0.73) OUTSIDE the gate band alongside the
-    # comparable row (0.6995 ± 0.02). A measured 0.70 matches it; external anchors must not
+    # comparable row (0.6926 ± 0.02). A measured 0.70 matches it; external anchors must not
     # turn the result into a drift warning or a "multiple rows" error.
     monkeypatch.setattr(
         "soma.benchmark.ocelot._greedy_report_for_run",
