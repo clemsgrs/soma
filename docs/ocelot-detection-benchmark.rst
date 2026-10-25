@@ -49,8 +49,13 @@ The recipe is fixed and only the encoder varies.
      - ``lightweight_conv`` on the frozen dense token grid, predicting one peak
        heatmap per class.
    * - Target and loss
-     - A peak Gaussian at every annotated cell and a foreground-weighted MSE; see
-       :doc:`detection`.
+     - A Gaussian peak (σ = 2 µm) at every annotated cell and an MSE loss with
+       foreground weight 10; see :doc:`detection`.
+   * - Training
+     - AdamW with learning rate 3e-4 and weight decay 1e-4, cosine schedule over 50
+       epochs, effective batch 8. Training stops after 10 epochs without a better tune
+       ``mean_f1`` and keeps the best epoch. These values were chosen on ``tune``
+       across seven encoders.
    * - Thresholds
      - One score threshold per class, chosen on ``tune`` and applied once to ``test``.
    * - Seeds

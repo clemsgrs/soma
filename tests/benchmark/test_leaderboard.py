@@ -388,7 +388,7 @@ def test_pinned_reference_joins_the_anchor_row(tmp_path: Path):
     # OCELOT's gate is pinned to the Virchow2 @ 0.2 anchor -> a per-row join for that
     # encoder, no config-agnostic banner.
     assert table.banner is None
-    assert table.rows[0].reference_expected == pytest.approx(0.6995, abs=1e-6)
+    assert table.rows[0].reference_expected == pytest.approx(0.6926, abs=1e-6)
     assert table.rows[0].reference_pass is True
 
 
@@ -408,7 +408,7 @@ def test_external_anchors_collected_as_guidance_distinct_from_gate(tmp_path: Pat
     table = _detection_table(tmp_path)
     # The gate joins the soma-reproduced anchor row; external anchors land in `guidance`.
     gate_expected = table.rows[0].reference_expected
-    assert gate_expected == pytest.approx(0.6995, abs=1e-6)
+    assert gate_expected == pytest.approx(0.6926, abs=1e-6)
     assert len(table.guidance) >= 2  # official baseline + best-reported
     assert any("best reported" in a.label for a in table.guidance)
     for anchor in table.guidance:

@@ -179,9 +179,10 @@ def test_midog_config_carries_relaxed_tolerance():
     assert cfg.features.dense.tolerance == pytest.approx(0.10)
 
 
-@pytest.mark.parametrize("dataset", ["midog", "monkey"])
-def test_tiled_datasets_store_the_dense_cache_in_fp16(dataset):
+@pytest.mark.parametrize("dataset", ["ocelot", "midog", "monkey"])
+def test_datasets_store_the_dense_cache_in_fp16(dataset):
     # The tiled datasets' dense grids are large: fp16 halves the cache for the big encoders.
+    # OCELOT's reference numbers were measured on fp16 features.
     cfg = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset=dataset)
     assert cfg.features.cache.dtype == "fp16"
 

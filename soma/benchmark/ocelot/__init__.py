@@ -57,9 +57,8 @@ _CONFIG_FILES: dict[tuple[str, float], str] = {
 
 BENCHMARK_NAME = "ocelot"
 PRIMARY_METRIC = "mean_f1"
-# The recorded anchor is single-seed (seed 0); the reference band IS that seed-0 value, so
-# the default reproduce run is seed 0 only — a like-for-like comparison to the published
-# number (examples-era RESULTS.md / expected_metrics.json, canonical_seed = 0).
+# The reference band IS the anchor's seed-0 value (the tuned protocol's seed-0 run, #677),
+# so the default reproduce run is seed 0 only — a like-for-like comparison.
 CANONICAL_SEEDS: tuple[int, ...] = (0,)
 ANCHOR_ENCODER = "virchow2"
 ANCHOR_SPACING = 0.2
@@ -78,11 +77,11 @@ FACET = Facet(
 
 # A small reference environment shown alongside a run (the recorded anchor environment).
 REFERENCE_ENVIRONMENT: dict[str, str] = {
-    "soma": "1.5.1",
-    "slide2vec": "5.1.1",
-    "torch": "2.7.1+cu128",
+    "soma": "2.2.0",
+    "slide2vec": "7.1.4",
+    "torch": "2.8.0+cu128",
     "cuda": "12.8",
-    "gpu": "NVIDIA GeForce RTX 2080 Ti",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition (1g.24gb MIG slice)",
 }
 
 

@@ -234,7 +234,7 @@ def test_load_reference_parses_ocelot_band():
     # The gate row is pinned to the anchor it was measured on: every key cell populated.
     assert gate.key == {"encoder": "virchow2"}
     assert gate.metric == "mean_f1"
-    assert gate.expected == pytest.approx(0.6995, abs=1e-6)
+    assert gate.expected == pytest.approx(0.6926, abs=1e-6)
     assert gate.tolerance == pytest.approx(0.02, abs=1e-6)  # per-row tolerance column
     assert gate.source  # a non-empty provenance string
 

@@ -97,6 +97,21 @@ def test_build_config_selects_one_native_manifest_for_every_protocol(
     assert Path(cfg.cohort.splits).parts[-3:] == ("ocelot", "curated", "splits.csv")
 
 
+@pytest.mark.parametrize(
+    "encoder, spacing",
+    [("virchow2", 0.2), ("virchow2", 0.25), ("virchow2", 0.5), ("uni2", 0.25), ("uni2", 0.5)],
+)
+def test_committed_configs_pin_the_tuned_protocol(encoder, spacing):
+    # The experiment id ignores the cache dtype, so only the config keeps a reproduction
+    # on the fp16 features the reference numbers were measured on.
+    cfg = OCELOT.build_config(encoder=encoder, spacing=spacing)
+    params = cfg.learner.params
+    assert cfg.features.cache.dtype == "fp16"
+    assert params["head"].params["sigma"] == pytest.approx(2.0)
+    assert params["optimizer"].name == "adamw"
+    assert params["optimizer"].params == {"lr": pytest.approx(3e-4), "weight_decay": pytest.approx(1e-4)}
+
+
 def test_build_config_accepts_unreferenced_encoder_at_packaged_spacing():
     cfg = OCELOT.build_config(encoder="phikon", spacing=0.2)
     assert cfg.features.encoder.name == "phikon"
@@ -110,12 +125,12 @@ def test_expected_returns_broad_band():
     gate = [r for r in OCELOT.expected() if not r.is_external]
     assert len(gate) == 1
     assert gate[0].metric == "mean_f1"
-    assert gate[0].expected == pytest.approx(0.6995, abs=1e-6)
+    assert gate[0].expected == pytest.approx(0.6926, abs=1e-6)
     # The broad banner also matches when axes are supplied.
     gate_axed = [
         r for r in OCELOT.expected(encoder="virchow2", spacing=0.2) if not r.is_external
     ]
-    assert gate_axed[0].expected == pytest.approx(0.6995)
+    assert gate_axed[0].expected == pytest.approx(0.6926)
 
 
 def test_extract_test_metrics_reads_test_headline():
