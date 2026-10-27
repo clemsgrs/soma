@@ -62,10 +62,6 @@ The recipe is fixed and only the encoder varies.
      - ``0``. ``soma reproduce`` checks a run against Virchow2's seed-0 test score
        (0.693 ± 0.02), so the default run is seed 0.
 
-The committed configs also hold a spacing ablation: ``uni2`` at 0.25 and 0.5 µm/px and
-``virchow2`` at 0.2, 0.25 and 0.5 µm/px. ``soma reproduce`` keeps spacing at 0.2 µm/px;
-the other configs serve a custom sweep ranked with ``soma leaderboard``.
-
 Results
 -------
 
