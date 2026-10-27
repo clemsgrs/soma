@@ -59,7 +59,8 @@ The recipe is fixed and only the encoder varies.
    * - Thresholds
      - One score threshold per class, chosen on ``tune`` and applied once to ``test``.
    * - Seeds
-     - ``0``. The reference below is a seed-0 value, so the default run is seed 0.
+     - ``0``. ``soma reproduce`` checks a run against Virchow2's seed-0 test score
+       (0.693 ± 0.02), so the default run is seed 0.
 
 The committed configs also hold a spacing ablation: ``uni2`` at 0.25 and 0.5 µm/px and
 ``virchow2`` at 0.2, 0.25 and 0.5 µm/px. ``soma reproduce`` keeps spacing at 0.2 µm/px;
@@ -68,7 +69,8 @@ the other configs serve a custom sweep ranked with ``soma leaderboard``.
 Results
 -------
 
-soma's ``mean_f1`` on the OCELOT test split, three seeds per encoder, best first.
+soma's ``mean_f1`` on the official OCELOT test set (126 cases in v1.0.1), three seeds
+per encoder, best first.
 
 .. include:: _generated/ocelot-results.rst
 
