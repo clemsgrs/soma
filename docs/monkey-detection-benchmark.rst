@@ -55,12 +55,13 @@ The recipe is fixed and only the encoder varies.
      - ``lightweight_conv``, with one peak heatmap for lymphocytes and one for
        monocytes.
    * - Target and loss
-     - Peak Gaussians with σ = 1.7 µm and foreground-weighted MSE with weight 10;
-       see :doc:`detection`.
+     - Peak Gaussians with σ = 3.33 µm (two thirds of the 5 µm matching distance)
+       and foreground-weighted MSE with weight 10; see :doc:`detection`.
    * - Training
-     - Adam, learning rate 0.0001, weight decay 0.00001, cosine schedule, up to
+     - AdamW, learning rate 0.0003, weight decay 0.0001, cosine schedule, up to
        50 epochs. Batch size 1 with 8 accumulation steps; early stopping has
-       patience 10.
+       patience 10. These settings, and σ as a fraction of the matching distance,
+       were chosen on the OCELOT tune split and carried over unchanged.
    * - Selection
      - Checkpoints use tune tile F1. Per-class score thresholds are selected on
        stitched tune ROIs and frozen before scoring stitched test ROIs.
@@ -85,20 +86,13 @@ provenance.
 
 .. include:: _generated/monkey-results.rst
 
-The table contains the historical seven-encoder panel, with the latest Virchow2
-row replaced by a newer five-fold reproduction. Its mean **0.27549** is within
-the packaged **0.2751 ± 0.02** target. Its population fold standard deviation is
-**0.02515**, recorded separately from seed spread. The reference tolerance is
-unchanged.
+All seven encoders were trained with the recipe above. The packaged Virchow2
+target is **0.2929 ± 0.02**.
 
 The `measurement provenance
 <https://github.com/clemsgrs/soma/blob/main/soma/benchmark/monkey/provenance.json>`__
-records each fold's score and population fold standard deviation. It identifies
-historical panel rows harvested from native run summaries separately from rows
-emitted by ``soma reproduce --record``, and preserves original training versions,
-training and scoring commits, run paths and historical snapshot limitations.
-Earlier training runs retain their original software identity when their results
-are published here.
+records each fold's score, the fold standard deviations and the training software
+for these rows. It also keeps the earlier recipe's results and their history.
 
 Reproduce
 ---------

@@ -187,6 +187,15 @@ def test_datasets_store_the_dense_cache_in_fp16(dataset):
     assert cfg.features.cache.dtype == "fp16"
 
 
+def test_monkey_config_pins_the_protocol_carried_over_from_ocelot():
+    # OCELOT's tuned optimizer, with σ kept at the same fraction (2/3) of the matching distance.
+    params = DETECTION_BENCHMARK.build_config(encoder="virchow2", dataset="monkey").learner.params
+    head = params["head"].params
+    assert head["sigma"] == pytest.approx(2 * head["match_distance"] / 3, abs=0.01)
+    assert params["optimizer"].name == "adamw"
+    assert params["optimizer"].params == {"lr": pytest.approx(3e-4), "weight_decay": pytest.approx(1e-4)}
+
+
 def test_unknown_dataset_raises():
     with pytest.raises(KeyError):
         DETECTION_BENCHMARK.build_config(encoder="uni2", dataset="pannuke")

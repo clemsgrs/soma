@@ -2539,5 +2539,1295 @@
       "previous_recorder_ledger": "/maindisk/clement/soma/ledgers/monkey-virchow2/monkey.csv",
       "recorder_key_normalization": "dataset=monkey and spacing=0.242 added from actual fixed recipe to the recorder rows; metric, measured, std, n_seeds, date and commits are unchanged."
     }
-  ]
+  ],
+  "transferred_protocol": {
+    "evidence": "campaign_native_scores",
+    "recorded_on": "2026-10-27",
+    "protocol": {
+      "sigma_um": 3.33,
+      "match_distance_um": 5.0,
+      "optimizer": "adamw",
+      "lr": 0.0003,
+      "weight_decay": 0.0001,
+      "foreground_weight": 10.0,
+      "scheduler": "cosine",
+      "max_epochs": 50,
+      "early_stopping_patience": 10,
+      "precision": "fp32",
+      "decided_in": "https://github.com/clemsgrs/soma/issues/677"
+    },
+    "training": {
+      "soma_commit": "1b159e4792409888fd403c6b25e28d924fa112cc",
+      "soma_tag": "2.2.0",
+      "soma_install": "git-archive snapshot on PYTHONPATH (run.yaml environment.soma reads 0.0.0+unknown)",
+      "slide2vec": "7.1.4",
+      "hs2p": "6.1.0",
+      "torch": "2.14.1+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA GeForce RTX 3080 Ti",
+      "host": "dlc-tornadus",
+      "dataset_file_sha256": "5f93b11cc93997d9bfed572e7e6f56bdd4a2f591b1113687dc90ab6fc0889ef3",
+      "dataset_file_note": "Re-curated with soma 2.2.0. The checksum differs from the historical one only through absolute image paths: same 1846 samples, tile/crop coordinates, points and folds (splits checksum unchanged).",
+      "splits_file_sha256": "a1026c735675ce64eb212e5156a796d658142b96fd638e2ebacf29c7cd254319"
+    },
+    "replicate_axis": "patient_folds",
+    "spread": "ledger std is empty (one seed); population and sample fold SDs are in aggregates",
+    "runs": [
+      {
+        "encoder": "virchow2",
+        "run_dir": "/maindisk/clement/soma/runs/transfer-677/runs/tuned/out/experiments/dataset-virchow2-lightweight-conv-detection_d54be942da3c/runs/stage4_tuned",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "folds": [
+          {
+            "fold": 0,
+            "selected_epoch": 13,
+            "selection_monitor": [
+              "mean_f1",
+              0.5853888679533509
+            ],
+            "cache_key": "efc4ec785283cd9d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2784593987964914,
+              "froc_lymphocytes": 0.30818131564400225,
+              "froc_monocytes": 0.22421986710404573,
+              "mean_froc": 0.26620059137402396
+            },
+            "tune": {
+              "froc_inflammatory": 0.25930836670635354,
+              "froc_lymphocytes": 0.30553015060057315,
+              "froc_monocytes": 0.2236435136090491,
+              "mean_froc": 0.26458683210481115
+            },
+            "score_threshold_per_class": [
+              0.79,
+              0.615
+            ]
+          },
+          {
+            "fold": 1,
+            "selected_epoch": 25,
+            "selection_monitor": [
+              "mean_f1",
+              0.5483576269488625
+            ],
+            "cache_key": "efc4ec785283cd9d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2628531226323195,
+              "froc_lymphocytes": 0.31984330223766844,
+              "froc_monocytes": 0.21756804524566986,
+              "mean_froc": 0.26870567374166915
+            },
+            "tune": {
+              "froc_inflammatory": 0.300978900099581,
+              "froc_lymphocytes": 0.3253968253968254,
+              "froc_monocytes": 0.21934172067607063,
+              "mean_froc": 0.27236927303644803
+            },
+            "score_threshold_per_class": [
+              0.779,
+              0.738
+            ]
+          },
+          {
+            "fold": 2,
+            "selected_epoch": 22,
+            "selection_monitor": [
+              "mean_f1",
+              0.540786071838975
+            ],
+            "cache_key": "efc4ec785283cd9d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.3038629915637976,
+              "froc_lymphocytes": 0.33015873015873015,
+              "froc_monocytes": 0.21451264455458127,
+              "mean_froc": 0.2723356873566557
+            },
+            "tune": {
+              "froc_inflammatory": 0.28804448135843486,
+              "froc_lymphocytes": 0.33145589798087144,
+              "froc_monocytes": 0.24483922191345772,
+              "mean_froc": 0.28814755994716457
+            },
+            "score_threshold_per_class": [
+              0.757,
+              0.758
+            ]
+          },
+          {
+            "fold": 3,
+            "selected_epoch": 21,
+            "selection_monitor": [
+              "mean_f1",
+              0.5513071648340501
+            ],
+            "cache_key": "efc4ec785283cd9d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2975729051310447,
+              "froc_lymphocytes": 0.3288168614948636,
+              "froc_monocytes": 0.24689030038375015,
+              "mean_froc": 0.2878535809393069
+            },
+            "tune": {
+              "froc_inflammatory": 0.34020092869852014,
+              "froc_lymphocytes": 0.36171034946236563,
+              "froc_monocytes": 0.25667646698517704,
+              "mean_froc": 0.30919340822377134
+            },
+            "score_threshold_per_class": [
+              0.796,
+              0.635
+            ]
+          },
+          {
+            "fold": 4,
+            "selected_epoch": 12,
+            "selection_monitor": [
+              "mean_f1",
+              0.559073828853394
+            ],
+            "cache_key": "efc4ec785283cd9d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.3216920539860261,
+              "froc_lymphocytes": 0.34595094086021505,
+              "froc_monocytes": 0.2280717873330883,
+              "mean_froc": 0.2870113640966517
+            },
+            "tune": {
+              "froc_inflammatory": 0.2904187493975572,
+              "froc_lymphocytes": 0.3219499211760129,
+              "froc_monocytes": 0.24438556649003282,
+              "mean_froc": 0.28316774383302284
+            },
+            "score_threshold_per_class": [
+              0.814,
+              0.746
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "genbio-pathfm",
+        "run_dir": "/maindisk/clement/soma/runs/transfer-677/runs/enc/genbio-pathfm/out/experiments/dataset-genbio-pathfm-lightweight-conv-detection_9a01cdc0b225/runs/tuned_genbio-pathfm",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "folds": [
+          {
+            "fold": 0,
+            "selected_epoch": 7,
+            "selection_monitor": [
+              "mean_f1",
+              0.6036628862350245
+            ],
+            "cache_key": "cdc74de746211b11",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2876853802619077,
+              "froc_lymphocytes": 0.3233421370513687,
+              "froc_monocytes": 0.23187400117755907,
+              "mean_froc": 0.2776080691144639
+            },
+            "tune": {
+              "froc_inflammatory": 0.25229101273586607,
+              "froc_lymphocytes": 0.3135327114200354,
+              "froc_monocytes": 0.23124337221633087,
+              "mean_froc": 0.27238804181818316
+            },
+            "score_threshold_per_class": [
+              0.807,
+              0.664
+            ]
+          },
+          {
+            "fold": 1,
+            "selected_epoch": 9,
+            "selection_monitor": [
+              "mean_f1",
+              0.5648691419974446
+            ],
+            "cache_key": "cdc74de746211b11",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2815149547209294,
+              "froc_lymphocytes": 0.3171452960185354,
+              "froc_monocytes": 0.24376988335100744,
+              "mean_froc": 0.2804575896847714
+            },
+            "tune": {
+              "froc_inflammatory": 0.30923660823328264,
+              "froc_lymphocytes": 0.3212618380685608,
+              "froc_monocytes": 0.24968229762358626,
+              "mean_froc": 0.28547206784607354
+            },
+            "score_threshold_per_class": [
+              0.76,
+              0.612
+            ]
+          },
+          {
+            "fold": 2,
+            "selected_epoch": 6,
+            "selection_monitor": [
+              "mean_f1",
+              0.560619462499953
+            ],
+            "cache_key": "cdc74de746211b11",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.3022189654848468,
+              "froc_lymphocytes": 0.3269707883153261,
+              "froc_monocytes": 0.23646587876477318,
+              "mean_froc": 0.28171833354004966
+            },
+            "tune": {
+              "froc_inflammatory": 0.3102620893318568,
+              "froc_lymphocytes": 0.357173219978746,
+              "froc_monocytes": 0.2505293105729787,
+              "mean_froc": 0.30385126527586237
+            },
+            "score_threshold_per_class": [
+              0.802,
+              0.711
+            ]
+          },
+          {
+            "fold": 3,
+            "selected_epoch": 7,
+            "selection_monitor": [
+              "mean_f1",
+              0.5644411250059932
+            ],
+            "cache_key": "cdc74de746211b11",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.3252237910668143,
+              "froc_lymphocytes": 0.36749911441728655,
+              "froc_monocytes": 0.2548630408892418,
+              "mean_froc": 0.3111810776532642
+            },
+            "tune": {
+              "froc_inflammatory": 0.34492036627175277,
+              "froc_lymphocytes": 0.3619791666666667,
+              "froc_monocytes": 0.24393605292171996,
+              "mean_froc": 0.30295760979419334
+            },
+            "score_threshold_per_class": [
+              0.779,
+              0.662
+            ]
+          },
+          {
+            "fold": 4,
+            "selected_epoch": 5,
+            "selection_monitor": [
+              "mean_f1",
+              0.5756238376047932
+            ],
+            "cache_key": "cdc74de746211b11",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.3385843857136657,
+              "froc_lymphocytes": 0.3802587365591397,
+              "froc_monocytes": 0.24840744824206787,
+              "mean_froc": 0.3143330924006038
+            },
+            "tune": {
+              "froc_inflammatory": 0.30465017006100165,
+              "froc_lymphocytes": 0.349220973322687,
+              "froc_monocytes": 0.2375094625283876,
+              "mean_froc": 0.29336521792553727
+            },
+            "score_threshold_per_class": [
+              0.745,
+              0.713
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "h-optimus-1",
+        "run_dir": "/maindisk/clement/soma/runs/transfer-677/runs/enc/h-optimus-1/out/experiments/dataset-h-optimus-1-lightweight-conv-detection_f4bfadbda3bc/runs/tuned_h-optimus-1",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "folds": [
+          {
+            "fold": 0,
+            "selected_epoch": 7,
+            "selection_monitor": [
+              "mean_f1",
+              0.6050343082866576
+            ],
+            "cache_key": "592a74c09e0b1cac",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2919334627724763,
+              "froc_lymphocytes": 0.3274573633888172,
+              "froc_monocytes": 0.2495373875010514,
+              "mean_froc": 0.2884973754449343
+            },
+            "tune": {
+              "froc_inflammatory": 0.2706822527690587,
+              "froc_lymphocytes": 0.3221754771050545,
+              "froc_monocytes": 0.25068487097914455,
+              "mean_froc": 0.28643017404209953
+            },
+            "score_threshold_per_class": [
+              0.827,
+              0.7
+            ]
+          },
+          {
+            "fold": 1,
+            "selected_epoch": 7,
+            "selection_monitor": [
+              "mean_f1",
+              0.5679142234589052
+            ],
+            "cache_key": "592a74c09e0b1cac",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.28767261693008933,
+              "froc_lymphocytes": 0.33664105847204445,
+              "froc_monocytes": 0.26542064333686816,
+              "mean_froc": 0.3010308509044563
+            },
+            "tune": {
+              "froc_inflammatory": 0.3134734982996073,
+              "froc_lymphocytes": 0.33809523809523806,
+              "froc_monocytes": 0.2504447833269793,
+              "mean_froc": 0.2942700107111087
+            },
+            "score_threshold_per_class": [
+              0.776,
+              0.677
+            ]
+          },
+          {
+            "fold": 2,
+            "selected_epoch": 5,
+            "selection_monitor": [
+              "mean_f1",
+              0.5603131231666368
+            ],
+            "cache_key": "592a74c09e0b1cac",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.3008191947090543,
+              "froc_lymphocytes": 0.32787781779378417,
+              "froc_monocytes": 0.24450374888804172,
+              "mean_froc": 0.28619078334091297
+            },
+            "tune": {
+              "froc_inflammatory": 0.29673080472499075,
+              "froc_lymphocytes": 0.34401346085724405,
+              "froc_monocytes": 0.2540029112081514,
+              "mean_froc": 0.29900818603269774
+            },
+            "score_threshold_per_class": [
+              0.776,
+              0.715
+            ]
+          },
+          {
+            "fold": 3,
+            "selected_epoch": 4,
+            "selection_monitor": [
+              "mean_f1",
+              0.5757621435036591
+            ],
+            "cache_key": "592a74c09e0b1cac",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.32138242894056845,
+              "froc_lymphocytes": 0.35979454481048534,
+              "froc_monocytes": 0.26859203387587666,
+              "mean_froc": 0.314193289343181
+            },
+            "tune": {
+              "froc_inflammatory": 0.3535455452849021,
+              "froc_lymphocytes": 0.37718413978494625,
+              "froc_monocytes": 0.2927232635060639,
+              "mean_froc": 0.3349537016455051
+            },
+            "score_threshold_per_class": [
+              0.759,
+              0.642
+            ]
+          },
+          {
+            "fold": 4,
+            "selected_epoch": 3,
+            "selection_monitor": [
+              "mean_f1",
+              0.5793714999698487
+            ],
+            "cache_key": "592a74c09e0b1cac",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.34702512693659676,
+              "froc_lymphocytes": 0.3639448924731183,
+              "froc_monocytes": 0.27649148597329415,
+              "mean_froc": 0.3202181892232062
+            },
+            "tune": {
+              "froc_inflammatory": 0.3233362250588672,
+              "froc_lymphocytes": 0.3531519357942796,
+              "froc_monocytes": 0.26783160905038267,
+              "mean_froc": 0.31049177242233117
+            },
+            "score_threshold_per_class": [
+              0.698,
+              0.663
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "midnight",
+        "run_dir": "/maindisk/clement/soma/runs/transfer-677/runs/enc/midnight/out/experiments/dataset-midnight-lightweight-conv-detection_d697209c8686/runs/tuned_midnight",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "folds": [
+          {
+            "fold": 0,
+            "selected_epoch": 12,
+            "selection_monitor": [
+              "mean_f1",
+              0.5342180761298011
+            ],
+            "cache_key": "110afd45d34e262d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.24112859916553064,
+              "froc_lymphocytes": 0.2809921585488197,
+              "froc_monocytes": 0.1563209689629069,
+              "mean_froc": 0.2186565637558633
+            },
+            "tune": {
+              "froc_inflammatory": 0.21519284193816068,
+              "froc_lymphocytes": 0.27323029083592465,
+              "froc_monocytes": 0.15659243548957227,
+              "mean_froc": 0.21491136316274845
+            },
+            "score_threshold_per_class": [
+              0.795,
+              0.635
+            ]
+          },
+          {
+            "fold": 1,
+            "selected_epoch": 12,
+            "selection_monitor": [
+              "mean_f1",
+              0.5028759483269959
+            ],
+            "cache_key": "110afd45d34e262d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.21159396760111124,
+              "froc_lymphocytes": 0.2770257911102982,
+              "froc_monocytes": 0.14665075998586075,
+              "mean_froc": 0.21183827554807946
+            },
+            "tune": {
+              "froc_inflammatory": 0.24537324089209553,
+              "froc_lymphocytes": 0.2780578898225957,
+              "froc_monocytes": 0.1578663108400051,
+              "mean_froc": 0.21796210033130042
+            },
+            "score_threshold_per_class": [
+              0.752,
+              0.717
+            ]
+          },
+          {
+            "fold": 2,
+            "selected_epoch": 13,
+            "selection_monitor": [
+              "mean_f1",
+              0.4949852681515805
+            ],
+            "cache_key": "110afd45d34e262d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.25923942656370363,
+              "froc_lymphocytes": 0.286906708973637,
+              "froc_monocytes": 0.15383149065955012,
+              "mean_froc": 0.22036909981659358
+            },
+            "tune": {
+              "froc_inflammatory": 0.26655361757105944,
+              "froc_lymphocytes": 0.31758767268862914,
+              "froc_monocytes": 0.1826783114992722,
+              "mean_froc": 0.2501329920939507
+            },
+            "score_threshold_per_class": [
+              0.763,
+              0.737
+            ]
+          },
+          {
+            "fold": 3,
+            "selected_epoch": 11,
+            "selection_monitor": [
+              "mean_f1",
+              0.4988080723957832
+            ],
+            "cache_key": "110afd45d34e262d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.25983988556662974,
+              "froc_lymphocytes": 0.3065356004250797,
+              "froc_monocytes": 0.17725287812624058,
+              "mean_froc": 0.24189423927566014
+            },
+            "tune": {
+              "froc_inflammatory": 0.2795968406891464,
+              "froc_lymphocytes": 0.32199260752688175,
+              "froc_monocytes": 0.17162807791253218,
+              "mean_froc": 0.24681034271970698
+            },
+            "score_threshold_per_class": [
+              0.731,
+              0.668
+            ]
+          },
+          {
+            "fold": 4,
+            "selected_epoch": 15,
+            "selection_monitor": [
+              "mean_f1",
+              0.5108640561069507
+            ],
+            "cache_key": "110afd45d34e262d",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.273076422340841,
+              "froc_lymphocytes": 0.3050235215053763,
+              "froc_monocytes": 0.16801421046183998,
+              "mean_froc": 0.23651886598360816
+            },
+            "tune": {
+              "froc_inflammatory": 0.2506437531843406,
+              "froc_lymphocytes": 0.2793849681632987,
+              "froc_monocytes": 0.1678652535957608,
+              "mean_froc": 0.22362511087952974
+            },
+            "score_threshold_per_class": [
+              0.803,
+              0.671
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "conchv15",
+        "run_dir": "/maindisk/clement/soma/runs/transfer-677/runs/enc/conchv15/out/experiments/dataset-conchv15-lightweight-conv-detection_4aeb658a596d/runs/tuned_conchv15",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "folds": [
+          {
+            "fold": 0,
+            "selected_epoch": 8,
+            "selection_monitor": [
+              "mean_f1",
+              0.574870843791374
+            ],
+            "cache_key": "2dc8b07b7484ed24",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.262410322083144,
+              "froc_lymphocytes": 0.28916118993509815,
+              "froc_monocytes": 0.1922996046765918,
+              "mean_froc": 0.24073039730584497
+            },
+            "tune": {
+              "froc_inflammatory": 0.2425767579463867,
+              "froc_lymphocytes": 0.2795713675995366,
+              "froc_monocytes": 0.19107900318133617,
+              "mean_froc": 0.2353251853904364
+            },
+            "score_threshold_per_class": [
+              0.764,
+              0.563
+            ]
+          },
+          {
+            "fold": 1,
+            "selected_epoch": 15,
+            "selection_monitor": [
+              "mean_f1",
+              0.5381441525921685
+            ],
+            "cache_key": "2dc8b07b7484ed24",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.24436266551214056,
+              "froc_lymphocytes": 0.28586671544418024,
+              "froc_monocytes": 0.18915694591728527,
+              "mean_froc": 0.23751183068073276
+            },
+            "tune": {
+              "froc_inflammatory": 0.2897713394585048,
+              "froc_lymphocytes": 0.29871948779511803,
+              "froc_monocytes": 0.19357605794891344,
+              "mean_froc": 0.24614777287201572
+            },
+            "score_threshold_per_class": [
+              0.722,
+              0.589
+            ]
+          },
+          {
+            "fold": 2,
+            "selected_epoch": 8,
+            "selection_monitor": [
+              "mean_f1",
+              0.5369760789756199
+            ],
+            "cache_key": "2dc8b07b7484ed24",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2921763147511414,
+              "froc_lymphocytes": 0.3187541683340002,
+              "froc_monocytes": 0.2028847375778371,
+              "mean_froc": 0.2608194529559187
+            },
+            "tune": {
+              "froc_inflammatory": 0.292093484680694,
+              "froc_lymphocytes": 0.3408924590510078,
+              "froc_monocytes": 0.22886065899166338,
+              "mean_froc": 0.2848765590213356
+            },
+            "score_threshold_per_class": [
+              0.785,
+              0.694
+            ]
+          },
+          {
+            "fold": 3,
+            "selected_epoch": 9,
+            "selection_monitor": [
+              "mean_f1",
+              0.5395705389261425
+            ],
+            "cache_key": "2dc8b07b7484ed24",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.29994856485441473,
+              "froc_lymphocytes": 0.33722989727240527,
+              "froc_monocytes": 0.21552864893476245,
+              "mean_froc": 0.27637927310358384
+            },
+            "tune": {
+              "froc_inflammatory": 0.32125808271492423,
+              "froc_lymphocytes": 0.3515625,
+              "froc_monocytes": 0.21563763322307974,
+              "mean_froc": 0.28360006661153986
+            },
+            "score_threshold_per_class": [
+              0.728,
+              0.544
+            ]
+          },
+          {
+            "fold": 4,
+            "selected_epoch": 10,
+            "selection_monitor": [
+              "mean_f1",
+              0.5445285230828415
+            ],
+            "cache_key": "2dc8b07b7484ed24",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.30966020049472726,
+              "froc_lymphocytes": 0.337869623655914,
+              "froc_monocytes": 0.21110498591204216,
+              "mean_froc": 0.2744873047839781
+            },
+            "tune": {
+              "froc_inflammatory": 0.28365073463598683,
+              "froc_lymphocytes": 0.31828511762176764,
+              "froc_monocytes": 0.197703759777946,
+              "mean_froc": 0.25799443869985683
+            },
+            "score_threshold_per_class": [
+              0.742,
+              0.692
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "h0-mini",
+        "run_dir": "/maindisk/clement/soma/runs/transfer-677/runs/enc/h0-mini/out/experiments/dataset-h0-mini-lightweight-conv-detection_fa59ca908ef3/runs/tuned_h0-mini",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "folds": [
+          {
+            "fold": 0,
+            "selected_epoch": 9,
+            "selection_monitor": [
+              "mean_f1",
+              0.5834279608632496
+            ],
+            "cache_key": "512f21f8bbfab6a2",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2842635050467496,
+              "froc_lymphocytes": 0.318991462440882,
+              "froc_monocytes": 0.21465219951215408,
+              "mean_froc": 0.266821830976518
+            },
+            "tune": {
+              "froc_inflammatory": 0.2463109283111448,
+              "froc_lymphocytes": 0.3064447289799403,
+              "froc_monocytes": 0.21712619300106042,
+              "mean_froc": 0.2617854609905004
+            },
+            "score_threshold_per_class": [
+              0.808,
+              0.63
+            ]
+          },
+          {
+            "fold": 1,
+            "selected_epoch": 15,
+            "selection_monitor": [
+              "mean_f1",
+              0.5471853419730256
+            ],
+            "cache_key": "512f21f8bbfab6a2",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.26848143738499836,
+              "froc_lymphocytes": 0.31403572952868725,
+              "froc_monocytes": 0.2010427712972782,
+              "mean_froc": 0.25753925041298276
+            },
+            "tune": {
+              "froc_inflammatory": 0.2997388347143152,
+              "froc_lymphocytes": 0.3246231826063759,
+              "froc_monocytes": 0.20996950057186425,
+              "mean_froc": 0.2672963415891201
+            },
+            "score_threshold_per_class": [
+              0.732,
+              0.704
+            ]
+          },
+          {
+            "fold": 2,
+            "selected_epoch": 9,
+            "selection_monitor": [
+              "mean_f1",
+              0.5411726622711164
+            ],
+            "cache_key": "512f21f8bbfab6a2",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.30305507017642747,
+              "froc_lymphocytes": 0.3280112044817927,
+              "froc_monocytes": 0.21991358495361546,
+              "mean_froc": 0.2739623947177041
+            },
+            "tune": {
+              "froc_inflammatory": 0.30157576596530083,
+              "froc_lymphocytes": 0.3456960680127524,
+              "froc_monocytes": 0.23997618102421595,
+              "mean_froc": 0.2928361245184842
+            },
+            "score_threshold_per_class": [
+              0.763,
+              0.742
+            ]
+          },
+          {
+            "fold": 3,
+            "selected_epoch": 8,
+            "selection_monitor": [
+              "mean_f1",
+              0.549793040620753
+            ],
+            "cache_key": "512f21f8bbfab6a2",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.3125,
+              "froc_lymphocytes": 0.35862557562876374,
+              "froc_monocytes": 0.23845441312690221,
+              "mean_froc": 0.29853999437783296
+            },
+            "tune": {
+              "froc_inflammatory": 0.3326932257084581,
+              "froc_lymphocytes": 0.35747647849462366,
+              "froc_monocytes": 0.26773245130466744,
+              "mean_froc": 0.31260446489964555
+            },
+            "score_threshold_per_class": [
+              0.765,
+              0.612
+            ]
+          },
+          {
+            "fold": 4,
+            "selected_epoch": 14,
+            "selection_monitor": [
+              "mean_f1",
+              0.5593202425400727
+            ],
+            "cache_key": "512f21f8bbfab6a2",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.3154320184003819,
+              "froc_lymphocytes": 0.33202284946236554,
+              "froc_monocytes": 0.2327269386255053,
+              "mean_froc": 0.28237489404393545
+            },
+            "tune": {
+              "froc_inflammatory": 0.2854546205642996,
+              "froc_lymphocytes": 0.3097168478594681,
+              "froc_monocytes": 0.22562873244175288,
+              "mean_froc": 0.2676727901506105
+            },
+            "score_threshold_per_class": [
+              0.768,
+              0.742
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "dinov2-vitb14",
+        "run_dir": "/maindisk/clement/soma/runs/transfer-677/runs/enc/dinov2-vitb14/out/experiments/dataset-dinov2-vitb14-lightweight-conv-detection_85ed0f932594/runs/tuned_dinov2-vitb14",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "folds": [
+          {
+            "fold": 0,
+            "selected_epoch": 12,
+            "selection_monitor": [
+              "mean_f1",
+              0.5262580907070501
+            ],
+            "cache_key": "2152351b295b6abc",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.21546797758224204,
+              "froc_lymphocytes": 0.24877669266834554,
+              "froc_monocytes": 0.14923458659264865,
+              "mean_froc": 0.1990056396304971
+            },
+            "tune": {
+              "froc_inflammatory": 0.2115669083955695,
+              "froc_lymphocytes": 0.26313944271690753,
+              "froc_monocytes": 0.13699628844114528,
+              "mean_froc": 0.2000678655790264
+            },
+            "score_threshold_per_class": [
+              0.742,
+              0.618
+            ]
+          },
+          {
+            "fold": 1,
+            "selected_epoch": 21,
+            "selection_monitor": [
+              "mean_f1",
+              0.5030666224963822
+            ],
+            "cache_key": "2152351b295b6abc",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.22882166179600968,
+              "froc_lymphocytes": 0.27969331138345227,
+              "froc_monocytes": 0.1507378932484977,
+              "mean_froc": 0.21521560231597497
+            },
+            "tune": {
+              "froc_inflammatory": 0.28494260000375776,
+              "froc_lymphocytes": 0.304014939309057,
+              "froc_monocytes": 0.16803278688524592,
+              "mean_froc": 0.23602386309715145
+            },
+            "score_threshold_per_class": [
+              0.716,
+              0.634
+            ]
+          },
+          {
+            "fold": 2,
+            "selected_epoch": 15,
+            "selection_monitor": [
+              "mean_f1",
+              0.4783349928732996
+            ],
+            "cache_key": "2152351b295b6abc",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.27227890197846794,
+              "froc_lymphocytes": 0.296265172735761,
+              "froc_monocytes": 0.15230651925276403,
+              "mean_froc": 0.2242858459942625
+            },
+            "tune": {
+              "froc_inflammatory": 0.25043835363602807,
+              "froc_lymphocytes": 0.2936936094597858,
+              "froc_monocytes": 0.17023951303427287,
+              "mean_froc": 0.23196656124702933
+            },
+            "score_threshold_per_class": [
+              0.782,
+              0.653
+            ]
+          },
+          {
+            "fold": 3,
+            "selected_epoch": 18,
+            "selection_monitor": [
+              "mean_f1",
+              0.5029772785274464
+            ],
+            "cache_key": "2152351b295b6abc",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2525032299741602,
+              "froc_lymphocytes": 0.2869465108041091,
+              "froc_monocytes": 0.17672356755326188,
+              "mean_froc": 0.23183503917868548
+            },
+            "tune": {
+              "froc_inflammatory": 0.29362496202751376,
+              "froc_lymphocytes": 0.3150369623655914,
+              "froc_monocytes": 0.19582261423496264,
+              "mean_froc": 0.255429788300277
+            },
+            "score_threshold_per_class": [
+              0.724,
+              0.635
+            ]
+          },
+          {
+            "fold": 4,
+            "selected_epoch": 20,
+            "selection_monitor": [
+              "mean_f1",
+              0.5030590517336684
+            ],
+            "cache_key": "2152351b295b6abc",
+            "cache_dtype": "fp16",
+            "test": {
+              "froc_inflammatory": 0.2981491125287506,
+              "froc_lymphocytes": 0.3287970430107527,
+              "froc_monocytes": 0.18072399852995222,
+              "mean_froc": 0.25476052077035244
+            },
+            "tune": {
+              "froc_inflammatory": 0.2571707908180829,
+              "froc_lymphocytes": 0.29358352271563987,
+              "froc_monocytes": 0.16037934224913786,
+              "mean_froc": 0.22698143248238886
+            },
+            "score_threshold_per_class": [
+              0.729,
+              0.67
+            ]
+          }
+        ]
+      }
+    ],
+    "aggregates": [
+      {
+        "encoder": "virchow2",
+        "metric": "froc_inflammatory",
+        "mean": 0.29288809442193586,
+        "population_std": 0.020407600020968374,
+        "sample_std": 0.022816390452255707,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "virchow2",
+        "metric": "froc_lymphocytes",
+        "mean": 0.3265902300790959,
+        "population_std": 0.012465459223038716,
+        "sample_std": 0.013936807096733141,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "virchow2",
+        "metric": "froc_monocytes",
+        "mean": 0.22625252892422706,
+        "population_std": 0.011371931830825587,
+        "sample_std": 0.012714206304609826,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "virchow2",
+        "metric": "mean_froc",
+        "mean": 0.27642137950166146,
+        "population_std": 0.009203613519282833,
+        "sample_std": 0.010289952733876243,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "genbio-pathfm",
+        "metric": "froc_inflammatory",
+        "mean": 0.3070454954496328,
+        "population_std": 0.021794815861187245,
+        "sample_std": 0.02436734491135265,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "genbio-pathfm",
+        "metric": "froc_lymphocytes",
+        "mean": 0.3430432144723313,
+        "population_std": 0.025691413509847976,
+        "sample_std": 0.02872387352303827,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "genbio-pathfm",
+        "metric": "froc_monocytes",
+        "mean": 0.24307605048492986,
+        "population_std": 0.00820997719530246,
+        "sample_std": 0.009179033551209683,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "genbio-pathfm",
+        "metric": "mean_froc",
+        "mean": 0.2930596324786306,
+        "population_std": 0.0161686995572212,
+        "sample_std": 0.01807715565885868,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "h-optimus-1",
+        "metric": "froc_inflammatory",
+        "mean": 0.30976656605775704,
+        "population_std": 0.02195152042190029,
+        "sample_std": 0.02454254593642196,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "h-optimus-1",
+        "metric": "froc_lymphocytes",
+        "mean": 0.3431431353876499,
+        "population_std": 0.015692883114757,
+        "sample_std": 0.017545176703777643,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "h-optimus-1",
+        "metric": "froc_monocytes",
+        "mean": 0.26090905991502644,
+        "population_std": 0.012005362460997065,
+        "sample_std": 0.013422403278656804,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "h-optimus-1",
+        "metric": "mean_froc",
+        "mean": 0.30202609765133814,
+        "population_std": 0.013518629881467006,
+        "sample_std": 0.015114287688810076,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "midnight",
+        "metric": "froc_inflammatory",
+        "mean": 0.24897566024756326,
+        "population_std": 0.02127529241628191,
+        "sample_std": 0.02378650004199605,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "midnight",
+        "metric": "froc_lymphocytes",
+        "mean": 0.29129675611264216,
+        "population_std": 0.01224552286396154,
+        "sample_std": 0.013690910771922955,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "midnight",
+        "metric": "froc_monocytes",
+        "mean": 0.16041406163927965,
+        "population_std": 0.010870327718796424,
+        "sample_std": 0.012153395858464512,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "midnight",
+        "metric": "mean_froc",
+        "mean": 0.22585540887596092,
+        "population_std": 0.011396107958128539,
+        "sample_std": 0.012741236036650871,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "conchv15",
+        "metric": "froc_inflammatory",
+        "mean": 0.2817116135391136,
+        "population_std": 0.0244569157832258,
+        "sample_std": 0.0273436631056402,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "conchv15",
+        "metric": "froc_lymphocytes",
+        "mean": 0.3137763189283196,
+        "population_std": 0.022539685874205684,
+        "sample_std": 0.025200134903107844,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "conchv15",
+        "metric": "froc_monocytes",
+        "mean": 0.20219498460370375,
+        "population_std": 0.010252409313558449,
+        "sample_std": 0.011462542079134325,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "conchv15",
+        "metric": "mean_froc",
+        "mean": 0.2579856517660117,
+        "population_std": 0.016343692628879088,
+        "sample_std": 0.018272803860767944,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "h0-mini",
+        "metric": "froc_inflammatory",
+        "mean": 0.29674640620171144,
+        "population_std": 0.017842972540475247,
+        "sample_std": 0.019949049760582385,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "h0-mini",
+        "metric": "froc_lymphocytes",
+        "mean": 0.33033736430849825,
+        "population_std": 0.015510948166551288,
+        "sample_std": 0.017341767247942206,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "h0-mini",
+        "metric": "froc_monocytes",
+        "mean": 0.22135798150309105,
+        "population_std": 0.013276315147867031,
+        "sample_std": 0.014843371580670428,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "h0-mini",
+        "metric": "mean_froc",
+        "mean": 0.27584767290579465,
+        "population_std": 0.013984023027230766,
+        "sample_std": 0.015634613043905194,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "dinov2-vitb14",
+        "metric": "froc_inflammatory",
+        "mean": 0.2534441767719261,
+        "population_std": 0.029673636393734295,
+        "sample_std": 0.033176134058000795,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "dinov2-vitb14",
+        "metric": "froc_lymphocytes",
+        "mean": 0.2880957461204841,
+        "population_std": 0.025850511466765192,
+        "sample_std": 0.028901750446412383,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "dinov2-vitb14",
+        "metric": "froc_monocytes",
+        "mean": 0.1619453130354249,
+        "population_std": 0.013792106482075173,
+        "sample_std": 0.015420043823417785,
+        "n_replicates": 5,
+        "n_seeds": 1
+      },
+      {
+        "encoder": "dinov2-vitb14",
+        "metric": "mean_froc",
+        "mean": 0.2250205295779545,
+        "population_std": 0.018462694682962924,
+        "sample_std": 0.020641920179464514,
+        "n_replicates": 5,
+        "n_seeds": 1
+      }
+    ]
+  }
 }
