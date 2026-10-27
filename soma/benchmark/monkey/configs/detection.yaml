@@ -55,12 +55,12 @@ learner:
       params:
         num_classes: 2            # 0 = lymphocytes, 1 = monocytes (merged MNL pooled at score time)
         match_distance: 5.0       # δ in µm — per-class margins (4/5 µm) are applied by the FROC scorer
-        sigma: 1.7                # target Gaussian σ in µm (≈ δ/3)
+        sigma: 3.33               # target Gaussian σ in µm (2δ/3, carried over from OCELOT, #677)
         matching: greedy          # FROC uses greedy-by-confidence matching
         foreground_weight: 10.0
     optimizer:
-      name: adam
-      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+      name: adamw
+      params: {lr: 3.0e-4, weight_decay: 1.0e-4}
     scheduler: cosine
 
 trainer:

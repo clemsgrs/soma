@@ -8,23 +8,23 @@
      - Inflammatory FROC (mean ± seed std)
      - Seeds
    * - h-optimus-1
-     - 0.302
+     - 0.310
      - 1
    * - genbio-pathfm
-     - 0.301
+     - 0.307
      - 1
    * - h0-mini
-     - 0.282
+     - 0.297
      - 1
    * - virchow2
-     - 0.275
+     - 0.293
      - 1
    * - conchv15
-     - 0.270
+     - 0.282
      - 1
    * - dinov2-vitb14
-     - 0.239
+     - 0.253
      - 1
    * - midnight
-     - 0.239
+     - 0.249
      - 1
