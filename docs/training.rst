@@ -36,7 +36,9 @@ Budget, optimizer and schedulers
 ``persistent_workers`` and the optional ``sampler`` and ``augment`` leaves.
 ``learner.params`` holds the model's ``aggregator`` or ``decoder`` leaf and its
 ``head`` leaf, the ``optimizer`` and ``scheduler`` leaves, the feature
-``normalization`` and ``projection``, and the keywords of a custom learner.
+``normalization`` and ``projection``, and the keywords of a custom learner. The
+``mil`` learner also takes ``checkpoint_cox_window``, which saves GPU memory in a
+Cox window (see :doc:`survival`).
 ``learner.name`` is ``mil`` for the set shape and ``dense`` for the grid shape; a
 registered or dotted :class:`soma.learn.Learner` subclass owns custom step logic
 (see :ref:`custom-learner`).

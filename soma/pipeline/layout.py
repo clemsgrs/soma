@@ -343,7 +343,8 @@ IDENTITY_VERSION = 9
 #: Plan fields left out of the experiment identity, by section: where and how a launch
 #: runs (the whole ``run`` section, so the seed too: one experiment, several seeded
 #: runs), the cohort files (their train/tune content is hashed instead), loader
-#: throughput, the device, and what is saved rather than measured.
+#: throughput, the device, and what is saved rather than measured. What a resume may
+#: change (:meth:`Plan.comparable`) is left out too, so a resume finds its run dir.
 _IDENTITY_EXCLUDED: dict[str, tuple[str, ...]] = {
     "cohort": ("records", "splits"),
     "loaders": ("num_workers", "pin_memory", "persistent_workers"),
@@ -354,7 +355,7 @@ _IDENTITY_EXCLUDED: dict[str, tuple[str, ...]] = {
 
 def _plan_identity(plan: Plan) -> dict[str, Any]:
     """The experiment-defining part of a plan (see :data:`_IDENTITY_EXCLUDED`)."""
-    payload = plan.to_dict()
+    payload = comparable(plan.to_dict())
     payload.pop("run", None)
     payload["features"] = _features_identity(plan)
     for section, names in _IDENTITY_EXCLUDED.items():
@@ -1081,11 +1082,12 @@ def guard_resume_plan_drift(run_dir: Path, plan: Plan) -> None:
     ``plan.yaml`` is checked: a fresh run, or a pinned run id naming a not-yet-created
     dir, has nothing to compare against. The plans are compared without where and how a
     launch runs (``run.output_dir``, ``run.run_id``, ``run.resume``, ``run.mirror_root``,
-    and ``run.folds``, the folds this launch takes on; :meth:`Plan.comparable`), so an
-    otherwise identical relaunch passes while a changed seed, encoder, head or evaluation
-    protocol is caught before it mixes incompatible folds (issue #244). The manifest guard
-    then checks the cohort files' content, and the component guard the code of the
-    external components."""
+    ``run.folds``, the folds this launch takes on, and
+    ``learner.params.checkpoint_cox_window``, which saves memory and keeps the gradients;
+    :meth:`Plan.comparable`), so an otherwise identical relaunch passes while a changed
+    seed, encoder, head or evaluation protocol is caught before it mixes incompatible
+    folds (issue #244). The manifest guard then checks the cohort files' content, and the
+    component guard the code of the external components."""
     if not (plan.run.resume or plan.run.run_id):
         return
     saved_path = Path(run_dir) / PLAN_FILENAME

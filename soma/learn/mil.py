@@ -8,6 +8,7 @@ from typing import Any
 
 import torch
 from torch import Tensor, nn
+from torch.utils.checkpoint import checkpoint
 
 from soma.learn.learner import Learner, LearnerParams, PredictOutput, StepOutput, learner_registry
 from soma.learn.collate import CoxWindowBatch
@@ -19,9 +20,11 @@ __all__ = ["MILLearner", "MILLearnerParams"]
 @dataclasses.dataclass
 class MILLearnerParams(LearnerParams):
     """:class:`MILLearner`'s params: :class:`~soma.learn.learner.LearnerParams` plus an
-    optional ``(predictions, targets) -> Tensor`` loss replacing the head's."""
+    optional ``(predictions, targets) -> Tensor`` loss replacing the head's, and
+    ``checkpoint_cox_window`` (see :class:`MILLearner`)."""
 
     loss: Callable[[Tensor, dict[str, Tensor]], Tensor] | None = None
+    checkpoint_cox_window: bool = False
 
 
 class MILLearner(Learner):
@@ -36,6 +39,11 @@ class MILLearner(Learner):
     Args:
         model: The model; its ``task_head`` owns targets, loss and metrics.
         loss: Optional ``(predictions, targets) -> Tensor`` replacing the head's loss.
+        checkpoint_cox_window: Checkpoint each bag of a training ``CoxWindowBatch``:
+            the forward keeps only the bag's risk, and the backward recomputes the bags
+            one at a time. Only one bag's graph is then in memory, not the whole
+            window's; the loss and gradients are the same, and a window takes about
+            twice as long.
         optimizer: Optimizer leaf (see :class:`Learner`).
         schedulers: Scheduler leaves (see :class:`Learner`).
     """
@@ -45,11 +53,13 @@ class MILLearner(Learner):
         model: nn.Module,
         *,
         loss: Callable[[Tensor, dict[str, Tensor]], Tensor] | None = None,
+        checkpoint_cox_window: bool = False,
         optimizer: Any = None,
         schedulers: Sequence[Any] = (),
     ) -> None:
         super().__init__(model, optimizer=optimizer, schedulers=schedulers)
         self.loss_fn = loss
+        self.checkpoint_cox_window = checkpoint_cox_window
 
     @property
     def head(self):
@@ -58,23 +68,36 @@ class MILLearner(Learner):
     def transfer_batch(self, batch: Any, device: torch.device) -> Any:
         if isinstance(batch, CoxWindowBatch):
             # The window's bags stay on the host; ``forward_batch`` moves each one right
-            # before its forward, so only one bag at a time occupies the accelerator.
+            # before its forward. Without ``checkpoint_cox_window`` a training window still
+            # holds every bag's graph (with its device copy) until the backward.
             return dataclasses.replace(batch, targets=super().transfer_batch(batch.targets, device))
         return super().transfer_batch(batch, device)
 
     def forward_batch(self, batch: Any):
         if isinstance(batch, CoxWindowBatch):
             device = next(self.model.parameters()).device
+            # Without grad (validation, prediction) there is no graph to save memory on.
+            checkpointed = self.checkpoint_cox_window and torch.is_grad_enabled()
             risks = []
             for bag in batch.bags:
-                bag = bag.to(device).unsqueeze(0)  # (1, n_i, D), un-padded
-                mask = torch.ones(bag.shape[:2], dtype=torch.bool, device=device)
-                risks.append(self.model(bag, mask=mask).logits.view(1))
+                # Checkpoint takes its device from its tensor arguments: given only the
+                # host-side bag, it would restore neither the CUDA RNG (dropout) nor CUDA
+                # autocast in the recompute, so the device-side mask goes in too.
+                mask = torch.ones((1, bag.shape[0]), dtype=torch.bool, device=device)
+                if checkpointed:
+                    risks.append(checkpoint(self._bag_risk, bag, mask, use_reentrant=False))
+                else:
+                    risks.append(self._bag_risk(bag, mask))
             return MILModelOutput(logits=torch.cat(risks).unsqueeze(-1))
         mask = getattr(batch, "mask", None)
         if mask is not None:
             return self.model(batch.features, mask=mask)
         return self.model(batch.features)
+
+    def _bag_risk(self, bag: Tensor, mask: Tensor) -> Tensor:
+        """One un-padded bag's risk, shape ``(1,)``. The bag moves to the device here, so
+        a checkpoint keeps the host-side bag as its input, not the device copy."""
+        return self.model(bag.to(mask.device).unsqueeze(0), mask=mask).logits.view(1)
 
     def task_loss(self, logits: Tensor, targets: dict[str, Tensor]) -> Tensor:
         """The head's loss, or the ``loss=`` callable; training and validation share it."""

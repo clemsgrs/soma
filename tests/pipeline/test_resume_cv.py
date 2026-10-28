@@ -32,7 +32,7 @@ from soma.pipeline.layout import (
     resolve_managed_output_paths,
 )
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk
-from soma.pipeline.layout import guard_resume_plan_drift, record_plan
+from soma.pipeline.layout import guard_resume_plan_drift, open_run, record_plan
 from soma.plan import Plan, load_cohort, resolve
 from tests.experiment_configs import experiment
 
@@ -254,6 +254,50 @@ def test_drift_guard_refuses_a_changed_head(tmp_path: Path):
     run_dir = tmp_path / "run"
     _record(run_dir, _make_config(tmp_path))
     changed = _make_config(tmp_path, head_params={"dropout": 0.5}, resume=True)
+    with pytest.raises(ValueError, match="Refusing to resume.*learner"):
+        guard_resume_plan_drift(run_dir, _plan(changed))
+
+
+def _cox_window_config(tmp_path: Path, *, resume: bool = False, **learner_params) -> ExperimentConfig:
+    """An AB-MIL Cox run in accumulation mode (``cox_window`` 2)."""
+    dataset_csv = _write_csv(
+        tmp_path / "dataset.csv",
+        "sample_id,image_path,time,event\n" + "".join(f"s{i},/slides/s{i}.svs,{i + 1}.0,{i % 2}\n" for i in range(4)),
+    )
+    splits_csv = _write_csv(
+        tmp_path / "splits.csv",
+        "fold,sample_id,split\n0,s0,train\n0,s1,train\n0,s2,tune\n0,s3,test\n",
+    )
+    return experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / "outputs",
+        aggregator="abmil",
+        head="cox_survival",
+        head_params={"cox_window": 2},
+        loaders={"batch_size": 1},
+        run={"resume": resume},
+        **learner_params,
+    )
+
+
+@pytest.mark.parametrize(("first", "then"), [(False, True), (True, False)], ids=["turned_on", "turned_off"])
+def test_a_resume_may_toggle_cox_window_checkpointing(tmp_path: Path, first: bool, then: bool):
+    """Checkpointing a Cox window changes memory and speed, not the gradients: a run that
+    ran out of GPU memory resumes in its own run dir with it on (and the reverse)."""
+    started = _cox_window_config(tmp_path, checkpoint_cox_window=first)
+    layout, _ = open_run(_plan(started), config=started, num_folds=1)
+    resumed = _cox_window_config(tmp_path, checkpoint_cox_window=then, resume=True)
+
+    assert open_run(_plan(resumed), config=resumed, num_folds=1)[0].run_dir == layout.run_dir
+
+
+def test_a_resume_that_toggles_cox_window_checkpointing_refuses_other_learner_changes(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    _record(run_dir, _cox_window_config(tmp_path))
+    changed = _cox_window_config(
+        tmp_path, checkpoint_cox_window=True, optimizer={"name": "adam", "params": {"lr": 1e-3}}, resume=True
+    )
     with pytest.raises(ValueError, match="Refusing to resume.*learner"):
         guard_resume_plan_drift(run_dir, _plan(changed))
 
