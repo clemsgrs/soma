@@ -20,7 +20,12 @@ Two heads model time-to-event with right censoring; the head selects the loss:
   * **Accumulation mode** (``cox_window >= 2``): for large variable-size MIL
     bags. ``batch_size`` is pinned to ``1`` and an aggregator is required. The
     trainer forwards ``cox_window`` bags un-padded and computes one Cox loss and
-    one optimizer step per window.
+    one optimizer step per window. By default, the window keeps every bag's
+    activations in GPU memory until the backward pass. With
+    ``learner.params.checkpoint_cox_window: true``, it keeps one bag's at a time:
+    the backward pass computes each bag again, so a window takes about twice as
+    long, with the same loss and gradients. A run that ran out of GPU memory can
+    resume with it on.
 
 Both losses rank with Harrell's C-index via scikit-survival. The ``mil_survival``
 preset takes the loss as its ``loss`` argument: ``"nll"`` builds the

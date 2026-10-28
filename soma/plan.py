@@ -53,6 +53,10 @@ SECTIONS = ("run", "cohort", "features", "loaders", "learner", "trainer", "evalu
 #: ``run`` fields a resume may change: where a launch writes and which of the run's folds
 #: it takes on (launches pinned to one ``run_id`` split the folds), not what it trains.
 RESUME_EXCLUDED_RUN_FIELDS = ("output_dir", "run_id", "resume", "mirror_root", "folds")
+#: ``learner.params`` keys a resume may change: how a step runs, not what it computes.
+#: Checkpointing a Cox window gives the same gradients with less memory, so a run that ran
+#: out of GPU memory resumes with it on.
+RESUME_EXCLUDED_LEARNER_PARAMS = ("checkpoint_cox_window",)
 #: The ``learner.params`` keys that build the model rather than the learner.
 MODEL_PARAMS = (*LEAF_PARAMS[:3], "normalization", "projection")
 #: The ``learner.params`` keys that are not the learner class's own keywords: the model's
@@ -121,8 +125,8 @@ class Plan(Mapping):
 
     def comparable(self) -> dict[str, Any]:
         """The plan a resume must match: without the launch-only ``run`` fields
-        (``output_dir``, ``run_id``, ``resume``, ``mirror_root``, ``folds``). ``run.seed``
-        stays."""
+        (``output_dir``, ``run_id``, ``resume``, ``mirror_root``, ``folds``) and
+        ``learner.params.checkpoint_cox_window``. ``run.seed`` stays."""
         return comparable(self.to_dict())
 
     @property
@@ -148,6 +152,10 @@ def comparable(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(run, dict):
         for name in RESUME_EXCLUDED_RUN_FIELDS:
             run.pop(name, None)
+    params = (payload.get("learner") or {}).get("params")
+    if isinstance(params, dict):
+        for name in RESUME_EXCLUDED_LEARNER_PARAMS:
+            params.pop(name, None)
     return payload
 
 
@@ -336,6 +344,8 @@ def _check(config: ExperimentConfig) -> None:
     family = str(head_cls.task_family)
     head_params = _head_params(head)
     registries["head"].validate(head.name, head_params)
+    if own.get("checkpoint_cox_window"):
+        _check_checkpoint_cox_window(head_cls, head_params)
     target_columns(config)
     aggregator, decoder = params.get("aggregator"), params.get("decoder")
     for leaf, kind in ((aggregator, "aggregator"), (decoder, "decoder")):
@@ -607,6 +617,16 @@ def _check_survival(config: ExperimentConfig, head: Component, *, unit: str, agg
         raise ValueError(
             "Cox survival requires loaders.batch_size >= 2: the partial likelihood's risk set is the "
             "batch (or set head cox_window >= 2 for large MIL bags)."
+        )
+
+
+def _check_checkpoint_cox_window(head_cls: type, head_params: Mapping[str, Any]) -> None:
+    from soma.models.heads.survival import CoxSurvivalHead
+
+    if not (issubclass(head_cls, CoxSurvivalHead) and head_params.get("cox_window", 1) >= 2):
+        raise ValueError(
+            "learner.params.checkpoint_cox_window checkpoints the bags of a Cox window: it needs "
+            "the cox_survival head in accumulation mode (cox_window >= 2)."
         )
 
 

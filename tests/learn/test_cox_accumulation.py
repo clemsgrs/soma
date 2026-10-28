@@ -1,7 +1,8 @@
 """Tests for Cox prediction-accumulation (phase 2: large variable-size MIL bags).
 
 Covers the window as a training batch (graph connectivity, no-detach), padded-vs-
-accumulation parity, the no-pad window collate, full-cohort MIL eval, the revised
+accumulation parity, checkpointed windows (same gradients, one bag's memory; the GPU
+tests skip without CUDA), the no-pad window collate, full-cohort MIL eval, the revised
 config guards, and MIL accumulation + padded end-to-end runs.
 """
 
@@ -202,6 +203,124 @@ class TestParity:
 
 
 # ---------------------------------------------------------------------------
+# Checkpointed windows — one bag's graph in memory at a time, same gradients
+# ---------------------------------------------------------------------------
+
+needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+
+
+def _dropout_cox_model(arm: str, input_dim: int = D, region_side: int = 2) -> MILModel:
+    """An ABMIL or HIPT Cox model with dropout everywhere, so a recompute that drew new
+    dropout masks would give other gradients. HIPT regions are ``region_side`` tiles a side."""
+    if arm == "abmil":
+        agg = aggregator_registry.get("abmil")(input_dim=input_dim, dropout=0.25)
+    else:
+        agg = aggregator_registry.get("hipt")(
+            input_dim=input_dim,
+            region_size=4 * region_side,
+            patch_size=4,
+            embed_dim_region=12,
+            embed_dim_slide=12,
+            num_heads=2,
+            dropout=0.25,
+        )
+    head = CoxSurvivalHead(input_dim=agg.output_dim, cox_window=4, dropout=0.25)
+    return MILModel(aggregator=agg, task_head=head)
+
+
+def _dropout_cox_window(arm: str, sizes, input_dim: int = D, region_side: int = 2) -> CoxWindowBatch:
+    """A window of four bags: ``(n, D)`` tiles for ABMIL, ``(m, side², D)`` regions for HIPT.
+    The earliest time is an event, so every bag enters the loss."""
+    g = torch.Generator().manual_seed(0)
+    shape = (input_dim,) if arm == "abmil" else (region_side**2, input_dim)
+    bags = [torch.randn(n, *shape, generator=g) for n in sizes]
+    return _window_batch(bags, [4.0, 3.0, 2.0, 1.0], [0.0, 1.0, 0.0, 1.0])
+
+
+def _train_window(model: MILModel, window: CoxWindowBatch, *, checkpoint_cox_window: bool, device, autocast=None):
+    """One seeded training step: its loss, the parameter gradients and the CPU (and
+    CUDA) random states after the backward."""
+    learner = MILLearner(model, checkpoint_cox_window=checkpoint_cox_window).to(device).train()
+    learner.zero_grad(set_to_none=True)
+    torch.manual_seed(1)  # seeds the CUDA generators too
+    with torch.autocast(device.type, dtype=autocast or torch.bfloat16, enabled=autocast is not None):
+        loss = learner.training_step(learner.transfer_batch(window, device))
+    loss.backward()
+    grads = {name: p.grad.clone() for name, p in model.named_parameters() if p.grad is not None}
+    states = [torch.get_rng_state()] + ([torch.cuda.get_rng_state()] if device.type == "cuda" else [])
+    return loss.detach(), grads, states
+
+
+def _assert_checkpointing_changes_nothing(arm: str, device, autocast=None) -> None:
+    torch.manual_seed(0)
+    model = _dropout_cox_model(arm).to(device)
+    window = _dropout_cox_window(arm, [5, 8, 3, 6])
+    loss, grads, states = _train_window(model, window, checkpoint_cox_window=False, device=device, autocast=autocast)
+    ck_loss, ck_grads, ck_states = _train_window(model, window, checkpoint_cox_window=True, device=device, autocast=autocast)
+    assert torch.allclose(ck_loss, loss, atol=1e-6)
+    assert grads and ck_grads.keys() == grads.keys()
+    for name, grad in grads.items():
+        assert torch.allclose(ck_grads[name], grad, atol=1e-6), name
+    assert len(ck_states) == len(states)
+    for ck_state, state in zip(ck_states, states):
+        assert torch.equal(ck_state, state)
+
+
+@pytest.mark.parametrize("arm", ["abmil", "hipt"])
+def test_a_checkpointed_window_trains_like_the_plain_window_on_cpu(arm):
+    _assert_checkpointing_changes_nothing(arm, torch.device("cpu"))
+
+
+@needs_cuda
+@pytest.mark.parametrize("autocast", [None, torch.bfloat16], ids=["fp32", "bf16"])
+@pytest.mark.parametrize("arm", ["abmil", "hipt"])
+def test_a_checkpointed_window_trains_like_the_plain_window_on_gpu(arm, autocast):
+    _assert_checkpointing_changes_nothing(arm, torch.device("cuda"), autocast)
+
+
+def _peak_bytes(step, model: MILModel) -> int:
+    """The accelerator memory one training step allocates at its peak, on top of what
+    was allocated before it (a first, unmeasured call warms the kernels' workspaces)."""
+    for _ in range(2):
+        model.zero_grad(set_to_none=True)
+        torch.cuda.synchronize()
+        torch.cuda.reset_peak_memory_stats()
+        base = torch.cuda.memory_allocated()
+        step()
+        torch.cuda.synchronize()
+    return torch.cuda.max_memory_allocated() - base
+
+
+@needs_cuda
+@pytest.mark.parametrize(
+    ("arm", "size", "input_dim", "region_side"),
+    [("abmil", 16384, 1024, 2), ("hipt", 64, 512, 8)],
+    ids=["abmil", "hipt"],
+)
+def test_a_checkpointed_window_peaks_at_about_one_bag(arm, size, input_dim, region_side):
+    device = torch.device("cuda")
+    torch.manual_seed(0)
+    model = _dropout_cox_model(arm, input_dim, region_side).to(device).train()
+    window = _dropout_cox_window(arm, [size] * 4, input_dim, region_side)
+    bag = window.bags[0]
+
+    def one_bag():
+        mask = torch.ones((1, bag.shape[0]), dtype=torch.bool, device=device)
+        model(bag.to(device).unsqueeze(0), mask=mask).logits.sum().backward()
+
+    def window_step(checkpoint_cox_window: bool):
+        learner = MILLearner(model, checkpoint_cox_window=checkpoint_cox_window)
+        return lambda: learner.training_step(learner.transfer_batch(window, device)).backward()
+
+    alone = _peak_bytes(one_bag, model)
+    plain = _peak_bytes(window_step(False), model)
+    checkpointed = _peak_bytes(window_step(True), model)
+    # Without checkpointing the window holds all four bags' graphs at once.
+    assert plain > 2 * alone, (plain, alone)
+    assert checkpointed <= 1.5 * alone, (checkpointed, alone)
+
+
+# ---------------------------------------------------------------------------
 # Window collate
 # ---------------------------------------------------------------------------
 
@@ -365,6 +484,31 @@ class TestMILCoxEndToEnd:
         predictions = Predictions.from_parquet(next(result.run_dir.rglob("predictions_test.parquet")))
         assert predictions.task_family == "survival"
         assert predictions.prediction_columns == ("risk_score",)
+
+    def test_checkpointed_windows_train_the_same_model_in_the_same_experiment(self, tmp_path: Path):
+        """``learner.params.checkpoint_cox_window`` changes neither the trained model (the
+        AB-MIL dropout included) nor the experiment the run is filed under."""
+        dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path)
+        runs = {}
+        for checkpoint_cox_window in (False, True):
+            output_dir = tmp_path / f"out-{checkpoint_cox_window}"
+            config = experiment(
+                dataset_csv,
+                splits_csv,
+                output_dir=output_dir,
+                aggregator='abmil',
+                head='cox_survival',
+                head_params={'cox_window': 2},
+                loaders={"batch_size": 1},
+                trainer={"max_epochs": 2},
+                checkpoint_cox_window=checkpoint_cox_window,
+            )
+            with patch("soma.pipeline.layout.make_run_id", return_value=FIXED_RUN_ID):
+                result = Pipeline(config, source=CachedSetSource(feature_dir)).run()
+            predictions = Predictions.from_parquet(next(result.run_dir.rglob("predictions_test.parquet")))
+            runs[checkpoint_cox_window] = (result.run_dir.relative_to(output_dir), predictions.frame)
+        assert runs[True][0] == runs[False][0]
+        pd.testing.assert_frame_equal(runs[True][1], runs[False][1])
 
     def test_padded_mode_run(self, tmp_path: Path):
         dataset_csv, splits_csv, feature_dir = _setup_mil_survival_data(tmp_path)

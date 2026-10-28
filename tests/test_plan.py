@@ -398,6 +398,15 @@ def test_survival_refuses_tiles_label_aware_aggregators_and_bad_cox_risk_sets(fi
     check(experiment(*files, head="cox_survival", head_params={"cox_window": 4}, aggregator="abmil"))
 
 
+def test_only_a_cox_window_is_checkpointed(files):
+    window = {"head": "cox_survival", "head_params": {"cox_window": 4}, "aggregator": "abmil"}
+    check(experiment(*files, **window, checkpoint_cox_window=True))
+    with pytest.raises(ValueError, match="checkpoint_cox_window.*cox_window >= 2"):
+        check(experiment(*files, head="cox_survival", aggregator="abmil", loaders={"batch_size": 4}, checkpoint_cox_window=True))
+    with pytest.raises(ValueError, match="checkpoint_cox_window.*cox_window >= 2"):
+        check(experiment(*files, aggregator="abmil", checkpoint_cox_window=True))
+
+
 def test_annotation_masks_serve_bags_and_slide_manifest_segmentation(files):
     masks = extraction(0.5, 224, masks=annotation_masks())
     check(experiment(*files, aggregator="abmil", features=FeaturesConfig(extraction=masks)))
