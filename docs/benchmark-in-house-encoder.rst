@@ -49,6 +49,11 @@ The registration exists only in the process that ran your script. slide2vec star
 one worker process per visible GPU, and those processes never import it, so make one
 GPU visible, for example with ``CUDA_VISIBLE_DEVICES=0``.
 
+Running the seeds in parallel with ``devices`` (see :ref:`parallel-seeds`) needs
+several visible GPUs, so the first seed would extract its features in slide2vec
+processes that do not know the encoder. To use ``devices``, install the encoder as a
+plugin package, as described next.
+
 As a plugin package
 -------------------
 

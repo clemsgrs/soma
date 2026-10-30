@@ -4,7 +4,8 @@
 the canonical per-fold order (``run_fold``); ``build.py`` plan → objects; ``layout.py``
 the run layout, ``RunRecorder`` and the resume guards; ``aggregate.py`` the per-fold
 writers and the from-disk summary; ``console.py`` the panels; ``mirror.py`` the artifact
-mirror; ``representation.py`` the task-free CRoMa evaluation.
+mirror; ``representation.py`` the task-free CRoMa evaluation; ``parallel.py`` runs jobs
+(a benchmark's seeds) side by side, one new process per device.
 """
 
 from soma.pipeline.folds import FoldResult

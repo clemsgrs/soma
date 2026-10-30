@@ -186,18 +186,19 @@ def build_cli_rst() -> str:
            :doc:`croma-robustness-benchmark`. ``--rebuild`` replaces a partial
            or revision-mismatched destination.
 
-        ``soma reproduce NAME [--encoder NAME | --encoders NAME [NAME ...]] [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N]``
+        ``soma reproduce NAME [--encoder NAME | --encoders NAME [NAME ...]] [--raw-root DIR | --curated-dir DIR | --from-run-dir DIR] [--seeds N] [--devices LIST]``
            Curate, run, and score a registered benchmark. ``NAME`` is a benchmark
            (``ocelot``, ``eva/bach``) or a family prefix (``eva``). ``--raw-root``
            curates from raw data, ``--curated-dir`` reuses prepared manifests, and
            ``--from-run-dir`` rescores one existing run. ``--encoders`` runs an
            ordered panel and writes one leaderboard per benchmark. ``--seeds N``
-           runs seeds 0 through N−1. ``--output-root``, ``--cache-root``, and
-           ``--out-dir`` place run artifacts, shared features, and curated
-           manifests; ``--record`` appends the score to the benchmark's results
-           ledger, ``soma/benchmark/<protocol>/results.csv`` next to its
+           runs seeds 0 through N−1. ``--devices 0,1,2,3`` runs the seeds side by
+           side, one process per GPU (``cpu`` entries run on the CPU). ``--output-root``,
+           ``--cache-root``, and ``--out-dir`` place run artifacts, shared features,
+           and curated manifests; ``--record`` appends the score to the benchmark's
+           results ledger, ``soma/benchmark/<protocol>/results.csv`` next to its
            ``reference.csv``. See :doc:`benchmarking` for panel validation,
-           partial failures, and reference comparisons.
+           partial failures, parallel seeds, and reference comparisons.
 
         ``soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]``
            Render a faceted leaderboard over the completed run dirs under an

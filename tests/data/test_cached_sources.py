@@ -64,6 +64,26 @@ def test_cached_set_source_conforms_for_vectors_and_hierarchies(tmp_path: Path) 
     check_set_source(CachedSetSource(hipt))
 
 
+def test_cached_set_source_packs_vectors_without_touching_another_processs_pack(tmp_path: Path) -> None:
+    # Two processes over one cache (benchmark seeds run side by side) may both build the
+    # packed matrix. Each must write its own temporary file: a shared name lets one
+    # process rename the other's half-written pack into place.
+    vectors = {f"s{i}": torch.randn(16) for i in range(3)}
+    for sample_id, vector in vectors.items():
+        torch.save(vector, tmp_path / f"{sample_id}.pt")
+    in_progress = tmp_path / "packed_features.pt.tmp"
+    in_progress.write_bytes(b"another process's pack, half written")
+
+    source = CachedSetSource(tmp_path)
+
+    assert torch.equal(source.load("s1"), vectors["s1"])
+    assert in_progress.read_bytes() == b"another process's pack, half written"
+    assert sorted(path.name for path in tmp_path.glob("*.tmp")) == ["packed_features.pt.tmp"]
+    packed = torch.load(tmp_path / "packed_features.pt")
+    assert packed["sample_ids"] == ["s0", "s1", "s2"]
+    assert torch.equal(packed["features"][1], vectors["s1"])
+
+
 def test_cached_set_source_disowns_payloads_the_manifest_marks_unsuccessful(
     tmp_path: Path,
 ) -> None:
