@@ -117,7 +117,11 @@ def run_on_devices(
             while pending and free_slots and failure is None:
                 index = pending.popleft()
                 slot = free_slots.popleft()
-                running[index] = _start(context, jobs[index], payloads[index], resolved[slot], slot)
+                job, device = jobs[index], resolved[slot]
+                running[index] = _start(context, job, payloads[index], device, slot)
+                # Only once the job is in ``running``: if this print fails (a closed
+                # stdout, an interrupt), the ``except`` below must still stop its process.
+                print(f"{job.label} started on {device}; log: {job.log_path}", flush=True)
             # A timeout, so that an interrupt delivered to another thread is still seen.
             ready = connection.wait(
                 [entry.reader for entry in running.values()]
@@ -244,8 +248,9 @@ def _start(context, job: DeviceJob, payload: bytes, device: str, slot: int) -> _
     with _environment_variable("CUDA_VISIBLE_DEVICES", visible):
         process.start()
     # Only the job's process may hold the writing end: its exit then reads as EOF here.
+    # Nothing else that can fail runs after ``start``: the caller can stop the process
+    # only once this returns (see run_on_devices).
     writer.close()
-    print(f"{job.label} started on {device}; log: {log_path}", flush=True)
     return _Running(process=process, reader=reader, device=device, slot=slot)
 
 

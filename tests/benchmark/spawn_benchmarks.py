@@ -7,7 +7,8 @@ sees none of a test's monkeypatches or local functions.
 
 The tile protocol is the real ``Pipeline`` on CPU: soma.testing's weight-free ``fake``
 encoder over the synthetic tiles of ``tests.e2e.synthetic.make_tile_dataset``, then a
-binary-classification head trained for a few epochs.
+binary-classification head trained for a few epochs. The trainer is pinned to ``cpu``, so
+a sequential run trains where the ``cpu`` workers do, also on a machine with a GPU.
 """
 
 from __future__ import annotations
@@ -98,7 +99,7 @@ def build_tile_config(
                 "optimizer": {"name": "adam", "params": {"lr": 5e-3}},
             },
         ),
-        trainer=TrainerConfig(max_epochs=4),
+        trainer=TrainerConfig(max_epochs=4, device="cpu"),
         evaluation=EvaluationConfig(metrics=["auroc", "balanced_accuracy"]),
     )
 

@@ -321,6 +321,35 @@ def test_an_interrupt_stops_every_worker(tmp_path):
     assert multiprocessing.active_children() == []
 
 
+class _BrokenStartLine:
+    """Standard output whose reader has gone away by the time a worker's "started" line comes."""
+
+    def __init__(self, stream) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        if "started on" in text:
+            raise BrokenPipeError(32, "Broken pipe")
+        return self._stream.write(text)
+
+    def flush(self) -> None:
+        self._stream.flush()
+
+
+def test_a_worker_is_stopped_when_its_started_line_cannot_be_printed(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "stdout", _BrokenStartLine(sys.stdout))
+    try:
+        with pytest.raises(BrokenPipeError):
+            _run_quick(tmp_path, actions={1: "hang"})
+    finally:
+        leaked = multiprocessing.active_children()
+        for process in leaked:  # never leave a hanging worker behind a failed check
+            process.kill()
+            process.join()
+
+    assert leaked == []
+
+
 @pytest.fixture(scope="module")
 def tile_benchmark_runs(tmp_path_factory, tile_data):
     """The registered tile benchmark through ``run_benchmark``, sequential then parallel."""
