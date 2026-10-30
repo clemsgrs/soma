@@ -28,6 +28,7 @@ from soma.benchmark import (
     run_benchmark,
     run_benchmark_spec,
 )
+from soma.pipeline.parallel import DeviceJob, run_on_devices
 from tests.benchmark import spawn_benchmarks
 from tests.e2e.synthetic import make_tile_dataset
 
@@ -216,6 +217,34 @@ def test_a_script_runs_its_seeds_in_parallel_and_its_top_level_code_already_sees
     workers = [(tmp_path / "out" / f"seed_{seed}" / "pid").read_text() for seed in (1, 2)]
     assert sorted((marks / f"imported-{pid}").read_text() for pid in workers) == ["", "5"]
     assert len(list(marks.iterdir())) == 3  # the script itself, then each worker once
+
+
+@pytest.mark.parametrize(
+    ("caller_threads", "devices", "expected"),
+    [
+        (7, ["cuda:1", "cuda:0", "cpu"], [("5", 2), ("3", 2), ("", 7)]),
+        (1, ["cuda:0", "cuda:0"], [("3", 1), ("3", 1)]),
+    ],
+)
+def test_a_gpu_worker_gets_its_share_of_the_callers_cpu_threads_and_a_cpu_worker_all_of_them(
+    tmp_path, monkeypatch, caller_threads, devices, expected
+):
+    # On a GPU, a worker's CPU threads only load data, so the workers split the caller's
+    # threads instead of each taking them all. On cpu they do the math: a worker keeps the
+    # caller's count, so it computes as the caller would.
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3,5")
+    jobs = [
+        DeviceJob(f"job {index}", tmp_path / f"job_{index}.log", spawn_benchmarks.thread_count)
+        for index in range(len(devices))
+    ]
+    previous = torch.get_num_threads()
+    torch.set_num_threads(caller_threads)
+    try:
+        results = run_on_devices(jobs, devices)
+    finally:
+        torch.set_num_threads(previous)
+
+    assert results == expected
 
 
 def test_a_device_may_take_several_seeds_one_after_another(tmp_path):

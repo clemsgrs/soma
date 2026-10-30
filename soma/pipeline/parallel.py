@@ -10,6 +10,12 @@ A job's process sees one device: ``CUDA_VISIBLE_DEVICES`` is set before the job 
 so ``cuda:<n>`` (the n-th GPU visible to the caller) is the job's only GPU, and ``cpu``
 leaves it none. The job's target and arguments reach the process pickled, so the target
 must be a module-level function and its arguments must pickle.
+
+A job on a GPU runs with an even share of the caller's torch CPU threads: the caller's
+count divided by the number of device entries, at least 1. There its CPU threads only load
+data for the GPU, and every job at the caller's full count would oversubscribe the cores.
+A job on ``cpu`` keeps the caller's count, because there the threads do the math, and the
+job then computes exactly as the caller would.
 """
 
 from __future__ import annotations
@@ -104,8 +110,12 @@ def run_on_devices(
     raises ``RuntimeError``. No job process outlives this call, also on
     ``KeyboardInterrupt``.
     """
+    import torch
+
     resolved = resolve_devices(devices)
     payloads = [pickle.dumps((job.target, job.args)) for job in jobs]
+    # Read here: a new process starts at torch's default, not at this process's count.
+    caller_threads = torch.get_num_threads()
     context = get_context("spawn")
     results: list[Any] = [None] * len(jobs)
     pending = deque(range(len(jobs)))
@@ -118,7 +128,8 @@ def run_on_devices(
                 index = pending.popleft()
                 slot = free_slots.popleft()
                 job, device = jobs[index], resolved[slot]
-                running[index] = _start(context, job, payloads[index], device, slot)
+                threads = _job_threads(device, caller_threads, len(resolved))
+                running[index] = _start(context, job, payloads[index], device, slot, threads)
                 # Only once the job is in ``running``: if this print fails (a closed
                 # stdout, an interrupt), the ``except`` below must still stop its process.
                 print(f"{job.label} started on {device}; log: {job.log_path}", flush=True)
@@ -231,14 +242,23 @@ def _environment_variable(name: str, value: str) -> Iterator[None]:
             os.environ[name] = previous
 
 
-def _start(context, job: DeviceJob, payload: bytes, device: str, slot: int) -> _Running:
+def _job_threads(device: str, caller_threads: int, device_count: int) -> int:
+    """Torch's CPU thread count for a job on ``device`` (see the module docstring)."""
+    if device == "cpu":
+        return caller_threads
+    return max(1, caller_threads // device_count)
+
+
+def _start(
+    context, job: DeviceJob, payload: bytes, device: str, slot: int, threads: int
+) -> _Running:
     reader, writer = context.Pipe(duplex=False)
     log_path = Path(job.log_path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     visible = _visible_value(device)
     process = context.Process(
         target=_job_main,
-        args=(writer, job.label, device, visible, str(log_path), payload),
+        args=(writer, job.label, device, visible, threads, str(log_path), payload),
         name=f"soma-{job.label.replace(' ', '-')}",
         daemon=False,
     )
@@ -331,8 +351,11 @@ def _redirect_output(log_path: str) -> None:
             stream.reconfigure(line_buffering=True)
 
 
-def _job_main(writer, label: str, device: str, visible: str, log_path: str, payload: bytes) -> None:
-    """A job's process: send its output to its log, run the job, report.
+def _job_main(
+    writer, label: str, device: str, visible: str, threads: int, log_path: str, payload: bytes
+) -> None:
+    """A job's process: send its output to its log, run the job with ``threads`` torch CPU
+    threads, report.
 
     ``visible`` is the ``CUDA_VISIBLE_DEVICES`` the process started with (see
     :func:`_start`).
@@ -340,12 +363,15 @@ def _job_main(writer, label: str, device: str, visible: str, log_path: str, payl
     _redirect_output(log_path)
     started = datetime.datetime.now().isoformat(timespec="seconds")
     print(
-        f"--- {label} on {device} (CUDA_VISIBLE_DEVICES={visible!r}), "
+        f"--- {label} on {device} (CUDA_VISIBLE_DEVICES={visible!r}, {threads} CPU threads), "
         f"process {os.getpid()}, started {started} ---",
         flush=True,
     )
     try:
         try:
+            import torch
+
+            torch.set_num_threads(threads)
             target, args = pickle.loads(payload)
             result = target(*args)
             report = ("ok", result)

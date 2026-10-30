@@ -57,6 +57,7 @@ __all__ = [
     "score_and_snapshot_cache",
     "score_quick",
     "score_tile_run",
+    "thread_count",
     "tile_spec",
 ]
 
@@ -175,6 +176,13 @@ class TileBenchmark:
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
         return score_tile_run(run_dir)
+
+
+def thread_count() -> tuple[str, int]:
+    """A job for ``run_on_devices``: the GPUs its process may see, and torch's CPU threads."""
+    import torch
+
+    return os.environ.get("CUDA_VISIBLE_DEVICES", "<unset>"), torch.get_num_threads()
 
 
 # --- a quick protocol: no Pipeline, for the failure paths -----------------------------

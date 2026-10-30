@@ -96,9 +96,13 @@ Plan for the cost of each process:
   memory: about N × D × 4 bytes for N samples of D-dimensional features, since they
   are held as fp32. With an fp16 cache (``cache.dtype: fp16``) a process briefly holds
   both the fp16 and the fp32 copy while it converts.
-* **CPU threads.** Each process uses PyTorch's default number of CPU threads, so
-  several processes can compete for the same cores. Set ``OMP_NUM_THREADS`` (for
-  example, the number of cores divided by the number of devices) to share them.
+* **CPU threads.** A process on a GPU gets an even share of PyTorch's CPU threads:
+  the command's thread count divided by the number of devices listed. There the CPU
+  only loads data, so the share does not change the score. A process on ``cpu`` keeps
+  the full count, so it computes exactly as the seeds run one after another, and
+  several such processes compete for the same cores. To share them, set
+  ``OMP_NUM_THREADS`` yourself (for example, the number of cores divided by the
+  number of devices).
 
 From Python, ``run_benchmark`` and ``run_benchmark_spec`` take the same option as a
 list: ``devices=["cuda:0", "cuda:1"]``. Each new process imports your script again
