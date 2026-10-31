@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import os
 from concurrent.futures import ThreadPoolExecutor
@@ -241,9 +242,13 @@ class CachedSetSource:
             return
         self._packed_matrix = matrix
         self._packed_row = {sid: i for i, sid in enumerate(sample_ids)}
+        # A temporary name of this process's own: processes that share the cache (seeds
+        # run side by side) may build the pack at once, and must not write the same file.
+        tmp = packed_path.with_name(f"{self._packed_filename}.{os.getpid()}.tmp")
         try:
-            tmp = packed_path.with_name(self._packed_filename + ".tmp")
             torch.save({"sample_ids": sample_ids, "features": matrix}, tmp)
             tmp.replace(packed_path)
         except Exception:
-            pass  # in-memory pack still valid for this run; persistence is best-effort
+            # The in-memory pack is still valid for this run; persistence is best-effort.
+            with contextlib.suppress(OSError):
+                tmp.unlink(missing_ok=True)

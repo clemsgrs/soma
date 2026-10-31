@@ -52,6 +52,82 @@ def _run_seed(owner, config, *, pipeline_cls=None):
     return (pipeline_cls or _pipeline_cls())(config).run()
 
 
+def _require_picklable(owner, pipeline_cls=None) -> None:
+    """Fail before any seed runs when ``owner`` cannot reach a seed's worker process.
+
+    A worker is a ``spawn`` process: it receives the benchmark or spec pickled, and pickle
+    stores a function by its module and name.
+    """
+    import pickle
+
+    try:
+        pickle.dumps((owner, pipeline_cls))
+    except Exception as exc:  # noqa: BLE001 - pickle raises several types
+        raise TypeError(
+            f"devices runs each seed after the first in a new process, which receives "
+            f"benchmark {owner.name!r} pickled, but it does not pickle "
+            f"({type(exc).__name__}: {exc}). Define the spec's callables (build_config, "
+            "score, run) as module-level functions: lambdas and closures do not pickle."
+        ) from exc
+
+
+def _seed_job(owner, build_kwargs: dict[str, Any], pipeline_cls, with_checksums: bool):
+    """One seed in its worker process: build its config, run it and score it.
+
+    Returns only the raw scores and, when asked, the run's three checksums: the run's
+    result holds the trained learner, which has no business crossing processes.
+    """
+    config = owner.build_config(**build_kwargs)
+    run = _run_seed(owner, config, pipeline_cls=pipeline_cls)
+    checksums = (
+        (run.dataset_checksum, run.splits_checksum, run.test_checksum)
+        if with_checksums
+        else None
+    )
+    del run
+    return owner.score(build_kwargs["output_root"]), checksums
+
+
+def _free_first_seed_memory() -> None:
+    """Release the first seed's memory before workers start: one may share its GPU."""
+    gc.collect()
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+def _run_seeds_on_devices(
+    owner,
+    seeds: Sequence[int],
+    build_kwargs: Callable[[int], dict[str, Any]],
+    devices: Sequence[str],
+    *,
+    check: Callable[[Any, Any], None],
+    pipeline_cls=None,
+    with_checksums: bool = False,
+) -> list[tuple[Any, Any]]:
+    """Run ``seeds`` in worker processes on ``devices``; ``check`` each as it finishes.
+
+    ``check(scores, checksums)`` runs in this process, so its errors and its messages
+    are the sequential loop's. Returns ``(scores, checksums)`` per seed, in seed order.
+    """
+    from soma.pipeline.parallel import DeviceJob, run_on_devices
+
+    jobs = []
+    for seed in seeds:
+        kwargs = build_kwargs(seed)
+        jobs.append(
+            DeviceJob(
+                label=f"seed {seed}",
+                log_path=Path(kwargs["output_root"]) / "worker.log",
+                target=_seed_job,
+                args=(owner, kwargs, pipeline_cls, with_checksums),
+            )
+        )
+    return run_on_devices(jobs, devices, on_result=lambda _index, result: check(*result))
+
+
 def _reproduce_seeds(benchmark, requested: int | None) -> tuple[int, ...]:
     """Seeds to run: the benchmark's canonical set by default, or the first ``requested``.
 
@@ -667,6 +743,13 @@ def _reproduce_one(
 
     import statistics
 
+    devices = getattr(args, "devices", None)
+    if devices is not None:
+        from soma.pipeline.parallel import resolve_devices
+
+        devices = resolve_devices(devices)
+        _require_picklable(benchmark, pipeline_cls)
+
     if manifest is None:
         try:
             manifest = resolve_manifest(benchmark, args, family_root=family_root)
@@ -683,9 +766,21 @@ def _reproduce_one(
     overrides = {"cache": {"enabled": True, "root_dir": str(cache_root)}}
     print(f"Feature cache (shared across seeds): {cache_root}", flush=True)
 
+    def seed_kwargs(seed: int) -> dict[str, Any]:
+        """``build_config``'s keywords for one seed, here or in a worker process."""
+        return dict(
+            **axes,
+            dataset_csv=manifest.dataset_csv,
+            splits_csv=manifest.splits_csv,
+            output_root=output_root / f"seed_{seed}",
+            seed=seed,
+            overrides=overrides,
+        )
+
     measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
     seed_roots: list[Path] = []
-    for seed in seeds:
+    # With devices, only the first seed runs here: it fills the shared feature cache.
+    for seed in seeds if devices is None else seeds[:1]:
         # Free the previous seed's pipeline before building the next. A live segmentation
         # run holds its frozen encoder inside a reference cycle, which only the cyclic GC
         # reclaims; left to chance, each seed adds a GB-sized encoder to GPU memory until
@@ -693,14 +788,7 @@ def _reproduce_one(
         gc.collect()
         seed_root = output_root / f"seed_{seed}"
         seed_roots.append(seed_root)
-        config = benchmark.build_config(
-            **axes,
-            dataset_csv=manifest.dataset_csv,
-            splits_csv=manifest.splits_csv,
-            output_root=seed_root,
-            seed=seed,
-            overrides=overrides,
-        )
+        config = benchmark.build_config(**seed_kwargs(seed))
         with _panel_runtime_boundary(isolate_runtime_failures):
             _run_seed(benchmark, config, pipeline_cls=pipeline_cls)
             metrics = _require_reported_scores(
@@ -710,6 +798,26 @@ def _reproduce_one(
             )
             for metric in reported_metrics:
                 measured_values[metric].append(float(metrics[metric]))
+
+    if devices is not None and len(seeds) > 1:
+        _free_first_seed_memory()
+        others = seeds[1:]
+        with _panel_runtime_boundary(isolate_runtime_failures):
+            finished = _run_seeds_on_devices(
+                benchmark,
+                others,
+                seed_kwargs,
+                devices,
+                check=lambda scores, _checksums: _require_reported_scores(
+                    benchmark, scores, raise_error=isolate_runtime_failures
+                ),
+                pipeline_cls=pipeline_cls,
+            )
+        for seed, (scores, _checksums) in zip(others, finished):
+            seed_root = output_root / f"seed_{seed}"
+            seed_roots.append(seed_root)
+            for metric in reported_metrics:
+                measured_values[metric].append(float(scores[metric]))
 
     measured = {
         metric: statistics.fmean(values) for metric, values in measured_values.items()
@@ -772,6 +880,7 @@ def run_benchmark(
     output_root: str | Path | None = None,
     cache_root: str | Path | None = None,
     return_result: bool = False,
+    devices: Sequence[str | int] | None = None,
 ) -> int | BenchmarkRunResult:
     """Reproduce one registered benchmark exactly as ``soma reproduce`` does (issue #370).
 
@@ -799,6 +908,10 @@ def run_benchmark(
     Pass ``return_result=True`` to receive the aggregated Reported metrics and seed output
     roots as a :class:`BenchmarkRunResult`. Both modes print the same report; like the CLI,
     a scorer omitting a required Reported metric terminates via ``SystemExit``.
+
+    ``devices`` runs the seeds side by side, as ``--devices`` does and as
+    :func:`run_benchmark_spec` describes: the first seed here, then one new process per
+    seed on a free device. The default, ``None``, runs them one after another here.
     """
     benchmark = get_benchmark(name)
     options = SimpleNamespace(
@@ -811,6 +924,7 @@ def run_benchmark(
         output_root=output_root,
         cache_root=cache_root,
         record=record,
+        devices=devices,
     )
     return _reproduce_one(
         benchmark,
@@ -829,6 +943,7 @@ def run_benchmark_spec(
     output_root: str | Path,
     cache_root: str | Path | None = None,
     seeds: Sequence[int] | None = None,
+    devices: Sequence[str | int] | None = None,
 ) -> BenchmarkRunResult:
     """Execute an external benchmark specification without registry concerns.
 
@@ -841,6 +956,14 @@ def run_benchmark_spec(
     checksums of the run, which the returned :class:`BenchmarkRunResult` carries; every
     seed must report the same three, or a ``ValueError`` is raised. A score that misses a
     Reported metric also raises ``ValueError``.
+
+    ``devices`` (for example ``["cuda:0", "cuda:1"]``; ``"cpu"`` or a bare GPU number
+    ``n`` for ``cuda:<n>`` also work, and an entry may repeat) runs the seeds side by
+    side. The first seed runs in this process and fills the feature cache; every other
+    seed then runs in a new process on a free device, with its output in
+    ``<output_root>/seed_<n>/worker.log``. The result is the sequential one. The spec
+    must pickle, so its callables must be module-level functions; a ``TypeError`` says so
+    before any seed runs. The default, ``None``, runs the seeds one after another here.
     """
     import statistics
 
@@ -848,6 +971,11 @@ def run_benchmark_spec(
         spec.canonical_seeds if seeds is None else seeds,
         message="seeds must be a non-empty sequence of unique integers",
     )
+    if devices is not None:
+        from soma.pipeline.parallel import resolve_devices
+
+        devices = resolve_devices(devices)
+        _require_picklable(spec)
     output_root = Path(output_root)
     shared_cache_root = (
         Path(cache_root) if cache_root is not None else output_root / "feature_cache"
@@ -858,21 +986,33 @@ def run_benchmark_spec(
     seed_roots: list[Path] = []
     identities: set[tuple[str, str, str]] = set()
 
-    for seed in selected_seeds:
+    def seed_kwargs(seed: int) -> dict[str, Any]:
+        """``build_config``'s keywords for one seed, here or in a worker process."""
+        return dict(
+            dataset_csv=dataset_csv,
+            splits_csv=splits_csv,
+            output_root=output_root / f"seed_{seed}",
+            seed=seed,
+            overrides=overrides,
+            encoder=encoder,
+        )
+
+    def check_scores(scores: dict[str, float]) -> None:
+        error = _missing_reported_score_message(
+            spec, scores, reported_metrics=reported_metrics
+        )
+        if error is not None:
+            raise ValueError(error)
+
+    # With devices, only the first seed runs here: it fills the shared feature cache.
+    for seed in selected_seeds if devices is None else selected_seeds[:1]:
         # Free the previous seed's pipeline before building the next, as in
         # ``_reproduce_one``: a live segmentation run holds its frozen encoder inside a
         # reference cycle, which only the cyclic GC reclaims.
         gc.collect()
         seed_root = output_root / f"seed_{seed}"
         seed_roots.append(seed_root)
-        config = spec.build_config(
-            dataset_csv=dataset_csv,
-            splits_csv=splits_csv,
-            output_root=seed_root,
-            seed=seed,
-            overrides=overrides,
-            encoder=encoder,
-        )
+        config = spec.build_config(**seed_kwargs(seed))
         run = _run_seed(spec, config)
         identities.add((run.dataset_checksum, run.splits_checksum, run.test_checksum))
         # Drop the result before the next seed: through its fold results it owns the
@@ -880,13 +1020,30 @@ def run_benchmark_spec(
         # otherwise stay alive while the next seed trains.
         del run
         scores = spec.score(seed_root)
-        error = _missing_reported_score_message(
-            spec, scores, reported_metrics=reported_metrics
-        )
-        if error is not None:
-            raise ValueError(error)
+        check_scores(scores)
         for metric in reported_metrics:
             measured_values[metric].append(float(scores[metric]))
+
+    if devices is not None and len(selected_seeds) > 1:
+        _free_first_seed_memory()
+
+        def check_worker_seed(scores, checksums) -> None:
+            identities.add(checksums)
+            check_scores(scores)
+
+        others = selected_seeds[1:]
+        finished = _run_seeds_on_devices(
+            spec,
+            others,
+            seed_kwargs,
+            devices,
+            check=check_worker_seed,
+            with_checksums=True,
+        )
+        for seed, (scores, _checksums) in zip(others, finished):
+            seed_roots.append(output_root / f"seed_{seed}")
+            for metric in reported_metrics:
+                measured_values[metric].append(float(scores[metric]))
 
     if len(identities) != 1:
         raise ValueError(

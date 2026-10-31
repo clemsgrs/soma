@@ -439,6 +439,11 @@ for a recipe that a ``Pipeline`` runs:
        output_root="runs/hest-IDC",
    )
 
+Both ``run_benchmark`` and ``run_benchmark_spec`` take ``devices``, for example
+``devices=["cuda:0", "cuda:1"]``, to run the seeds side by side, one process per
+device. See :ref:`parallel-seeds` for what this costs and what it asks of your
+script.
+
 Runnable demonstrations live in ``examples/``
 (`examples/README.md <https://github.com/clemsgrs/soma/blob/main/examples/README.md>`_):
 

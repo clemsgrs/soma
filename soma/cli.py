@@ -632,6 +632,16 @@ def _run_reproduce_panel(
 def _cmd_reproduce(args: argparse.Namespace) -> int:
     from soma.benchmark import get_benchmark
 
+    devices = getattr(args, "devices", None)
+    if devices is not None:
+        from soma.pipeline.parallel import resolve_devices
+
+        try:
+            resolve_devices(devices)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+
     encoders = getattr(args, "encoders", None)
     if encoders is not None:
         duplicates = sorted({name for name in encoders if encoders.count(name) > 1})
@@ -863,6 +873,11 @@ def _build_leaderboard_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _device_list(text: str) -> list[str]:
+    """``--devices 0,1`` or ``--devices cpu,cpu``: the entries, checked when the run starts."""
+    return [entry.strip() for entry in text.split(",")]
+
+
 def _build_reproduce_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="soma reproduce",
@@ -892,6 +907,17 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
     parser.add_argument("--out-dir", type=Path, default=None, help="Curated manifest dir (default <raw-root>/curated).")
     parser.add_argument("--output-root", type=Path, default=None, help="Where runs are written.")
     parser.add_argument("--cache-root", type=Path, default=None, help="Shared feature-cache root (reused across seeds).")
+    parser.add_argument(
+        "--devices",
+        type=_device_list,
+        default=None,
+        metavar="LIST",
+        help=(
+            "Run the seeds side by side, one process per device: a comma-separated list "
+            "such as 0,1,2,3 (GPU numbers), cuda:0,cuda:1 or cpu,cpu. The first seed "
+            "runs first and fills the feature cache. Default: one seed after another."
+        ),
+    )
     encoder_group = parser.add_mutually_exclusive_group()
     encoder_group.add_argument(
         "--encoder",

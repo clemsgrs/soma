@@ -63,6 +63,55 @@ sets ``--seeds 1`` explicitly. ``--curated-dir`` reuses prepared manifests,
 the benchmark's results ledger, which is what the results tables in these pages
 are built from.
 
+.. _parallel-seeds:
+
+Run the seeds in parallel
+-------------------------
+
+By default the seeds run one after another. On a machine with several GPUs,
+``--devices`` runs them side by side, one process per device::
+
+   soma reproduce eva/bach --encoder uni2 --raw-root /path/to/eva/bach --output-root runs/eva-bach --devices 0,1,2,3
+
+The first seed runs alone and fills the shared feature cache, so features are
+extracted once. Each other seed then runs in a new process on the next free device
+and reads its features from the cache. A device takes the next seed as soon as it is
+free; list a device twice (``0,0,1,1``) to run two seeds on it at once. The score is
+the same as with seeds run one after another.
+
+An entry is a GPU number (``0``), ``cuda:<n>`` or ``cpu``. GPU numbers count the GPUs
+the command sees: with ``CUDA_VISIBLE_DEVICES=3,5``, ``0`` is GPU 3 and ``1`` is GPU 5.
+To keep a whole run off some GPUs, set ``CUDA_VISIBLE_DEVICES`` before the command. A
+GPU number the command cannot see fails before any seed runs.
+
+Each process writes its output to ``seed_<n>/worker.log`` under the output root, and
+the console says when each seed starts and finishes, on which device. If a seed fails,
+no new seed starts; the running ones finish, then the command fails with that seed's
+error and the path to its log. With ``--encoders``, a failed seed fails only its
+encoder, as described under `Compare encoders`_.
+
+Plan for the cost of each process:
+
+* **Memory.** Each process loads its own copy of the cached features into host
+  memory: about N × D × 4 bytes for N samples of D-dimensional features, since they
+  are held as fp32. With an fp16 cache (``cache.dtype: fp16``) a process briefly holds
+  both the fp16 and the fp32 copy while it converts.
+* **CPU threads.** A process on a GPU gets an even share of PyTorch's CPU threads:
+  the command's thread count divided by the number of devices listed. There the CPU
+  only loads data, so the share does not change the score. A process on ``cpu`` keeps
+  the full count, so it computes exactly as the seeds run one after another, and
+  several such processes compete for the same cores. To share them, set
+  ``OMP_NUM_THREADS`` yourself (for example, the number of cores divided by the
+  number of devices).
+
+From Python, ``run_benchmark`` and ``run_benchmark_spec`` take the same option as a
+list: ``devices=["cuda:0", "cuda:1"]``. Each new process imports your script again
+before it runs its seed, so put the call under ``if __name__ == "__main__":``. Code
+outside that block runs again in each process: an encoder registered there is known
+to every seed's process. A spec's ``build_config``, ``score`` and ``run`` must be
+module-level functions: a lambda or a nested function cannot be sent to another
+process, and soma says so before any seed runs.
+
 Compare encoders
 ----------------
 
