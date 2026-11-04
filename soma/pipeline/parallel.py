@@ -4,7 +4,7 @@
 process on a free device, at most one job per entry of ``devices`` at a time, hands the
 device to the next job when one finishes, sends each job's output to its own log file,
 and names the job that failed. The benchmark runners use it to train a benchmark's seeds
-in parallel.
+in parallel, and :class:`~soma.pipeline.Pipeline` to train a run's folds in parallel.
 
 A job's process sees one device: ``CUDA_VISIBLE_DEVICES`` is set before the job runs,
 so ``cuda:<n>`` (the n-th GPU visible to the caller) is the job's only GPU, and ``cpu``
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import gc
 import os
 import pickle
 import signal
@@ -34,7 +35,7 @@ from multiprocessing import connection, get_context
 from pathlib import Path
 from typing import Any
 
-__all__ = ["DeviceJob", "resolve_devices", "run_on_devices"]
+__all__ = ["DeviceJob", "free_device_memory", "resolve_devices", "run_on_devices"]
 
 #: How often the wait for a job wakes up to notice an interrupt.
 _POLL_SECONDS = 1.0
@@ -89,6 +90,16 @@ def resolve_devices(devices: Sequence[str | int]) -> tuple[str, ...]:
                 + "."
             )
     return resolved
+
+
+def free_device_memory() -> None:
+    """Release the memory this process no longer uses before jobs start: a job may train
+    on the GPU this process used."""
+    gc.collect()
+    import torch
+
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def run_on_devices(

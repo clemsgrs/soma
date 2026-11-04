@@ -786,3 +786,35 @@ def test_a_representation_run_calls_no_callback_factory(tmp_path: Path):
     assert result.fold_results == []
     assert result.summary["test/croma_median"] == 0.0
     assert contexts == []
+
+
+def test_a_representation_run_warns_that_it_ignores_devices(tmp_path: Path):
+    """A representation run has no folds to spread: it warns and runs here, as without
+    devices, so its callback factory (a local function) never has to pickle."""
+    rows = _croma_cohort()
+    _representation_inputs(
+        tmp_path,
+        rows=rows,
+        split_rows=[(0, row[0], "test") for row in rows],
+        tensors=_croma_tensors(rows),
+    )
+    config = experiment(
+        tmp_path / "dataset.csv",
+        tmp_path / "splits.csv",
+        output_dir=tmp_path / "outputs",
+        head=None,
+        evaluation={"representation": CRoMaOptions(confounder_column="site", split="test")},
+    )
+
+    from soma.pipeline import Pipeline
+
+    with pytest.warns(UserWarning, match=r"devices.*ignored.*representation run.*CUDA_VISIBLE_DEVICES"):
+        result = Pipeline(
+            config,
+            source=CachedSetSource(tmp_path / "features"),
+            callback_factory=lambda context: [],
+            devices=["cpu", "cpu"],
+        ).run()
+
+    assert result.summary["test/croma_median"] == 0.0
+    assert yaml.safe_load((result.run_dir / "run.yaml").read_text(encoding="utf-8"))["status"] == "completed"

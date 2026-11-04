@@ -4,6 +4,9 @@ The first seed runs in the calling process and fills the shared feature cache; e
 other seed runs in a ``spawn`` worker on a free device. The result must be the one the
 sequential loop gives. The specs live in ``tests.benchmark.spawn_benchmarks``: a worker
 imports them by name, so it sees no monkeypatch or test-local function.
+
+When a seed trains through a ``Pipeline`` on splits with several folds, ``devices``
+spreads each seed's folds instead, and the seeds run one after another.
 """
 
 from __future__ import annotations
@@ -11,6 +14,7 @@ from __future__ import annotations
 import json
 import multiprocessing
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -30,7 +34,7 @@ from soma.benchmark import (
 )
 from soma.pipeline.parallel import DeviceJob, run_on_devices
 from tests.benchmark import spawn_benchmarks
-from tests.e2e.synthetic import make_tile_dataset
+from tests.e2e.synthetic import make_tile_cv_splits, make_tile_dataset
 
 CPUS = ["cpu", "cpu"]
 
@@ -416,6 +420,101 @@ def test_parallel_seeds_give_the_sequential_result_through_run_benchmark(tile_be
     assert parallel.metrics[1].std > 0
     # run_benchmark leaves the checksums empty, in parallel as in sequence.
     assert (parallel.dataset_checksum, parallel.splits_checksum, parallel.test_checksum) == ("", "", "")
+
+
+# --- folds or seeds --------------------------------------------------------------------
+
+
+@pytest.fixture(scope="module")
+def tile_cv_dir(tmp_path_factory, tile_data) -> Path:
+    """A curated dir of the tile cohort with 2-fold splits: dataset.csv and splits.csv."""
+    dataset_csv, _splits_csv = tile_data
+    curated = tmp_path_factory.mktemp("tiles-cv")
+    shutil.copyfile(dataset_csv, curated / "dataset.csv")
+    make_tile_cv_splits(dataset_csv, 2, path=curated / "splits.csv")
+    return curated
+
+
+def _started_logs(output: str, output_root: Path) -> list[str]:
+    """``seed_<n>/<job dir>`` of each job a "started on" line names, in start order."""
+    parts = [
+        Path(line.split("log: ")[1]).relative_to(output_root).parts
+        for line in output.splitlines()
+        if " started on " in line
+    ]
+    return [f"{part[0]}/{part[-2]}" for part in parts]
+
+
+def test_devices_spread_each_seeds_folds_and_the_seeds_run_in_turn(tmp_path, tile_cv_dir, capsys):
+    output_root = tmp_path / "out"
+
+    def run(devices):
+        return run_benchmark_spec(
+            spawn_benchmarks.tile_cv_spec((0, 1)),
+            dataset_csv=tile_cv_dir / "dataset.csv",
+            splits_csv=tile_cv_dir / "splits.csv",
+            encoder="fake",
+            output_root=output_root,
+            devices=devices,
+        )
+
+    sequential = run(None)
+    output_root.rename(tmp_path / "sequential")
+    capsys.readouterr()
+    parallel = run(CPUS)
+
+    output = capsys.readouterr().out
+    assert "parallel/tiles_cv has 2 folds: devices spreads each seed's folds; seeds run in turn." in output
+    assert parallel == sequential
+    # Seed 0's two folds train side by side, then seed 1's; no seed has a worker of its own.
+    assert _started_logs(output, output_root) in (
+        ["seed_0/fold_0", "seed_0/fold_1", "seed_1/fold_0", "seed_1/fold_1"],
+        ["seed_0/fold_1", "seed_0/fold_0", "seed_1/fold_1", "seed_1/fold_0"],
+    )
+    assert len(list(output_root.glob("seed_*/experiments/*/runs/*/fold_*/worker.log"))) == 4
+    assert list(output_root.glob("seed_*/worker.log")) == []
+
+
+def test_run_benchmark_spreads_the_folds_of_a_benchmark_with_several(tmp_path, tile_cv_dir, capsys):
+    benchmark = spawn_benchmarks.TileCVBenchmark()
+    register_benchmark(benchmark)
+    try:
+        result = run_benchmark(
+            benchmark.name,
+            encoder="fake",
+            seeds=1,
+            curated_dir=tile_cv_dir,
+            output_root=tmp_path / "out",
+            return_result=True,
+            devices=CPUS,
+        )
+    finally:
+        benchmark_registry._entries.pop(benchmark.name, None)
+
+    output = capsys.readouterr().out
+    assert f"{benchmark.name} has 2 folds: --devices spreads each seed's folds; seeds run in turn." in output
+    assert [metric.n_seeds for metric in result.metrics] == [1, 1]
+    assert len(list((tmp_path / "out").glob("seed_0/experiments/*/runs/*/fold_*/worker.log"))) == 2
+
+
+def test_devices_spread_the_seeds_of_a_one_fold_benchmark_and_of_one_with_its_own_runner(
+    tmp_path, tile_data, capsys
+):
+    dataset_csv, splits_csv = tile_data
+    run_benchmark_spec(
+        spawn_benchmarks.tile_spec((0,)),
+        dataset_csv=dataset_csv,
+        splits_csv=splits_csv,
+        encoder="fake",
+        output_root=tmp_path / "tiles",
+        devices=CPUS,
+    )
+    assert "parallel/tiles has 1 fold: devices spreads the seeds." in capsys.readouterr().out
+
+    _run_quick(tmp_path, seeds=(0, 1))
+    assert "parallel/quick runs each seed with its own runner: devices spreads the seeds." in (
+        capsys.readouterr().out
+    )
 
 
 # --- soma reproduce --devices ---------------------------------------------------------

@@ -4,13 +4,17 @@
 :class:`~soma.plan.Plan` once (ADR 0020); everything after reads the plan. ``run()`` only
 orchestrates: the canonical per-fold order is :func:`~soma.pipeline.folds.run_fold`,
 plan → objects is :mod:`soma.pipeline.build`, the run layout and resume guards are
-:mod:`soma.pipeline.layout`.
+:mod:`soma.pipeline.layout`. With ``devices``, the pending folds train in worker processes
+(:func:`~soma.pipeline.parallel.run_on_devices`), each a ``run.folds`` launch of the run.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
-from collections.abc import Callable, Sequence
+import pickle
+import warnings
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -42,11 +46,13 @@ from soma.pipeline.layout import (
     fold_dir,
     fold_is_complete,
     open_run,
+    record_plan,
     reject_undeclared_fold_dirs,
     register_test_result,
     source_identity,
     test_identity_digest,
 )
+from soma.pipeline.parallel import DeviceJob, free_device_memory, resolve_devices, run_on_devices
 from soma.pipeline.representation import run_representation
 from soma.plan import Plan, check, resolve, revalidated
 from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
@@ -55,11 +61,16 @@ __all__ = ["FoldContext", "Pipeline", "PipelineResult"]
 
 logger = logging.getLogger(__name__)
 
+#: The file in a run dir that a fold's worker holds while it prepares its features.
+_PREPARE_LOCK = ".fold_prepare.lock"
+
 
 @dataclass(frozen=True)
 class PipelineResult:
     """Result of a full pipeline run across all folds."""
 
+    #: The folds this launch trained in its own process. With ``devices`` the folds train
+    #: in worker processes, so it holds none; their artifacts are on disk.
     fold_results: list[FoldResult]
     summary: dict[str, float]
     run_dir: Path
@@ -122,6 +133,15 @@ class Pipeline:
             ``callback_factory(context)`` gets the fold's :class:`FoldContext` and
             returns Trainer callbacks, which run after the plan's. Like ``source``, it
             is not part of the config, the plan or the experiment identity.
+        devices: Train the pending folds side by side, one new process per fold, at
+            most one fold per entry at a time: ``"cuda:<n>"`` (the n-th GPU this
+            process sees), a GPU number ``n``, or ``"cpu"``; an entry may repeat.
+            ``run()`` extracts the features first, in this process, and writes the
+            summary once every fold is done; each fold's output goes to
+            ``<fold_dir>/worker.log``. The config, ``source`` and ``callback_factory``
+            must pickle. A one-fold run or a representation run ignores ``devices``
+            with a warning. Like ``source``, it is not part of the config or the plan.
+            ``None`` (the default) trains the folds one after another, here.
     """
 
     def __init__(
@@ -130,6 +150,7 @@ class Pipeline:
         *,
         source: Any = None,
         callback_factory: Callable[[FoldContext], Sequence[Any]] | None = None,
+        devices: Sequence[str | int] | None = None,
     ) -> None:
         ensure_default_logging()
         if not isinstance(config, ExperimentConfig):
@@ -140,6 +161,9 @@ class Pipeline:
         self._config = config
         self._source = source
         self._callback_factory = callback_factory
+        self._devices = None if devices is None else resolve_devices(devices)
+        #: False in a fold's worker process: the launch that started it summarizes the run.
+        self._summarizes = True
         self._cohort, self._image_manifest, self._annotation_manifest = load_pipeline_data(config)
         self._plan = resolve(config, self._cohort)
 
@@ -171,13 +195,23 @@ class Pipeline:
         return self._annotation_manifest
 
     def run(self) -> PipelineResult:
-        """Run every fold not yet complete on disk, then summarize the run from disk."""
+        """Run every fold not yet complete on disk, then summarize the run from disk.
+
+        With ``devices``, the pending folds train in worker processes first; the loop
+        below then finds them complete and only summarizes.
+        """
         plan, num_folds = self._plan, self._cohort.num_folds
+        devices = self._fold_devices()
         if plan.evaluation.representation is not None:
             return run_representation(self)
+        if devices is not None:
+            self._require_worker_inputs()
         layout, mirror = open_run(plan, config=self._config, num_folds=num_folds)
         with RunRecorder(layout, plan) as recorder:
-            inputs = self._prepare(layout, recorder.components)
+            with self._preparing(layout.run_dir):
+                inputs = self._prepare(layout, recorder.components)
+            if devices is not None:
+                inputs = self._train_on_devices(layout, inputs, devices)
             results = []
             for fold, fold_split in enumerate(inputs.cohort.folds):
                 directory = fold_dir(layout.run_dir, fold, num_folds)
@@ -190,6 +224,9 @@ class Pipeline:
                 if mirror is not None:
                     mirror.fold_completed(fold=fold, fold_dir=directory)
             pending = self._pending_folds(layout.run_dir)
+            if not self._summarizes:  # a fold's worker: the launch that started it summarizes
+                recorder.partial(pending)
+                return recorder.with_identity(PipelineResult(results, {}, layout.run_dir, pending_folds=pending))
             if pending:  # only with run.folds: the launch completing the run summarizes it
                 logger.info("Fold(s) %s still pending; the launch completing them writes summary.json.", list(pending))
                 recorder.partial(pending)
@@ -211,6 +248,118 @@ class Pipeline:
         return recorder.with_identity(PipelineResult(results, summary, layout.run_dir))
 
     # -- run() helpers ------------------------------------------------------------
+
+    def _fold_devices(self) -> tuple[str, ...] | None:
+        """The devices the folds spread over, or ``None``: a one-fold run and a
+        representation run have no folds to spread, so they warn and ignore them."""
+        if self._devices is None:
+            return None
+        if self._plan.evaluation.representation is not None:
+            reason = "a representation run trains no folds"
+        elif self._cohort.num_folds == 1:
+            reason = "this run has one fold"
+        else:
+            return self._devices
+        warnings.warn(
+            f"devices={list(self._devices)} is ignored: {reason}, so it runs in this process, "
+            f"on {_device_in_this_process(self._plan)}. CUDA_VISIBLE_DEVICES picks the GPU "
+            "this process sees as cuda:0 (for example CUDA_VISIBLE_DEVICES=1).",
+            UserWarning,
+            stacklevel=3,
+        )
+        return None
+
+    def _require_worker_inputs(self) -> None:
+        """Fail before any extraction when a fold's worker could not get what it needs:
+        each receives the config, the source and the callback factory pickled, and reads
+        the features this launch extracts from the feature cache."""
+        for name, value in (
+            ("config", self._config),
+            ("source", self._source),
+            ("callback_factory", self._callback_factory),
+        ):
+            try:
+                pickle.dumps(value)
+            except Exception as exc:  # noqa: BLE001 - pickle raises several types
+                raise TypeError(
+                    f"devices trains each fold in a new process, which receives the {name} "
+                    f"pickled, but it does not pickle ({type(exc).__name__}: {exc}). Define "
+                    "the callables and classes it holds at module level: lambdas, nested "
+                    "functions and classes defined inside a function do not pickle."
+                ) from exc
+        features = self._plan.features
+        if self._source is None and features.kind != "live" and not features.cache.enabled:
+            raise ValueError(
+                "devices trains each fold in a new process, which reads the features this "
+                "run extracts from the feature cache, but features.cache.enabled is false. "
+                "Enable the cache, or pass the features as source."
+            )
+
+    @contextlib.contextmanager
+    def _preparing(self, run_dir: Path) -> Iterator[None]:
+        """In a fold's worker, prepare the features while no other fold's worker does.
+
+        Every worker extracts into the same run dir (a cache hit, but one that rewrites
+        the run dir's tiling stub and extraction record), so they take turns. The
+        launch that started them prepared first and removes the lock file afterwards.
+        """
+        if self._summarizes:
+            yield
+            return
+        import fcntl
+
+        with open(Path(run_dir) / _PREPARE_LOCK, "a") as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            except OSError as exc:  # a file system without locks: prepare at once
+                logger.warning("Could not lock %s (%s); preparing without it.", handle.name, exc)
+            try:
+                yield
+            finally:
+                with contextlib.suppress(OSError):
+                    fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def _train_on_devices(self, layout, inputs: RunInputs, devices: tuple[str, ...]) -> RunInputs:
+        """Train each pending fold in a worker process, at most one per device entry at a
+        time; return ``inputs`` for the summary, without the encoder stage this launch
+        no longer needs.
+
+        A worker runs this pipeline again with ``run.folds`` set to its fold and
+        ``run.run_id`` to this run's id, so it trains the fold into this run dir exactly
+        as a ``run.folds`` launch would. If a fold fails, no new fold starts, the running
+        ones finish and the first error is raised (:func:`run_on_devices`).
+        """
+        run_dir, num_folds = layout.run_dir, self._cohort.num_folds
+        selected = self._plan.run.folds
+        pending = [fold for fold in self._pending_folds(run_dir) if selected is None or fold in selected]
+        if not pending:
+            return inputs
+        # A live run's frozen encoder: a worker may train on this process's GPU.
+        inputs = replace(inputs, encoder_stage=None)
+        free_device_memory()
+        jobs = [
+            DeviceJob(
+                label=f"fold {fold}",
+                log_path=fold_dir(run_dir, fold, num_folds) / "worker.log",
+                target=_train_fold,
+                args=(self._fold_config(fold, layout.run_id), self._source, self._callback_factory),
+            )
+            for fold in pending
+        ]
+        logger.info("Training fold(s) %s side by side on %s.", pending, ", ".join(devices))
+        try:
+            run_on_devices(jobs, devices)
+        finally:
+            # Each worker recorded its own config (its run.folds and run.run_id); the run
+            # keeps the one it was started with, so config.yaml and plan.yaml replay it.
+            record_plan(run_dir, self._plan, config=self._config)
+            (run_dir / _PREPARE_LOCK).unlink(missing_ok=True)
+        return inputs
+
+    def _fold_config(self, fold: int, run_id: str) -> ExperimentConfig:
+        """The config a fold's worker runs: this one, trained on ``fold`` into this run."""
+        config = self._config
+        return replace(config, run=replace(config.run, folds=(fold,), run_id=run_id))
 
     def _prepare(self, layout, components: list[dict[str, Any]]) -> RunInputs:
         """Extract the features, apply the test-clobber guard and print the run summary;
@@ -416,6 +565,25 @@ class Pipeline:
             seg_downsample=plan.features.extraction.segmentation.downsample,
             **plan.evaluation.attention_heatmaps,
         )
+
+
+def _train_fold(config: ExperimentConfig, source: Any, callback_factory: Any) -> None:
+    """A fold's worker process: train the one fold ``config.run.folds`` names into the
+    run dir ``config.run.run_id`` pins, and leave the summary to the launch that started
+    this process."""
+    pipeline = Pipeline(config, source=source, callback_factory=callback_factory)
+    pipeline._summarizes = False
+    pipeline.run()
+
+
+def _device_in_this_process(plan: Plan) -> str:
+    """The device this process trains on: the trainer's, with ``auto`` resolved."""
+    import torch
+
+    device = str(plan.trainer.device)
+    if device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    return "cuda:0" if device == "cuda" else device
 
 
 def _record_cohort_csv(source: Any, cohort_csv: str | Path) -> None:

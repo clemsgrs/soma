@@ -271,6 +271,24 @@ def make_tile_dataset(root: Path, n: int = 32, size: int = 64, seed: int = 0) ->
     return dataset_csv, splits_csv
 
 
+def make_tile_cv_splits(dataset_csv: Path, n_folds: int, path: Path | None = None) -> Path:
+    """Cross-validation splits over a :func:`make_tile_dataset` cohort.
+
+    Each fold rotates the roles of the pairs of tiles (one light, one dark), so every
+    split of every fold holds both labels. Written to ``path``, by default
+    ``splits_cv.csv`` beside ``dataset_csv``.
+    """
+    sample_ids = pd.read_csv(dataset_csv)["sample_id"].tolist()
+    rows = [
+        (fold, sample_id, ("train", "train", "tune", "test")[(i // 2 + fold) % 4])
+        for fold in range(n_folds)
+        for i, sample_id in enumerate(sample_ids)
+    ]
+    path = Path(path) if path is not None else Path(dataset_csv).parent / "splits_cv.csv"
+    pd.DataFrame(rows, columns=["fold", "sample_id", "split"]).to_csv(path, index=False)
+    return path
+
+
 CLASS_COLOURS = {1: _LIGHT, 2: _DARK}
 
 

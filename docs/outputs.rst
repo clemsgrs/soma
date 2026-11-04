@@ -63,6 +63,8 @@ per-fold artifacts are written directly inside it; with several folds, each
 - for segmentation and detection, the predictions of tune and every test split
   and the optional overlays, probabilities and heatmaps; see
   :ref:`grid-outputs`
+- ``worker.log`` when the fold trained in a process of its own (see
+  :ref:`parallel-folds`)
 
 .. _plan-yaml:
 
@@ -319,15 +321,59 @@ checksum-verified completed folds from the mirror before continuing. A bare
 and fails when several do. Mid-fold checkpoints are not mirrored, so an
 incomplete fold restarts after node loss.
 
-Folds of one run can train side by side, one per GPU. Pin every launch to the
-same ``run.run_id`` and give each its share with ``run.folds`` (for example
-``run.folds: [2]``). A launch trains only its listed folds and leaves the other
-pending folds alone; folds seed independently, so the result matches a single
-launch. While folds remain pending the run is recorded as ``partial`` and no
-``summary.json`` is written. The launch that finds every fold complete writes
-the summary, so finish with one launch without ``run.folds`` if
-no fold launch ended last. Two launches given the same fold would both train
-it: the selection is not a lock.
+.. _parallel-folds:
+
+Train the folds side by side
+----------------------------
+
+On one machine with several GPUs, pass ``--devices`` to train the folds of a run
+side by side, one fold per GPU:
+
+.. code-block:: bash
+
+   soma run config.yaml --devices 0,1,2,3
+
+In Python, pass ``devices`` to the pipeline:
+
+.. code-block:: python
+
+   soma.Pipeline(config, devices=["cuda:0", "cuda:1"]).run()
+
+The run first extracts the features in its own process and fills the feature
+cache. Then each fold trains in a new process on a free device, and reads the
+features from the cache. The output of a fold goes to ``fold_<k>/worker.log``,
+not to your terminal. When every fold is done, the run writes ``summary.json``.
+Folds seed independently, so the result is the one you get when the folds train
+one after another.
+
+- An entry is ``cuda:<n>`` or ``n`` (the n-th GPU this process sees) or ``cpu``.
+  An entry may repeat, so ``0,0`` trains two folds at a time on GPU 0. A device
+  takes the next fold when its fold is done, and devices without a fold stay
+  idle.
+- ``devices`` is not part of the config or the plan: ``config.yaml`` and
+  ``plan.yaml`` do not record it.
+- The feature cache must be on (``features.cache.enabled``), unless you pass the
+  features as ``source``. The config, ``source`` and ``callback_factory`` must
+  pickle: define your callbacks and components as module-level functions or
+  classes. A ``TypeError`` says so before any extraction starts.
+- With ``run.folds``, only the listed folds train side by side. A resume trains
+  only the folds that are not complete.
+- If a fold fails, no new fold starts. The folds that are running finish, and the
+  first error is raised, with the path of the failed fold's ``worker.log``. The
+  run writes no summary, and the folds that completed stay on disk, so a rerun
+  trains only the folds that are left.
+- A run with one fold, or a representation run, ignores ``devices`` with a
+  warning and runs in your process. Use ``CUDA_VISIBLE_DEVICES`` to choose its
+  GPU.
+
+To spread the folds over several machines, start one launch per machine. Pin
+every launch to the same ``run.run_id`` and give each its share with
+``run.folds`` (for example ``run.folds: [2]``). A launch trains only its listed
+folds and leaves the other pending folds alone. While folds remain pending, the
+run is recorded as ``partial`` and no ``summary.json`` is written. The launch
+that finds every fold complete writes the summary, so finish with one launch
+without ``run.folds`` if no fold launch ended last. Two launches given the same
+fold would both train it: the selection is not a lock.
 
 .. _log-output:
 

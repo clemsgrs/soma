@@ -43,10 +43,12 @@ from soma.config import (
 
 __all__ = [
     "CACHE_SNAPSHOT",
+    "CV_PRIMARY_METRIC",
     "MEAN_PROBABILITY",
     "PRIMARY_METRIC",
     "QuickBenchmark",
     "TileBenchmark",
+    "TileCVBenchmark",
     "UnpicklableError",
     "UnrebuildableError",
     "build_quick_config",
@@ -58,10 +60,13 @@ __all__ = [
     "score_quick",
     "score_tile_run",
     "thread_count",
+    "tile_cv_spec",
     "tile_spec",
 ]
 
 PRIMARY_METRIC = "test/auroc"
+#: The primary metric of a run with several folds: the mean over its folds.
+CV_PRIMARY_METRIC = "test/auroc_mean"
 #: The mean test probability of the positive class, which moves with every weight.
 MEAN_PROBABILITY = "test/mean_prob_1"
 #: The file, in a seed's root, that :func:`score_and_snapshot_cache` writes.
@@ -155,6 +160,18 @@ def tile_spec(seeds: tuple[int, ...] = (0, 1, 2)) -> BenchmarkSpec:
     )
 
 
+def tile_cv_spec(seeds: tuple[int, ...] = (0, 1)) -> BenchmarkSpec:
+    """:func:`tile_spec` on splits with several folds, which report fold means."""
+    return BenchmarkSpec(
+        name="parallel/tiles_cv",
+        canonical_seeds=seeds,
+        primary_metric=CV_PRIMARY_METRIC,
+        reported_metrics=(CV_PRIMARY_METRIC, MEAN_PROBABILITY),
+        build_config=build_tile_config,
+        score=score_and_snapshot_cache,
+    )
+
+
 class TileBenchmark:
     """The tile protocol as a registered benchmark, for ``run_benchmark``."""
 
@@ -176,6 +193,14 @@ class TileBenchmark:
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
         return score_tile_run(run_dir)
+
+
+class TileCVBenchmark(TileBenchmark):
+    """:class:`TileBenchmark` on splits with several folds, which report fold means."""
+
+    name = "parallel_tiles_cv_fixture"
+    primary_metric = CV_PRIMARY_METRIC
+    reported_metrics = (CV_PRIMARY_METRIC, MEAN_PROBABILITY)
 
 
 def thread_count() -> tuple[str, int]:

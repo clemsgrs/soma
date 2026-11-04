@@ -194,7 +194,16 @@ def _cmd_run(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         print(f"Error: --feature-dir is not a directory: {feature_dir}", file=sys.stderr)
         sys.exit(1)
     source = _cached_source(config, feature_dir) if feature_dir is not None else None
-    Pipeline(config, source=source).run()
+    devices = args.devices
+    if devices is not None:
+        from soma.pipeline.parallel import resolve_devices
+
+        try:
+            resolve_devices(devices)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(2)
+    Pipeline(config, source=source, devices=devices).run()
 
 
 def _build_run_parser(argv: Sequence[str] = ()) -> argparse.ArgumentParser:
@@ -220,6 +229,18 @@ def _build_run_parser(argv: Sequence[str] = ()) -> argparse.ArgumentParser:
     parser.add_argument(
         "--feature-dir", type=Path, default=None,
         help="Train on features already extracted: a pooled feature cache or dense grids directory.",
+    )
+    parser.add_argument(
+        "--devices",
+        type=_device_list,
+        default=None,
+        metavar="LIST",
+        help=(
+            "Train the folds side by side, one process per device: a comma-separated list "
+            "such as 0,1,2,3 (GPU numbers), cuda:0,cuda:1 or cpu,cpu. The features are "
+            "extracted first, in this process; a one-fold run ignores the flag. "
+            "Default: one fold after another."
+        ),
     )
     _add_preset_arguments(parser, _selected_preset(argv, positional=False))
     parser.set_defaults(func=_cmd_run)
@@ -915,7 +936,9 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
         help=(
             "Run the seeds side by side, one process per device: a comma-separated list "
             "such as 0,1,2,3 (GPU numbers), cuda:0,cuda:1 or cpu,cpu. The first seed "
-            "runs first and fills the feature cache. Default: one seed after another."
+            "runs first and fills the feature cache. When the benchmark's splits have "
+            "more than one fold, the seeds run one after another and each seed's folds "
+            "run side by side instead. Default: one seed after another."
         ),
     )
     encoder_group = parser.add_mutually_exclusive_group()
@@ -1145,7 +1168,7 @@ def _build_compact_index_parser() -> argparse.ArgumentParser:
 
 def _print_top_level_help() -> None:
     print(
-        "usage: soma run CONFIG [--feature-dir DIR]\n"
+        "usage: soma run CONFIG [--feature-dir DIR] [--devices LIST]\n"
         "       soma run --preset NAME --cohort CSV --splits CSV --out DIR [--seed N] [PRESET ARGUMENTS]\n"
         "       soma init NAME [PRESET ARGUMENTS]\n"
         "       soma list [KIND] [--level {tile,slide,patient}]\n"
@@ -1157,7 +1180,7 @@ def _print_top_level_help() -> None:
         "\n"
         "commands:\n"
         "  run          run an experiment from a YAML config (--feature-dir: on cached features),\n"
-        "               or from a preset (--preset) on a cohort\n"
+        "               or from a preset (--preset) on a cohort (--devices: folds side by side)\n"
         "  init         print a preset as an editable YAML config with every default filled in\n"
         "  list         list the component kinds, or one kind's components and their params\n"
         "  prepare-croma  acquire and decode the pinned PathoROB tile sources\n"
