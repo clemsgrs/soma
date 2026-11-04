@@ -195,6 +195,8 @@ def _component_entry(
     if not hasattr(target, "__qualname__"):
         target = type(target)
     module = str(getattr(target, "__module__", None) or "")
+    # Spawn re-runs the entry script as ``__mp_main__``, which is ``sys.modules["__main__"]`` in the worker.
+    module = "__main__" if module == "__mp_main__" else module
     entry["object"] = f"{module}.{target.__qualname__}"
     source = _source_file(target)
     installed = _installed_distribution(module, source)

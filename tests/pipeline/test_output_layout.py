@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -252,6 +253,37 @@ def test_a_module_in_a_shared_namespace_is_attributed_to_the_distribution_that_i
         # A file no distribution lists is not installed code: its digest pins it.
         metrics[2]: (None, None, digest),
     }
+
+
+def test_an_entry_script_component_records_as_main_in_a_spawned_worker(tmp_path: Path, monkeypatch):
+    # ``python script.py`` runs the script as ``__main__``; a spawned worker (a fold of
+    # ``Pipeline(devices=...)``) runs it again as ``__mp_main__``, aliased as ``__main__``.
+    script = tmp_path / "script.py"
+    script.write_text(_USER_METRICS_SOURCE, encoding="utf-8")
+    name = "__main__.positive_rate"
+    plan = Plan(
+        experiment(
+            tmp_path / "dataset.csv",
+            tmp_path / "splits.csv",
+            features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224)),
+            aggregator="abmil",
+            evaluation={"metrics": ["auroc", name]},
+        )
+    )
+
+    def record_as(module_name: str) -> list[dict]:
+        spec = importlib.util.spec_from_file_location(module_name, script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        monkeypatch.setitem(sys.modules, module_name, module)
+        monkeypatch.setitem(sys.modules, "__main__", module)
+        return component_record(plan)
+
+    launch, worker = record_as("__main__"), record_as("__mp_main__")
+
+    (entry,) = [entry for entry in worker if entry["name"] == name]
+    assert entry["object"] == name
+    assert fingerprint_conflicts({"launch": launch, "worker": worker}) == {}
 
 
 def test_canonical_experiment_payload_omits_the_run_section(tmp_path: Path):
