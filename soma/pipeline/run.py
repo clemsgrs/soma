@@ -11,6 +11,7 @@ plan → objects is :mod:`soma.pipeline.build`, the run layout and resume guards
 from __future__ import annotations
 
 import contextlib
+import importlib
 import logging
 import pickle
 import warnings
@@ -54,7 +55,7 @@ from soma.pipeline.layout import (
 )
 from soma.pipeline.parallel import DeviceJob, free_device_memory, resolve_devices, run_on_devices
 from soma.pipeline.representation import run_representation
-from soma.plan import Plan, check, resolve, revalidated
+from soma.plan import Plan, check, component_leaves, resolve, revalidated
 from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 __all__ = ["FoldContext", "Pipeline", "PipelineResult"]
@@ -211,7 +212,10 @@ class Pipeline:
             with self._preparing(layout.run_dir):
                 inputs = self._prepare(layout, recorder.components)
             if devices is not None:
-                inputs = self._train_on_devices(layout, inputs, devices)
+                # This launch trains no fold, so it drops a live run's frozen encoder before
+                # a worker loads its own, maybe on the same GPU.
+                inputs = replace(inputs, encoder_stage=None)
+                self._train_on_devices(layout, devices)
             results = []
             for fold, fold_split in enumerate(inputs.cohort.folds):
                 directory = fold_dir(layout.run_dir, fold, num_folds)
@@ -271,8 +275,9 @@ class Pipeline:
 
     def _require_worker_inputs(self) -> None:
         """Fail before any extraction when a fold's worker could not get what it needs:
-        each receives the config, the source and the callback factory pickled, and reads
-        the features this launch extracts from the feature cache."""
+        each receives the config, the source and the callback factory pickled, reads
+        the features this launch extracts from the feature cache, and sees only the GPU
+        ``devices`` gives it, as ``cuda:0``."""
         for name, value in (
             ("config", self._config),
             ("source", self._source),
@@ -293,6 +298,14 @@ class Pipeline:
                 "devices trains each fold in a new process, which reads the features this "
                 "run extracts from the feature cache, but features.cache.enabled is false. "
                 "Enable the cache, or pass the features as source."
+            )
+        device = str(self._plan.trainer.device)
+        kind, _, index = device.partition(":")
+        if kind == "cuda" and index.isdigit() and int(index) >= 1:
+            raise ValueError(
+                f"trainer.device is {device!r}, but devices picks the GPU each fold trains on: "
+                "a fold's worker sees only its own GPU, as cuda:0. Set trainer.device to auto "
+                "or cuda."
             )
 
     @contextlib.contextmanager
@@ -319,30 +332,34 @@ class Pipeline:
                 with contextlib.suppress(OSError):
                     fcntl.flock(handle, fcntl.LOCK_UN)
 
-    def _train_on_devices(self, layout, inputs: RunInputs, devices: tuple[str, ...]) -> RunInputs:
+    def _train_on_devices(self, layout, devices: tuple[str, ...]) -> None:
         """Train each pending fold in a worker process, at most one per device entry at a
-        time; return ``inputs`` for the summary, without the encoder stage this launch
-        no longer needs.
+        time.
 
         A worker runs this pipeline again with ``run.folds`` set to its fold and
         ``run.run_id`` to this run's id, so it trains the fold into this run dir exactly
-        as a ``run.folds`` launch would. If a fold fails, no new fold starts, the running
-        ones finish and the first error is raised (:func:`run_on_devices`).
+        as a ``run.folds`` launch would. It first imports the modules of the plan's
+        components, so a key that a module of this process registered (such as a
+        benchmark's, under ``python -m soma``) resolves there too. If a fold fails, no
+        new fold starts, the running ones finish and the first error is raised
+        (:func:`run_on_devices`).
         """
         run_dir, num_folds = layout.run_dir, self._cohort.num_folds
         selected = self._plan.run.folds
         pending = [fold for fold in self._pending_folds(run_dir) if selected is None or fold in selected]
         if not pending:
-            return inputs
-        # A live run's frozen encoder: a worker may train on this process's GPU.
-        inputs = replace(inputs, encoder_stage=None)
+            return
         free_device_memory()
+        modules = sorted(
+            {getattr(obj, "__module__", None) for _, _, obj in component_leaves(self._plan) if obj is not None}
+            - {"__main__", None}
+        )
         jobs = [
             DeviceJob(
                 label=f"fold {fold}",
                 log_path=fold_dir(run_dir, fold, num_folds) / "worker.log",
                 target=_train_fold,
-                args=(self._fold_config(fold, layout.run_id), self._source, self._callback_factory),
+                args=(self._fold_config(fold, layout.run_id), self._source, self._callback_factory, modules),
             )
             for fold in pending
         ]
@@ -354,7 +371,6 @@ class Pipeline:
             # keeps the one it was started with, so config.yaml and plan.yaml replay it.
             record_plan(run_dir, self._plan, config=self._config)
             (run_dir / _PREPARE_LOCK).unlink(missing_ok=True)
-        return inputs
 
     def _fold_config(self, fold: int, run_id: str) -> ExperimentConfig:
         """The config a fold's worker runs: this one, trained on ``fold`` into this run."""
@@ -567,10 +583,13 @@ class Pipeline:
         )
 
 
-def _train_fold(config: ExperimentConfig, source: Any, callback_factory: Any) -> None:
+def _train_fold(config: ExperimentConfig, source: Any, callback_factory: Any, modules: Sequence[str]) -> None:
     """A fold's worker process: train the one fold ``config.run.folds`` names into the
     run dir ``config.run.run_id`` pins, and leave the summary to the launch that started
-    this process."""
+    this process. ``modules`` are those of the run's components, imported first so the
+    keys they register resolve."""
+    for module in modules:
+        importlib.import_module(module)
     pipeline = Pipeline(config, source=source, callback_factory=callback_factory)
     pipeline._summarizes = False
     pipeline.run()

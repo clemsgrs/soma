@@ -350,6 +350,10 @@ one after another.
   An entry may repeat, so ``0,0`` trains two folds at a time on GPU 0. A device
   takes the next fold when its fold is done, and devices without a fold stay
   idle.
+- ``devices`` picks the GPU of each fold, and a fold's process sees only that GPU,
+  as ``cuda:0``. Set ``trainer.device`` to ``auto`` or ``cuda``. A run that sets
+  ``trainer.device`` to another GPU, such as ``cuda:1``, is refused before any
+  extraction starts.
 - ``devices`` is not part of the config or the plan: ``config.yaml`` and
   ``plan.yaml`` do not record it.
 - The feature cache must be on (``features.cache.enabled``), unless you pass the

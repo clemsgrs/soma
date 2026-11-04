@@ -10,19 +10,24 @@ monkeypatch or test-local function.
 
 from __future__ import annotations
 
+import gc
 import json
 import multiprocessing
 import os
 import threading
+import weakref
 from pathlib import Path
 
 import pandas as pd
 import pytest
 import yaml
 
+from soma.config import ExperimentConfig
 from soma.pipeline import Pipeline
 from tests.benchmark.spawn_benchmarks import cache_snapshot
-from tests.e2e.synthetic import make_tile_cv_splits, make_tile_dataset
+from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section
+from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_tile_cv_splits, make_tile_dataset
+from tests.pipeline.spawn_components import OPTIMIZER
 from tests.pipeline.spawn_pipelines import CACHE_SNAPSHOT, PID_FILE, FoldRecorder, tile_cv_config
 
 CPUS = ["cpu", "cpu"]
@@ -160,6 +165,97 @@ def test_devices_need_the_feature_cache_the_workers_read(tmp_path, tile_cv):
         Pipeline(config, devices=CPUS).run()
 
     assert not (tmp_path / "out").exists()
+
+
+def test_devices_refuse_a_trainer_pinned_to_another_gpu(tmp_path, tile_cv):
+    # A fold's worker sees only the GPU devices gives it, as cuda:0: a trainer pinned to
+    # cuda:1 would fail in every worker, after the extraction.
+    dataset_csv, _splits_csv, cv_csv = tile_cv
+    config = tile_cv_config(dataset_csv, cv_csv, tmp_path / "out")
+    config.trainer.device = "cuda:1"
+
+    with pytest.raises(ValueError, match=r"trainer.device is 'cuda:1'.*devices.*auto.*cuda"):
+        Pipeline(config, devices=CPUS).run()
+
+    assert not (tmp_path / "out").exists()
+
+
+class _EncoderStage:
+    """A stand-in for a live run's frozen encoder stage that a weak reference can follow."""
+
+
+def test_a_live_run_drops_its_encoder_stage_before_the_folds_train(tmp_path, monkeypatch):
+    # The launch never trains a fold itself, so the live encoder it built (a foundation
+    # model on the GPU) must be freed before the workers, which may share that GPU, start.
+    dataset_csv, _splits_csv = make_dense_dataset(tmp_path / "data", "segmentation")
+    config = ExperimentConfig.from_dict(
+        {
+            "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
+            "cohort": {"records": str(dataset_csv), "splits": str(make_tile_cv_splits(dataset_csv, 2))},
+            "features": {
+                "kind": "live",
+                "encoder": {"name": "fake"},
+                "extraction": {
+                    "tiling": {
+                        "requested_spacing_um": SPACING_UM,
+                        "requested_tile_size_px": 96,
+                        "tolerance": 0.05,
+                        "overlap": 0.0,
+                    },
+                },
+                "execution": {**CPU_EXECUTION, "precision": "fp32"},
+            },
+            "loaders": {"batch_size": 4, **CPU_LOADER},
+            "learner": learner_section(
+                "dense",
+                {
+                    "decoder": {"name": "lightweight_conv"},
+                    "head": {"name": "segmentation", "params": {"num_classes": 3}},
+                },
+                learning_rate=3e-3,
+                normalization={"method": "none"},
+            ),
+            "trainer": {"max_epochs": 1},
+            "evaluation": {"metrics": ["mean_dice"]},
+        }
+    )
+    built, alive = [], []
+
+    def live_encoder_for(plan):
+        stage = _EncoderStage()
+        built.append(weakref.ref(stage))
+        return stage
+
+    def run_on_devices(jobs, devices):
+        gc.collect()
+        alive.extend(ref() is not None for ref in built)
+        raise RuntimeError("stopped before the folds train")
+
+    monkeypatch.setattr("soma.pipeline.run.live_encoder_for", live_encoder_for)
+    monkeypatch.setattr("soma.pipeline.run.run_on_devices", run_on_devices)
+
+    with pytest.raises(RuntimeError, match="stopped before the folds train"):
+        Pipeline(config, devices=CPUS).run()
+
+    assert alive == [False]
+
+
+def test_a_workers_component_resolves_from_the_module_that_registered_it(tmp_path, tile_cv):
+    # Only this test module imports spawn_components, which registers the optimizer, and
+    # a worker unpickles nothing from it: the key resolves there only if the worker
+    # imports the modules of the run's components first. Under `python -m soma`, a
+    # worker does not import the CLI module, which imports the benchmark components.
+    dataset_csv, _splits_csv, _cv_csv = tile_cv
+    two_folds = make_tile_cv_splits(dataset_csv, 2, path=tmp_path / "splits_2.csv")
+    config = tile_cv_config(dataset_csv, two_folds, tmp_path / "out")
+    config.learner.params["optimizer"] = {"name": OPTIMIZER, "params": {"lr": 5e-3}}
+
+    result = Pipeline(config, devices=CPUS).run()
+
+    assert result.pending_folds == ()
+    assert (result.run_dir / "summary.json").is_file()
+    for fold in range(2):
+        assert (result.run_dir / f"fold_{fold}" / "metrics.json").is_file()
 
 
 def test_a_device_that_is_not_one_is_refused_when_the_pipeline_is_built(tmp_path, tile_cv):
