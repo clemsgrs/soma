@@ -33,6 +33,7 @@ from typing import Any, Callable, Iterator, Sequence
 import slide2vec
 from slide2vec.encoders import encoder_code, encoder_registry
 
+from soma._internal.main_module import launch_name
 from soma.extract.cache._types import FeatureCacheResolution
 from soma.extract.cache.io import _load_metadata, _write_metadata
 
@@ -163,14 +164,16 @@ def stale_features_reason(
             installed,
         )
         return "no recorded feature identity"
+    # Both sides name the launched script's code as the launch does (``_launch_code``).
+    identity = _launch_identity(record["identity"])
     # Every hit: the encoder's code is read from the registry, without building it.
-    code_reason = _changed_code_reason(cache_dir=cache_dir, identity=record["identity"], check=check)
+    code_reason = _changed_code_reason(cache_dir=cache_dir, identity=identity, check=check)
     if code_reason is not None:
         return code_reason
     verified_version = record.get("slide2vec_version")
     if verified_version == installed:
         return None
-    differing = check.differing(dict(record["identity"]))
+    differing = check.differing(identity)
     if not differing:
         # Verified against the installed slide2vec: record that, so the next hit skips
         # the comparison. The identity stays the one slide2vec wrote with the features.
@@ -212,7 +215,7 @@ def _current_code(encoder: str) -> list[tuple[str, str, str, dict[str, Any]]]:
     also records the code of its registered tile encoder (``tile_encoder_code``), whose
     features it aggregates. Read from the registry: no encoder is built.
     """
-    current = [("encoder_code", encoder, f"encoder '{encoder}'", encoder_code(encoder))]
+    current = [("encoder_code", encoder, f"encoder '{encoder}'", _launch_code(encoder_code(encoder)))]
     info = encoder_registry.info(encoder)
     if info.get("level", "tile") != "tile":
         tile_encoder = str(info["tile_encoder"])
@@ -221,10 +224,39 @@ def _current_code(encoder: str) -> list[tuple[str, str, str, dict[str, Any]]]:
                 "tile_encoder_code",
                 tile_encoder,
                 f"tile encoder '{tile_encoder}' of encoder '{encoder}'",
-                encoder_code(tile_encoder),
+                _launch_code(encoder_code(tile_encoder)),
             )
         )
     return current
+
+
+def _launch_code(code: dict[str, Any]) -> dict[str, Any]:
+    """An encoder's code block, with its ``object`` named as the launch process names it.
+
+    A class defined in the launched script is ``__main__.<class>`` in the launch and
+    ``__mp_main__.<class>`` in a spawned worker. Either process can write a cache's
+    record: the launch extracts, and soma's multi-GPU slide aggregation runs slide2vec in
+    spawned workers. So the recorded and the current code are both read this way, and
+    each process reads what the other wrote. The fingerprint of the script still tells
+    an edit apart.
+    """
+    name = code.get("object")
+    return {**code, "object": launch_name(name)} if isinstance(name, str) else code
+
+
+#: The fields of a feature identity that hold an encoder's code block.
+_CODE_FIELDS = ("encoder_code", "tile_encoder_code")
+
+
+def _launch_identity(identity: dict[str, Any]) -> dict[str, Any]:
+    """A copy of a recorded ``identity`` whose code blocks go through :func:`_launch_code`.
+
+    Only the comparison reads it: the record keeps what slide2vec wrote.
+    """
+    return {
+        field: _launch_code(value) if field in _CODE_FIELDS and isinstance(value, dict) else value
+        for field, value in identity.items()
+    }
 
 
 def _changed_code_reason(

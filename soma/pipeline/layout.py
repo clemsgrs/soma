@@ -38,6 +38,7 @@ from urllib.parse import unquote, urlparse
 import yaml
 
 from soma._internal.atomic_io import atomic_write_text
+from soma._internal.main_module import launch_name
 from soma.config import ExperimentConfig
 from soma.plan import Plan, comparable, component_leaves
 
@@ -194,9 +195,8 @@ def _component_entry(
         return {**entry, "source_sha256": None, "fingerprint": None}
     if not hasattr(target, "__qualname__"):
         target = type(target)
-    module = str(getattr(target, "__module__", None) or "")
-    # Spawn re-runs the entry script as ``__mp_main__``, which is ``sys.modules["__main__"]`` in the worker.
-    module = "__main__" if module == "__mp_main__" else module
+    # A spawned worker runs the entry script again as ``__mp_main__``; the launch, as ``__main__``.
+    module = launch_name(str(getattr(target, "__module__", None) or ""))
     entry["object"] = f"{module}.{target.__qualname__}"
     source = _source_file(target)
     installed = _installed_distribution(module, source)

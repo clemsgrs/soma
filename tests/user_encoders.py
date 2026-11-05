@@ -3,21 +3,26 @@
 slide2vec fingerprints an encoder by the file that defines its class, so a test that
 checks what soma does after an edit to an encoder needs that class in a real file. The
 module registers itself with ``slide2vec.register_encoder`` on import, as a user's
-``my_encoder.py`` does.
+``my_encoder.py`` does. The same encoder can also sit at the top of the script a user
+launches, ``train.py``, which registers it each time the script runs.
 """
 
 from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.util
+import os
+import subprocess
 import sys
+import textwrap
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 from slide2vec.encoders import encoder_registry
 
-__all__ = ["UserEncoderModule", "notebook_encoder"]
+__all__ = ["EntryScript", "UserEncoderModule", "notebook_encoder", "run_entry_script"]
 
 #: The module's source. A tile embeds as its mean normalised RGB times ``SCALE``; each
 #: 8x8 block of a dense grid likewise. ``ENCODED`` counts the tiles and images encoded.
@@ -131,6 +136,32 @@ class UserEncoderModule:
             importlib.reload(module)
 
 
+class EntryScript(UserEncoderModule):
+    """The encoder at the top of a script, ``<directory>/train.py``, registered as ``name``
+    each time the script runs (:meth:`run_as`).
+
+    ``python train.py`` runs the script as the module ``__main__``. A ``spawn`` worker runs
+    it again as ``__mp_main__``, which is also ``sys.modules["__main__"]`` there. ``edit()``
+    changes the file; the next :meth:`run_as` runs the edited script.
+    """
+
+    def __init__(self, directory: Path, request: pytest.FixtureRequest, *, name: str) -> None:
+        super().__init__(directory, request, module="train", name=name)
+
+    def run_as(self, module_name: str) -> None:
+        """Run the script as the module ``module_name``, in the registry it started with."""
+        self._monkeypatch.setattr(encoder_registry, "_entries", dict(self._entries))
+        spec = importlib.util.spec_from_file_location(module_name, self.path)
+        module = importlib.util.module_from_spec(spec)
+        for key in {module_name, "__main__"}:
+            self._monkeypatch.setitem(sys.modules, key, module)
+        spec.loader.exec_module(module)
+        self.module_name, self.object = module_name, f"{module_name}.UserTileEncoder"
+
+    def _load(self) -> None:
+        """A script registers its encoder only when it runs: see :meth:`run_as`."""
+
+
 def notebook_encoder(request: pytest.FixtureRequest, *, module: str, name: str) -> ModuleType:
     """The same encoder defined in a notebook cell: its module has no file. Registered
     as ``name`` until the test ends."""
@@ -141,3 +172,28 @@ def notebook_encoder(request: pytest.FixtureRequest, *, module: str, name: str) 
     monkeypatch.setitem(sys.modules, module, cell)
     exec(compile(_SOURCE.replace("{name}", name), "<notebook cell>", "exec"), cell.__dict__)
     return cell
+
+
+def run_entry_script(directory: Path, *, name: str, main: str) -> subprocess.CompletedProcess:
+    """Launch ``python train.py`` in ``directory``, a script that defines and registers the
+    encoder as ``name`` at its top level, as a user's ``train.py`` may, and runs ``main``
+    under its ``if __name__ == "__main__":`` guard.
+
+    A ``spawn`` worker the script starts runs it again as the module ``__mp_main__``, so
+    the encoder's class is ``__main__.UserTileEncoder`` in the launch and
+    ``__mp_main__.UserTileEncoder`` in a worker. The script imports this checkout's soma
+    and tests, and sees no GPU.
+    """
+    script = directory / "train.py"
+    guarded = textwrap.indent(textwrap.dedent(main).strip(), "    ")
+    script.write_text(_SOURCE.replace("{name}", name) + '\n\nif __name__ == "__main__":\n' + guarded + "\n")
+    env = {**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "CUDA_VISIBLE_DEVICES": ""}
+    return subprocess.run(
+        [sys.executable, str(script)],
+        cwd=directory,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+        check=False,
+    )

@@ -33,7 +33,7 @@ from tests.extraction_configs import extraction, tissue_masks
 import soma
 from soma.data import ImageManifest
 from tests.e2e.synthetic import write_tiff
-from tests.user_encoders import UserEncoderModule, notebook_encoder
+from tests.user_encoders import EntryScript, UserEncoderModule, notebook_encoder
 
 STUB_ENCODER = "soma512-switchable-transform"
 STUB_SLIDE_ENCODER = "soma512-slide"
@@ -827,6 +827,69 @@ def test_reextract_setting_aggregates_the_tiles_of_the_edited_tile_encoder(
     _assert_same_features(_features(rebuilt), _user_slide_features(kind, scale=2.0))
     recorded = cache_metadata(tmp_path, kind)["feature_identity"]["identity"]
     assert recorded["tile_encoder_code"]["fingerprint"] == user_encoder.fingerprint
+
+
+def test_a_spawned_worker_reads_the_cache_of_the_launched_scripts_encoder_until_the_script_changes(
+    tmp_path, request, monkeypatch
+):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    name = "soma695-script-encoder"
+    script = EntryScript(tmp_path / "user_code", request, name=name)
+    dataset = _image_dataset(tmp_path / "data")
+    # The launch, `python train.py`, runs the script as __main__ and extracts.
+    script.run_as("__main__")
+    extract_images(dataset, tmp_path, encoder=name)
+    recorded = cache_metadata(tmp_path, "image")["feature_identity"]["identity"]["encoder_code"]
+    assert recorded["object"] == "__main__.UserTileEncoder"
+    original = script.fingerprint
+
+    # A spawned worker runs the same script as __mp_main__: a full hit.
+    script.run_as("__mp_main__")
+    extract_images(dataset, tmp_path, encoder=name)
+    assert script.encoded == 0
+
+    # A worker that runs another train.py does not read the cache.
+    script.edit()
+    script.run_as("__mp_main__")
+    with pytest.raises(CacheFeatureIdentityMismatch) as refused:
+        extract_images(dataset, tmp_path, encoder=name)
+    message = str(refused.value)
+    assert f"encoder '{name}'" in message
+    assert original[:12] in message and script.fingerprint[:12] in message
+    assert script.encoded == 0
+
+
+def test_the_launch_reads_a_cache_a_spawned_worker_recorded_for_the_launched_scripts_encoder(
+    tmp_path, request, monkeypatch
+):
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    name = "soma695-worker-recorded-encoder"
+    script = EntryScript(tmp_path / "user_code", request, name=name)
+    dataset = _image_dataset(tmp_path / "data")
+    # soma's multi-GPU slide aggregation runs slide2vec in spawn workers, so the record
+    # can name an encoder of the launched script as __mp_main__.<class>.
+    script.run_as("__mp_main__")
+    extract_images(dataset, tmp_path, encoder=name)
+    recorded = cache_metadata(tmp_path, "image")["feature_identity"]["identity"]["encoder_code"]
+    assert recorded["object"] == "__mp_main__.UserTileEncoder"
+
+    # The launch, and a later worker, read it: full hits.
+    for module_name in ("__main__", "__mp_main__"):
+        script.run_as(module_name)
+        extract_images(dataset, tmp_path, encoder=name)
+        assert script.encoded == 0
+
+    # So does the launch after a slide2vec upgrade, which compares the whole identity.
+    monkeypatch.setattr(slide2vec, "__version__", _UPGRADED_VERSION)
+    script.run_as("__main__")
+    extract_images(dataset, tmp_path, encoder=name)
+    assert script.encoded == 0
+    record = cache_metadata(tmp_path, "image")["feature_identity"]
+    assert record["slide2vec_version"] == _UPGRADED_VERSION
+    # The record keeps what slide2vec wrote.
+    assert record["identity"]["encoder_code"] == recorded
 
 
 def test_cache_of_an_encoder_without_a_source_file_is_reused_with_one_warning(
