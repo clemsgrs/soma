@@ -19,6 +19,7 @@ from soma.extract.cache import (
     build_tiling_cache_key,
     build_hierarchical_cache_key,
     build_tile_cache_key,
+    commit_extracted_samples,
     manifest_digest,
     probe_resolved_backends,
     record_empty_sample_ids,
@@ -1326,3 +1327,121 @@ def test_resolve_tile_cache_treats_changed_image_path_as_distinct_sample(tmp_pat
     )
     assert resolution_b.complete is False
     assert resolution_b.missing_sample_ids() == ["s1"]
+
+
+# Feature cache keys depend on the encoder and its preprocessing, not on the dataset, so
+# datasets that resolve the same encoder share one cache directory. Each kind is resolved
+# with the settings of one shared cache, and stores one sample's features in this shape.
+def _resolve_shared_tile_cache(cache_root: Path, images: ImageManifest) -> FeatureCacheResolution:
+    return resolve_tile_cache(
+        cache_root=cache_root,
+        images=images,
+        tile_encoder_name="virchow",
+        preprocessing=extraction(0.5, 224),
+        execution=ExecutionOptions(precision="fp16"),
+    )
+
+
+def _resolve_shared_slide_cache(cache_root: Path, images: ImageManifest) -> FeatureCacheResolution:
+    return resolve_slide_cache(
+        cache_root=cache_root,
+        images=images,
+        slide_encoder_name="prism",
+        tile_encoder_name="virchow",
+        tile_preprocessing=extraction(0.5, 224),
+        tile_execution=ExecutionOptions(precision="fp16"),
+        execution=ExecutionOptions(precision="fp16"),
+    )
+
+
+SHARED_CACHE_KINDS = [
+    pytest.param(_resolve_shared_tile_cache, (4, 16), id="tile"),
+    pytest.param(_resolve_shared_slide_cache, (16,), id="slide"),
+]
+
+
+def _extract_into_cache(
+    resolution: FeatureCacheResolution,
+    *,
+    feature_shape: tuple[int, ...],
+    empty: list[str],
+) -> None:
+    """Record one extraction the way soma does: the empty samples, then the features of
+    every other sample, signed in one commit."""
+    resolution = record_empty_sample_ids(resolution, empty)
+    extracted = [sample_id for sample_id in resolution.cache_ids if sample_id not in empty]
+    for sample_id in extracted:
+        _save_payload(resolution, sample_id, torch.randn(*feature_shape))
+    commit_extracted_samples(resolution, extracted, feature_dim=feature_shape[-1])
+
+
+def _make_named_dataset(tmp_path: Path, name: str, sample_ids: list[str]) -> ImageManifest:
+    (tmp_path / name).mkdir()
+    return _make_dataset(
+        tmp_path / name,
+        rows=[
+            {"sample_id": sample_id, "image_path": f"/slides/{sample_id}.svs", "label": "tumor"}
+            for sample_id in sample_ids
+        ],
+    )
+
+
+@pytest.mark.parametrize(("resolve", "feature_shape"), SHARED_CACHE_KINDS)
+def test_another_dataset_resolves_a_shared_cache_holding_an_empty_sample_as_a_hit(
+    tmp_path: Path, resolve, feature_shape
+):
+    cache_root = tmp_path / "feature_cache"
+    dataset_a = _make_named_dataset(tmp_path, "a", ["a1", "a_no_tissue"])
+    dataset_b = _make_named_dataset(tmp_path, "b", ["b1", "b2"])
+    resolution_a = resolve(cache_root, dataset_a)
+    _extract_into_cache(resolution_a, feature_shape=feature_shape, empty=["a_no_tissue"])
+    resolution_b = resolve(cache_root, dataset_b)
+    assert resolution_b.cache_dir == resolution_a.cache_dir
+    _extract_into_cache(resolution_b, feature_shape=feature_shape, empty=[])
+
+    reused = resolve(cache_root, dataset_b)
+
+    assert reused.validation == CacheValidationResult(complete=True)
+    assert reused.complete is True
+    assert reused.reused is True
+    assert reused.missing_sample_ids() == []
+
+
+@pytest.mark.parametrize(("resolve", "feature_shape"), SHARED_CACHE_KINDS)
+def test_dataset_keeps_its_empty_sample_in_a_cache_another_dataset_extracted_into(
+    tmp_path: Path, resolve, feature_shape
+):
+    cache_root = tmp_path / "feature_cache"
+    dataset_a = _make_named_dataset(tmp_path, "a", ["a1", "a_no_tissue"])
+    dataset_b = _make_named_dataset(tmp_path, "b", ["b1", "b2"])
+    _extract_into_cache(resolve(cache_root, dataset_a), feature_shape=feature_shape, empty=["a_no_tissue"])
+    _extract_into_cache(resolve(cache_root, dataset_b), feature_shape=feature_shape, empty=[])
+
+    reused = resolve(cache_root, dataset_a)
+
+    assert reused.validation == CacheValidationResult(complete=True)
+    assert reused.complete is True
+    assert reused.reused is True
+    assert reused.empty_sample_ids == {"a_no_tissue"}
+    assert reused.missing_sample_ids() == []
+
+
+@pytest.mark.parametrize(("resolve", "feature_shape"), SHARED_CACHE_KINDS)
+def test_empty_sample_with_a_feature_file_fails_a_shared_cache_holding_another_datasets_empty(
+    tmp_path: Path, resolve, feature_shape
+):
+    cache_root = tmp_path / "feature_cache"
+    dataset_a = _make_named_dataset(tmp_path, "a", ["a1", "a_no_tissue"])
+    dataset_b = _make_named_dataset(tmp_path, "b", ["b1", "b_no_tissue"])
+    _extract_into_cache(resolve(cache_root, dataset_a), feature_shape=feature_shape, empty=["a_no_tissue"])
+    resolution_b = resolve(cache_root, dataset_b)
+    _extract_into_cache(resolution_b, feature_shape=feature_shape, empty=["b_no_tissue"])
+    _save_payload(resolution_b, "b_no_tissue", torch.randn(*feature_shape))
+
+    reused = resolve(cache_root, dataset_b)
+
+    assert reused.validation == CacheValidationResult(
+        complete=False, reason="unexpected feature for empty sample b_no_tissue"
+    )
+    assert reused.complete is False
+    assert reused.reused is False
