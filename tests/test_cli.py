@@ -140,6 +140,35 @@ def test_feature_dir_must_be_a_directory(tmp_path: Path, capsys):
     assert "--feature-dir" in err
 
 
+# --- soma run --devices ---
+
+
+def _pipeline_devices(args: list[str]):
+    """Run main() with Pipeline patched; return the devices it was constructed with."""
+    with patch("soma.cli.Pipeline") as MockPipeline:
+        from soma.cli import main
+
+        main(args)
+    MockPipeline.return_value.run.assert_called_once()
+    return MockPipeline.call_args.kwargs["devices"]
+
+
+def test_devices_reach_the_pipeline(tmp_path: Path):
+    config_path = str(_make_valid_config(tmp_path))
+
+    assert _pipeline_devices(["run", config_path, "--devices", "cpu, cpu,cpu"]) == ["cpu"] * 3
+    assert _pipeline_devices(["run", config_path, "--devices=cpu"]) == ["cpu"]
+    # Without the flag the folds train one after another, in this process.
+    assert _pipeline_devices(["run", config_path]) is None
+
+
+def test_a_bad_device_exits_before_the_pipeline_is_built(tmp_path: Path, capsys):
+    code, err = _exit_code(["run", str(_make_valid_config(tmp_path)), "--devices", "0,gpu1"], capsys)
+
+    assert code == 2
+    assert err.startswith("Error: ") and "'gpu1' is not a device" in err
+
+
 # --- soma run --preset ---
 
 

@@ -38,6 +38,12 @@ pooled feature cache (slide, patient and tile runs) or of dense grids
 
     soma run config.yaml --feature-dir runs/features/uni2
 
+Train the folds of a cross-validation run side by side with ``--devices``,
+one process per GPU. The features are extracted first; each fold then trains
+in its own process and writes its output to ``fold_<k>/worker.log``::
+
+    soma run config.yaml --devices 0,1,2,3
+
 ``soma`` prints soma's INFO log messages to stderr, and warnings and errors
 from other libraries. See :ref:`log-output` for the same behaviour in a Python
 script.
@@ -45,13 +51,16 @@ script.
 Available commands
 ------------------
 
-``soma run CONFIG [--feature-dir DIR]``
+``soma run CONFIG [--feature-dir DIR] [--devices LIST]``
    Run an experiment from a YAML config file, optionally on pre-extracted
    features. The run directory keeps the config as given (``config.yaml``)
    and its resolved plan (``plan.yaml``), written before training starts;
    ``soma run plan.yaml`` replays a run with every value pinned.
+   ``--devices 0,1,2,3`` trains the folds side by side, one process per GPU
+   (``cpu`` entries train on the CPU); a one-fold run ignores it with a
+   warning. See :ref:`parallel-folds`.
 
-``soma run --preset NAME --cohort CSV --splits CSV --out DIR [--seed N] [PRESET ARGUMENTS] [--feature-dir DIR]``
+``soma run --preset NAME --cohort CSV --splits CSV --out DIR [--seed N] [PRESET ARGUMENTS] [--feature-dir DIR] [--devices LIST]``
    Run a preset on a cohort: the preset's own arguments are flags
    (``--encoder``, ``--aggregator``, ``--decoder``; ``soma run --preset NAME
    --help`` lists them), its required ones are required, and ``--seed``
@@ -118,7 +127,9 @@ Benchmarking commands
    ``--from-run-dir`` rescores one existing run. ``--encoders`` runs an
    ordered panel and writes one leaderboard per benchmark. ``--seeds N``
    runs seeds 0 through N−1. ``--devices 0,1,2,3`` runs the seeds side by
-   side, one process per GPU (``cpu`` entries run on the CPU). ``--output-root``,
+   side, one process per GPU (``cpu`` entries run on the CPU); when the
+   benchmark has more than one fold, it runs each seed's folds side by side
+   and the seeds one after another. ``--output-root``,
    ``--cache-root``, and ``--out-dir`` place run artifacts, shared features,
    and curated manifests; ``--record`` appends the score to the benchmark's
    results ledger, ``soma/benchmark/<protocol>/results.csv`` next to its

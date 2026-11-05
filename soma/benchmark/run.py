@@ -7,6 +7,8 @@ executes an external project's direct :class:`~soma.benchmark.spec.BenchmarkSpec
 exact seeds, shared feature caching, metric aggregation, and per-seed evidence roots,
 without registry, reference, tolerance, ledger, or CLI concerns. Both pick how a seed runs
 in one helper: the benchmark's or spec's own runner when it has one, else a ``Pipeline``.
+With ``devices``, both also pick what runs side by side in one helper: each seed's folds
+when a seed is a ``Pipeline`` run with several folds, else the seeds.
 
 The helpers here keep the CLI's reporting contract verbatim (stdout/stderr text, exit
 codes): a return value of ``0`` is success, ``2`` a usage/protocol error, and — exactly
@@ -37,19 +39,52 @@ def _pipeline_cls():
     return Pipeline
 
 
-def _run_seed(owner, config, *, pipeline_cls=None):
+def _run_seed(owner, config, *, pipeline_cls=None, devices=None):
     """Run one seed's config: ``owner``'s own runner if it has one, else a ``Pipeline``.
 
     Both public runners pick how a seed runs here, so the registered-benchmark path and
     the external-spec path cannot drift apart. A benchmark that composes the verbs itself
     (HEST's closed-form probe) exposes ``run``; a :class:`BenchmarkSpec` carries it as its
     ``run`` field. Either way the result exposes the run's ``dataset_checksum``,
-    ``splits_checksum`` and ``test_checksum``.
+    ``splits_checksum`` and ``test_checksum``. ``devices`` spreads the ``Pipeline``'s
+    folds (see :func:`_spreads_folds`).
     """
     runner = getattr(owner, "run", None)
     if callable(runner):
         return runner(config)
-    return (pipeline_cls or _pipeline_cls())(config).run()
+    pipeline_cls = pipeline_cls or _pipeline_cls()
+    if devices is None:
+        return pipeline_cls(config).run()
+    return pipeline_cls(config, devices=devices).run()
+
+
+def _spreads_folds(owner, config, *, flag: str) -> bool:
+    """Whether ``devices`` spreads each seed's folds, rather than the seeds; says which.
+
+    A seed that trains through a ``Pipeline`` on splits with several folds spreads its
+    folds, and the seeds run one after another: the folds are the larger unit of work,
+    and every fold of a seed then shares the feature extraction the seed runs first. A
+    seed with its own runner, a representation run or a one-fold run spreads the seeds.
+    ``config`` is the first seed's: every seed shares its splits.
+    """
+    if callable(getattr(owner, "run", None)):
+        print(f"{owner.name} runs each seed with its own runner: {flag} spreads the seeds.", flush=True)
+        return False
+    if config.evaluation.representation is not None:
+        print(f"{owner.name} is a representation benchmark: {flag} spreads the seeds.", flush=True)
+        return False
+    from soma.plan import load_cohort
+
+    num_folds = load_cohort(config).num_folds
+    if num_folds == 1:
+        print(f"{owner.name} has 1 fold: {flag} spreads the seeds.", flush=True)
+        return False
+    print(
+        f"{owner.name} has {num_folds} folds: {flag} spreads each seed's folds; "
+        "seeds run in turn.",
+        flush=True,
+    )
+    return True
 
 
 def _require_picklable(owner, pipeline_cls=None) -> None:
@@ -86,15 +121,6 @@ def _seed_job(owner, build_kwargs: dict[str, Any], pipeline_cls, with_checksums:
     )
     del run
     return owner.score(build_kwargs["output_root"]), checksums
-
-
-def _free_first_seed_memory() -> None:
-    """Release the first seed's memory before workers start: one may share its GPU."""
-    gc.collect()
-    import torch
-
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
 
 def _run_seeds_on_devices(
@@ -748,7 +774,6 @@ def _reproduce_one(
         from soma.pipeline.parallel import resolve_devices
 
         devices = resolve_devices(devices)
-        _require_picklable(benchmark, pipeline_cls)
 
     if manifest is None:
         try:
@@ -777,9 +802,22 @@ def _reproduce_one(
             overrides=overrides,
         )
 
+    # With devices, each seed's folds run side by side (the seeds in turn), or the seeds.
+    fold_devices = None
+    if devices is not None:
+        with _panel_runtime_boundary(isolate_runtime_failures):
+            spreads_folds = _spreads_folds(
+                benchmark, benchmark.build_config(**seed_kwargs(seeds[0])), flag="--devices"
+            )
+        if spreads_folds:
+            fold_devices, devices = devices, None
+        else:
+            _require_picklable(benchmark, pipeline_cls)
+
     measured_values: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
     seed_roots: list[Path] = []
-    # With devices, only the first seed runs here: it fills the shared feature cache.
+    # With devices for the seeds, only the first seed runs here: it fills the shared
+    # feature cache.
     for seed in seeds if devices is None else seeds[:1]:
         # Free the previous seed's pipeline before building the next. A live segmentation
         # run holds its frozen encoder inside a reference cycle, which only the cyclic GC
@@ -790,7 +828,7 @@ def _reproduce_one(
         seed_roots.append(seed_root)
         config = benchmark.build_config(**seed_kwargs(seed))
         with _panel_runtime_boundary(isolate_runtime_failures):
-            _run_seed(benchmark, config, pipeline_cls=pipeline_cls)
+            _run_seed(benchmark, config, pipeline_cls=pipeline_cls, devices=fold_devices)
             metrics = _require_reported_scores(
                 benchmark,
                 benchmark.score(seed_root),
@@ -800,7 +838,9 @@ def _reproduce_one(
                 measured_values[metric].append(float(metrics[metric]))
 
     if devices is not None and len(seeds) > 1:
-        _free_first_seed_memory()
+        from soma.pipeline.parallel import free_device_memory
+
+        free_device_memory()
         others = seeds[1:]
         with _panel_runtime_boundary(isolate_runtime_failures):
             finished = _run_seeds_on_devices(
@@ -911,7 +951,9 @@ def run_benchmark(
 
     ``devices`` runs the seeds side by side, as ``--devices`` does and as
     :func:`run_benchmark_spec` describes: the first seed here, then one new process per
-    seed on a free device. The default, ``None``, runs them one after another here.
+    seed on a free device. When a seed trains through a ``Pipeline`` on splits with more
+    than one fold, it spreads each seed's folds instead, and the seeds run one after
+    another. The default, ``None``, runs everything one after another here.
     """
     benchmark = get_benchmark(name)
     options = SimpleNamespace(
@@ -963,7 +1005,11 @@ def run_benchmark_spec(
     seed then runs in a new process on a free device, with its output in
     ``<output_root>/seed_<n>/worker.log``. The result is the sequential one. The spec
     must pickle, so its callables must be module-level functions; a ``TypeError`` says so
-    before any seed runs. The default, ``None``, runs the seeds one after another here.
+    before any seed runs. When the spec has no ``run`` and its splits declare more than
+    one fold, ``devices`` spreads each seed's folds instead (see
+    :class:`~soma.pipeline.Pipeline`), and the seeds run one after another; the spec then
+    need not pickle. A line says which before the first seed runs. The default, ``None``,
+    runs the seeds and their folds one after another here.
     """
     import statistics
 
@@ -975,7 +1021,6 @@ def run_benchmark_spec(
         from soma.pipeline.parallel import resolve_devices
 
         devices = resolve_devices(devices)
-        _require_picklable(spec)
     output_root = Path(output_root)
     shared_cache_root = (
         Path(cache_root) if cache_root is not None else output_root / "feature_cache"
@@ -1004,7 +1049,16 @@ def run_benchmark_spec(
         if error is not None:
             raise ValueError(error)
 
-    # With devices, only the first seed runs here: it fills the shared feature cache.
+    # With devices, each seed's folds run side by side (the seeds in turn), or the seeds.
+    fold_devices = None
+    if devices is not None:
+        if _spreads_folds(spec, spec.build_config(**seed_kwargs(selected_seeds[0])), flag="devices"):
+            fold_devices, devices = devices, None
+        else:
+            _require_picklable(spec)
+
+    # With devices for the seeds, only the first seed runs here: it fills the shared
+    # feature cache.
     for seed in selected_seeds if devices is None else selected_seeds[:1]:
         # Free the previous seed's pipeline before building the next, as in
         # ``_reproduce_one``: a live segmentation run holds its frozen encoder inside a
@@ -1013,7 +1067,7 @@ def run_benchmark_spec(
         seed_root = output_root / f"seed_{seed}"
         seed_roots.append(seed_root)
         config = spec.build_config(**seed_kwargs(seed))
-        run = _run_seed(spec, config)
+        run = _run_seed(spec, config, devices=fold_devices)
         identities.add((run.dataset_checksum, run.splits_checksum, run.test_checksum))
         # Drop the result before the next seed: through its fold results it owns the
         # trained learner and, for live segmentation, the frozen encoder, which would
@@ -1025,7 +1079,9 @@ def run_benchmark_spec(
             measured_values[metric].append(float(scores[metric]))
 
     if devices is not None and len(selected_seeds) > 1:
-        _free_first_seed_memory()
+        from soma.pipeline.parallel import free_device_memory
+
+        free_device_memory()
 
         def check_worker_seed(scores, checksums) -> None:
             identities.add(checksums)

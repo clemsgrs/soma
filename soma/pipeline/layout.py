@@ -195,6 +195,8 @@ def _component_entry(
     if not hasattr(target, "__qualname__"):
         target = type(target)
     module = str(getattr(target, "__module__", None) or "")
+    # Spawn re-runs the entry script as ``__mp_main__``, which is ``sys.modules["__main__"]`` in the worker.
+    module = "__main__" if module == "__mp_main__" else module
     entry["object"] = f"{module}.{target.__qualname__}"
     source = _source_file(target)
     installed = _installed_distribution(module, source)
@@ -951,11 +953,17 @@ def has_successful_run(experiment_dir: Path) -> bool:
 
 
 def update_latest_pointer(experiment_dir: Path, run_dir: Path) -> None:
+    """Point ``<experiment_dir>/latest`` at ``run_dir``.
+
+    The link is made under a name of this process's own, then renamed over ``latest``, so
+    launches that update it at once (the folds of one run, each in its own process) never
+    find it half-replaced.
+    """
     latest_path = experiment_dir / "latest"
-    if latest_path.exists() or latest_path.is_symlink():
-        latest_path.unlink()
-    target = os.path.relpath(run_dir, experiment_dir)
-    latest_path.symlink_to(target)
+    staging = latest_path.with_name(f".latest.tmp-{os.getpid()}")
+    staging.unlink(missing_ok=True)
+    staging.symlink_to(os.path.relpath(run_dir, experiment_dir))
+    os.replace(staging, latest_path)
 
 
 # ---------------------------------------------------------------------------
@@ -1018,9 +1026,8 @@ def register_test_result(
         "recorded_at": _timestamp_now(),
     }
     run_dir.mkdir(parents=True, exist_ok=True)
-    test_results_path(run_dir).write_text(
-        json.dumps(registry, indent=2, sort_keys=True), encoding="utf-8"
-    )
+    # Atomic: the folds of one run may register at once, each in its own process.
+    atomic_write_text(test_results_path(run_dir), json.dumps(registry, indent=2, sort_keys=True))
     return TestResultDecision(test_digest=test_digest, skipped=False, prior=prior)
 
 
@@ -1182,6 +1189,7 @@ class RunRecorder:
         self._metadata: RunMetadata | None = None
         self._summary_metrics: dict[str, float] | None = None
         self._pending_folds: tuple[int, ...] = ()
+        self._partial = False
 
     def __enter__(self) -> "RunRecorder":
         layout = self._layout
@@ -1214,8 +1222,11 @@ class RunRecorder:
         self._summary_metrics = summary_metrics
 
     def partial(self, pending_folds: tuple[int, ...]) -> None:
-        """This launch trained its ``run.folds`` share; other folds are still pending."""
+        """This launch trained its ``run.folds`` share and leaves the summary to another
+        launch: ``pending_folds`` are the folds still incomplete (none when the launch
+        that started a fold's worker summarizes the run)."""
         self._pending_folds = pending_folds
+        self._partial = True
 
     def with_identity(self, result):
         """``result`` (a ``PipelineResult``) with the manifest checksums the run's
@@ -1240,7 +1251,7 @@ class RunRecorder:
             self._write_indexes(metadata)
             if not has_successful_run(layout.experiment_dir):
                 update_latest_pointer(layout.experiment_dir, layout.run_dir)
-        elif self._pending_folds:
+        elif self._partial:
             # Not "completed": the leaderboard ranks completed runs, and this one has no
             # summary yet. The latest pointer stays where it was for the same reason.
             metadata = self._metadata.with_updates(

@@ -148,7 +148,7 @@ def test_the_soma_cli_prints_info_logs(tmp_path: Path, capsys):
     class LoggingPipeline:
         """Stands in for the real run: it only logs, so the CLI alone owns the setup."""
 
-        def __init__(self, config, *, source=None):
+        def __init__(self, config, *, source=None, devices=None):
             pass
 
         def run(self):

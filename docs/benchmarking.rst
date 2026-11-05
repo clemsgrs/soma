@@ -90,7 +90,18 @@ no new seed starts; the running ones finish, then the command fails with that se
 error and the path to its log. With ``--encoders``, a failed seed fails only its
 encoder, as described under `Compare encoders`_.
 
-Plan for the cost of each process:
+When the benchmark's splits have more than one fold, ``--devices`` spreads the folds
+instead. The seeds run one after another, and the folds of each seed train side by
+side, one process per device, as described under :ref:`parallel-folds`. Each fold
+writes its output to ``fold_<k>/worker.log`` in its seed's run directory. Before the
+first seed runs, the command prints which one it spreads::
+
+   detection/monkey has 5 folds: --devices spreads each seed's folds; seeds run in turn.
+
+A benchmark with one fold, and a benchmark that runs its seeds with its own runner
+(``hest``), spread the seeds.
+
+Plan for the cost of each process (a seed's or a fold's):
 
 * **Memory.** Each process loads its own copy of the cached features into host
   memory: about N × D × 4 bytes for N samples of D-dimensional features, since they
@@ -110,7 +121,8 @@ before it runs its seed, so put the call under ``if __name__ == "__main__":``. C
 outside that block runs again in each process: an encoder registered there is known
 to every seed's process. A spec's ``build_config``, ``score`` and ``run`` must be
 module-level functions: a lambda or a nested function cannot be sent to another
-process, and soma says so before any seed runs.
+process, and soma says so before any seed runs. When the folds run side by side, the
+spec stays in your process and only each seed's config is sent.
 
 Compare encoders
 ----------------

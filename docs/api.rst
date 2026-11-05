@@ -132,6 +132,35 @@ and the failure policy.
 
 .. autoclass:: soma.pipeline.FoldContext
 
+Train the folds side by side
+----------------------------
+
+``Pipeline(config, devices=[...])`` trains the folds of a run with several folds
+side by side, one new process per fold, on the devices you list. The run extracts
+the features first, in your process, and writes the summary when every fold is
+done. Each fold writes its output to ``fold_<k>/worker.log``. Without ``devices``,
+the folds train one after another, in your process:
+
+.. code-block:: python
+
+   class TuneLoss:  # at module level: a fold's process imports it by name
+       ...
+
+
+   def tune_loss(context):
+       return [TuneLoss(context)]
+
+
+   if __name__ == "__main__":
+       result = Pipeline(config, callback_factory=tune_loss, devices=["cuda:0", "cuda:1"]).run()
+
+Each process receives the config, ``source`` and ``callback_factory`` pickled, so
+they must pickle: a lambda or a nested function does not. Each process also imports
+your script again, so put the call under ``if __name__ == "__main__":``. The folds
+train in other processes, so ``result.fold_results`` is empty; read the folds from
+the run directory. See :ref:`parallel-folds` for resume, failures and the run
+layout.
+
 Dense features over given images
 --------------------------------
 
@@ -441,8 +470,9 @@ for a recipe that a ``Pipeline`` runs:
 
 Both ``run_benchmark`` and ``run_benchmark_spec`` take ``devices``, for example
 ``devices=["cuda:0", "cuda:1"]``, to run the seeds side by side, one process per
-device. See :ref:`parallel-seeds` for what this costs and what it asks of your
-script.
+device. When a seed trains through a ``Pipeline`` on splits with more than one fold,
+they spread each seed's folds instead, and the seeds run one after another. See
+:ref:`parallel-seeds` for what this costs and what it asks of your script.
 
 Runnable demonstrations live in ``examples/``
 (`examples/README.md <https://github.com/clemsgrs/soma/blob/main/examples/README.md>`_):
