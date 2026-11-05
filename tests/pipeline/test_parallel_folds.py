@@ -29,6 +29,7 @@ from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section
 from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_tile_cv_splits, make_tile_dataset
 from tests.pipeline.spawn_components import OPTIMIZER
 from tests.pipeline.spawn_pipelines import CACHE_SNAPSHOT, PID_FILE, FoldRecorder, tile_cv_config
+from tests.user_encoders import run_entry_script
 
 CPUS = ["cpu", "cpu"]
 FOLDS = 3
@@ -256,6 +257,43 @@ def test_a_workers_component_resolves_from_the_module_that_registered_it(tmp_pat
     assert (result.run_dir / "summary.json").is_file()
     for fold in range(2):
         assert (result.run_dir / f"fold_{fold}" / "metrics.json").is_file()
+
+
+def test_the_folds_of_an_encoder_defined_in_the_launched_script_read_the_launchs_cache(tmp_path, tile_cv):
+    # The launch records the encoder's class as __main__.UserTileEncoder in the cache. A
+    # worker runs the script again as __mp_main__, and must still read that cache.
+    dataset_csv, _splits_csv, _cv_csv = tile_cv
+    two_folds = make_tile_cv_splits(dataset_csv, 2, path=tmp_path / "splits_2.csv")
+
+    completed = run_entry_script(
+        tmp_path,
+        name="soma695-script-encoder",
+        main=f"""
+        from pathlib import Path
+        from soma.pipeline import Pipeline
+        from tests.benchmark.spawn_benchmarks import build_tile_config
+
+        for name, devices in (("in_turn", None), ("parallel", {CPUS!r})):
+            config = build_tile_config(
+                dataset_csv={str(dataset_csv)!r},
+                splits_csv={str(two_folds)!r},
+                output_root=Path({str(tmp_path)!r}, name),
+                seed=0,
+                overrides={{}},
+                encoder="soma695-script-encoder",
+            )
+            Pipeline(config, devices=devices).run()
+        """,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    (in_turn,) = (tmp_path / "in_turn" / "experiments").glob("*/runs/*")
+    (parallel,) = (tmp_path / "parallel" / "experiments").glob("*/runs/*")
+    for fold in range(2):
+        assert (parallel / f"fold_{fold}" / "worker.log").is_file()
+        metrics = [run_dir / f"fold_{fold}" / "metrics.json" for run_dir in (parallel, in_turn)]
+        assert metrics[0].read_bytes() == metrics[1].read_bytes()
+    assert (parallel / "summary.json").read_bytes() == (in_turn / "summary.json").read_bytes()
 
 
 def test_a_device_that_is_not_one_is_refused_when_the_pipeline_is_built(tmp_path, tile_cv):

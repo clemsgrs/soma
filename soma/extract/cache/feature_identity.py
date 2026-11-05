@@ -33,6 +33,7 @@ from typing import Any, Callable, Iterator, Sequence
 import slide2vec
 from slide2vec.encoders import encoder_code, encoder_registry
 
+from soma._internal.main_module import launch_name
 from soma.extract.cache._types import FeatureCacheResolution
 from soma.extract.cache.io import _load_metadata, _write_metadata
 
@@ -212,7 +213,7 @@ def _current_code(encoder: str) -> list[tuple[str, str, str, dict[str, Any]]]:
     also records the code of its registered tile encoder (``tile_encoder_code``), whose
     features it aggregates. Read from the registry: no encoder is built.
     """
-    current = [("encoder_code", encoder, f"encoder '{encoder}'", encoder_code(encoder))]
+    current = [("encoder_code", encoder, f"encoder '{encoder}'", _launch_code(encoder))]
     info = encoder_registry.info(encoder)
     if info.get("level", "tile") != "tile":
         tile_encoder = str(info["tile_encoder"])
@@ -221,10 +222,22 @@ def _current_code(encoder: str) -> list[tuple[str, str, str, dict[str, Any]]]:
                 "tile_encoder_code",
                 tile_encoder,
                 f"tile encoder '{tile_encoder}' of encoder '{encoder}'",
-                encoder_code(tile_encoder),
+                _launch_code(tile_encoder),
             )
         )
     return current
+
+
+def _launch_code(encoder: str) -> dict[str, Any]:
+    """``encoder_code(encoder)``, with its ``object`` named as the launch process names it.
+
+    The launch extracts the features, so a cache records an encoder defined in the
+    launched script as ``__main__.<class>``. A spawned worker, which names the class
+    ``__mp_main__.<class>``, must still read that cache. The fingerprint of the script
+    still tells an edit apart.
+    """
+    code = encoder_code(encoder)
+    return {**code, "object": launch_name(str(code["object"]))}
 
 
 def _changed_code_reason(

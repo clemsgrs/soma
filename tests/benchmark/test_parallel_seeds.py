@@ -35,6 +35,7 @@ from soma.benchmark import (
 from soma.pipeline.parallel import DeviceJob, run_on_devices
 from tests.benchmark import spawn_benchmarks
 from tests.e2e.synthetic import make_tile_cv_splits, make_tile_dataset
+from tests.user_encoders import run_entry_script
 
 CPUS = ["cpu", "cpu"]
 
@@ -221,6 +222,45 @@ def test_a_script_runs_its_seeds_in_parallel_and_its_top_level_code_already_sees
     workers = [(tmp_path / "out" / f"seed_{seed}" / "pid").read_text() for seed in (1, 2)]
     assert sorted((marks / f"imported-{pid}").read_text() for pid in workers) == ["", "5"]
     assert len(list(marks.iterdir())) == 3  # the script itself, then each worker once
+
+
+def test_the_seeds_of_an_encoder_defined_in_the_launched_script_read_the_first_seeds_cache(
+    tmp_path, tile_data
+):
+    # Seed 0 fills the cache in the launch, which records the encoder's class as
+    # __main__.UserTileEncoder. Seed 1's worker runs the script again as __mp_main__, and
+    # must still read that cache.
+    dataset_csv, _splits_csv = tile_data
+
+    completed = run_entry_script(
+        tmp_path,
+        name="soma695-script-encoder",
+        main=f"""
+        from pathlib import Path
+        from soma.benchmark import register_benchmark, run_benchmark
+        from tests.benchmark.spawn_benchmarks import TileBenchmark
+
+        benchmark = TileBenchmark()
+        register_benchmark(benchmark)
+        for name, devices in (("in_turn", None), ("parallel", {CPUS!r})):
+            status = run_benchmark(
+                benchmark.name,
+                encoder="soma695-script-encoder",
+                seeds=2,
+                curated_dir={str(dataset_csv.parent)!r},
+                output_root=Path({str(tmp_path)!r}, name),
+                devices=devices,
+            )
+            assert status == 0, status
+        """,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (tmp_path / "parallel" / "seed_1" / "worker.log").is_file()
+    for seed in (0, 1):
+        (in_turn,) = (tmp_path / "in_turn" / f"seed_{seed}").glob("experiments/*/runs/*/summary.json")
+        (parallel,) = (tmp_path / "parallel" / f"seed_{seed}").glob("experiments/*/runs/*/summary.json")
+        assert parallel.read_bytes() == in_turn.read_bytes()
 
 
 @pytest.mark.parametrize(
