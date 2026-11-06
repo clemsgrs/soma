@@ -443,11 +443,6 @@ def _validate_feature_cache_contents(
     if feature_type not in _FEATURE_TYPE_TO_RANK:
         return CacheValidationResult(complete=False, reason="unsupported feature_type metadata"), 0, 0
     empty_sample_ids = {str(s) for s in metadata.get("empty_sample_ids", [])}
-    expected_ids = {str(cache_id) for cache_id in cache_ids}
-    # A content-addressed cache holds the records of every tile set it has seen, not
-    # only this dataset's.
-    if identity_key_by_id is None and not empty_sample_ids.issubset(expected_ids):
-        return CacheValidationResult(complete=False, reason="empty sample metadata mismatch"), 0, 0
     cached_signature_by_id = {
         str(cache_id): str(signature)
         for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
