@@ -68,12 +68,12 @@ learner:
       params:
         num_classes: 1            # single mitotic-figure class
         match_distance: 7.5       # δ in µm (MIDOG-native, ~one nucleus)
-        sigma: 2.5                # target Gaussian σ in µm (≈ δ/3)
+        sigma: 5.0                # target Gaussian σ in µm (2δ/3, carried over from OCELOT, #677)
         matching: hungarian       # MIDOG-native one-to-one matching
         foreground_weight: 10.0
     optimizer:
-      name: adam
-      params: {lr: 1.0e-4, weight_decay: 1.0e-5}
+      name: adamw
+      params: {lr: 3.0e-4, weight_decay: 1.0e-4}
     scheduler: cosine
 
 trainer:
