@@ -1387,5 +1387,707 @@
       "recorder_key_normalization": "dataset=midog and spacing=0.25 added from the fixed run recipe; metric, measured, std, n_seeds, date and scoring commit are unchanged.",
       "training_provenance": "See reproductions entries for each seed; seed 0 retains its original 1.19.0 version and 8e1f1f6 commit."
     }
-  ]
+  ],
+  "transferred_protocol": {
+    "evidence": "campaign_native_scores",
+    "recorded_on": "2026-11-08",
+    "protocol": {
+      "sigma_um": 5.0,
+      "match_distance_um": 7.5,
+      "optimizer": "adamw",
+      "lr": 0.0003,
+      "weight_decay": 0.0001,
+      "foreground_weight": 10.0,
+      "scheduler": "cosine",
+      "max_epochs": 50,
+      "early_stopping_patience": 10,
+      "precision": "fp32",
+      "decided_in": "https://github.com/clemsgrs/soma/issues/677"
+    },
+    "training": {
+      "soma_commit": "1b159e4792409888fd403c6b25e28d924fa112cc",
+      "soma_tag": "2.2.0",
+      "soma_install": "git-archive snapshot on PYTHONPATH (run.yaml environment.soma reads 0.0.0+unknown)",
+      "slide2vec": "7.1.4",
+      "hs2p": "6.1.0",
+      "torch": "2.14.1+cu130",
+      "cuda": "13.0",
+      "gpu": "NVIDIA GeForce RTX 3080 Ti",
+      "host": "dlc-tornadus",
+      "dataset_file_sha256": "23b9e8437e276e4bef2d04686eafd477a90964e12eb82dcacc898476188ccf57",
+      "splits_file_sha256": "bf0332bec8a2662241b5f7ff4b43fe25f9e9d1e6b510649f041b5228787f5530"
+    },
+    "replicate_axis": "seeds",
+    "spread": "ledger std is the sample seed SD (ddof=1); population SDs are in aggregates",
+    "checkpoint_epoch_indexing": "selected_epoch is zero_based_as_saved; epochs_trained counts epochs run",
+    "runs": [
+      {
+        "encoder": "virchow2",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "seeds": [
+          {
+            "seed": 0,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/tuned/s0/out/experiments/dataset-virchow2-lightweight-conv-detection_f907c6ce429b/runs/stage4_tuned_s0",
+            "started_at": "2026-10-28T18:00:34.445574+00:00",
+            "finished_at": "2026-10-29T15:48:33.324993+00:00",
+            "epochs_trained": 21,
+            "selected_epoch": 10,
+            "selection_monitor": [
+              "mean_f1",
+              0.773396329274941
+            ],
+            "cache_key": "f697b8745b4a602f",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7626321974148061
+            },
+            "tune": {
+              "f1": 0.7767665952890792
+            },
+            "score_threshold_per_class": [
+              0.8366383314132689
+            ]
+          },
+          {
+            "seed": 1,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/tuned/s1/out/experiments/dataset-virchow2-lightweight-conv-detection_f907c6ce429b/runs/stage4_tuned_s1",
+            "started_at": "2026-10-28T18:02:35.180719+00:00",
+            "finished_at": "2026-10-29T12:44:03.763675+00:00",
+            "epochs_trained": 18,
+            "selected_epoch": 7,
+            "selection_monitor": [
+              "mean_f1",
+              0.7707503032403397
+            ],
+            "cache_key": "f697b8745b4a602f",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7620130793289736
+            },
+            "tune": {
+              "f1": 0.778415015641293
+            },
+            "score_threshold_per_class": [
+              0.7507964063207714
+            ]
+          },
+          {
+            "seed": 2,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/tuned/s2/out/experiments/dataset-virchow2-lightweight-conv-detection_f907c6ce429b/runs/stage4_tuned_s2",
+            "started_at": "2026-10-29T12:44:14.484134+00:00",
+            "finished_at": "2026-10-30T11:36:39.159907+00:00",
+            "epochs_trained": 22,
+            "selected_epoch": 11,
+            "selection_monitor": [
+              "mean_f1",
+              0.7715423606082549
+            ],
+            "cache_key": "f697b8745b4a602f",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7609208972845336
+            },
+            "tune": {
+              "f1": 0.7799622946404524
+            },
+            "score_threshold_per_class": [
+              0.8585840913714194
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "genbio-pathfm",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "seeds": [
+          {
+            "seed": 0,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/genbio-pathfm/s0/out/experiments/dataset-genbio-pathfm-lightweight-conv-detection_2741ecae4551/runs/tuned_genbio-pathfm_s0",
+            "started_at": "2026-10-31T03:03:59.088732+00:00",
+            "finished_at": "2026-10-31T14:48:12.776101+00:00",
+            "epochs_trained": 14,
+            "selected_epoch": 3,
+            "selection_monitor": [
+              "mean_f1",
+              0.7994477045219193
+            ],
+            "cache_key": "0dae4c64cdb8be6b",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7892573307755549
+            },
+            "tune": {
+              "f1": 0.8033707865168539
+            },
+            "score_threshold_per_class": [
+              0.8623107771902363
+            ]
+          },
+          {
+            "seed": 1,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/genbio-pathfm/s1/out/experiments/dataset-genbio-pathfm-lightweight-conv-detection_2741ecae4551/runs/tuned_genbio-pathfm_s1",
+            "started_at": "2026-10-31T13:29:46.030952+00:00",
+            "finished_at": "2026-11-01T05:23:00.042425+00:00",
+            "epochs_trained": 19,
+            "selected_epoch": 8,
+            "selection_monitor": [
+              "mean_f1",
+              0.8037314797878178
+            ],
+            "cache_key": "0dae4c64cdb8be6b",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7987275882012724
+            },
+            "tune": {
+              "f1": 0.8083718401739604
+            },
+            "score_threshold_per_class": [
+              0.8849996948728756
+            ]
+          },
+          {
+            "seed": 2,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/genbio-pathfm/s2/out/experiments/dataset-genbio-pathfm-lightweight-conv-detection_2741ecae4551/runs/tuned_genbio-pathfm_s2",
+            "started_at": "2026-11-01T16:18:46.348844+00:00",
+            "finished_at": "2026-11-02T05:44:41.957437+00:00",
+            "epochs_trained": 16,
+            "selected_epoch": 5,
+            "selection_monitor": [
+              "mean_f1",
+              0.7994896099161501
+            ],
+            "cache_key": "0dae4c64cdb8be6b",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7976945244956772
+            },
+            "tune": {
+              "f1": 0.804591564335291
+            },
+            "score_threshold_per_class": [
+              0.9030276364361753
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "h-optimus-1",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "seeds": [
+          {
+            "seed": 0,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/h-optimus-1/s0/out/experiments/dataset-h-optimus-1-lightweight-conv-detection_df0e49835c1b/runs/tuned_h-optimus-1_s0",
+            "started_at": "2026-10-30T17:52:18.573824+00:00",
+            "finished_at": "2026-10-31T10:34:01.185014+00:00",
+            "epochs_trained": 16,
+            "selected_epoch": 5,
+            "selection_monitor": [
+              "mean_f1",
+              0.7784011220196353
+            ],
+            "cache_key": "9b169cb5dc2cd131",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7717231222385862
+            },
+            "tune": {
+              "f1": 0.7818329278183292
+            },
+            "score_threshold_per_class": [
+              0.7857085361468549
+            ]
+          },
+          {
+            "seed": 1,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/h-optimus-1/s1/out/experiments/dataset-h-optimus-1-lightweight-conv-detection_df0e49835c1b/runs/tuned_h-optimus-1_s1",
+            "started_at": "2026-10-31T14:48:52.066546+00:00",
+            "finished_at": "2026-11-01T07:29:47.997279+00:00",
+            "epochs_trained": 16,
+            "selected_epoch": 5,
+            "selection_monitor": [
+              "mean_f1",
+              0.7775241439859526
+            ],
+            "cache_key": "9b169cb5dc2cd131",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7666666666666667
+            },
+            "tune": {
+              "f1": 0.7839522905936568
+            },
+            "score_threshold_per_class": [
+              0.9188028695632
+            ]
+          },
+          {
+            "seed": 2,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/h-optimus-1/s2/out/experiments/dataset-h-optimus-1-lightweight-conv-detection_df0e49835c1b/runs/tuned_h-optimus-1_s2",
+            "started_at": "2026-11-01T18:09:53.845977+00:00",
+            "finished_at": "2026-11-02T09:53:38.847120+00:00",
+            "epochs_trained": 15,
+            "selected_epoch": 4,
+            "selection_monitor": [
+              "mean_f1",
+              0.767847882454624
+            ],
+            "cache_key": "9b169cb5dc2cd131",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7641641082891432
+            },
+            "tune": {
+              "f1": 0.7754891864057673
+            },
+            "score_threshold_per_class": [
+              0.8583989131207369
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "midnight",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "seeds": [
+          {
+            "seed": 0,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/midnight/s0/out/experiments/dataset-midnight-lightweight-conv-detection_0797a607a949/runs/tuned_midnight_s0",
+            "started_at": "2026-10-30T17:54:16.624434+00:00",
+            "finished_at": "2026-10-31T13:28:34.492683+00:00",
+            "epochs_trained": 16,
+            "selected_epoch": 5,
+            "selection_monitor": [
+              "mean_f1",
+              0.723771819326975
+            ],
+            "cache_key": "e6574e24724fa1d5",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7184061849539102
+            },
+            "tune": {
+              "f1": 0.7291666666666666
+            },
+            "score_threshold_per_class": [
+              0.8408586188238494
+            ]
+          },
+          {
+            "seed": 1,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/midnight/s1/out/experiments/dataset-midnight-lightweight-conv-detection_0797a607a949/runs/tuned_midnight_s1",
+            "started_at": "2026-11-01T00:21:34.963041+00:00",
+            "finished_at": "2026-11-01T18:08:48.166018+00:00",
+            "epochs_trained": 17,
+            "selected_epoch": 6,
+            "selection_monitor": [
+              "mean_f1",
+              0.7211829681097452
+            ],
+            "cache_key": "e6574e24724fa1d5",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7233154442456768
+            },
+            "tune": {
+              "f1": 0.7309893704006541
+            },
+            "score_threshold_per_class": [
+              0.8775428278105599
+            ]
+          },
+          {
+            "seed": 2,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/midnight/s2/out/experiments/dataset-midnight-lightweight-conv-detection_0797a607a949/runs/tuned_midnight_s2",
+            "started_at": "2026-11-01T20:51:06.826980+00:00",
+            "finished_at": "2026-11-02T16:35:56.763506+00:00",
+            "epochs_trained": 19,
+            "selected_epoch": 8,
+            "selection_monitor": [
+              "mean_f1",
+              0.731856654060868
+            ],
+            "cache_key": "e6574e24724fa1d5",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7268026429187016
+            },
+            "tune": {
+              "f1": 0.7390288236821605
+            },
+            "score_threshold_per_class": [
+              0.8409731022215315
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "conchv15",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "seeds": [
+          {
+            "seed": 0,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/conchv15/s0/out/experiments/dataset-conchv15-lightweight-conv-detection_35365dad8898/runs/tuned_conchv15_s0",
+            "started_at": "2026-10-30T18:04:17.890740+00:00",
+            "finished_at": "2026-10-31T08:50:27.436419+00:00",
+            "epochs_trained": 19,
+            "selected_epoch": 8,
+            "selection_monitor": [
+              "mean_f1",
+              0.7518663348738002
+            ],
+            "cache_key": "08d773750bc94959",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7509489051094891
+            },
+            "tune": {
+              "f1": 0.7649817613340282
+            },
+            "score_threshold_per_class": [
+              0.9062529341602812
+            ]
+          },
+          {
+            "seed": 1,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/conchv15/s1/out/experiments/dataset-conchv15-lightweight-conv-detection_35365dad8898/runs/tuned_conchv15_s1",
+            "started_at": "2026-11-01T05:23:57.460590+00:00",
+            "finished_at": "2026-11-01T16:18:25.614279+00:00",
+            "epochs_trained": 14,
+            "selected_epoch": 3,
+            "selection_monitor": [
+              "mean_f1",
+              0.7478902953586498
+            ],
+            "cache_key": "08d773750bc94959",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7440633245382586
+            },
+            "tune": {
+              "f1": 0.7562761506276151
+            },
+            "score_threshold_per_class": [
+              0.8129837603251241
+            ]
+          },
+          {
+            "seed": 2,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/conchv15/s2/out/experiments/dataset-conchv15-lightweight-conv-detection_35365dad8898/runs/tuned_conchv15_s2",
+            "started_at": "2026-11-02T05:45:45.453782+00:00",
+            "finished_at": "2026-11-02T18:13:03.250992+00:00",
+            "epochs_trained": 16,
+            "selected_epoch": 5,
+            "selection_monitor": [
+              "mean_f1",
+              0.7544458415663733
+            ],
+            "cache_key": "08d773750bc94959",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7587392550143266
+            },
+            "tune": {
+              "f1": 0.7681350567132683
+            },
+            "score_threshold_per_class": [
+              0.784718609586051
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "h0-mini",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "seeds": [
+          {
+            "seed": 0,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/h0-mini/s0/out/experiments/dataset-h0-mini-lightweight-conv-detection_dc05b4882179/runs/tuned_h0-mini_s0",
+            "started_at": "2026-10-31T08:51:24.514618+00:00",
+            "finished_at": "2026-11-01T00:21:15.437796+00:00",
+            "epochs_trained": 15,
+            "selected_epoch": 4,
+            "selection_monitor": [
+              "mean_f1",
+              0.7677463818056512
+            ],
+            "cache_key": "b3ad1255414ba719",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7637685211070729
+            },
+            "tune": {
+              "f1": 0.7722672064777328
+            },
+            "score_threshold_per_class": [
+              0.8435843216103255
+            ]
+          },
+          {
+            "seed": 1,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/h0-mini/s1/out/experiments/dataset-h0-mini-lightweight-conv-detection_dc05b4882179/runs/tuned_h0-mini_s1",
+            "started_at": "2026-11-01T07:30:06.866252+00:00",
+            "finished_at": "2026-11-01T20:50:11.610907+00:00",
+            "epochs_trained": 13,
+            "selected_epoch": 2,
+            "selection_monitor": [
+              "mean_f1",
+              0.7695796267224838
+            ],
+            "cache_key": "b3ad1255414ba719",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7640323931862608
+            },
+            "tune": {
+              "f1": 0.7769709543568465
+            },
+            "score_threshold_per_class": [
+              0.7948688647842833
+            ]
+          },
+          {
+            "seed": 2,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/h0-mini/s2/out/experiments/dataset-h0-mini-lightweight-conv-detection_dc05b4882179/runs/tuned_h0-mini_s2",
+            "started_at": "2026-11-02T08:31:58.757404+00:00",
+            "finished_at": "2026-11-03T03:57:14.638238+00:00",
+            "epochs_trained": 19,
+            "selected_epoch": 8,
+            "selection_monitor": [
+              "mean_f1",
+              0.7646343581726593
+            ],
+            "cache_key": "b3ad1255414ba719",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7572649572649572
+            },
+            "tune": {
+              "f1": 0.7717733473242392
+            },
+            "score_threshold_per_class": [
+              0.8422896420317038
+            ]
+          }
+        ]
+      },
+      {
+        "encoder": "dinov2-vitb14",
+        "git_sha": "1b159e4792409888fd403c6b25e28d924fa112cc",
+        "environment": {
+          "soma": "0.0.0+unknown",
+          "torch": "2.14.1+cu130",
+          "cuda": "13.0"
+        },
+        "hostname": "dlc-tornadus",
+        "seeds": [
+          {
+            "seed": 0,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/dinov2-vitb14/s0/out/experiments/dataset-dinov2-vitb14-lightweight-conv-detection_d976a7b80e52/runs/tuned_dinov2-vitb14_s0",
+            "started_at": "2026-10-31T10:34:32.223033+00:00",
+            "finished_at": "2026-11-01T15:05:52.725927+00:00",
+            "epochs_trained": 28,
+            "selected_epoch": 17,
+            "selection_monitor": [
+              "mean_f1",
+              0.7316640028414136
+            ],
+            "cache_key": "8fbf7dcfb5bb9616",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7081098138213947
+            },
+            "tune": {
+              "f1": 0.7420890506860823
+            },
+            "score_threshold_per_class": [
+              0.9448805706841605
+            ]
+          },
+          {
+            "seed": 1,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/dinov2-vitb14/s1/out/experiments/dataset-dinov2-vitb14-lightweight-conv-detection_d976a7b80e52/runs/tuned_dinov2-vitb14_s1",
+            "started_at": "2026-11-01T15:06:55.807392+00:00",
+            "finished_at": "2026-11-02T08:30:57.652537+00:00",
+            "epochs_trained": 17,
+            "selected_epoch": 6,
+            "selection_monitor": [
+              "mean_f1",
+              0.726475424812717
+            ],
+            "cache_key": "8fbf7dcfb5bb9616",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7099908897661706
+            },
+            "tune": {
+              "f1": 0.7380638353996307
+            },
+            "score_threshold_per_class": [
+              0.7040672677436046
+            ]
+          },
+          {
+            "seed": 2,
+            "run_dir": "/maindisk/clement/soma/runs/midog-677/runs/enc/dinov2-vitb14/s2/out/experiments/dataset-dinov2-vitb14-lightweight-conv-detection_d976a7b80e52/runs/tuned_dinov2-vitb14_s2",
+            "started_at": "2026-11-07T10:19:03.251193+00:00",
+            "finished_at": "2026-11-08T13:57:30.947907+00:00",
+            "epochs_trained": 27,
+            "selected_epoch": 16,
+            "selection_monitor": [
+              "mean_f1",
+              0.7329862402380067
+            ],
+            "cache_key": "8fbf7dcfb5bb9616",
+            "cache_dtype": "fp16",
+            "test": {
+              "f1": 0.7207694619777577
+            },
+            "tune": {
+              "f1": 0.7461559212301052
+            },
+            "score_threshold_per_class": [
+              0.8269256742633119
+            ]
+          }
+        ]
+      }
+    ],
+    "aggregates": [
+      {
+        "encoder": "virchow2",
+        "metric": "f1",
+        "mean": 0.7618553913427711,
+        "sample_std": 0.00086647917442495,
+        "population_std": 0.0007074772833630504,
+        "per_seed": [
+          0.7626321974148061,
+          0.7620130793289736,
+          0.7609208972845336
+        ],
+        "n_seeds": 3,
+        "tune_mean": 0.7783813018569415
+      },
+      {
+        "encoder": "genbio-pathfm",
+        "metric": "f1",
+        "mean": 0.7952264811575015,
+        "sample_std": 0.0051951777993322285,
+        "population_std": 0.004241844910466393,
+        "per_seed": [
+          0.7892573307755549,
+          0.7987275882012724,
+          0.7976945244956772
+        ],
+        "n_seeds": 3,
+        "tune_mean": 0.8054447303420351
+      },
+      {
+        "encoder": "h-optimus-1",
+        "metric": "f1",
+        "mean": 0.7675179657314654,
+        "sample_std": 0.003850740908612763,
+        "population_std": 0.003144116785920846,
+        "per_seed": [
+          0.7717231222385862,
+          0.7666666666666667,
+          0.7641641082891432
+        ],
+        "n_seeds": 3,
+        "tune_mean": 0.7804248016059178
+      },
+      {
+        "encoder": "midnight",
+        "metric": "f1",
+        "mean": 0.7228414240394295,
+        "sample_std": 0.004218251765314064,
+        "population_std": 0.003444188143871278,
+        "per_seed": [
+          0.7184061849539102,
+          0.7233154442456768,
+          0.7268026429187016
+        ],
+        "n_seeds": 3,
+        "tune_mean": 0.7330616202498271
+      },
+      {
+        "encoder": "conchv15",
+        "metric": "f1",
+        "mean": 0.7512504948873581,
+        "sample_std": 0.0073426120100534694,
+        "population_std": 0.005995217601287515,
+        "per_seed": [
+          0.7509489051094891,
+          0.7440633245382586,
+          0.7587392550143266
+        ],
+        "n_seeds": 3,
+        "tune_mean": 0.7631309895583038
+      },
+      {
+        "encoder": "h0-mini",
+        "metric": "f1",
+        "mean": 0.7616886238527637,
+        "sample_std": 0.0038332788417489204,
+        "population_std": 0.0031298590680305873,
+        "per_seed": [
+          0.7637685211070729,
+          0.7640323931862608,
+          0.7572649572649572
+        ],
+        "n_seeds": 3,
+        "tune_mean": 0.7736705027196061
+      },
+      {
+        "encoder": "dinov2-vitb14",
+        "metric": "f1",
+        "mean": 0.7129567218551077,
+        "sample_std": 0.006831090165233715,
+        "population_std": 0.005577561763922344,
+        "per_seed": [
+          0.7081098138213947,
+          0.7099908897661706,
+          0.7207694619777577
+        ],
+        "n_seeds": 3,
+        "tune_mean": 0.7421029357719394
+      }
+    ]
+  }
 }
