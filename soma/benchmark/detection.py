@@ -1457,8 +1457,8 @@ class DetectionBenchmark:
     This object drives the campaign harness and is *not* itself in the benchmark registry:
     its ``curate`` takes a ``dataset`` argument and its ``primary_metric`` is only nominal,
     neither of which fits the registry protocol. The registered, ``soma reproduce``-able
-    views are the per-dataset :class:`DetectionDatasetBenchmark` objects
-    (``detection/midog``, ``detection/monkey``).
+    views are the per-dataset :class:`DetectionDatasetBenchmark` objects (``midog``,
+    ``monkey``) and OCELOT's own ``ocelot`` benchmark.
     """
 
     name = BENCHMARK_NAME
@@ -1572,15 +1572,17 @@ DETECTION_BENCHMARK = DetectionBenchmark()
 
 
 class DetectionDatasetBenchmark:
-    """One detection dataset registered as ``detection/<dataset>`` (protocol-as-code).
+    """One detection dataset registered as its own top-level benchmark (protocol-as-code).
 
     The registry-facing, EVA-style view of the ranking harness: the dataset (and its
     committed recipe) is fixed, ``encoder`` is the only varied axis, and the conformant
     ``curate(raw_root, out_dir)`` / ``build_config(encoder=...)`` / ``expected(**axes)`` /
     ``score(run_dir)`` surface delegates to :class:`DetectionBenchmark` with the dataset
     bound. ``primary_metric`` is the dataset's native metric (MIDOG ``f1``, MONKEY
-    ``froc_inflammatory``). The MIDOG and MONKEY protocols register their view at import;
-    OCELOT keeps its own standalone ``ocelot`` benchmark.
+    ``froc_inflammatory``). The MIDOG and MONKEY protocols register their view at import
+    under the dataset's name (``midog``, ``monkey``), which is also the name of its
+    reference and results tables; OCELOT keeps its own standalone ``ocelot`` benchmark.
+    The detection datasets share this harness code but are not a registry family.
     """
 
     canonical_seeds = DEFAULT_SEEDS
@@ -1589,9 +1591,7 @@ class DetectionDatasetBenchmark:
     def __init__(self, dataset: str, harness: DetectionBenchmark = DETECTION_BENCHMARK) -> None:
         spec = dataset_spec(dataset)
         self.dataset = dataset
-        self.name = f"detection/{dataset}"
-        # Its reference rows and results ledger are the dataset protocol's.
-        self.results_name = dataset
+        self.name = dataset
         self.primary_metric = spec.metric_name
         self._harness = harness
         self.facet = Facet(

@@ -3,8 +3,8 @@
 The curator (:mod:`soma.benchmark.midog.curate`) writes one sample per ROI, which is tiled
 into fixed supervision tiles; the native metric is the single-class F1 of
 :mod:`soma.benchmark.midog.f1`. Importing this package registers the dataset with the
-harness (:func:`~soma.benchmark.detection.register_dataset`) and its ``detection/midog``
-benchmark view.
+harness (:func:`~soma.benchmark.detection.register_dataset`) and its top-level ``midog``
+benchmark.
 """
 
 from __future__ import annotations

@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from soma.benchmark import get_benchmark
+from soma.benchmark import benchmark_registry, get_benchmark, load_results, run_benchmark
 from soma.benchmark.registry import Benchmark
 from soma.benchmark import detection
 from soma.benchmark.detection import (
@@ -57,7 +57,8 @@ def test_registered_per_dataset_not_as_the_harness():
     with pytest.raises(KeyError):
         get_benchmark("detection-benchmark")
     for dataset, metric in (("midog", "f1"), ("monkey", "froc_inflammatory")):
-        bench = get_benchmark(f"detection/{dataset}")
+        bench = get_benchmark(dataset)
+        assert bench.name == dataset
         assert isinstance(bench, DetectionDatasetBenchmark)
         assert isinstance(bench, Benchmark)  # runtime protocol conformance
         assert bench.primary_metric == metric
@@ -66,6 +67,23 @@ def test_registered_per_dataset_not_as_the_harness():
         assert bench.facet.fixed["decoder"] == "lightweight_conv"
     assert isinstance(DETECTION_BENCHMARK, DetectionBenchmark)
     assert DETECTION_BENCHMARK.datasets == ("ocelot", "midog", "monkey")
+
+
+def test_each_detection_dataset_is_a_top_level_benchmark(capsys):
+    # The three share the harness code but are not a registry family: each is listed under
+    # its own name, and the old names under a ``detection/`` prefix are gone (no alias).
+    from soma.cli import main
+
+    main(["list", "benchmarks"])
+    out = capsys.readouterr().out
+    assert all(name in out for name in ("midog", "monkey", "ocelot"))
+    assert "detection/" not in out
+    registered = benchmark_registry.list()
+    assert {"midog", "monkey", "ocelot"} <= set(registered)
+    assert not [name for name in registered if name.startswith("detection")]
+    for old in ("detection/midog", "detection/monkey"):
+        with pytest.raises(KeyError, match="registered: .*midog"):
+            get_benchmark(old)
 
 
 def test_the_harness_names_no_dataset_and_imports_no_scorer():
@@ -129,7 +147,7 @@ def test_a_dataset_registers_once(monkeypatch):
 
 
 def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
-    bench = get_benchmark("detection/midog")
+    bench = get_benchmark("midog")
     cfg = bench.build_config(encoder="uni2", dataset_csv="/x/d.csv", output_root="/out", seed=3)
     assert cfg.features.encoder.name == "uni2" and cfg.learner.params["head"].params["num_classes"] == 1
     assert cfg.run.seed == 3 and str(cfg.cohort.records) == "/x/d.csv"
@@ -142,6 +160,28 @@ def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
                         [SamplePrediction("s0", [[10, 10]], [0.9], [0], [[10, 11]], [0])]),
     )
     assert bench.score(tmp_path)["f1"] == pytest.approx(1.0)
+
+
+def test_reproduce_midog_records_into_the_midog_ledger(tmp_path: Path):
+    # The registry name is the ledger name: a re-scored MIDOG run appends to midog's own
+    # results table (soma/benchmark/midog/results.csv in the package).
+    run_dir = tmp_path / "run"
+    write_cell_predictions(
+        run_dir / "predictions.json",
+        CellPredictions("virchow2", "midog", 0, "f1", 0.25,
+                        [SamplePrediction("s0", [[10, 10]], [0.9], [0], [[10, 11]], [0])]),
+    )
+    results_root = tmp_path / "ledger"
+
+    code = run_benchmark(
+        "midog", encoder="virchow2", from_run_dir=run_dir, record=True, results_root=results_root
+    )
+
+    assert code == 0
+    assert [path.name for path in results_root.iterdir()] == ["midog.csv"]
+    (row,) = load_results("midog", results_root=results_root)
+    assert row.key["encoder"] == "virchow2"
+    assert row.metric == "f1" and row.measured == pytest.approx(1.0) and row.n_seeds == 1
 
 
 @pytest.mark.parametrize(
