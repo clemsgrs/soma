@@ -184,6 +184,28 @@ def test_reproduce_midog_records_into_the_midog_ledger(tmp_path: Path):
     assert row.metric == "f1" and row.measured == pytest.approx(1.0) and row.n_seeds == 1
 
 
+def test_each_detection_view_runs_the_seeds_its_ledger_records():
+    # reproduce runs canonical_seeds by default and --record writes len(seeds) as n_seeds,
+    # so they match the recorded rows: MIDOG three seeds on one split, MONKEY seed 0 across
+    # its five patient folds. OCELOT is its own benchmark, on seed 0.
+    assert get_benchmark("midog").canonical_seeds == (0, 1, 2)
+    assert get_benchmark("monkey").canonical_seeds == (0,)
+    assert get_benchmark("ocelot").canonical_seeds == (0,)
+    for dataset in ("midog", "monkey"):
+        bench = get_benchmark(dataset)
+        recorded = {row.n_seeds for row in load_results(dataset)}
+        assert recorded == {len(bench.canonical_seeds)}, dataset
+
+
+def test_a_dataset_view_defaults_to_the_harness_seeds(monkeypatch):
+    monkeypatch.setattr(detection, "_DATASETS", dict(detection._DATASETS))
+    register_dataset(_toy_spec())
+    register_dataset(_toy_spec(name="toy_folds", canonical_seeds=(0,)))
+
+    assert DetectionDatasetBenchmark("toy").canonical_seeds == detection.DEFAULT_SEEDS == (0, 1, 2)
+    assert DetectionDatasetBenchmark("toy_folds").canonical_seeds == (0,)
+
+
 @pytest.mark.parametrize(
     "dataset,num_classes,metric",
     [("ocelot", 2, "mean_f1"), ("midog", 1, "f1"), ("monkey", 2, "froc_inflammatory")],

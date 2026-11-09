@@ -71,9 +71,7 @@ The recipe is fixed and only the encoder varies.
        using the valid ROI area. This merged score differs from the mean of
        the two per-class FROCs.
    * - Replicates
-     - One seed, ``0``, across all five patient folds. Use ``--seeds 1`` explicitly:
-       the generic detection CLI otherwise runs three seeds, each across five
-       folds.
+     - One seed, ``0``, across all five patient folds.
 
 Results
 -------
@@ -108,13 +106,13 @@ annotations into one directory::
 **Run one seed across all five folds** with the default encoder, Virchow2, or
 choose another compatible installed encoder::
 
-    soma reproduce monkey --seeds 1 --raw-root /path/to/monkey --record
-    soma reproduce monkey --encoder uni2 --seeds 1 --raw-root /path/to/monkey --record
+    soma reproduce monkey --raw-root /path/to/monkey --record
+    soma reproduce monkey --encoder uni2 --raw-root /path/to/monkey --record
 
 **Reuse prepared manifests or rescore a completed five-fold run.** Rescoring reads
 saved tune/test predictions and performs no training or feature extraction::
 
-    soma reproduce monkey --seeds 1 --curated-dir /path/to/monkey/curated --record
+    soma reproduce monkey --curated-dir /path/to/monkey/curated --record
     soma reproduce monkey --from-run-dir soma_reproduce/monkey/seed_0 --record
 
 ``--record`` stores the five-fold mean as one seed measurement. The native

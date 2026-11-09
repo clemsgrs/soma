@@ -171,7 +171,10 @@ class DatasetSpec:
     fixed tiles are folded back to parent ROIs before operating-point selection and scoring;
     for those, ``tile_px`` / ``tile_overlap_px`` are the curate-time tiling geometry — the
     single source the curator uses, cross-checked against the committed config's
-    ``requested_tile_size_px`` in ``build_config``.
+    ``requested_tile_size_px`` in ``build_config``. ``canonical_seeds`` are the seeds the
+    dataset's registered benchmark view runs by default, matching its protocol, its reference
+    gate and its recorded results (MIDOG three seeds on one split, MONKEY seed ``0`` across
+    its patient folds).
 
     The owning protocol supplies the rest: ``config`` is its committed per-dataset recipe,
     ``score(samples, spec)`` its native metric over persisted :class:`SamplePrediction`
@@ -192,6 +195,7 @@ class DatasetSpec:
     stitch_to_roi: bool = False
     tile_px: int | None = None
     tile_overlap_px: int | None = None
+    canonical_seeds: tuple[int, ...] = DEFAULT_SEEDS
 
 
 #: The registered datasets, in registration order (the order reports list them in).
@@ -1579,13 +1583,13 @@ class DetectionDatasetBenchmark:
     ``curate(raw_root, out_dir)`` / ``build_config(encoder=...)`` / ``expected(**axes)`` /
     ``score(run_dir)`` surface delegates to :class:`DetectionBenchmark` with the dataset
     bound. ``primary_metric`` is the dataset's native metric (MIDOG ``f1``, MONKEY
-    ``froc_inflammatory``). The MIDOG and MONKEY protocols register their view at import
-    under the dataset's name (``midog``, ``monkey``), which is also the name of its
-    reference and results tables; OCELOT keeps its own standalone ``ocelot`` benchmark.
-    The detection datasets share this harness code but are not a registry family.
+    ``froc_inflammatory``) and ``canonical_seeds`` its protocol's seeds. The MIDOG and
+    MONKEY protocols register their view at import under the dataset's name (``midog``,
+    ``monkey``), which is also the name of its reference and results tables; OCELOT keeps
+    its own standalone ``ocelot`` benchmark. The detection datasets share this harness
+    code but are not a registry family.
     """
 
-    canonical_seeds = DEFAULT_SEEDS
     reference_environment = REFERENCE_ENVIRONMENT
 
     def __init__(self, dataset: str, harness: DetectionBenchmark = DETECTION_BENCHMARK) -> None:
@@ -1593,6 +1597,7 @@ class DetectionDatasetBenchmark:
         self.dataset = dataset
         self.name = dataset
         self.primary_metric = spec.metric_name
+        self.canonical_seeds = spec.canonical_seeds
         self._harness = harness
         self.facet = Facet(
             fixed={
