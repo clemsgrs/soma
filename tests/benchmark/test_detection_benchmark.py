@@ -260,6 +260,38 @@ def test_a_cache_only_rescore_takes_its_encoder_from_the_cache(
     assert row.key == {"dataset": dataset, "encoder": encoder, "spacing": spacing}
 
 
+@_FIXED_RECIPES
+def test_a_first_rescore_of_a_copied_run_takes_its_encoder_from_the_saved_config(
+    tmp_path: Path, monkeypatch, capsys, dataset, spacing, sample
+):
+    # A copied, never-scored run has no experiment.json and no cache yet: the reference is
+    # looked up before scoring writes the cache. Its saved config still names its encoder,
+    # so a UNI2 run is never held to the Virchow2 gate or recorded as Virchow2.
+    bench = get_benchmark(dataset)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    bench.build_config(encoder="uni2").to_yaml(run_dir / "config.yaml")
+
+    def score_run(name, path):
+        # Like the real scorer: label the cache with the run's encoder, return its metrics.
+        write_cell_predictions(
+            Path(path) / detection.SCORE_DIRNAME / "predictions.json",
+            CellPredictions("uni2", name, 0, bench.primary_metric, float(spacing), [sample]),
+        )
+        return bench.score(path)
+
+    monkeypatch.setattr(detection, "score_run", score_run)
+    results_root = tmp_path / "ledger"
+
+    code = run_benchmark(dataset, from_run_dir=run_dir, record=True, results_root=results_root)
+
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "[REFERENCE OK]" not in out and "[POTENTIAL DRIFT]" not in out
+    (row,) = [r for r in load_results(dataset, results_root=results_root) if r.metric == bench.primary_metric]
+    assert row.key == {"dataset": dataset, "encoder": "uni2", "spacing": spacing}
+
+
 def test_each_detection_view_runs_the_seeds_its_ledger_records():
     # reproduce runs canonical_seeds by default and --record writes len(seeds) as n_seeds,
     # so they match the recorded rows: MIDOG three seeds on one split, MONKEY seed 0 across

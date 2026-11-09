@@ -1664,16 +1664,27 @@ class DetectionDatasetBenchmark:
         merged.pop("dataset", None)
         return self._harness.expected(dataset=self.dataset, **merged)
 
-    def cached_run_axes(self, run_dir: str | Path) -> dict[str, str]:
-        """The encoder a run's ``predictions.json`` cache names (``{}`` when it has none).
+    def saved_run_axes(self, run_dir: str | Path) -> dict[str, str]:
+        """The encoder a run's own saved files name (``{}`` when they name none).
 
         ``reproduce --from-run-dir`` reads a run's encoder from its ``experiment.json``. A
-        bare cache (an archived or copied ``predictions.json``) has none but names its own
-        encoder, so its rescore is checked and recorded as that encoder rather than as the
-        one a new run would train.
+        copied run dir or a bare ``predictions.json`` has none, but still names its encoder:
+        its ``predictions.json`` cache does, else its saved ``config.yaml`` (the label
+        :func:`score_run` writes into the cache). These are the sources :meth:`score` reads,
+        in the same order, so even a first rescore, whose reference is looked up before the
+        cache exists, is checked and recorded as the run's encoder rather than as the one a
+        new run would train.
         """
+        from soma.benchmark.registry import locate_run_config
+
         paths = persisted_predictions(run_dir)
-        return {"encoder": read_cell_predictions(paths[0]).encoder} if paths else {}
+        if paths:
+            return {"encoder": read_cell_predictions(paths[0]).encoder}
+        try:
+            config_path = locate_run_config(run_dir)
+        except FileNotFoundError:
+            return {}
+        return {"encoder": _encoder_label(ExperimentConfig.from_yaml(config_path))}
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
         """The run's native test metric (MIDOG ``f1``, MONKEY ``froc_*``), fold mean.
