@@ -184,6 +184,52 @@ def test_reproduce_midog_records_into_the_midog_ledger(tmp_path: Path):
     assert row.metric == "f1" and row.measured == pytest.approx(1.0) and row.n_seeds == 1
 
 
+@pytest.mark.parametrize(
+    ("dataset", "metric", "gate"),
+    [("midog", "f1", 0.7619), ("monkey", "froc_inflammatory", 0.2929)],
+)
+def test_a_detection_view_finds_the_gate_of_its_fixed_recipe(dataset, metric, gate):
+    # The gate rows are keyed on dataset, encoder and spacing; the view supplies its own
+    # dataset and recipe spacing, so an encoder alone finds the gate.
+    bench = get_benchmark(dataset)
+
+    (row,) = [r for r in bench.expected(encoder="virchow2") if not r.is_external]
+    assert (row.metric, row.expected, row.tolerance) == (metric, pytest.approx(gate), pytest.approx(0.02))
+    # With no encoder, the lookup is for the encoder the default run trains.
+    assert bench.build_config().features.encoder.name == "virchow2"
+    assert [r for r in bench.expected() if not r.is_external] == [row]
+    # Another encoder has no gate; an explicit axis wins over the recipe's own.
+    assert all(r.is_external for r in bench.expected(encoder="uni2"))
+    assert all(r.is_external for r in bench.expected(encoder="virchow2", spacing="0.5"))
+
+
+@pytest.mark.parametrize(
+    ("dataset", "spacing", "sample"),
+    [
+        ("midog", "0.25", SamplePrediction("s0", [[10, 10]], [0.9], [0], [[10, 11]], [0])),
+        ("monkey", "0.242", SamplePrediction("s0", [[10, 10]], [0.9], [0], [[10, 11]], [0], area_mm2=0.01)),
+    ],
+    ids=["midog", "monkey"],
+)
+@pytest.mark.parametrize("encoder", ["virchow2", "uni2"], ids=["gate encoder", "no gate"])
+def test_a_recorded_detection_row_carries_the_fixed_recipe(tmp_path: Path, dataset, spacing, sample, encoder):
+    # A ledger row joins its reference table on dataset, encoder and spacing, whether or not
+    # the encoder has a gate row.
+    bench = get_benchmark(dataset)
+    run_dir = tmp_path / "run"
+    write_cell_predictions(
+        run_dir / "predictions.json",
+        CellPredictions(encoder, dataset, 0, bench.primary_metric, float(spacing), [sample]),
+    )
+    results_root = tmp_path / "ledger"
+
+    code = run_benchmark(dataset, encoder=encoder, from_run_dir=run_dir, record=True, results_root=results_root)
+
+    assert code == 0
+    (row,) = [r for r in load_results(dataset, results_root=results_root) if r.metric == bench.primary_metric]
+    assert row.key == {"dataset": dataset, "encoder": encoder, "spacing": spacing}
+
+
 def test_each_detection_view_runs_the_seeds_its_ledger_records():
     # reproduce runs canonical_seeds by default and --record writes len(seeds) as n_seeds,
     # so they match the recorded rows: MIDOG three seeds on one split, MONKEY seed 0 across

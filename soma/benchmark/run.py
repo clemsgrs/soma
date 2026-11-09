@@ -469,7 +469,7 @@ def _record_reference_row(benchmark, axes: dict[str, Any], gate_row):
 
 
 def _record_axes(benchmark, axes: dict[str, Any], run_dir: str | Path | None) -> dict[str, Any]:
-    """The varied-axis values a ``--record`` row must be attributable by.
+    """The axis values a ``--record`` row must be attributable by.
 
     A **broad** reference row states one config-agnostic band (OCELOT's) and so carries an
     *empty* key. Copying it verbatim appends a measurement no reader can attribute, and
@@ -487,6 +487,10 @@ def _record_axes(benchmark, axes: dict[str, Any], run_dir: str | Path | None) ->
         for axis, value in _from_run_dir_axes(benchmark, run_dir).items():
             if axis in missing:
                 resolved[axis] = value
+    # A benchmark with one fixed recipe (MIDOG, MONKEY) names the fixed key cells its rows
+    # join on; an explicit axis still wins.
+    for axis, value in getattr(benchmark, "reference_axes", {}).items():
+        resolved.setdefault(axis, axes.get(axis) or value)
     return resolved
 
 

@@ -49,4 +49,7 @@ def test_reproduce_monkey_runs_one_seed_across_the_five_folds_by_default(monkeyp
 
     assert exit_info.value.code == 0
     assert runs == [(0, 5)]
-    assert "Reproducing benchmark 'monkey' — canonical seeds [0], running [0]." in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "Reproducing benchmark 'monkey' — canonical seeds [0], running [0]." in out
+    # The view supplies its dataset and spacing, so the Virchow2 gate applies.
+    assert "[REFERENCE OK] monkey froc_inflammatory = 0.2900  (reference 0.2929," in out

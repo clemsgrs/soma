@@ -52,6 +52,7 @@ import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -1550,7 +1551,7 @@ class DetectionBenchmark:
         if dataset is None:
             return []
         rows = load_reference(dataset)
-        return [r for r in rows if r.matches(axes)]
+        return [r for r in rows if r.matches({"dataset": dataset, **axes})]
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
         """Re-aggregate a run's native metric off its persisted per-sample prediction cache.
@@ -1634,9 +1635,32 @@ class DetectionDatasetBenchmark:
             overrides=overrides,
         )
 
+    @cached_property
+    def reference_axes(self) -> dict[str, str]:
+        """The fixed key cells of this recipe's reference and results rows.
+
+        The dataset and the committed config's dense spacing, written as the tables write
+        it (``"0.25"``, ``"0.242"``). ``expected()`` fills them under the caller's axes, and
+        ``--record`` keys every row on them, so a gate is found from ``encoder`` alone and a
+        recorded row joins its reference cell, whether or not the encoder has a gate.
+        """
+        dense = self.build_config().features.dense
+        axes = {"dataset": self.dataset}
+        if dense is not None:
+            axes["spacing"] = f"{float(dense.spacing_um):g}"
+        return axes
+
     def expected(self, **axes: Any) -> list[ReferenceRow]:
-        """Reference rows from ``<dataset>/reference.csv`` matching ``axes``."""
-        merged = {k: v for k, v in axes.items() if v is not None}
+        """Reference rows from ``<dataset>/reference.csv`` matching ``axes``.
+
+        ``axes`` default to the recipe's own :attr:`reference_axes` and to the encoder
+        :meth:`build_config` runs when none is named; an explicit axis wins.
+        """
+        merged = {
+            "encoder": DEFAULT_ROSTER[0].name,
+            **self.reference_axes,
+            **{k: v for k, v in axes.items() if v is not None},
+        }
         merged.pop("dataset", None)
         return self._harness.expected(dataset=self.dataset, **merged)
 

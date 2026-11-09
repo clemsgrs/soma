@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import tomllib
+from types import SimpleNamespace
 
 from jinja2 import Environment
 import pytest
@@ -203,7 +204,7 @@ def test_detection_results_tables_select_the_native_headline_metric(
         MeasuredRow(key={"encoder": "virchow2"}, metric="precision", measured=0.95, n_seeds=3),
     ]
     monkeypatch.setattr(generator, "load_results", lambda name: rows)
-    monkeypatch.setattr(generator, "expected_rows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(generator, "get_benchmark", lambda name: SimpleNamespace(expected=lambda **axes: []))
 
     assert getattr(generator, builder)() == (
         ".. list-table::\n"
@@ -252,7 +253,7 @@ def test_detection_table_uses_the_latest_recorder_row_for_each_encoder(
         ),
     ]
     monkeypatch.setattr(generator, "load_results", lambda name: rows)
-    monkeypatch.setattr(generator, "expected_rows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(generator, "get_benchmark", lambda name: SimpleNamespace(expected=lambda **axes: []))
 
     assert getattr(generator, builder)() == (
         ".. list-table::\n"

@@ -324,7 +324,6 @@ def _results_table(
     *,
     metric: str | None = None,
     std_label: str = "std",
-    reference_axes: dict[str, str] | None = None,
 ) -> str:
     """A ``list-table`` of soma's recorded scores, best first.
 
@@ -350,8 +349,8 @@ def _results_table(
         seeds = "" if row.n_seeds is None else str(row.n_seeds)
         gates = [
             g
-            for g in expected_rows(name, metric=row.metric, **{**(reference_axes or {}), **row.key})
-            if not g.is_external
+            for g in get_benchmark(name).expected(**row.key)
+            if g.metric == row.metric and not g.is_external
         ]
         gate = gates[0] if gates else None
         if gate is not None and not gate.within_tolerance(row.measured):
@@ -373,8 +372,6 @@ def build_midog_results_rst() -> str:
     return _results_table(
         "midog", ("encoder",), ("Encoder",), "Stitched-ROI F1",
         metric="f1", std_label="seed std",
-        # The recorder emits only the varying encoder axis for this fixed recipe.
-        reference_axes={"dataset": "midog", "spacing": "0.25"},
     )
 
 
@@ -383,8 +380,6 @@ def build_monkey_results_rst() -> str:
     return _results_table(
         "monkey", ("encoder",), ("Encoder",), "Inflammatory FROC",
         metric="froc_inflammatory", std_label="seed std",
-        # The recorder emits only the varying encoder axis for this fixed recipe.
-        reference_axes={"dataset": "monkey", "spacing": "0.242"},
     )
 
 
