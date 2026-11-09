@@ -1664,6 +1664,17 @@ class DetectionDatasetBenchmark:
         merged.pop("dataset", None)
         return self._harness.expected(dataset=self.dataset, **merged)
 
+    def cached_run_axes(self, run_dir: str | Path) -> dict[str, str]:
+        """The encoder a run's ``predictions.json`` cache names (``{}`` when it has none).
+
+        ``reproduce --from-run-dir`` reads a run's encoder from its ``experiment.json``. A
+        bare cache (an archived or copied ``predictions.json``) has none but names its own
+        encoder, so its rescore is checked and recorded as that encoder rather than as the
+        one a new run would train.
+        """
+        paths = persisted_predictions(run_dir)
+        return {"encoder": read_cell_predictions(paths[0]).encoder} if paths else {}
+
     def score(self, run_dir: str | Path) -> dict[str, float]:
         """The run's native test metric (MIDOG ``f1``, MONKEY ``froc_*``), fold mean.
 

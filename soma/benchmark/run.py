@@ -365,6 +365,8 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     default and a ``uni`` run is silently compared against the ``uni2`` reference. Reads the
     tolerant ``canonical_spec`` (the same source the leaderboard projects), so it still
     resolves on runs whose full config no longer loads with the installed soma.
+    A run with no recorded spec (a bare score cache, e.g. a detection ``predictions.json``)
+    falls back to the benchmark's optional ``cached_run_axes(run_dir)`` hook.
     Unresolved axes are skipped; a missing/unrankable run dir yields ``{}``.
     """
     from soma.benchmark.leaderboard import _MISSING, axis_value, load_run_record
@@ -372,7 +374,8 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     run_dir = _resolve_run_dir(from_run_dir)
     record = load_run_record(run_dir)
     if record is None:
-        return {}
+        cached_run_axes = getattr(benchmark, "cached_run_axes", None)
+        return dict(cached_run_axes(from_run_dir)) if cached_run_axes is not None else {}
     resolved: dict[str, Any] = {}
     for axis in benchmark.facet.varied:
         value = axis_value(record.canonical_spec, axis)
