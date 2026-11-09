@@ -96,7 +96,7 @@ side, one process per device, as described under :ref:`parallel-folds`. Each fol
 writes its output to ``fold_<k>/worker.log`` in its seed's run directory. Before the
 first seed runs, the command prints which one it spreads::
 
-   detection/monkey has 5 folds: --devices spreads each seed's folds; seeds run in turn.
+   monkey has 5 folds: --devices spreads each seed's folds; seeds run in turn.
 
 A benchmark with one fold, and a benchmark that runs its seeds with its own runner
 (``hest``), spread the seeds.

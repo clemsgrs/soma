@@ -219,7 +219,7 @@ Curate from Python::
 
     from soma.benchmark import get_benchmark
 
-    get_benchmark("detection/midog").curate("<raw_root>", "<out>/curated")
+    get_benchmark("midog").curate("<raw_root>", "<out>/curated")
 
 This runs two steps:
 
@@ -286,7 +286,7 @@ polygon are dropped, and ``summary.json`` records the kept and dropped counts,
 the valid area and the annotated ``area_rois``. ``dataset.csv`` also records the
 source slide (``source_slide``) and the crop offset (``crop_x``, ``crop_y``).
 
-The ROIs are larger than a training tile. The ``detection/monkey`` benchmark tiles
+The ROIs are larger than a training tile. The ``monkey`` benchmark tiles
 them with :func:`soma.benchmark.tiles.tile_detection_manifest` into
 1024 px tiles with 128 px overlap, as for MIDOG, and the tiles carry the ignore
 masks.

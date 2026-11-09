@@ -108,14 +108,14 @@ annotations into one directory::
 **Run one seed across all five folds** with the default encoder, Virchow2, or
 choose another compatible installed encoder::
 
-    soma reproduce detection/monkey --seeds 1 --raw-root /path/to/monkey --record
-    soma reproduce detection/monkey --encoder uni2 --seeds 1 --raw-root /path/to/monkey --record
+    soma reproduce monkey --seeds 1 --raw-root /path/to/monkey --record
+    soma reproduce monkey --encoder uni2 --seeds 1 --raw-root /path/to/monkey --record
 
 **Reuse prepared manifests or rescore a completed five-fold run.** Rescoring reads
 saved tune/test predictions and performs no training or feature extraction::
 
-    soma reproduce detection/monkey --seeds 1 --curated-dir /path/to/monkey/curated --record
-    soma reproduce detection/monkey --from-run-dir soma_reproduce/detection/monkey/seed_0 --record
+    soma reproduce monkey --seeds 1 --curated-dir /path/to/monkey/curated --record
+    soma reproduce monkey --from-run-dir soma_reproduce/monkey/seed_0 --record
 
 ``--record`` stores the five-fold mean as one seed measurement. The native
 ``detection_score/metrics.json`` also retains every fold value and the population

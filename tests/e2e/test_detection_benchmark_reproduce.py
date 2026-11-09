@@ -1,9 +1,9 @@
-"""``soma reproduce detection/midog --from-run-dir`` on a run over synthetic tiled ROIs.
+"""``soma reproduce midog --from-run-dir`` on a run over synthetic tiled ROIs.
 
 The ROIs are cut into overlapping supervision tiles by the benchmark's own tiler
 (:func:`soma.benchmark.tiles.tile_detection_manifest`), a run on the MIDOG recipe shape
 (dense grids, ``lightweight_conv``, single-class Hungarian detection head) trains through
-``soma run``, and the registered ``detection/midog`` benchmark then scores that run dir
+``soma run``, and the registered ``midog`` benchmark then scores that run dir
 itself: thresholds frozen on the stitched tune ROIs, test decoded and stitched back to
 ROIs, ``predictions.json`` written, the native MIDOG F1 reported. A multi-fold run is
 scored per fold and averaged.
@@ -119,23 +119,23 @@ def midog_shaped_config(tmp_path: Path, tiled: Path, encoder_name: str) -> dict:
 
 
 def reproduce_from_run_dir(seed_root: Path, capsys) -> tuple[int, float]:
-    """Run ``soma reproduce detection/midog --from-run-dir`` and parse the measured F1."""
+    """Run ``soma reproduce midog --from-run-dir`` and parse the measured F1."""
     capsys.readouterr()
     code = 0
     try:
-        soma_main(["reproduce", "detection/midog", "--from-run-dir", str(seed_root)])
+        soma_main(["reproduce", "midog", "--from-run-dir", str(seed_root)])
     except SystemExit as exc:
         code = int(exc.code or 0)
     out = capsys.readouterr().out
-    match = re.search(r"detection/midog f1 = (-?\d+\.\d+)", out)
+    match = re.search(r"\] midog f1 = (-?\d+\.\d+)", out)
     assert match, f"no measured f1 in reproduce output:\n{out}"
     return code, float(match.group(1))
 
 
 def reproduce_failure(seed_root: Path) -> str | None:
-    """The exception type ``soma reproduce detection/midog --from-run-dir`` raised, if any."""
+    """The exception type ``soma reproduce midog --from-run-dir`` raised, if any."""
     try:
-        soma_main(["reproduce", "detection/midog", "--from-run-dir", str(seed_root)])
+        soma_main(["reproduce", "midog", "--from-run-dir", str(seed_root)])
     except (FileNotFoundError, ValueError) as exc:
         return type(exc).__name__
     except SystemExit as exc:

@@ -95,14 +95,14 @@ and the expected directory layout.
 **Run the three-seed benchmark** with its default encoder, Virchow2, or choose
 another compatible installed encoder::
 
-    soma reproduce detection/midog --raw-root /path/to/midog --record
-    soma reproduce detection/midog --encoder uni2 --raw-root /path/to/midog --record
+    soma reproduce midog --raw-root /path/to/midog --record
+    soma reproduce midog --encoder uni2 --raw-root /path/to/midog --record
 
 **Reuse prepared manifests or rescore a completed run.** The latter reads saved
 tune/test predictions and performs no training or feature extraction::
 
-    soma reproduce detection/midog --curated-dir /path/to/midog/curated --record
-    soma reproduce detection/midog --from-run-dir soma_reproduce/detection/midog/seed_0 --record
+    soma reproduce midog --curated-dir /path/to/midog/curated --record
+    soma reproduce midog --from-run-dir soma_reproduce/midog/seed_0 --record
 
 ``--seeds 1`` selects seed 0 for the individual reference check. ``--encoders``
 compares an encoder panel; :doc:`benchmarking` describes the shared options.

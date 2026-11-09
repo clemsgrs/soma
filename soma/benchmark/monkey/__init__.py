@@ -3,8 +3,8 @@
 The curator (:mod:`soma.benchmark.monkey.curate`) writes one sample per ROI polygon,
 which is tiled into fixed supervision tiles; the native metric is the challenge's FROC
 (:mod:`soma.benchmark.monkey.froc`). Importing this package registers the dataset with the
-harness (:func:`~soma.benchmark.detection.register_dataset`) and its ``detection/monkey``
-benchmark view.
+harness (:func:`~soma.benchmark.detection.register_dataset`) and its top-level ``monkey``
+benchmark.
 """
 
 from __future__ import annotations

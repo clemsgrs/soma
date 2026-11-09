@@ -385,11 +385,10 @@ def _results_table_name(benchmark) -> str:
     """The protocol whose results/reference tables a benchmark records under.
 
     Family members share one keyed table: ``eva/bach`` records under ``eva`` (keyed by
-    ``dataset``), matching ``eva/reference.csv``. A standalone benchmark (``ocelot``) maps
-    to itself. A benchmark whose tables sit in another protocol names it as
-    ``results_name`` (``detection/midog`` records under ``midog``).
+    ``dataset``), matching ``eva/reference.csv``. A standalone benchmark (``ocelot``,
+    ``midog``, ``monkey``) maps to itself.
     """
-    return getattr(benchmark, "results_name", None) or benchmark.name.split("/", 1)[0]
+    return benchmark.name.split("/", 1)[0]
 
 
 def _git_commit() -> str:

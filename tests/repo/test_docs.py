@@ -223,7 +223,7 @@ def test_missing_monkey_results_request_one_seed_across_five_folds(monkeypatch) 
 
     assert generator.build_monkey_results_rst() == (
         "No reproductions have been recorded yet. "
-        "``soma reproduce detection/monkey --seeds 1 --record`` "
+        "``soma reproduce monkey --seeds 1 --record`` "
         "appends a measured score to the results ledger this table reads."
     )
 
@@ -366,7 +366,7 @@ def test_benchmark_pages_spell_the_protocol_constants_of_the_packages() -> None:
     assert f"``{ocelot.primary_metric}``" in ocelot_page
 
     for dataset in ("midog", "monkey"):
-        benchmark = get_benchmark(f"detection/{dataset}")
+        benchmark = get_benchmark(dataset)
         page = (docs_dir / f"{dataset}-detection-benchmark.rst").read_text(encoding="utf-8")
         assert f"``{benchmark.facet.fixed['decoder']}``" in page
         assert f"``{benchmark.primary_metric}``" in page
