@@ -447,9 +447,15 @@ def _seed_runs_axes(benchmark, seed_dirs: dict[int, Path]) -> dict[str, Any]:
     """The axes the seed runs of one output root share, read as :func:`_from_run_dir_axes`.
 
     A mean over seeds is one cell's score only if every seed run is that cell, so two seed
-    runs naming different values for an axis raise ``ValueError``. An axis a seed run does
-    not name (an unfinished run, say) is no conflict: scoring that run reports it instead.
+    runs naming different values for an axis raise ``ValueError``. So do two seed runs of
+    different experiments (``experiment_id`` leaves out the seed but covers the protocol and
+    the dataset/splits checksums): a rerun of some seeds after a change leaves both in one
+    output root. An axis or identity a seed run does not record (an unfinished run, say) is
+    no conflict: scoring that run reports it instead.
     """
+    from soma.benchmark.leaderboard import load_run_record
+
+    output_root = next(iter(seed_dirs.values())).parent
     per_seed = {
         seed_dir.name: _from_run_dir_axes(benchmark, seed_dir) for seed_dir in seed_dirs.values()
     }
@@ -467,10 +473,22 @@ def _seed_runs_axes(benchmark, seed_dirs: dict[int, Path]) -> dict[str, Any]:
             f"{name}: " + ", ".join(f"{axis}={seed_axes.get(axis, '?')}" for axis in differing)
             for name, seed_axes in per_seed.items()
         )
-        output_root = next(iter(seed_dirs.values())).parent
         raise ValueError(
             f"the seed runs under {output_root} have different settings ({listing}), so "
             "their scores have no common mean. Rescore seed runs that share their settings."
+        )
+    experiment_ids = {
+        seed_dir.name: record.experiment_id
+        for seed_dir in seed_dirs.values()
+        if (record := load_run_record(_resolve_run_dir(seed_dir))) is not None
+        and record.experiment_id
+    }
+    if len(set(experiment_ids.values())) > 1:
+        listing = ", ".join(f"{name}: {eid[:12]}" for name, eid in experiment_ids.items())
+        raise ValueError(
+            f"the seed runs under {output_root} are runs of different experiments ({listing}), "
+            "so their scores have no common mean. Rerun every seed, or rescore an output root "
+            "whose seed runs are one experiment."
         )
     return shared
 

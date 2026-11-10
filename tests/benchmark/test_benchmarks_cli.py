@@ -1583,7 +1583,7 @@ def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, 
     assert (rows[0].measured, rows[0].n_seeds) == (pytest.approx(0.70), 3)
 
 
-def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float):
+def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float, experiment_id: str = "e"):
     """A minimal self-describing run dir (experiment.json + run.yaml + summary.json).
 
     ``load_run_record`` reads the encoder axis from the experiment's ``canonical_spec`` two
@@ -1596,7 +1596,7 @@ def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float):
     (exp / "experiment.json").write_text(
         json.dumps(
             {
-                "experiment_id": "e",
+                "experiment_id": experiment_id,
                 "dataset_checksum": "d",
                 "splits_checksum": "s",
                 "canonical_spec": {
@@ -1606,7 +1606,9 @@ def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float):
             }
         )
     )
-    (run_dir / "run.yaml").write_text("seed: 0\nexperiment_id: e\nstatus: completed\n")
+    (run_dir / "run.yaml").write_text(
+        f"seed: 0\nexperiment_id: {experiment_id}\nstatus: completed\n"
+    )
     (run_dir / "summary.json").write_text(
         json.dumps({"test/balanced_accuracy": balanced_accuracy})
     )
@@ -1647,6 +1649,34 @@ def test_reproduce_from_run_dir_cli_encoder_overrides_run_encoder(capsys, tmp_pa
     out = capsys.readouterr().out
     assert code == 0
     assert "REFERENCE OK" in out
+
+
+@pytest.mark.parametrize("record", [True, False], ids=["record", "check"])
+def test_rescoring_a_whole_output_refuses_seed_runs_of_different_experiments(
+    capsys, tmp_path, monkeypatch, record
+):
+    # A --seeds 1 rerun after a protocol or data change leaves seed_0's newest run in the new
+    # experiment and seeds 1-4 in the old one. The encoder matches, but the seed runs measure
+    # different experiments, so their mean is neither checked nor recorded.
+    ledger = tmp_path / "ledger" / "eva.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    output_root = tmp_path / "out"
+    for seed in range(5):  # eva/bach's five canonical seeds
+        _write_run(
+            output_root / f"seed_{seed}",
+            encoder="uni2",
+            balanced_accuracy=0.914,
+            experiment_id=("a" if seed == 0 else "b") * 64,
+        )
+
+    argv = ["reproduce", "eva/bach", "--from-run-dir", str(output_root)]
+    code = _run_cli([*argv, "--record"] if record else argv)
+
+    assert code == 2
+    assert not ledger.exists()
+    captured = capsys.readouterr()
+    assert "REFERENCE" not in captured.out
+    assert "seed_0: aaaaaaaaaaaa" in captured.err and "seed_1: bbbbbbbbbbbb" in captured.err
 
 
 def test_reproduce_eva_family_fans_out_over_members(monkeypatch, capsys, tmp_path):
