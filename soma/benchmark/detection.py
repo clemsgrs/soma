@@ -52,6 +52,7 @@ import json
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import cached_property
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -171,7 +172,10 @@ class DatasetSpec:
     fixed tiles are folded back to parent ROIs before operating-point selection and scoring;
     for those, ``tile_px`` / ``tile_overlap_px`` are the curate-time tiling geometry — the
     single source the curator uses, cross-checked against the committed config's
-    ``requested_tile_size_px`` in ``build_config``.
+    ``requested_tile_size_px`` in ``build_config``. ``canonical_seeds`` are the seeds the
+    dataset's registered benchmark view runs by default, matching its protocol, its reference
+    gate and its recorded results (MIDOG three seeds on one split, MONKEY seed ``0`` across
+    its patient folds).
 
     The owning protocol supplies the rest: ``config`` is its committed per-dataset recipe,
     ``score(samples, spec)`` its native metric over persisted :class:`SamplePrediction`
@@ -192,6 +196,7 @@ class DatasetSpec:
     stitch_to_roi: bool = False
     tile_px: int | None = None
     tile_overlap_px: int | None = None
+    canonical_seeds: tuple[int, ...] = DEFAULT_SEEDS
 
 
 #: The registered datasets, in registration order (the order reports list them in).
@@ -1546,7 +1551,7 @@ class DetectionBenchmark:
         if dataset is None:
             return []
         rows = load_reference(dataset)
-        return [r for r in rows if r.matches(axes)]
+        return [r for r in rows if r.matches({"dataset": dataset, **axes})]
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
         """Re-aggregate a run's native metric off its persisted per-sample prediction cache.
@@ -1579,13 +1584,13 @@ class DetectionDatasetBenchmark:
     ``curate(raw_root, out_dir)`` / ``build_config(encoder=...)`` / ``expected(**axes)`` /
     ``score(run_dir)`` surface delegates to :class:`DetectionBenchmark` with the dataset
     bound. ``primary_metric`` is the dataset's native metric (MIDOG ``f1``, MONKEY
-    ``froc_inflammatory``). The MIDOG and MONKEY protocols register their view at import
-    under the dataset's name (``midog``, ``monkey``), which is also the name of its
-    reference and results tables; OCELOT keeps its own standalone ``ocelot`` benchmark.
-    The detection datasets share this harness code but are not a registry family.
+    ``froc_inflammatory``) and ``canonical_seeds`` its protocol's seeds. The MIDOG and
+    MONKEY protocols register their view at import under the dataset's name (``midog``,
+    ``monkey``), which is also the name of its reference and results tables; OCELOT keeps
+    its own standalone ``ocelot`` benchmark. The detection datasets share this harness
+    code but are not a registry family.
     """
 
-    canonical_seeds = DEFAULT_SEEDS
     reference_environment = REFERENCE_ENVIRONMENT
 
     def __init__(self, dataset: str, harness: DetectionBenchmark = DETECTION_BENCHMARK) -> None:
@@ -1593,6 +1598,7 @@ class DetectionDatasetBenchmark:
         self.dataset = dataset
         self.name = dataset
         self.primary_metric = spec.metric_name
+        self.canonical_seeds = spec.canonical_seeds
         self._harness = harness
         self.facet = Facet(
             fixed={
@@ -1629,11 +1635,56 @@ class DetectionDatasetBenchmark:
             overrides=overrides,
         )
 
+    @cached_property
+    def reference_axes(self) -> dict[str, str]:
+        """The fixed key cells of this recipe's reference and results rows.
+
+        The dataset and the committed config's dense spacing, written as the tables write
+        it (``"0.25"``, ``"0.242"``). ``expected()`` fills them under the caller's axes, and
+        ``--record`` keys every row on them, so a gate is found from ``encoder`` alone and a
+        recorded row joins its reference cell, whether or not the encoder has a gate.
+        """
+        dense = self.build_config().features.dense
+        axes = {"dataset": self.dataset}
+        if dense is not None:
+            axes["spacing"] = f"{float(dense.spacing_um):g}"
+        return axes
+
     def expected(self, **axes: Any) -> list[ReferenceRow]:
-        """Reference rows from ``<dataset>/reference.csv`` matching ``axes``."""
-        merged = {k: v for k, v in axes.items() if v is not None}
+        """Reference rows from ``<dataset>/reference.csv`` matching ``axes``.
+
+        ``axes`` default to the recipe's own :attr:`reference_axes` and to the encoder
+        :meth:`build_config` runs when none is named; an explicit axis wins.
+        """
+        merged = {
+            "encoder": DEFAULT_ROSTER[0].name,
+            **self.reference_axes,
+            **{k: v for k, v in axes.items() if v is not None},
+        }
         merged.pop("dataset", None)
         return self._harness.expected(dataset=self.dataset, **merged)
+
+    def saved_run_axes(self, run_dir: str | Path) -> dict[str, str]:
+        """The encoder a run's own saved files name (``{}`` when they name none).
+
+        ``reproduce --from-run-dir`` reads a run's encoder from its ``experiment.json``. A
+        copied run dir or a bare ``predictions.json`` has none, but still names its encoder:
+        its ``predictions.json`` cache does, else its saved ``config.yaml`` (the label
+        :func:`score_run` writes into the cache). These are the sources :meth:`score` reads,
+        in the same order, so even a first rescore, whose reference is looked up before the
+        cache exists, is checked and recorded as the run's encoder rather than as the one a
+        new run would train.
+        """
+        from soma.benchmark.registry import locate_run_config
+
+        paths = persisted_predictions(run_dir)
+        if paths:
+            return {"encoder": read_cell_predictions(paths[0]).encoder}
+        try:
+            config_path = locate_run_config(run_dir)
+        except FileNotFoundError:
+            return {}
+        return {"encoder": _encoder_label(ExperimentConfig.from_yaml(config_path))}
 
     def score(self, run_dir: str | Path) -> dict[str, float]:
         """The run's native test metric (MIDOG ``f1``, MONKEY ``froc_*``), fold mean.

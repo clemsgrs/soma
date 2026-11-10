@@ -72,6 +72,8 @@ DETECTION_DATASET = DatasetSpec(
     # these tile it.
     tile_px=1024,
     tile_overlap_px=128,
+    # One seed across the five patient folds: the folds are the replicates.
+    canonical_seeds=(0,),
 )
 
 register_dataset(DETECTION_DATASET)

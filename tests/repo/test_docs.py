@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import subprocess
 import tomllib
+from types import SimpleNamespace
 
 from jinja2 import Environment
 import pytest
@@ -203,7 +204,7 @@ def test_detection_results_tables_select_the_native_headline_metric(
         MeasuredRow(key={"encoder": "virchow2"}, metric="precision", measured=0.95, n_seeds=3),
     ]
     monkeypatch.setattr(generator, "load_results", lambda name: rows)
-    monkeypatch.setattr(generator, "expected_rows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(generator, "get_benchmark", lambda name: SimpleNamespace(expected=lambda **axes: []))
 
     assert getattr(generator, builder)() == (
         ".. list-table::\n"
@@ -223,7 +224,7 @@ def test_missing_monkey_results_request_one_seed_across_five_folds(monkeypatch) 
 
     assert generator.build_monkey_results_rst() == (
         "No reproductions have been recorded yet. "
-        "``soma reproduce monkey --seeds 1 --record`` "
+        "``soma reproduce monkey --record`` "
         "appends a measured score to the results ledger this table reads."
     )
 
@@ -252,7 +253,7 @@ def test_detection_table_uses_the_latest_recorder_row_for_each_encoder(
         ),
     ]
     monkeypatch.setattr(generator, "load_results", lambda name: rows)
-    monkeypatch.setattr(generator, "expected_rows", lambda *args, **kwargs: [])
+    monkeypatch.setattr(generator, "get_benchmark", lambda name: SimpleNamespace(expected=lambda **axes: []))
 
     assert getattr(generator, builder)() == (
         ".. list-table::\n"
@@ -266,56 +267,57 @@ def test_detection_table_uses_the_latest_recorder_row_for_each_encoder(
     )
 
 
-def test_midog_aggregate_table_does_not_compare_a_seed_mean_with_the_seed_zero_reference(
-    monkeypatch,
+@pytest.mark.parametrize(
+    ("builder", "metric", "label", "n_seeds"),
+    [
+        ("build_midog_results_rst", "f1", "Stitched-ROI F1", 3),
+        ("build_monkey_results_rst", "froc_inflammatory", "Inflammatory FROC", 1),
+    ],
+)
+@pytest.mark.parametrize(
+    "key",
+    [{"encoder": "virchow2"}, None],
+    ids=["encoder-only recorder row", "fully keyed row"],
+)
+def test_detection_tables_check_each_row_against_the_gate_of_the_fixed_recipe(
+    monkeypatch, builder: str, metric: str, label: str, n_seeds: int, key
 ) -> None:
+    # The gate measures what the default run records: MIDOG's three-seed mean, MONKEY's
+    # seed 0 across five folds. A recorded row far from it is flagged, keyed by the varying
+    # encoder alone or by the full recipe.
     from soma.benchmark import MeasuredRow
+    from soma.benchmark.detection import dataset_spec
 
-    generator, _ = _load_reference_generator()
-    rows = [
-        MeasuredRow(
-            key={"dataset": "midog", "encoder": "virchow2", "spacing": "0.25"},
-            metric="f1", measured=0.5, std=0.01, n_seeds=3,
-        ),
-    ]
-    monkeypatch.setattr(generator, "load_results", lambda name: rows)
-
-    assert generator.build_midog_results_rst() == (
-        ".. list-table::\n"
-        "   :header-rows: 1\n\n"
-        "   * - Encoder\n"
-        "     - Stitched-ROI F1 (mean ± seed std)\n"
-        "     - Seeds\n"
-        "   * - virchow2\n"
-        "     - 0.500 ± 0.010\n"
-        "     - 3"
-    )
-
-
-def test_monkey_encoder_only_recorder_row_is_checked_against_the_fixed_recipe(monkeypatch) -> None:
-    from soma.benchmark import MeasuredRow
-
+    dataset = builder.removeprefix("build_").removesuffix("_results_rst")
+    key = key or {"dataset": dataset, "encoder": "virchow2", "spacing": f"{dataset_spec(dataset).spacing_um:.3g}"}
     generator, _ = _load_reference_generator()
     monkeypatch.setattr(generator, "load_results", lambda name: [
-        MeasuredRow(
-            key={"encoder": "virchow2"}, metric="froc_inflammatory",
-            measured=0.8, n_seeds=1,
-        ),
+        MeasuredRow(key=key, metric=metric, measured=0.8, n_seeds=n_seeds),
     ])
 
-    assert generator.build_monkey_results_rst() == (
+    assert getattr(generator, builder)() == (
         ".. raw:: html\n\n"
         "   <style>.red { color: #d32f2f; font-weight: 600; }</style>\n\n"
         ".. role:: red\n\n"
         ".. list-table::\n"
         "   :header-rows: 1\n\n"
         "   * - Encoder\n"
-        "     - Inflammatory FROC (mean ± seed std)\n"
+        f"     - {label} (mean ± seed std)\n"
         "     - Seeds\n"
         "   * - virchow2\n"
         "     - :red:`0.800`\n"
-        "     - 1"
+        f"     - {n_seeds}"
     )
+
+
+@pytest.mark.parametrize("builder", ["build_midog_results_rst", "build_monkey_results_rst"])
+def test_recorded_detection_results_sit_within_their_gates(builder: str) -> None:
+    # The packaged ledgers are checked against their gates and none drifts.
+    generator, _ = _load_reference_generator()
+    table = getattr(generator, builder)()
+
+    assert "   * - virchow2\n" in table
+    assert ":red:" not in table
 
 
 @pytest.mark.parametrize("filename", sorted(_BENCHMARK_PAGES))
@@ -371,8 +373,32 @@ def test_benchmark_pages_spell_the_protocol_constants_of_the_packages() -> None:
         assert f"``{benchmark.facet.fixed['decoder']}``" in page
         assert f"``{benchmark.primary_metric}``" in page
         assert f"{dataset_spec(dataset).spacing_um:.3g} µm/px" in page
+    # MONKEY's default run is its protocol (seed 0 across five folds): no --seeds needed.
     monkey_page = (docs_dir / "monkey-detection-benchmark.rst").read_text(encoding="utf-8")
-    assert "--seeds 1" in monkey_page
+    assert get_benchmark("monkey").canonical_seeds == (0,)
+    assert "One seed, ``0``, across all five patient folds." in monkey_page
+    assert "--seeds" not in monkey_page
+
+
+def test_detection_pages_quote_the_gate_their_default_run_checks() -> None:
+    # The quoted target is the packaged gate, which measures what the default run measures.
+    from soma.benchmark import load_reference
+
+    docs_dir = Path(__file__).resolve().parents[2] / "docs"
+    for dataset in ("midog", "monkey"):
+        (gate,) = [row for row in load_reference(dataset) if not row.is_external]
+        page = (docs_dir / f"{dataset}-detection-benchmark.rst").read_text(encoding="utf-8")
+        assert f"**{gate.expected:.4f} ± {gate.tolerance:.2f}**" in page, dataset
+    midog_page = (docs_dir / "midog-detection-benchmark.rst").read_text(encoding="utf-8")
+    assert "three-seed mean test F1, **0.7619 ± 0.02**" in midog_page
+    assert (
+        "``--seeds 1`` runs seed 0 alone as a quick smoke test; it is not the reference check."
+        in " ".join(midog_page.split())
+    )
+    # A --from-run-dir rescore scores one seed; recording it would add a one-seed row to
+    # the three-seed ledger.
+    (rescore,) = [line for line in midog_page.splitlines() if "--from-run-dir" in line]
+    assert "--record" not in rescore
 
 
 def test_croma_benchmark_page_exceptions_table_matches_panel() -> None:

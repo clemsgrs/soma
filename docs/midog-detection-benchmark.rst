@@ -76,7 +76,7 @@ the three seeds.
 .. include:: _generated/midog-results.rst
 
 All seven encoders were trained with the recipe above. The packaged Virchow2
-target is the seed-0 test F1, **0.7626 ± 0.02**.
+target is the three-seed mean test F1, **0.7619 ± 0.02**.
 
 The `measurement provenance
 <https://github.com/clemsgrs/soma/blob/main/soma/benchmark/midog/provenance.json>`__
@@ -98,11 +98,14 @@ another compatible installed encoder::
     soma reproduce midog --raw-root /path/to/midog --record
     soma reproduce midog --encoder uni2 --raw-root /path/to/midog --record
 
-**Reuse prepared manifests or rescore a completed run.** The latter reads saved
-tune/test predictions and performs no training or feature extraction::
+**Reuse prepared manifests, or rescore one seed as a spot check.** Rescoring
+reads that seed's saved tune/test predictions and performs no training or
+feature extraction::
 
     soma reproduce midog --curated-dir /path/to/midog/curated --record
-    soma reproduce midog --from-run-dir soma_reproduce/midog/seed_0 --record
+    soma reproduce midog --from-run-dir soma_reproduce/midog/seed_0
 
-``--seeds 1`` selects seed 0 for the individual reference check. ``--encoders``
-compares an encoder panel; :doc:`benchmarking` describes the shared options.
+A rescore covers one seed, so leave out ``--record``: the results table holds
+three-seed means. ``--seeds 1`` runs seed 0 alone as a quick smoke test; it is
+not the reference check. ``--encoders`` compares an encoder panel;
+:doc:`benchmarking` describes the shared options.

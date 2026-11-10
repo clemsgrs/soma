@@ -365,6 +365,9 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     default and a ``uni`` run is silently compared against the ``uni2`` reference. Reads the
     tolerant ``canonical_spec`` (the same source the leaderboard projects), so it still
     resolves on runs whose full config no longer loads with the installed soma.
+    A run with no recorded spec (a copied run dir, or a bare score cache such as a detection
+    ``predictions.json``) falls back to the benchmark's optional ``saved_run_axes(run_dir)``
+    hook, which reads the axes from the run's other saved files.
     Unresolved axes are skipped; a missing/unrankable run dir yields ``{}``.
     """
     from soma.benchmark.leaderboard import _MISSING, axis_value, load_run_record
@@ -372,7 +375,8 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     run_dir = _resolve_run_dir(from_run_dir)
     record = load_run_record(run_dir)
     if record is None:
-        return {}
+        saved_run_axes = getattr(benchmark, "saved_run_axes", None)
+        return dict(saved_run_axes(from_run_dir)) if saved_run_axes is not None else {}
     resolved: dict[str, Any] = {}
     for axis in benchmark.facet.varied:
         value = axis_value(record.canonical_spec, axis)
@@ -469,7 +473,7 @@ def _record_reference_row(benchmark, axes: dict[str, Any], gate_row):
 
 
 def _record_axes(benchmark, axes: dict[str, Any], run_dir: str | Path | None) -> dict[str, Any]:
-    """The varied-axis values a ``--record`` row must be attributable by.
+    """The axis values a ``--record`` row must be attributable by.
 
     A **broad** reference row states one config-agnostic band (OCELOT's) and so carries an
     *empty* key. Copying it verbatim appends a measurement no reader can attribute, and
@@ -487,6 +491,10 @@ def _record_axes(benchmark, axes: dict[str, Any], run_dir: str | Path | None) ->
         for axis, value in _from_run_dir_axes(benchmark, run_dir).items():
             if axis in missing:
                 resolved[axis] = value
+    # A benchmark with one fixed recipe (MIDOG, MONKEY) names the fixed key cells its rows
+    # join on; an explicit axis still wins.
+    for axis, value in getattr(benchmark, "reference_axes", {}).items():
+        resolved.setdefault(axis, axes.get(axis) or value)
     return resolved
 
 

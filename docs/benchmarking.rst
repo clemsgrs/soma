@@ -57,11 +57,9 @@ Reproduce a benchmark
    reference still runs, and a gap never fails the command.
 
 ``--seeds 1`` runs seed 0 only, for a quick smoke test; omit it for the canonical seed
-set. MONKEY uses one seed across five patient folds, so its documented command
-sets ``--seeds 1`` explicitly. ``--curated-dir`` reuses prepared manifests,
-``--from-run-dir`` rescores one existing run, and ``--record`` appends the score to
-the benchmark's results ledger, which is what the results tables in these pages
-are built from.
+set. ``--curated-dir`` reuses prepared manifests, ``--from-run-dir`` rescores one
+existing run, and ``--record`` appends the score to the benchmark's results ledger,
+which is what the results tables in these pages are built from.
 
 .. _parallel-seeds:
 

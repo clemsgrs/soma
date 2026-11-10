@@ -324,9 +324,6 @@ def _results_table(
     *,
     metric: str | None = None,
     std_label: str = "std",
-    reproduce_command: str | None = None,
-    check_reference: bool = True,
-    reference_axes: dict[str, str] | None = None,
 ) -> str:
     """A ``list-table`` of soma's recorded scores, best first.
 
@@ -340,7 +337,7 @@ def _results_table(
     ]
     if not rows:
         return (
-            f"No reproductions have been recorded yet. ``soma reproduce {reproduce_command or name} --record`` "
+            f"No reproductions have been recorded yet. ``soma reproduce {name} --record`` "
             "appends a measured score to the results ledger this table reads."
         )
     header = list(key_labels) + [f"{metric_label} (mean ± {std_label})", "Seeds"]
@@ -352,11 +349,8 @@ def _results_table(
         seeds = "" if row.n_seeds is None else str(row.n_seeds)
         gates = [
             g
-            for g in (
-                expected_rows(name, metric=row.metric, **{**(reference_axes or {}), **row.key})
-                if check_reference else []
-            )
-            if not g.is_external
+            for g in get_benchmark(name).expected(**row.key)
+            if g.metric == row.metric and not g.is_external
         ]
         gate = gates[0] if gates else None
         if gate is not None and not gate.within_tolerance(row.measured):
@@ -375,10 +369,9 @@ def build_ocelot_results_rst() -> str:
 
 def build_midog_results_rst() -> str:
     """The MIDOG results table: one row per recorded encoder."""
-    # Its packaged target is seed 0; the aggregate table cannot evaluate that check.
     return _results_table(
         "midog", ("encoder",), ("Encoder",), "Stitched-ROI F1",
-        metric="f1", std_label="seed std", check_reference=False,
+        metric="f1", std_label="seed std",
     )
 
 
@@ -386,9 +379,7 @@ def build_monkey_results_rst() -> str:
     """The MONKEY results table: one row per recorded encoder."""
     return _results_table(
         "monkey", ("encoder",), ("Encoder",), "Inflammatory FROC",
-        metric="froc_inflammatory", std_label="seed std", reproduce_command="monkey --seeds 1",
-        # The recorder emits only the varying encoder axis for this fixed recipe.
-        reference_axes={"dataset": "monkey", "spacing": "0.242"},
+        metric="froc_inflammatory", std_label="seed std",
     )
 
 
