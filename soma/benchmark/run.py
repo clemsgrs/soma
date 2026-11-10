@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 import yaml
 
-from soma.benchmark.registry import get_benchmark, get_reported_metrics
+from soma.benchmark.registry import get_benchmark, get_reported_metrics, locate_run_config
 from soma.benchmark.spec import BenchmarkSpec, _validate_seed_sequence
 
 
@@ -451,8 +451,9 @@ def _seed_runs_axes(benchmark, seed_dirs: dict[int, Path]) -> dict[str, Any]:
     different experiments (``experiment_id`` leaves out the seed but covers the protocol and
     the train/tune rows) or of different test sets (``run.yaml``'s ``test_checksum``, which
     ``experiment_id`` leaves out): a rerun of some seeds after a change leaves both in one
-    output root. An axis or identity a seed run does not record (an unfinished run, say) is
-    no conflict: scoring that run reports it instead.
+    output root. The identities are read from every run a scorer may pick in a seed dir.
+    An axis or identity a seed run does not record (an unfinished run, say) is no conflict:
+    scoring that run reports it instead.
     """
     from soma.benchmark.leaderboard import load_run_record
 
@@ -478,11 +479,23 @@ def _seed_runs_axes(benchmark, seed_dirs: dict[int, Path]) -> dict[str, Any]:
             f"the seed runs under {output_root} have different settings ({listing}), so "
             "their scores have no common mean. Rescore seed runs that share their settings."
         )
-    records = [
-        (seed_dir.name, record)
-        for seed_dir in seed_dirs.values()
-        if (record := load_run_record(_resolve_run_dir(seed_dir))) is not None
-    ]
+    records = []
+    for seed_dir in seed_dirs.values():
+        # The summary scorer reads the run with the newest summary.json, the detection
+        # scorers the run with the newest config.yaml. An unfinished rerun makes them two
+        # runs, so the identities of both are checked.
+        runs = {seed_dir.name: _resolve_run_dir(seed_dir)}
+        try:
+            config_run = locate_run_config(seed_dir).parent
+        except FileNotFoundError:
+            config_run = runs[seed_dir.name]
+        if config_run != runs[seed_dir.name]:
+            runs[f"{seed_dir.name}/{config_run.name}"] = config_run
+        records += [
+            (name, record)
+            for name, run_dir in runs.items()
+            if (record := load_run_record(run_dir)) is not None
+        ]
     for identity, conflict, remedy in (
         (
             "experiment_id",

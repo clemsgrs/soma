@@ -9,6 +9,7 @@ informational reference status.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import re
 
@@ -1590,14 +1591,17 @@ def _write_run(
     balanced_accuracy: float,
     experiment_id: str = "e",
     test_checksum: str | None = None,
+    experiment: str = "exp",
+    finished: bool = True,
 ):
     """A minimal self-describing run dir (experiment.json + run.yaml + summary.json).
 
     ``load_run_record`` reads the encoder axis from the experiment's ``canonical_spec`` two
     levels above the run dir; this fixture is what lets ``--from-run-dir`` key the reference
-    row on the run's OWN encoder. Returns the concrete run dir.
+    row on the run's OWN encoder. A run that is not ``finished`` has no ``summary.json``.
+    Returns the concrete run dir.
     """
-    exp = tmp_path / "experiments" / "exp"
+    exp = tmp_path / "experiments" / experiment
     run_dir = exp / "runs" / "run"
     run_dir.mkdir(parents=True)
     (exp / "experiment.json").write_text(
@@ -1613,13 +1617,15 @@ def _write_run(
             }
         )
     )
-    run_yaml = f"seed: 0\nexperiment_id: {experiment_id}\nstatus: completed\n"
+    status = "completed" if finished else "running"
+    run_yaml = f"seed: 0\nexperiment_id: {experiment_id}\nstatus: {status}\n"
     if test_checksum is not None:
         run_yaml += f"test_checksum: {test_checksum}\n"
     (run_dir / "run.yaml").write_text(run_yaml)
-    (run_dir / "summary.json").write_text(
-        json.dumps({"test/balanced_accuracy": balanced_accuracy})
-    )
+    if finished:
+        (run_dir / "summary.json").write_text(
+            json.dumps({"test/balanced_accuracy": balanced_accuracy})
+        )
     return run_dir
 
 
@@ -1717,6 +1723,54 @@ def test_rescoring_a_whole_output_refuses_seed_runs_scored_on_different_test_set
     assert "REFERENCE" not in captured.out
     assert "seed_0: cccccccccccc" in captured.err and "seed_1: dddddddddddd" in captured.err
     assert "seed_4" not in captured.err
+
+
+def test_rescoring_a_whole_output_refuses_a_newer_unfinished_run_of_another_experiment(
+    capsys, tmp_path, monkeypatch
+):
+    # seed_0 was rerun after a protocol change, and the rerun died after its test predictions
+    # but before summary.json. The newest summary is still the old run's, yet OCELOT scores
+    # the run with the newest config.yaml: the new one. So the seed runs scored are of two
+    # experiments, and their mean is neither checked nor recorded.
+    ledger = tmp_path / "ledger" / "ocelot.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    scored: list[Path] = []
+
+    def greedy_report(run_dir, matching="greedy"):
+        scored.append(registry_mod.locate_run_config(run_dir).parent)
+        return {"tune": {"mean_f1": 0.71}, "test": {"headline": {"metrics": {"mean_f1": 0.70}}}}
+
+    monkeypatch.setattr("soma.benchmark.ocelot._greedy_report_for_run", greedy_report)
+    output_root = tmp_path / "out"
+    for seed in range(3):  # OCELOT's canonical seeds
+        old = _write_run(
+            output_root / f"seed_{seed}",
+            encoder="virchow2",
+            balanced_accuracy=0.70,
+            experiment_id="a" * 64,
+        )
+        (old / "config.yaml").write_text("{}\n")
+    new = _write_run(
+        output_root / "seed_0",
+        encoder="virchow2",
+        balanced_accuracy=0.70,
+        experiment_id="b" * 64,
+        experiment="exp_rerun",
+        finished=False,
+    )
+    (new / "config.yaml").write_text("{}\n")
+    (new / "predictions_test.parquet").write_bytes(b"")
+    old_config = output_root / "seed_0" / "experiments" / "exp" / "runs" / "run" / "config.yaml"
+    newer = old_config.stat().st_mtime + 60
+    os.utime(new / "config.yaml", (newer, newer))
+
+    code = _run_cli(["reproduce", "ocelot", "--from-run-dir", str(output_root), "--record"])
+
+    assert code == 2
+    assert not ledger.exists() and scored == []
+    captured = capsys.readouterr()
+    assert "REFERENCE" not in captured.out
+    assert "seed_0: aaaaaaaaaaaa" in captured.err and "seed_0/run: bbbbbbbbbbbb" in captured.err
 
 
 def test_reproduce_eva_family_fans_out_over_members(monkeypatch, capsys, tmp_path):
