@@ -100,6 +100,16 @@ def _run_dir_with_summary(tmp_path, accuracy: float) -> Path:
     return tmp_path
 
 
+def _canonical_output(tmp_path) -> Path:
+    """An output root holding a finished run for each of the fixture's canonical seeds."""
+    output_root = tmp_path / "out"
+    for seed in _LedgerBenchmark.canonical_seeds:
+        seed_root = output_root / f"seed_{seed}"
+        seed_root.mkdir(parents=True)
+        _run_dir_with_summary(seed_root, 0.71)
+    return output_root
+
+
 # --- public API surface ---------------------------------------------------------------
 
 
@@ -251,6 +261,26 @@ def test_run_benchmark_rescore_result_has_one_seed_and_no_spread(
     )
 
 
+def test_run_benchmark_rescore_of_a_whole_output_reports_every_seed(
+    tmp_path, ledger_benchmark
+):
+    # An output root of seed_<k> runs is rescored seed by seed, like the run that wrote it.
+    output_root = _canonical_output(tmp_path)
+
+    result = run_benchmark(
+        ledger_benchmark.name,
+        encoder="fixture-encoder",
+        from_run_dir=output_root,
+        return_result=True,
+    )
+
+    assert result == BenchmarkRunResult(
+        status=0,
+        metrics=(MetricResult("test/accuracy", 0.71, 0.0, 3),),
+        seed_roots=tuple(output_root / f"seed_{seed}" for seed in (0, 1, 2)),
+    )
+
+
 def test_run_benchmark_rescore_seed_roots_are_the_resolved_run_dir(
     tmp_path, ledger_benchmark
 ):
@@ -307,12 +337,12 @@ def test_run_benchmark_record_appends_to_external_results_root(
     monkeypatch.setattr(registry_mod, "_results_file", lambda name: sentinel)
     monkeypatch.setattr(run_mod, "_provenance", lambda: ("2026-08-20", "abc123", "5.7.0"))
     results_root = tmp_path / "external-ledger"
-    run_dir = _run_dir_with_summary(tmp_path, 0.71)
+    output_root = _canonical_output(tmp_path)
 
     code = run_benchmark(
         ledger_benchmark.name,
         encoder="fixture-encoder",
-        from_run_dir=run_dir,
+        from_run_dir=output_root,
         record=True,
         results_root=results_root,
     )
@@ -329,7 +359,7 @@ def test_run_benchmark_record_appends_to_external_results_root(
     assert row.key == {"encoder": "fixture-encoder"}
     assert row.metric == "test/accuracy"
     assert row.measured == pytest.approx(0.71)
-    assert row.n_seeds == 1 and row.std is None
+    assert row.n_seeds == 3 and row.std == pytest.approx(0.0)
     # Provenance stamped exactly as the CLI stamps it.
     assert row.date == "2026-08-20"
     assert row.soma_commit == "abc123"
@@ -369,12 +399,11 @@ def test_run_benchmark_without_results_root_uses_the_package_ledger(
 ):
     ledger = tmp_path / "package" / f"{ledger_benchmark.name}.csv"
     monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
-    run_dir = _run_dir_with_summary(tmp_path, 0.71)
 
     code = run_benchmark(
         ledger_benchmark.name,
         encoder="fixture-encoder",
-        from_run_dir=run_dir,
+        from_run_dir=_canonical_output(tmp_path),
         record=True,
     )
 

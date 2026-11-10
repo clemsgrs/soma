@@ -37,8 +37,10 @@ from soma.benchmark.run import (
     _record_axes,  # noqa: F401  (kept importable from soma.cli)
     _record_reference_row,  # noqa: F401  (kept importable from soma.cli)
     _record_result,  # noqa: F401  (kept importable from soma.cli)
+    _record_seeds_refusal,
     _reproduce_manifest,
     _reproduce_output_root,
+    _reproduce_seeds,
     _runtime_croma_version,
 )
 
@@ -593,6 +595,12 @@ def _run_reproduce_panel(
     family_root: str | None = None,
 ) -> tuple[list[tuple[str, str]], int]:
     """Run and project one preflighted concrete Benchmark's Encoder panel."""
+    if getattr(args, "record", False):
+        # Each cell would refuse a non-canonical --record; refuse before curation instead.
+        refusal = _record_seeds_refusal(benchmark, _reproduce_seeds(benchmark, args.seeds))
+        if refusal is not None:
+            print(f"Error: {refusal}", file=sys.stderr)
+            return [], 2
     try:
         manifest = _reproduce_manifest(benchmark, args, family_root=family_root)
     except _MissingReproduceSourceError as exc:
@@ -909,7 +917,8 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
         "--from-run-dir",
         type=Path,
         default=None,
-        help="Re-score an existing run directory (no curation, no training).",
+        help="Re-score an existing run directory, or every seed_<k> run under an output "
+        "root and their mean (no curation, no training).",
     )
     parser.add_argument(
         "--seeds",
@@ -965,7 +974,8 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
         "--record",
         action="store_true",
         help="Append the measured number + provenance to the results ledger "
-        "(soma/benchmark/<name>/results.csv) so 'reproduced' becomes a committed fact.",
+        "(soma/benchmark/<name>/results.csv) so 'reproduced' becomes a committed fact. "
+        "Only a run over the benchmark's canonical seeds is recorded.",
     )
     parser.set_defaults(func=_cmd_reproduce)
     return parser

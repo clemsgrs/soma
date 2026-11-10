@@ -59,8 +59,8 @@ The recipe is fixed and only the encoder varies.
    * - Thresholds
      - One score threshold per class, chosen on ``tune`` and applied once to ``test``.
    * - Seeds
-     - ``0``. ``soma reproduce`` checks a run against Virchow2's seed-0 test score
-       (0.693 ± 0.02), so the default run is seed 0.
+     - ``0``, ``1`` and ``2``. ``soma reproduce`` checks the mean of the three seeds
+       against Virchow2's three-seed mean test score, **0.6985 ± 0.02**.
 
 Results
 -------
@@ -93,14 +93,20 @@ encoder::
     soma reproduce ocelot --raw-root /path/to/ocelot2023_v1.0.1
     soma reproduce ocelot --encoder uni2 --raw-root /path/to/ocelot2023_v1.0.1
 
-**Compare encoders** in one command, which also writes a leaderboard, or rescore a
-finished run from its output root (by default ``soma_reproduce/ocelot/seed_<k>``)::
+**Compare encoders** in one command, which also writes a leaderboard::
 
     soma reproduce ocelot --encoders virchow2 uni2 h-optimus-1 --raw-root /path/to/ocelot2023_v1.0.1
+
+**Rescore a finished run** without training. Point ``--from-run-dir`` at the output
+root (by default ``soma_reproduce/ocelot``) to rescore all three seeds and check
+their mean, or at one seed's directory as a spot check::
+
+    soma reproduce ocelot --from-run-dir soma_reproduce/ocelot --record
     soma reproduce ocelot --from-run-dir soma_reproduce/ocelot/seed_0
 
 ``--record`` appends the measured score to the results ledger that the table above
-reads. :doc:`benchmarking` describes the options shared by every benchmark.
+reads. It records only a run over all three seeds, since the table holds three-seed
+means. :doc:`benchmarking` describes the options shared by every benchmark.
 
 References
 ----------

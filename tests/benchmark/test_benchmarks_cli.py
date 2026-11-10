@@ -38,7 +38,7 @@ def test_list_benchmarks_shows_ocelot(capsys):
 
 
 def test_reproduce_from_run_dir_passes_within_tolerance(monkeypatch, capsys, tmp_path):
-    # mean_f1 = 0.70 is within 0.6926 +/- 0.02 -> REFERENCE OK. Stub the greedy inner
+    # mean_f1 = 0.70 is within 0.6985 +/- 0.02 -> REFERENCE OK. Stub the greedy inner
     # seam so no data/GPU is touched.
     monkeypatch.setattr(
         "soma.benchmark.ocelot._greedy_report_for_run",
@@ -52,13 +52,13 @@ def test_reproduce_from_run_dir_passes_within_tolerance(monkeypatch, capsys, tmp
     out = capsys.readouterr().out
     assert code == 0
     assert out == (
-        "Reproducing benchmark 'ocelot' — canonical seeds [0], running [0].\n"
+        "Reproducing benchmark 'ocelot' — canonical seeds [0, 1, 2], running [0, 1, 2].\n"
         "  Fast paths: --seeds 1 (single-seed smoke) | --from-run-dir <dir> "
         "(re-score an existing run, no training).\n"
         "  Cache-aware: feature extraction is cached and shared across seeds and repeat "
         "runs, so it runs once per encoder.\n"
         "[REFERENCE OK] ocelot mean_f1 = 0.7000  "
-        "(reference 0.6926, Δ +0.0074, tolerance ±0.0200)\n"
+        "(reference 0.6985, Δ +0.0015, tolerance ±0.0200)\n"
     )
 
 
@@ -98,7 +98,7 @@ def test_reproduce_logs_fast_path_hint_at_start(monkeypatch, capsys, tmp_path):
 
 
 def test_reproduce_default_runs_canonical_seed_set(monkeypatch, capsys, tmp_path):
-    # Without --seeds, reproduce announces the benchmark's canonical seed set (OCELOT: [0]).
+    # Without --seeds, reproduce announces the benchmark's canonical seed set (OCELOT: 0-2).
     monkeypatch.setattr(
         "soma.benchmark.ocelot._greedy_report_for_run",
         lambda run_dir, matching="greedy": {
@@ -109,7 +109,7 @@ def test_reproduce_default_runs_canonical_seed_set(monkeypatch, capsys, tmp_path
     )
     _run_cli(["reproduce", "ocelot", "--from-run-dir", str(tmp_path)])
     out = capsys.readouterr().out
-    assert "canonical seeds [0]" in out
+    assert "canonical seeds [0, 1, 2]" in out
 
 
 # --- external (non-gating) guidance anchors excluded from the gate (issue #226) --------
@@ -214,6 +214,14 @@ def multi_metric_benchmark():
         registry_mod.benchmark_registry._entries.pop(bench.name, None)
 
 
+def _seed_outputs(tmp_path: Path, seeds) -> Path:
+    """An output root holding one ``seed_<k>`` run dir per seed, as ``soma reproduce`` writes."""
+    output_root = tmp_path / "out"
+    for seed in seeds:
+        (output_root / f"seed_{seed}").mkdir(parents=True)
+    return output_root
+
+
 @pytest.fixture()
 def external_only_benchmark():
     bench = _ExternalOnlyBenchmark()
@@ -290,7 +298,7 @@ def test_reproduce_record_writes_every_reported_metric_from_primary_anchor(
             "reproduce",
             multi_metric_benchmark.name,
             "--from-run-dir",
-            str(tmp_path),
+            str(_seed_outputs(tmp_path, multi_metric_benchmark.canonical_seeds)),
             "--record",
         ]
     )
@@ -302,7 +310,7 @@ def test_reproduce_record_writes_every_reported_metric_from_primary_anchor(
     assert {tuple(row.key.items()) for row in rows} == {
         (("encoder", "fixture"),)
     }
-    assert all(row.n_seeds == 1 and row.std is None for row in rows)
+    assert all(row.n_seeds == 2 and row.std == pytest.approx(0.0) for row in rows)
     assert all(row.date and row.soma_commit and row.slide2vec_version for row in rows)
     assert "recorded" in capsys.readouterr().out
 
@@ -329,7 +337,7 @@ def test_reproduce_record_skips_every_metric_without_unambiguous_primary_anchor(
             "reproduce",
             multi_metric_benchmark.name,
             "--from-run-dir",
-            str(tmp_path),
+            str(_seed_outputs(tmp_path, multi_metric_benchmark.canonical_seeds)),
             "--record",
         ]
     )
@@ -345,7 +353,7 @@ def test_reproduce_external_anchors_do_not_override_comparable_reference(
     monkeypatch, capsys, tmp_path
 ):
     # OCELOT's CSV carries external anchors (0.70, 0.73) OUTSIDE the gate band alongside the
-    # comparable row (0.6926 ± 0.02). A measured 0.70 matches it; external anchors must not
+    # comparable row (0.6985 ± 0.02). A measured 0.70 matches it; external anchors must not
     # turn the result into a drift warning or a "multiple rows" error.
     monkeypatch.setattr(
         "soma.benchmark.ocelot._greedy_report_for_run",
@@ -893,6 +901,27 @@ def test_reproduce_family_continues_ordered_cells_and_writes_isolated_leaderboar
         "  - test-valid-panel-family/alpha, uni2: "
         "RuntimeError: alpha weights unavailable\n"
     )
+
+
+def test_reproduce_panel_refuses_to_record_a_partial_seed_set_before_curation(
+    monkeypatch, capsys, tmp_path, panel_benchmark
+):
+    benchmark, private_name = panel_benchmark
+    ledger = tmp_path / "ledger" / f"{benchmark.name}.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    monkeypatch.setattr(cli, "Pipeline", lambda config: pytest.fail("trained a refused panel"))
+
+    code = _run_cli(
+        [
+            "reproduce", benchmark.name, "--encoders", private_name, "uni2", "--seeds", "1",
+            "--raw-root", str(tmp_path / "raw"), "--output-root", str(tmp_path / "runs"), "--record",
+        ]
+    )
+
+    assert code == 2
+    assert benchmark.curate_calls == 0
+    assert not ledger.exists()
+    assert "canonical seeds [0, 1]" in capsys.readouterr().err
 
 
 def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
@@ -1483,9 +1512,11 @@ def test_reproduce_record_appends_measured_row_with_provenance(capsys, tmp_path,
     # --record writes to the results ledger; route it to a temp file, not the shipped CSV.
     ledger = tmp_path / "ledger" / "eva.csv"
     monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
-    _write_summary(tmp_path, 0.914)
+    output_root = _seed_outputs(tmp_path, range(5))  # eva/bach's five canonical seeds
+    for seed, accuracy in enumerate([0.91, 0.92, 0.91, 0.92, 0.91]):
+        _write_summary(output_root / f"seed_{seed}", accuracy)
 
-    code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(tmp_path), "--record"])
+    code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(output_root), "--record"])
     out = capsys.readouterr().out
     assert code == 0
     assert "recorded" in out
@@ -1496,13 +1527,25 @@ def test_reproduce_record_appends_measured_row_with_provenance(capsys, tmp_path,
     assert len(rows) == 1
     row = rows[0]
     assert row.key == {"dataset": "bach", "encoder": "uni2"}
+    # The mean and sample SD over the five seed runs.
     assert row.measured == pytest.approx(0.914)
-    # A re-scored run has no seed *spread* (std stays empty) but it is still one seed;
-    # an empty n_seeds would read as "unknown" rather than "one".
-    assert row.n_seeds == 1
-    assert row.std is None
+    assert row.std == pytest.approx(0.005477, abs=1e-6)
+    assert row.n_seeds == 5
     assert row.date and row.soma_commit  # provenance captured at run time
     assert row.source == "soma reproduce --record"
+
+
+def test_reproduce_record_refuses_one_eva_run_for_a_five_seed_benchmark(capsys, tmp_path, monkeypatch):
+    # One rescored run is one seed; eva/bach's ledger rows and gate are five-seed means.
+    ledger = tmp_path / "ledger" / "eva.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    _write_summary(tmp_path, 0.914)
+
+    code = _run_cli(["reproduce", "eva/bach", "--from-run-dir", str(tmp_path), "--record"])
+
+    assert code != 0
+    assert not ledger.exists()
+    assert "canonical seeds [0, 1, 2, 3, 4]" in capsys.readouterr().err
 
 
 def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, monkeypatch):
@@ -1524,8 +1567,10 @@ def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, 
         },
     )
 
+    output_root = _seed_outputs(tmp_path, (0, 1, 2))  # OCELOT's canonical seeds
+
     code = _run_cli(
-        ["reproduce", "ocelot", "--encoder", "virchow2", "--from-run-dir", str(tmp_path), "--record"]
+        ["reproduce", "ocelot", "--encoder", "virchow2", "--from-run-dir", str(output_root), "--record"]
     )
     assert code == 0
     assert "recorded" in capsys.readouterr().out
@@ -1535,7 +1580,7 @@ def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, 
     rows = reproduced_rows("ocelot", encoder="virchow2")
     assert len(rows) == 1
     assert rows[0].key == {"encoder": "virchow2"}
-    assert rows[0].measured == pytest.approx(0.70)
+    assert (rows[0].measured, rows[0].n_seeds) == (pytest.approx(0.70), 3)
 
 
 def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float):

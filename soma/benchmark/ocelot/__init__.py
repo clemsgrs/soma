@@ -57,9 +57,10 @@ _CONFIG_FILES: dict[tuple[str, float], str] = {
 
 BENCHMARK_NAME = "ocelot"
 PRIMARY_METRIC = "mean_f1"
-# The reference band IS the anchor's seed-0 value (the tuned protocol's seed-0 run, #677),
-# so the default reproduce run is seed 0 only — a like-for-like comparison.
-CANONICAL_SEEDS: tuple[int, ...] = (0,)
+# The reference band IS the anchor's three-seed mean under the tuned protocol (#677), and
+# the recorded results are three-seed means, so the default reproduce run is seeds 0-2: a
+# like-for-like comparison.
+CANONICAL_SEEDS: tuple[int, ...] = (0, 1, 2)
 ANCHOR_ENCODER = "virchow2"
 ANCHOR_SPACING = 0.2
 

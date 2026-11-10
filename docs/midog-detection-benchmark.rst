@@ -98,14 +98,16 @@ another compatible installed encoder::
     soma reproduce midog --raw-root /path/to/midog --record
     soma reproduce midog --encoder uni2 --raw-root /path/to/midog --record
 
-**Reuse prepared manifests, or rescore one seed as a spot check.** Rescoring
-reads that seed's saved tune/test predictions and performs no training or
-feature extraction::
+**Reuse prepared manifests, or rescore a finished run.** Rescoring reads the
+saved tune/test predictions and performs no training or feature extraction. Point
+``--from-run-dir`` at the output root to rescore all three seeds and check their
+mean, or at one seed's directory as a spot check::
 
     soma reproduce midog --curated-dir /path/to/midog/curated --record
+    soma reproduce midog --from-run-dir soma_reproduce/midog --record
     soma reproduce midog --from-run-dir soma_reproduce/midog/seed_0
 
-A rescore covers one seed, so leave out ``--record``: the results table holds
-three-seed means. ``--seeds 1`` runs seed 0 alone as a quick smoke test; it is
-not the reference check. ``--encoders`` compares an encoder panel;
+``--record`` records only a run over all three seeds, since the results table
+holds three-seed means. ``--seeds 1`` runs seed 0 alone as a quick smoke test; it
+is not the reference check. ``--encoders`` compares an encoder panel;
 :doc:`benchmarking` describes the shared options.
