@@ -449,7 +449,8 @@ def _seed_runs_axes(benchmark, seed_dirs: dict[int, Path]) -> dict[str, Any]:
     A mean over seeds is one cell's score only if every seed run is that cell, so two seed
     runs naming different values for an axis raise ``ValueError``. So do two seed runs of
     different experiments (``experiment_id`` leaves out the seed but covers the protocol and
-    the dataset/splits checksums): a rerun of some seeds after a change leaves both in one
+    the train/tune rows) or of different test sets (``run.yaml``'s ``test_checksum``, which
+    ``experiment_id`` leaves out): a rerun of some seeds after a change leaves both in one
     output root. An axis or identity a seed run does not record (an unfinished run, say) is
     no conflict: scoring that run reports it instead.
     """
@@ -477,19 +478,32 @@ def _seed_runs_axes(benchmark, seed_dirs: dict[int, Path]) -> dict[str, Any]:
             f"the seed runs under {output_root} have different settings ({listing}), so "
             "their scores have no common mean. Rescore seed runs that share their settings."
         )
-    experiment_ids = {
-        seed_dir.name: record.experiment_id
+    records = [
+        (seed_dir.name, record)
         for seed_dir in seed_dirs.values()
         if (record := load_run_record(_resolve_run_dir(seed_dir))) is not None
-        and record.experiment_id
-    }
-    if len(set(experiment_ids.values())) > 1:
-        listing = ", ".join(f"{name}: {eid[:12]}" for name, eid in experiment_ids.items())
-        raise ValueError(
-            f"the seed runs under {output_root} are runs of different experiments ({listing}), "
-            "so their scores have no common mean. Rerun every seed, or rescore an output root "
-            "whose seed runs are one experiment."
-        )
+    ]
+    for identity, conflict, remedy in (
+        (
+            "experiment_id",
+            "are runs of different experiments",
+            "Rerun every seed, or rescore an output root whose seed runs are one experiment.",
+        ),
+        (
+            "test_checksum",
+            "scored different test sets",
+            "Rerun every seed, or rescore an output root whose seed runs scored one test set.",
+        ),
+    ):
+        recorded = {
+            name: value for name, record in records if (value := getattr(record, identity))
+        }
+        if len(set(recorded.values())) > 1:
+            listing = ", ".join(f"{name}: {value[:12]}" for name, value in recorded.items())
+            raise ValueError(
+                f"the seed runs under {output_root} {conflict} ({listing}), so their scores "
+                f"have no common mean. {remedy}"
+            )
     return shared
 
 

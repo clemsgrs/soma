@@ -1583,7 +1583,14 @@ def test_reproduce_record_keys_broad_reference_row_by_encoder(capsys, tmp_path, 
     assert (rows[0].measured, rows[0].n_seeds) == (pytest.approx(0.70), 3)
 
 
-def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float, experiment_id: str = "e"):
+def _write_run(
+    tmp_path,
+    *,
+    encoder: str,
+    balanced_accuracy: float,
+    experiment_id: str = "e",
+    test_checksum: str | None = None,
+):
     """A minimal self-describing run dir (experiment.json + run.yaml + summary.json).
 
     ``load_run_record`` reads the encoder axis from the experiment's ``canonical_spec`` two
@@ -1606,9 +1613,10 @@ def _write_run(tmp_path, *, encoder: str, balanced_accuracy: float, experiment_i
             }
         )
     )
-    (run_dir / "run.yaml").write_text(
-        f"seed: 0\nexperiment_id: {experiment_id}\nstatus: completed\n"
-    )
+    run_yaml = f"seed: 0\nexperiment_id: {experiment_id}\nstatus: completed\n"
+    if test_checksum is not None:
+        run_yaml += f"test_checksum: {test_checksum}\n"
+    (run_dir / "run.yaml").write_text(run_yaml)
     (run_dir / "summary.json").write_text(
         json.dumps({"test/balanced_accuracy": balanced_accuracy})
     )
@@ -1677,6 +1685,38 @@ def test_rescoring_a_whole_output_refuses_seed_runs_of_different_experiments(
     captured = capsys.readouterr()
     assert "REFERENCE" not in captured.out
     assert "seed_0: aaaaaaaaaaaa" in captured.err and "seed_1: bbbbbbbbbbbb" in captured.err
+
+
+@pytest.mark.parametrize("record", [True, False], ids=["record", "check"])
+def test_rescoring_a_whole_output_refuses_seed_runs_scored_on_different_test_sets(
+    capsys, tmp_path, monkeypatch, record
+):
+    # experiment_id leaves out the test rows, so a seed rerun after a test-only change (a
+    # different --curated-dir, a re-curated test split) stays in the same experiment. Its
+    # run.yaml still records which test set it scored, and a mean over two test sets is
+    # neither checked nor recorded. A seed run that records no test set is no conflict.
+    ledger = tmp_path / "ledger" / "eva.csv"
+    monkeypatch.setattr(registry_mod, "_results_file", lambda name: ledger)
+    output_root = tmp_path / "out"
+    test_checksums = ["c" * 64, "d" * 64, "d" * 64, "d" * 64, None]
+    for seed, test_checksum in enumerate(test_checksums):  # eva/bach's five canonical seeds
+        _write_run(
+            output_root / f"seed_{seed}",
+            encoder="uni2",
+            balanced_accuracy=0.914,
+            experiment_id="b" * 64,
+            test_checksum=test_checksum,
+        )
+
+    argv = ["reproduce", "eva/bach", "--from-run-dir", str(output_root)]
+    code = _run_cli([*argv, "--record"] if record else argv)
+
+    assert code == 2
+    assert not ledger.exists()
+    captured = capsys.readouterr()
+    assert "REFERENCE" not in captured.out
+    assert "seed_0: cccccccccccc" in captured.err and "seed_1: dddddddddddd" in captured.err
+    assert "seed_4" not in captured.err
 
 
 def test_reproduce_eva_family_fans_out_over_members(monkeypatch, capsys, tmp_path):
