@@ -18,6 +18,7 @@ like the CLI — protocol violations inside one scoring attempt may raise ``Syst
 from __future__ import annotations
 
 import gc
+import re
 import sys
 from collections.abc import Sequence
 from contextlib import contextmanager
@@ -28,7 +29,7 @@ from typing import Any, Callable
 
 import yaml
 
-from soma.benchmark.registry import get_benchmark, get_reported_metrics
+from soma.benchmark.registry import get_benchmark, get_reported_metrics, locate_run_config
 from soma.benchmark.spec import BenchmarkSpec, _validate_seed_sequence
 
 
@@ -168,6 +169,30 @@ def _reproduce_seeds(benchmark, requested: int | None) -> tuple[int, ...]:
     return tuple(range(requested))
 
 
+def _record_seeds_refusal(benchmark, seeds: Sequence[int] | None) -> str | None:
+    """Why ``--record`` refuses a run over ``seeds``; ``None`` when they are canonical.
+
+    A results ledger holds one seed count per benchmark: its gate is measured over the
+    canonical seeds, and the docs show each cell's latest row against it. So ``--record``
+    takes exactly ``benchmark.canonical_seeds``. ``seeds`` is ``None`` for one run whose
+    seed nothing names (a run dir not called ``seed_<k>``); it counts as one seed.
+    """
+    canonical = sorted(benchmark.canonical_seeds)
+    if seeds is None:
+        if len(canonical) == 1:
+            return None
+        given = "one run"
+    elif sorted(seeds) == canonical:
+        return None
+    else:
+        given = f"seeds {sorted(seeds)}"
+    return (
+        f"--record needs the canonical seeds {canonical} of benchmark {benchmark.name!r}, "
+        f"but was given {given}. Record the default run (without --seeds), or rescore its "
+        "whole output with --from-run-dir <output root>. Nothing was recorded."
+    )
+
+
 class ReportedScoreError(RuntimeError):
     """A Benchmark scorer omitted metrics required by its public protocol."""
 
@@ -179,7 +204,8 @@ class MetricResult:
     The measurement half of the ledger's :class:`MeasuredRow` (same measured/std/n_seeds
     semantics, minus the reference key and provenance columns) — keep the two in step.
     Mirroring the ledger convention, ``std`` is ``None`` for a ``from_run_dir`` re-score
-    (a single historical run has no seed spread) and ``0.0`` for a single-seed loop.
+    of one run (a single historical run has no seed spread) and ``0.0`` for a single-seed
+    loop.
     """
 
     metric: str
@@ -192,8 +218,9 @@ class MetricResult:
 class BenchmarkRunResult:
     """Measurements and evidence locations produced by either benchmark runner.
 
-    ``seed_roots`` holds the per-seed output roots of a canonical-seed run; for a
-    ``from_run_dir`` re-score it holds the single resolved run directory that was scored.
+    ``seed_roots`` holds the per-seed output roots of a canonical-seed run, or of the
+    output root a ``from_run_dir`` re-score read seed by seed; a re-score of one run holds
+    the single resolved run directory that was scored.
 
     The three checksums are the manifest identity every seed of a
     :func:`run_benchmark_spec` run trained and scored against (dataset, splits and test
@@ -357,6 +384,37 @@ def _resolve_run_dir(path: str | Path) -> Path:
     return summaries[-1].parent if summaries else candidate
 
 
+_SEED_DIR = re.compile(r"seed_(\d+)")
+
+
+def _seed_run_dirs(path: str | Path) -> dict[int, Path]:
+    """The ``seed_<k>`` run dirs directly under an output root, by seed, in seed order.
+
+    ``soma reproduce`` writes each seed's run to ``<output_root>/seed_<k>``; any other
+    directory (one run, or one seed's dir) yields ``{}``.
+    """
+    candidate = Path(path)
+    if not candidate.is_dir():
+        return {}
+    found = {
+        int(match.group(1)): child
+        for child in candidate.iterdir()
+        if child.is_dir() and (match := _SEED_DIR.fullmatch(child.name))
+    }
+    return dict(sorted(found.items()))
+
+
+def _from_run_dir_seeds(path: str | Path) -> tuple[int, ...] | None:
+    """The seeds a ``--from-run-dir`` target covers: every ``seed_<k>`` under an output
+    root, or the ``k`` of one ``seed_<k>`` dir. ``None`` for one run whose name gives none.
+    """
+    seed_dirs = _seed_run_dirs(path)
+    if seed_dirs:
+        return tuple(seed_dirs)
+    match = _SEED_DIR.fullmatch(Path(path).name)
+    return (int(match.group(1)),) if match else None
+
+
 def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
     """The benchmark's varied axes (encoder) read from a run's OWN recorded spec.
 
@@ -383,6 +441,83 @@ def _from_run_dir_axes(benchmark, from_run_dir: str | Path) -> dict[str, Any]:
         if value is not _MISSING:
             resolved[axis] = value
     return resolved
+
+
+def _seed_runs_axes(benchmark, seed_dirs: dict[int, Path]) -> dict[str, Any]:
+    """The axes the seed runs of one output root share, read as :func:`_from_run_dir_axes`.
+
+    A mean over seeds is one cell's score only if every seed run is that cell, so two seed
+    runs naming different values for an axis raise ``ValueError``. So do two seed runs of
+    different experiments (``experiment_id`` leaves out the seed but covers the protocol and
+    the train/tune rows) or of different test sets (``run.yaml``'s ``test_checksum``, which
+    ``experiment_id`` leaves out): a rerun of some seeds after a change leaves both in one
+    output root. The identities are read from every run a scorer may pick in a seed dir.
+    An axis or identity a seed run does not record (an unfinished run, say) is no conflict:
+    scoring that run reports it instead.
+    """
+    from soma.benchmark.leaderboard import load_run_record
+
+    output_root = next(iter(seed_dirs.values())).parent
+    per_seed = {
+        seed_dir.name: _from_run_dir_axes(benchmark, seed_dir) for seed_dir in seed_dirs.values()
+    }
+    shared: dict[str, Any] = {}
+    for seed_axes in per_seed.values():
+        for axis, value in seed_axes.items():
+            shared.setdefault(axis, value)
+    differing = sorted(
+        axis
+        for axis, value in shared.items()
+        if any(seed_axes.get(axis, value) != value for seed_axes in per_seed.values())
+    )
+    if differing:
+        listing = "; ".join(
+            f"{name}: " + ", ".join(f"{axis}={seed_axes.get(axis, '?')}" for axis in differing)
+            for name, seed_axes in per_seed.items()
+        )
+        raise ValueError(
+            f"the seed runs under {output_root} have different settings ({listing}), so "
+            "their scores have no common mean. Rescore seed runs that share their settings."
+        )
+    records = []
+    for seed_dir in seed_dirs.values():
+        # The summary scorer reads the run with the newest summary.json, the detection
+        # scorers the run with the newest config.yaml. An unfinished rerun makes them two
+        # runs, so the identities of both are checked.
+        runs = {seed_dir.name: _resolve_run_dir(seed_dir)}
+        try:
+            config_run = locate_run_config(seed_dir).parent
+        except FileNotFoundError:
+            config_run = runs[seed_dir.name]
+        if config_run != runs[seed_dir.name]:
+            runs[f"{seed_dir.name}/{config_run.name}"] = config_run
+        records += [
+            (name, record)
+            for name, run_dir in runs.items()
+            if (record := load_run_record(run_dir)) is not None
+        ]
+    for identity, conflict, remedy in (
+        (
+            "experiment_id",
+            "are runs of different experiments",
+            "Rerun every seed, or rescore an output root whose seed runs are one experiment.",
+        ),
+        (
+            "test_checksum",
+            "scored different test sets",
+            "Rerun every seed, or rescore an output root whose seed runs scored one test set.",
+        ),
+    ):
+        recorded = {
+            name: value for name, record in records if (value := getattr(record, identity))
+        }
+        if len(set(recorded.values())) > 1:
+            listing = ", ".join(f"{name}: {value[:12]}" for name, value in recorded.items())
+            raise ValueError(
+                f"the seed runs under {output_root} {conflict} ({listing}), so their scores "
+                f"have no common mean. {remedy}"
+            )
+    return shared
 
 
 def _results_table_name(benchmark) -> str:
@@ -699,10 +834,21 @@ def _reproduce_one(
     if args.encoder is not None:
         axes["encoder"] = args.encoder
 
+    # A --from-run-dir output root holding seed_<k> runs is rescored seed by seed.
+    seed_dirs = _seed_run_dirs(args.from_run_dir) if args.from_run_dir is not None else {}
     if args.from_run_dir is not None:
         # Constrain the reference lookup to the run's OWN axes; an explicit --encoder
         # still wins (setdefault only fills what the CLI left unset).
-        for axis, value in _from_run_dir_axes(benchmark, args.from_run_dir).items():
+        try:
+            run_axes = (
+                _seed_runs_axes(benchmark, seed_dirs)
+                if seed_dirs
+                else _from_run_dir_axes(benchmark, args.from_run_dir)
+            )
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return _run_return(2, return_result=return_result)
+        for axis, value in run_axes.items():
             axes.setdefault(axis, value)
 
     seeds = _reproduce_seeds(benchmark, args.seeds)
@@ -717,6 +863,16 @@ def _reproduce_one(
         "runs, so it runs once per encoder.",
         flush=True,
     )
+    record = getattr(args, "record", False)
+    if record:
+        # Before any curation, training or scoring, so a long run is never wasted.
+        recorded_seeds = (
+            seeds if args.from_run_dir is None else _from_run_dir_seeds(args.from_run_dir)
+        )
+        refusal = _record_seeds_refusal(benchmark, recorded_seeds)
+        if refusal is not None:
+            print(f"Error: {refusal}", file=sys.stderr)
+            return _run_return(2, return_result=return_result)
 
     row = _reproduce_reference_row(benchmark, axes)
 
@@ -733,10 +889,79 @@ def _reproduce_one(
                 _report_tolerance(benchmark, value, row)
         return 0
 
+    import statistics
+
+    def _report_seed_mean(
+        measured_values: dict[str, list[float]],
+        seed_roots: Sequence[Path],
+        *,
+        historical_run: bool = False,
+    ) -> int | BenchmarkRunResult:
+        """Record (with ``--record``) and report the seed mean and sample SD of each metric."""
+        measured = {
+            metric: statistics.fmean(values) for metric, values in measured_values.items()
+        }
+        spread = {
+            metric: statistics.stdev(values) if len(values) > 1 else 0.0
+            for metric, values in measured_values.items()
+        }
+        if record:
+            # Key off the gate row, or the external row for an external-only benchmark (hest).
+            record_row = _record_reference_row(benchmark, axes, row)
+            if record_row is not None:
+                # Every seed shares the varied axes, so the last seed's run identifies the
+                # cell for every Reported metric.
+                key_axes = _record_axes(benchmark, axes, seed_roots[-1])
+                for metric in reported_metrics:
+                    _record_result(
+                        benchmark,
+                        record_row,
+                        measured[metric],
+                        std=spread[metric],
+                        n_seeds=len(measured_values[metric]),
+                        key_axes=key_axes,
+                        metric=metric,
+                        run_dir=seed_roots[-1],
+                        historical_run=historical_run,
+                        provenance=provenance,
+                        recorded_croma_version=recorded_croma_version,
+                        results_root=results_root,
+                    )
+            else:
+                print("  (no reference row to key --record on; nothing recorded)")
+        status = _report_measured_metrics(measured)
+        return _run_return(
+            status,
+            return_result=return_result,
+            metrics=tuple(
+                MetricResult(
+                    metric=metric,
+                    measured=measured[metric],
+                    std=spread[metric],
+                    n_seeds=len(measured_values[metric]),
+                )
+                for metric in reported_metrics
+            ),
+            seed_roots=tuple(seed_roots),
+        )
+
+    if seed_dirs:
+        rescored: dict[str, list[float]] = {metric: [] for metric in reported_metrics}
+        for seed_dir in seed_dirs.values():
+            try:
+                scores = benchmark.score(seed_dir)
+            except FileNotFoundError as exc:
+                # Scorers raise this for a run whose outputs are not all written yet.
+                raise FileNotFoundError(f"seed run {seed_dir} is not finished: {exc}") from exc
+            scores = _require_reported_scores(benchmark, scores)
+            for metric in reported_metrics:
+                rescored[metric].append(float(scores[metric]))
+        return _report_seed_mean(rescored, list(seed_dirs.values()), historical_run=True)
+
     if args.from_run_dir is not None:
         metrics = _require_reported_scores(benchmark, benchmark.score(args.from_run_dir))
         measured = float(metrics[benchmark.primary_metric])
-        if getattr(args, "record", False):
+        if record:
             # A re-scored single run has no seed spread, so std is None — but it *is* one
             # seed, and an empty n_seeds reads as "unknown" rather than "one". Key the ledger
             # entry off the gate row, or the external row for an external-only benchmark,
@@ -773,8 +998,6 @@ def _reproduce_one(
             ),
             seed_roots=(_resolve_run_dir(args.from_run_dir),),
         )
-
-    import statistics
 
     devices = getattr(args, "devices", None)
     if devices is not None:
@@ -866,51 +1089,7 @@ def _reproduce_one(
             for metric in reported_metrics:
                 measured_values[metric].append(float(scores[metric]))
 
-    measured = {
-        metric: statistics.fmean(values) for metric, values in measured_values.items()
-    }
-    spread = {
-        metric: statistics.stdev(values) if len(values) > 1 else 0.0
-        for metric, values in measured_values.items()
-    }
-    if getattr(args, "record", False):
-        # Key off the gate row, or the external row for an external-only benchmark (hest).
-        record_row = _record_reference_row(benchmark, axes, row)
-        if record_row is not None:
-            key_axes = _record_axes(benchmark, axes, seed_root)
-            for metric in reported_metrics:
-                _record_result(
-                    benchmark,
-                    record_row,
-                    measured[metric],
-                    std=spread[metric],
-                    n_seeds=len(seeds),
-                    # seed_root is the last seed's output; every seed shares the varied
-                    # axes, so it identifies the cell for every Reported metric.
-                    key_axes=key_axes,
-                    metric=metric,
-                    run_dir=seed_root,
-                    provenance=provenance,
-                    recorded_croma_version=recorded_croma_version,
-                    results_root=results_root,
-                )
-        else:
-            print("  (no reference row to key --record on; nothing recorded)")
-    status = _report_measured_metrics(measured)
-    return _run_return(
-        status,
-        return_result=return_result,
-        metrics=tuple(
-            MetricResult(
-                metric=metric,
-                measured=measured[metric],
-                std=spread[metric],
-                n_seeds=len(measured_values[metric]),
-            )
-            for metric in reported_metrics
-        ),
-        seed_roots=tuple(seed_roots),
-    )
+    return _report_seed_mean(measured_values, seed_roots)
 
 
 def run_benchmark(
@@ -942,14 +1121,17 @@ def run_benchmark(
       commit, and the installed slide2vec (and, for representation benchmarks, croma)
       versions, exactly as ``--record`` does.
     - **Record** — appends :class:`~soma.benchmark.registry.MeasuredRow` rows to the
-      benchmark's results ledger; ``results_root`` points that ledger at a directory
-      outside the soma checkout (``<results_root>/<table>.csv``) so an external repository
-      can host its own committed ledger. Without it, the in-package table is used.
+      benchmark's results ledger, for a run over exactly the benchmark's canonical seeds
+      (any other run returns ``2`` before training or scoring); ``results_root`` points
+      that ledger at a directory outside the soma checkout (``<results_root>/<table>.csv``)
+      so an external repository can host its own committed ledger. Without it, the
+      in-package table is used.
 
     ``name`` must be a single registered benchmark (``ocelot``, ``eva/bach`` …); an unknown
     name raises ``KeyError`` listing the registered names. The remaining keywords mirror
     the CLI flags of the same name (``from_run_dir`` re-scores an existing run with no
-    training; one of ``raw_root`` / ``curated_dir`` / ``from_run_dir`` must be given).
+    training, or every ``seed_<k>`` run under an output root and their mean; one of
+    ``raw_root`` / ``curated_dir`` / ``from_run_dir`` must be given).
 
     By default, returns the CLI's exit status (``0`` success, ``2`` usage/protocol error).
     Pass ``return_result=True`` to receive the aggregated Reported metrics and seed output

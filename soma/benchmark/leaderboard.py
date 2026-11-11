@@ -116,6 +116,9 @@ class RunRecord:
     #: The run's component record (``run.yaml`` ``components``); ``None`` for a run
     #: recorded before the record existed.
     components: list[dict[str, Any]] | None = None
+    #: The digest of the test rows this run scored (``run.yaml`` ``test_checksum``), which
+    #: ``experiment_id`` leaves out; empty for a run recorded before the digest existed.
+    test_checksum: str = ""
 
     @property
     def triple(self) -> TripleKey:
@@ -170,6 +173,7 @@ def load_run_record(run_dir: str | Path) -> RunRecord | None:
         task=task,
         summary=summary,
         components=meta.get("components"),
+        test_checksum=str(meta.get("test_checksum") or ""),
     )
 
 

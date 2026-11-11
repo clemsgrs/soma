@@ -18,7 +18,9 @@ import pytest
 from soma.benchmark import (
     MeasuredRow,
     append_result,
+    benchmark_registry,
     expected_rows,
+    get_benchmark,
     load_results,
     reproduced_rows,
 )
@@ -169,6 +171,29 @@ def test_eva_seed_rows_join_and_stay_within_reference_band():
             f"recorded {row.key} {row.measured} outside band "
             f"{gates[0].expected}±{gates[0].tolerance}"
         )
+
+
+def test_every_ledger_cell_shows_a_row_over_its_benchmark_canonical_seeds():
+    # A cell's latest row is the one the docs table shows and checks against the gate, and
+    # the gate measures the benchmark's canonical seeds: so that row covers the same number
+    # of seeds. A family ledger (eva, hest, croma) holds its members' rows, keyed by dataset.
+    packaged = {
+        package.name
+        for package in resources.files("soma.benchmark").iterdir()
+        if package.joinpath("results.csv").is_file()
+    }
+    checked = set()
+    for name in sorted(benchmark_registry.list()):
+        table, _, member = name.partition("/")
+        rows = [row for row in load_results(table) if not member or row.key.get("dataset") == member]
+        latest = {(tuple(sorted(row.key.items())), row.metric): row for row in rows}
+        seeds = get_benchmark(name).canonical_seeds
+        for (key, metric), row in latest.items():
+            assert row.n_seeds == len(seeds), (name, dict(key), metric, row.n_seeds, seeds)
+        if rows:
+            checked.add(table)
+
+    assert checked == packaged == {"croma", "eva", "hest", "midog", "monkey", "ocelot"}
 
 
 def test_append_result_extends_an_existing_header_in_place(tmp_path, monkeypatch):

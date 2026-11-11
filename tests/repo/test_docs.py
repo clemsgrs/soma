@@ -310,7 +310,9 @@ def test_detection_tables_check_each_row_against_the_gate_of_the_fixed_recipe(
     )
 
 
-@pytest.mark.parametrize("builder", ["build_midog_results_rst", "build_monkey_results_rst"])
+@pytest.mark.parametrize(
+    "builder", ["build_ocelot_results_rst", "build_midog_results_rst", "build_monkey_results_rst"]
+)
 def test_recorded_detection_results_sit_within_their_gates(builder: str) -> None:
     # The packaged ledgers are checked against their gates and none drifts.
     generator, _ = _load_reference_generator()
@@ -385,7 +387,7 @@ def test_detection_pages_quote_the_gate_their_default_run_checks() -> None:
     from soma.benchmark import load_reference
 
     docs_dir = Path(__file__).resolve().parents[2] / "docs"
-    for dataset in ("midog", "monkey"):
+    for dataset in ("ocelot", "midog", "monkey"):
         (gate,) = [row for row in load_reference(dataset) if not row.is_external]
         page = (docs_dir / f"{dataset}-detection-benchmark.rst").read_text(encoding="utf-8")
         assert f"**{gate.expected:.4f} ± {gate.tolerance:.2f}**" in page, dataset
@@ -395,10 +397,35 @@ def test_detection_pages_quote_the_gate_their_default_run_checks() -> None:
         "``--seeds 1`` runs seed 0 alone as a quick smoke test; it is not the reference check."
         in " ".join(midog_page.split())
     )
-    # A --from-run-dir rescore scores one seed; recording it would add a one-seed row to
-    # the three-seed ledger.
-    (rescore,) = [line for line in midog_page.splitlines() if "--from-run-dir" in line]
-    assert "--record" not in rescore
+    ocelot_page = " ".join((docs_dir / "ocelot-detection-benchmark.rst").read_text(encoding="utf-8").split())
+    assert "- Seeds - ``0``, ``1`` and ``2``." in ocelot_page
+    assert "Virchow2's three-seed mean test score, **0.6985 ± 0.02**" in ocelot_page
+
+
+@pytest.mark.parametrize("dataset", ["ocelot", "midog"])
+def test_three_seed_detection_pages_record_a_rescore_of_the_whole_output(dataset: str) -> None:
+    # Rescoring the output root covers every canonical seed, so that is the rescore to
+    # record; seed_0 alone is a spot check of one seed and is never recorded.
+    page = (Path(__file__).resolve().parents[2] / "docs" / f"{dataset}-detection-benchmark.rst").read_text(
+        encoding="utf-8"
+    )
+
+    commands = [line.strip() for line in page.splitlines() if line.strip().startswith("soma reproduce")]
+    rescores = {command for command in commands if "--from-run-dir" in command}
+
+    assert rescores == {
+        f"soma reproduce {dataset} --from-run-dir soma_reproduce/{dataset} --record",
+        f"soma reproduce {dataset} --from-run-dir soma_reproduce/{dataset}/seed_0",
+    }
+
+
+def test_benchmarking_page_describes_whole_output_rescores_and_canonical_records() -> None:
+    page = " ".join(
+        (Path(__file__).resolve().parents[2] / "docs" / "benchmarking.rst").read_text(encoding="utf-8").split()
+    )
+
+    assert "``--from-run-dir`` rescores one existing run, or every ``seed_<k>`` run under an output root" in page
+    assert "only a run over the benchmark's canonical seeds" in page
 
 
 def test_croma_benchmark_page_exceptions_table_matches_panel() -> None:

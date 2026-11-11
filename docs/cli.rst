@@ -124,15 +124,17 @@ Benchmarking commands
    Curate, run, and score a registered benchmark. ``NAME`` is a benchmark
    (``ocelot``, ``eva/bach``) or a family prefix (``eva``). ``--raw-root``
    curates from raw data, ``--curated-dir`` reuses prepared manifests, and
-   ``--from-run-dir`` rescores one existing run. ``--encoders`` runs an
+   ``--from-run-dir`` rescores one existing run, or every ``seed_<k>`` run
+   under an output root. ``--encoders`` runs an
    ordered panel and writes one leaderboard per benchmark. ``--seeds N``
    runs seeds 0 through N−1. ``--devices 0,1,2,3`` runs the seeds side by
    side, one process per GPU (``cpu`` entries run on the CPU); when the
    benchmark has more than one fold, it runs each seed's folds side by side
    and the seeds one after another. ``--output-root``,
    ``--cache-root``, and ``--out-dir`` place run artifacts, shared features,
-   and curated manifests; ``--record`` appends the score to the benchmark's
-   results ledger, ``soma/benchmark/<protocol>/results.csv`` next to its
+   and curated manifests; ``--record`` appends the score of a run over the
+   benchmark's canonical seeds to its results ledger,
+   ``soma/benchmark/<protocol>/results.csv`` next to its
    ``reference.csv``. See :doc:`benchmarking` for panel validation,
    partial failures, parallel seeds, and reference comparisons.
 

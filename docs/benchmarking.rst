@@ -57,9 +57,11 @@ Reproduce a benchmark
    reference still runs, and a gap never fails the command.
 
 ``--seeds 1`` runs seed 0 only, for a quick smoke test; omit it for the canonical seed
-set. ``--curated-dir`` reuses prepared manifests, ``--from-run-dir`` rescores one
-existing run, and ``--record`` appends the score to the benchmark's results ledger,
-which is what the results tables in these pages are built from.
+set. ``--curated-dir`` reuses prepared manifests, and ``--from-run-dir`` rescores one
+existing run, or every ``seed_<k>`` run under an output root and reports their mean.
+``--record`` appends the score to the benchmark's results ledger, which is what the
+results tables in these pages are built from. It records only a run over the
+benchmark's canonical seeds: the default run, or a rescore of its whole output root.
 
 .. _parallel-seeds:
 

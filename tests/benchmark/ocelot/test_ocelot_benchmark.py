@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from soma.benchmark import get_benchmark
+from soma.benchmark import get_benchmark, reproduced_rows
 from soma.benchmark.ocelot import OCELOT, extract_test_metrics
 
 
@@ -44,7 +44,7 @@ def test_ocelot_registered_under_name():
     assert get_benchmark("ocelot") is OCELOT
     assert OCELOT.name == "ocelot"
     assert OCELOT.primary_metric == "mean_f1"
-    assert OCELOT.canonical_seeds == (0,)
+    assert OCELOT.canonical_seeds == (0, 1, 2)
 
 
 def test_ocelot_declares_canonical_facet():
@@ -125,12 +125,27 @@ def test_expected_returns_broad_band():
     gate = [r for r in OCELOT.expected() if not r.is_external]
     assert len(gate) == 1
     assert gate[0].metric == "mean_f1"
-    assert gate[0].expected == pytest.approx(0.6926, abs=1e-6)
+    assert gate[0].expected == pytest.approx(0.6985, abs=1e-6)
     # The broad banner also matches when axes are supplied.
     gate_axed = [
         r for r in OCELOT.expected(encoder="virchow2", spacing=0.2) if not r.is_external
     ]
-    assert gate_axed[0].expected == pytest.approx(0.6926)
+    assert gate_axed[0].expected == pytest.approx(0.6985)
+
+
+def test_ocelot_gate_is_the_three_seed_mean_the_default_run_measures():
+    # The default OCELOT run averages seeds 0-2 before the check, and every encoder's
+    # latest recorded row is such a mean: the gate is Virchow2's three-seed mean too.
+    (gate,) = [row for row in get_benchmark("ocelot").expected(encoder="virchow2") if not row.is_external]
+    (*_, recorded) = reproduced_rows("ocelot", encoder="virchow2", metric="mean_f1")
+
+    assert gate.expected == pytest.approx(0.6985)
+    assert gate.expected == pytest.approx((0.6926 + 0.6983 + 0.7047) / 3, abs=5e-5)
+    assert gate.expected == pytest.approx(recorded.measured) and recorded.n_seeds == 3
+    assert gate.tolerance == pytest.approx(0.02)
+    assert "three-seed mean" in gate.source
+    assert "0.6926 / 0.6983 / 0.7047" in gate.source
+    assert "seed 0" not in gate.source
 
 
 def test_extract_test_metrics_reads_test_headline():

@@ -162,26 +162,35 @@ def test_per_dataset_view_delegates_to_the_harness(tmp_path: Path):
     assert bench.score(tmp_path)["f1"] == pytest.approx(1.0)
 
 
+def _write_seed_caches(output_root: Path, dataset: str, encoder: str, spacing: float, sample) -> None:
+    """A scored run for each of ``dataset``'s canonical seeds, as ``seed_<k>`` under ``output_root``."""
+    bench = get_benchmark(dataset)
+    for seed in bench.canonical_seeds:
+        write_cell_predictions(
+            output_root / f"seed_{seed}" / "predictions.json",
+            CellPredictions(encoder, dataset, seed, bench.primary_metric, spacing, [sample]),
+        )
+
+
 def test_reproduce_midog_records_into_the_midog_ledger(tmp_path: Path):
-    # The registry name is the ledger name: a re-scored MIDOG run appends to midog's own
+    # The registry name is the ledger name: a re-scored MIDOG output appends to midog's own
     # results table (soma/benchmark/midog/results.csv in the package).
-    run_dir = tmp_path / "run"
-    write_cell_predictions(
-        run_dir / "predictions.json",
-        CellPredictions("virchow2", "midog", 0, "f1", 0.25,
-                        [SamplePrediction("s0", [[10, 10]], [0.9], [0], [[10, 11]], [0])]),
+    output_root = tmp_path / "out"
+    _write_seed_caches(
+        output_root, "midog", "virchow2", 0.25,
+        SamplePrediction("s0", [[10, 10]], [0.9], [0], [[10, 11]], [0]),
     )
     results_root = tmp_path / "ledger"
 
     code = run_benchmark(
-        "midog", encoder="virchow2", from_run_dir=run_dir, record=True, results_root=results_root
+        "midog", encoder="virchow2", from_run_dir=output_root, record=True, results_root=results_root
     )
 
     assert code == 0
     assert [path.name for path in results_root.iterdir()] == ["midog.csv"]
     (row,) = load_results("midog", results_root=results_root)
     assert row.key["encoder"] == "virchow2"
-    assert row.metric == "f1" and row.measured == pytest.approx(1.0) and row.n_seeds == 1
+    assert row.metric == "f1" and row.measured == pytest.approx(1.0) and row.n_seeds == 3
 
 
 @pytest.mark.parametrize(
@@ -219,11 +228,8 @@ def test_a_recorded_detection_row_carries_the_fixed_recipe(tmp_path: Path, datas
     # A ledger row joins its reference table on dataset, encoder and spacing, whether or not
     # the encoder has a gate row.
     bench = get_benchmark(dataset)
-    run_dir = tmp_path / "run"
-    write_cell_predictions(
-        run_dir / "predictions.json",
-        CellPredictions(encoder, dataset, 0, bench.primary_metric, float(spacing), [sample]),
-    )
+    run_dir = tmp_path / "out"
+    _write_seed_caches(run_dir, dataset, encoder, float(spacing), sample)
     results_root = tmp_path / "ledger"
 
     code = run_benchmark(dataset, encoder=encoder, from_run_dir=run_dir, record=True, results_root=results_root)
@@ -244,11 +250,8 @@ def test_a_cache_only_rescore_takes_its_encoder_from_the_cache(
     # Without --encoder, the rescore is checked and recorded as that encoder, not as the
     # encoder a new run would train: a UNI2 cache is never held to the Virchow2 gate.
     bench = get_benchmark(dataset)
-    run_dir = tmp_path / "run"
-    write_cell_predictions(
-        run_dir / "predictions.json",
-        CellPredictions(encoder, dataset, 0, bench.primary_metric, float(spacing), [sample]),
-    )
+    run_dir = tmp_path / "out"
+    _write_seed_caches(run_dir, dataset, encoder, float(spacing), sample)
     results_root = tmp_path / "ledger"
 
     code = run_benchmark(dataset, from_run_dir=run_dir, record=True, results_root=results_root)
@@ -268,9 +271,10 @@ def test_a_first_rescore_of_a_copied_run_takes_its_encoder_from_the_saved_config
     # looked up before scoring writes the cache. Its saved config still names its encoder,
     # so a UNI2 run is never held to the Virchow2 gate or recorded as Virchow2.
     bench = get_benchmark(dataset)
-    run_dir = tmp_path / "run"
-    run_dir.mkdir()
-    bench.build_config(encoder="uni2").to_yaml(run_dir / "config.yaml")
+    run_dir = tmp_path / "out"
+    for seed in bench.canonical_seeds:
+        (run_dir / f"seed_{seed}").mkdir(parents=True)
+        bench.build_config(encoder="uni2").to_yaml(run_dir / f"seed_{seed}" / "config.yaml")
 
     def score_run(name, path):
         # Like the real scorer: label the cache with the run's encoder, return its metrics.
@@ -295,10 +299,10 @@ def test_a_first_rescore_of_a_copied_run_takes_its_encoder_from_the_saved_config
 def test_each_detection_view_runs_the_seeds_its_ledger_records():
     # reproduce runs canonical_seeds by default and --record writes len(seeds) as n_seeds,
     # so they match the recorded rows: MIDOG three seeds on one split, MONKEY seed 0 across
-    # its five patient folds. OCELOT is its own benchmark, on seed 0.
+    # its five patient folds. OCELOT is its own benchmark, on three seeds too.
     assert get_benchmark("midog").canonical_seeds == (0, 1, 2)
     assert get_benchmark("monkey").canonical_seeds == (0,)
-    assert get_benchmark("ocelot").canonical_seeds == (0,)
+    assert get_benchmark("ocelot").canonical_seeds == (0, 1, 2)
     for dataset in ("midog", "monkey"):
         bench = get_benchmark(dataset)
         recorded = {row.n_seeds for row in load_results(dataset)}
