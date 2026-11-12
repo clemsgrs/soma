@@ -307,6 +307,244 @@ def test_augmentation_refuses_supplied_cached_grids(tmp_path, encoder_name, fake
     assert fake_live_encoder == []
 
 
+# A grid bundle names its encoder, so the bundle alone can predict from pixels.
+
+
+def _cached_segmentation_run(tmp_path, encoder_name) -> Run:
+    """One epoch of cached grid segmentation through the CLI: soma.extract encodes the
+    ROIs with the ``fake`` encoder and the decoder trains on the cached grids."""
+    config = _config(
+        tmp_path,
+        encoder_name,
+        "segmentation",
+        roi_px=96,
+        head={"name": "segmentation", "params": {"num_classes": 3}},
+        metrics=["mean_dice"],
+        epochs=1,
+    )
+    return run_soma(config, tmp_path / "config.yaml")
+
+
+@pytest.fixture
+def presets_built(monkeypatch) -> list[str]:
+    """The slide2vec presets built from here on (``Model.from_preset`` calls)."""
+    import slide2vec
+
+    built: list[str] = []
+    from_preset = slide2vec.Model.from_preset
+
+    def counting(name, *args, **kwargs):
+        built.append(name)
+        return from_preset(name, *args, **kwargs)
+
+    monkeypatch.setattr(slide2vec.Model, "from_preset", counting)
+    return built
+
+
+def test_a_cached_grid_bundle_copied_out_of_its_run_yields_its_encoder_stage(tmp_path, encoder_name):
+    """A bundle trained on cached grids records the encoder that extracted them. Copied
+    to an empty directory, with no plan and no run directory, it gives back that frozen
+    encoder stage, whose grids have the geometry the bundle was trained on."""
+    import shutil
+
+    import torch
+
+    from soma.pipeline.build import bundle_encoder_stage
+
+    run = _cached_segmentation_run(tmp_path, encoder_name)
+    copied = shutil.copytree(run.run_dir / "bundle", tmp_path / "elsewhere" / "bundle")
+
+    bundle = soma.load(copied)
+    stage = bundle_encoder_stage(bundle)
+
+    pixels = torch.randint(0, 256, (2, 3, 96, 96), dtype=torch.uint8)
+    with torch.inference_mode():
+        grid = stage(pixels)
+    assert tuple(grid.shape[-2:]) == tuple(bundle.preprocessing["geometry"]["grid_shape"])
+    assert stage.geometry.layout == bundle.model.head.geometry.layout
+
+
+def test_loading_a_cached_grid_bundle_builds_no_encoder(tmp_path, encoder_name, presets_built):
+    """``soma.load`` of a bundle trained on cached grids stays cheap: the encoder is built
+    only when its stage is asked for, once for every bundle with the same recipe."""
+    import gc
+
+    from soma.pipeline.build import bundle_encoder_stage
+
+    run = _cached_segmentation_run(tmp_path, encoder_name)
+    gc.collect()  # no stage of an earlier scenario is left to share
+    presets_built.clear()  # the run's own extraction
+
+    first, second = soma.load(run.run_dir / "bundle"), soma.load(run.run_dir / "bundle")
+    assert presets_built == []
+    assert first.model.encoder is None
+
+    stage = bundle_encoder_stage(first)
+    assert bundle_encoder_stage(second) is stage
+    assert presets_built == [encoder_name]
+
+
+def _as_written_before_the_recipe(bundle_dir) -> None:
+    """Make ``bundle_dir`` look like a cached grid bundle written before soma recorded the
+    encoder recipe: its ``preprocessing.json`` has no ``encoder``."""
+    path = bundle_dir / "preprocessing.json"
+    preprocessing = json.loads(path.read_text())
+    del preprocessing["encoder"]
+    path.write_text(json.dumps(preprocessing))
+
+
+def test_a_live_grid_bundle_hands_back_the_stage_it_carries(tmp_path, encoder_name, fake_live_encoder):
+    """A bundle trained live builds its frozen encoder stage when it loads; that is the
+    stage it gives back, and it records the same recipe a cached bundle does."""
+    from soma.pipeline.build import bundle_encoder_stage
+
+    config = _config(
+        tmp_path,
+        encoder_name,
+        "segmentation",
+        roi_px=96,
+        head={"name": "segmentation", "params": {"num_classes": 3}},
+        metrics=["mean_dice"],
+        epochs=1,
+        live=True,
+    )
+    run = run_soma(config, tmp_path / "config.yaml")
+
+    bundle = soma.load(run.run_dir / "bundle")
+    assert bundle.model.encoder is not None
+    assert bundle_encoder_stage(bundle) is bundle.model.encoder
+    assert bundle.preprocessing["encoder"]["encoder"] == encoder_name
+    assert bundle.preprocessing["encoder"]["target_size"] == fake_live_encoder[-1]["target_size"] == 96
+
+
+def test_an_old_cached_grid_bundle_takes_its_encoder_from_its_run_directory(tmp_path, encoder_name):
+    """A cached grid bundle with no recorded recipe is refused outside its run directory,
+    and the message names the fix. Inside its run directory, or given that directory, the
+    run's ``plan.yaml`` supplies the recipe."""
+    import shutil
+
+    from soma.pipeline.build import bundle_encoder_stage
+
+    run = _cached_segmentation_run(tmp_path, encoder_name)
+    _as_written_before_the_recipe(run.run_dir / "bundle")
+    copied = shutil.copytree(run.run_dir / "bundle", tmp_path / "elsewhere" / "bundle")
+
+    with pytest.raises(ValueError, match="records no encoder recipe.*run directory.*plan.yaml"):
+        bundle_encoder_stage(soma.load(copied))
+
+    inside = bundle_encoder_stage(soma.load(run.run_dir / "bundle"))
+    given = bundle_encoder_stage(soma.load(copied), run_dir=run.run_dir)
+    assert given is inside
+    assert inside.geometry.layout == soma.load(copied).model.head.geometry.layout
+
+
+@pytest.mark.parametrize("composite", ["configured", "supplied"])
+def test_a_composite_grid_bundle_has_no_single_encoder_stage(tmp_path, encoder_name, composite):
+    """A run over a composite of several encoders' grids, configured as the ``composite``
+    encoder or supplied as a ``CompositeDenseFeatureStore``, records that fact in its
+    bundle, and asking that bundle for its encoder stage is refused."""
+    from soma.config import ExperimentConfig
+    from soma.extract.dense import CachedGridSource
+    from soma.extract.dense.composite import CompositeDenseFeatureStore
+    from soma.pipeline import Pipeline
+    from soma.pipeline.build import bundle_encoder_stage
+    from tests.e2e.synthetic import write_cached_grids
+
+    config = _config(
+        tmp_path,
+        encoder_name,
+        "segmentation",
+        roi_px=96,
+        head={"name": "segmentation", "params": {"num_classes": 3}},
+        metrics=["mean_dice"],
+        epochs=1,
+    )
+    config["learner"]["params"]["normalization"] = {"method": "none"}  # refused over a composite
+    if composite == "configured":
+        members = [{"name": encoder_name}, {"name": encoder_name, "dense": {"overlap": 0.25}}]
+        config["features"]["encoder"] = {"name": "composite", "params": {"members": members}}
+        run_dir = run_soma(config, tmp_path / "config.yaml").run_dir
+    else:
+        del config["features"]["encoder"]
+        records = config["cohort"]["records"]
+        grids = [CachedGridSource(write_cached_grids(records, tmp_path / f"grids_{k}")) for k in range(2)]
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+        source = CompositeDenseFeatureStore(grids, concat_resolution="grid")
+        run_dir = Pipeline(ExperimentConfig.from_yaml(tmp_path / "config.yaml"), source=source).run().run_dir
+
+    with pytest.raises(ValueError, match="composite encoder"):
+        bundle_encoder_stage(soma.load(run_dir / "bundle"))
+
+
+def test_a_bundle_over_supplied_grids_of_no_named_encoder_has_no_encoder_stage(tmp_path, encoder_name):
+    """Grids supplied with ``--feature-dir`` to a config that names no encoder leave the
+    bundle nothing to record: asking for its encoder stage is refused."""
+    from soma.pipeline.build import bundle_encoder_stage
+    from tests.e2e.synthetic import write_cached_grids
+
+    config = _config(
+        tmp_path,
+        encoder_name,
+        "segmentation",
+        roi_px=96,
+        head={"name": "segmentation", "params": {"num_classes": 3}},
+        metrics=["mean_dice"],
+        epochs=1,
+    )
+    del config["features"]["encoder"]
+    grid_dir = write_cached_grids(config["cohort"]["records"], tmp_path / "grids")
+    run = run_soma(config, tmp_path / "config.yaml", "--feature-dir", str(grid_dir))
+
+    with pytest.raises(ValueError, match="names no encoder"):
+        bundle_encoder_stage(soma.load(run.run_dir / "bundle"))
+
+
+def test_a_recipe_whose_frame_differs_from_the_trained_grids_is_refused(tmp_path, encoder_name):
+    """Grids supplied with ``--feature-dir`` but pooled over 16 px patches, while the
+    config's ``fake`` encoder pools 8 px ones: the recorded recipe would not rebuild the
+    grids the bundle was trained on, so its stage is refused rather than returned."""
+    from soma.pipeline.build import bundle_encoder_stage
+    from tests.e2e.synthetic import write_cached_grids
+
+    config = _config(
+        tmp_path,
+        encoder_name,
+        "segmentation",
+        roi_px=96,
+        head={"name": "segmentation", "params": {"num_classes": 3}},
+        metrics=["mean_dice"],
+        epochs=1,
+    )
+    grid_dir = write_cached_grids(config["cohort"]["records"], tmp_path / "grids", patch_size=16)
+    run = run_soma(config, tmp_path / "config.yaml", "--feature-dir", str(grid_dir))
+
+    with pytest.raises(ValueError, match="frame"):
+        bundle_encoder_stage(soma.load(run.run_dir / "bundle"))
+
+
+def test_sliding_window_prediction_needs_no_encoder_for_a_cached_grid_bundle(tmp_path, encoder_name):
+    """``SlidingWindowSegmentationPredictor.from_bundles`` takes the encoder stage a cached
+    grid bundle records, so the bundle alone predicts a whole image, exactly as it does
+    behind the stage passed as ``encoder=``."""
+    import numpy as np
+
+    from soma.evaluation.sliding_window import SlidingWindowSegmentationPredictor
+    from soma.pipeline.build import bundle_encoder_stage
+
+    run = _cached_segmentation_run(tmp_path, encoder_name)
+    bundle = soma.load(run.run_dir / "bundle")
+    image = np.random.default_rng(0).integers(0, 256, (150, 200, 3), dtype=np.uint8)
+
+    alone = SlidingWindowSegmentationPredictor.from_bundles([bundle], device="cpu")
+    given = SlidingWindowSegmentationPredictor.from_bundles(
+        [bundle], encoder=bundle_encoder_stage(bundle), device="cpu"
+    )
+
+    labels = alone.predict_array(image, overlap=0.5).labels
+    assert labels.shape == (150, 200)
+    assert np.array_equal(labels, given.predict_array(image, overlap=0.5).labels)
+
+
 @pytest.mark.parametrize(
     ("kind", "flags", "head_params", "metrics"),
     [

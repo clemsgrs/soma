@@ -391,9 +391,11 @@ def test_from_bundles_ensembles_the_fold_bundles_over_one_stage(tmp_path):
     assert out.labels.shape == (64, 64)
 
 
-def test_from_bundles_needs_the_stage_for_bundles_trained_on_cached_grids(tmp_path):
+def test_from_bundles_needs_a_recipe_or_a_stage_of_the_trained_frame_for_cached_grid_bundles(tmp_path):
+    """These bundles were saved with no encoder recipe and no run directory around them,
+    so only ``encoder=`` can supply their stage, and it must have the trained frame."""
     _, bundles = _fold_bundles(tmp_path, folds=1)
-    with pytest.raises(ValueError, match="encoder="):
+    with pytest.raises(ValueError, match="records no encoder recipe"):
         SlidingWindowSegmentationPredictor.from_bundles(bundles)
     other = FakeEncoder(target_size=32, patch_size=PATCH)
     with pytest.raises(ValueError, match="frame"):

@@ -8,7 +8,8 @@ A bundle is a directory::
       model.json            how to rebuild the bare module before the weights load: its
                             shape, the builder's dotted path and the builder's arguments
       preprocessing.json    what predict / evaluate need beyond the module (class scheme,
-                            target schema, geometry, spacing, thresholds); no tensors
+                            target schema, geometry, spacing, thresholds and, for a grid
+                            bundle, its encoder recipe); no tensors
       provenance.json       soma / slide2vec / hs2p versions, the selected epoch and its
                             monitor, and whatever the caller adds (fold, run id, source,
                             the component record)
@@ -51,11 +52,13 @@ PROVENANCE = "provenance.json"
 
 @dataclass(frozen=True)
 class ModelBundle:
-    """A loaded bundle: the rebuilt module (eval mode, CPU) and its two metadata dicts."""
+    """A loaded bundle: the rebuilt module (eval mode, CPU), its two metadata dicts and
+    the directory :func:`load` read it from."""
 
     model: nn.Module
     preprocessing: dict[str, Any]
     provenance: dict[str, Any]
+    path: Path | None = None
 
 
 def record_builder(model: nn.Module, builder: Callable[..., nn.Module], **params: Any) -> nn.Module:
@@ -135,7 +138,9 @@ def load(path: str | Path) -> ModelBundle:
     model = builder(**_decode(recipe["params"]))
     model.load_state_dict(load_file(str(path / WEIGHTS), device="cpu"))
     model.eval()
-    return ModelBundle(model=model, preprocessing=_read_json(path / PREPROCESSING), provenance=provenance)
+    return ModelBundle(
+        model=model, preprocessing=_read_json(path / PREPROCESSING), provenance=provenance, path=path
+    )
 
 
 # ---------------------------------------------------------------------------

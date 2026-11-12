@@ -313,11 +313,12 @@ Every target source has ``subset(sample_ids)`` to restrict it to one split.
 
 For whole-image segmentation after a run, load each fold's bundle with
 :func:`soma.load` and pass the list to
-``SlidingWindowSegmentationPredictor.from_bundles(bundles, encoder=...)``, which
-slides the fold ensemble over an image. A bundle trained live carries its frozen
-encoder stage; for a run trained on cached grids, pass the stage that extracted
-them, ``soma.pipeline.build.live_encoder_for(plan)`` with the run's
-:class:`~soma.Plan` (``soma.Plan.from_yaml(run_dir / "plan.yaml")``).
+``SlidingWindowSegmentationPredictor.from_bundles(bundles)``, which slides the
+fold ensemble over an image. A bundle trained live carries its frozen encoder
+stage. A bundle trained on cached grids records the encoder that extracted them,
+and ``from_bundles`` builds that stage
+(``soma.pipeline.build.bundle_encoder_stage``). Pass ``encoder=`` to use another
+stage with the same frame.
 
 Task-free representation evaluation
 -----------------------------------
