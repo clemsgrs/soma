@@ -445,9 +445,12 @@ def _features_identity(plan: Plan, *, cache_dtype: bool = False) -> dict[str, An
 
     The extraction and a grid run's dense options are hashed as the run resolves them
     (the geometry left to the encoder preset or to ``dense`` filled in), so two plans that
-    extract the same features share one identity however the geometry was spelled.
+    extract the same features share one identity however the geometry was spelled. Tiling
+    fields at their legacy value are left out, as in the cache keys
+    (:func:`~soma.extract.cache.keys.without_legacy_tiling_values`): a run keeps the id it
+    had before hs2p added them.
     """
-    from soma.extract.cache.keys import _jsonable
+    from soma.extract.cache.keys import _jsonable, without_legacy_tiling_values
     from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
     features = plan.features
@@ -466,10 +469,13 @@ def _features_identity(plan: Plan, *, cache_dtype: bool = False) -> dict[str, An
     }
     if cache_dtype:
         cache["dtype"] = features.cache.dtype
+    extraction_identity = _jsonable(extraction)
+    if isinstance(extraction_identity.get("tiling"), dict):
+        extraction_identity["tiling"] = without_legacy_tiling_values(extraction_identity["tiling"])
     return {
         "kind": features.kind,
         "encoder": encoder,
-        "extraction": _jsonable(extraction),
+        "extraction": extraction_identity,
         "dense": None if dense is None else _jsonable(dense),
         "spacing_policy": features.spacing_policy,
         "precision": features.execution.precision,

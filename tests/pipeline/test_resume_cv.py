@@ -380,6 +380,35 @@ def test_drift_guard_refuses_unknown_evaluation_settings(tmp_path: Path) -> None
         guard_resume_plan_drift(run_dir, _plan(_with_run(original, resume=True)))
 
 
+def _without_tile_grid(plan_path: Path) -> None:
+    """Rewrite a saved plan.yaml as hs2p 6.1.0 wrote it, before ``tiling.grid`` existed."""
+    saved = yaml.safe_load(plan_path.read_text())
+    assert saved["features"]["extraction"]["tiling"].pop("grid") == "contour"
+    plan_path.write_text(yaml.safe_dump(saved))
+
+
+def test_a_plan_saved_before_hs2p_had_a_tile_grid_resumes_in_its_run_dir(tmp_path: Path):
+    """hs2p 6.1.1 added ``tiling.grid``. A run started under hs2p 6.1.0 saved a plan.yaml
+    without it. That plan means the contour grid, hs2p's default, so the run resumes."""
+    started = _make_config(tmp_path)
+    layout, _ = open_run(_plan(started), config=started, num_folds=1)
+    _without_tile_grid(layout.run_dir / "plan.yaml")
+
+    resumed = _with_run(started, resume=True)
+
+    assert open_run(_plan(resumed), config=resumed, num_folds=1)[0].run_dir == layout.run_dir
+
+
+def test_a_plan_saved_before_hs2p_had_a_tile_grid_refuses_a_slide_grid_resume(tmp_path: Path):
+    run_dir = tmp_path / "run"
+    _record(run_dir, _make_config(tmp_path))
+    _without_tile_grid(run_dir / "plan.yaml")
+    slide_grid = FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224, tiling_fields={"grid": "slide"}))
+
+    with pytest.raises(ValueError, match="Refusing to resume.*features"):
+        guard_resume_plan_drift(run_dir, _plan(_make_config(tmp_path, features=slide_grid, resume=True)))
+
+
 # --------------------------------------------------------------------------- #
 # end-to-end resume (CPU synthetic pipeline)
 # --------------------------------------------------------------------------- #

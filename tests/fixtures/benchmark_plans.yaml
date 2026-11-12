@@ -698,6 +698,7 @@ eva/camelyon16_small@uni2:
         sthresh_up: 255
       tiling:
         backend: auto
+        grid: contour
         mask_backend: auto
         overlap: 0.0
         requested_backend: auto
@@ -891,6 +892,7 @@ eva/consep@uni2:
         sthresh_up: 255
       tiling:
         backend: auto
+        grid: contour
         mask_backend: auto
         overlap: 0.0
         requested_backend: auto
@@ -1089,6 +1091,7 @@ eva/monusac@virchow2+knobs:
         sthresh_up: 255
       tiling:
         backend: auto
+        grid: contour
         mask_backend: auto
         overlap: 0.0
         requested_backend: auto
@@ -1290,6 +1293,7 @@ eva/panda_small@virchow2+knobs:
         sthresh_up: 255
       tiling:
         backend: auto
+        grid: contour
         mask_backend: auto
         overlap: 0.0
         requested_backend: auto
@@ -1635,6 +1639,7 @@ hest/IDC@uni2:
         sthresh_up: 255
       tiling:
         backend: auto
+        grid: contour
         mask_backend: auto
         overlap: 0.0
         requested_backend: auto
@@ -1776,6 +1781,7 @@ hest/LUNG@virchow2+knobs:
         sthresh_up: 255
       tiling:
         backend: auto
+        grid: contour
         mask_backend: auto
         overlap: 0.0
         requested_backend: auto

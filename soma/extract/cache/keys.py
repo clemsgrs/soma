@@ -38,6 +38,25 @@ _RUNTIME_NESTED_FIELDS = {
     "segmentation": frozenset({"sam2_device", "sam2_num_workers"}),
     "masks": frozenset({"colors"}),
 }
+#: hs2p ``TilingConfig`` fields that records written before the field existed lack, each
+#: with the one value such a record means. hs2p 6.1.1 added ``grid``; before it, every
+#: tile lay on the contour grid.
+LEGACY_TILING_VALUES: dict[str, Any] = {"grid": "contour"}
+
+
+def without_legacy_tiling_values(tiling: dict[str, Any]) -> dict[str, Any]:
+    """A tiling's JSON fields without those at their legacy value
+    (:data:`LEGACY_TILING_VALUES`).
+
+    Cache keys and experiment ids hash this form, so a run on those values keeps the keys
+    and ids it had before hs2p added the fields, and existing caches and runs stay hits.
+    Any other value enters the hash.
+    """
+    return {
+        name: value
+        for name, value in tiling.items()
+        if name not in LEGACY_TILING_VALUES or value != LEGACY_TILING_VALUES[name]
+    }
 
 
 def _resolve_encoder_precision(
@@ -136,7 +155,8 @@ def preprocessing_signature(preprocessing: PreprocessingConfig) -> dict[str, Any
 
     Every field of slide2vec's config and of the hs2p configs it holds (tiling,
     segmentation, filter, mask sampling), except the ones named in
-    :data:`_RUNTIME_PREPROCESSING_FIELDS` and :data:`_RUNTIME_NESTED_FIELDS`. The raw
+    :data:`_RUNTIME_PREPROCESSING_FIELDS` and :data:`_RUNTIME_NESTED_FIELDS`, and the
+    tiling fields at their legacy value (:func:`without_legacy_tiling_values`). The raw
     values a mask label merges are sorted: their order does not change what is sampled.
     """
     if preprocessing.tiling is None:
@@ -153,6 +173,7 @@ def preprocessing_signature(preprocessing: PreprocessingConfig) -> dict[str, Any
                 key: item for key, item in value.items() if key not in _RUNTIME_NESTED_FIELDS[field.name]
             }
         signature[field.name] = value
+    signature["tiling"] = without_legacy_tiling_values(signature["tiling"])
     signature["masks"]["pixel_mapping"] = {
         label: sorted(values) for label, values in signature["masks"]["pixel_mapping"].items()
     }

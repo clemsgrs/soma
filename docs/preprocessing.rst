@@ -180,7 +180,11 @@ the like) for a tiling made from a precomputed tissue mask or by annotation
 sampling, where no segmentation ran; tilings cached under hs2p 5 still load.
 With hs2p 6, ``backend: auto`` and ``mask_backend: auto`` skip a reader that
 opens a file but cannot decode it, so a deflate-compressed label TIFF no longer
-needs an explicit ``mask_backend``.
+needs an explicit ``mask_backend``. hs2p 6.1.1 adds ``tiling.grid``. Its default,
+``contour``, is the grid every earlier hs2p used, so it keeps the cache keys and
+experiment ids it had before: caches and runs made with hs2p 6.1.0 are reused and
+resume, and a ``plan.yaml`` without ``grid`` reads as ``contour``. A run with
+``grid: slide`` gets its own keys.
 
 Segmentation slide-manifest sampling
 ------------------------------------

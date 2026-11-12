@@ -599,6 +599,23 @@ def test_build_experiment_spec_distinguishes_sampling_settings_via_extraction(tm
     assert joint_spec.experiment_id != independent_spec.experiment_id
 
 
+def test_a_contour_grid_run_keeps_the_experiment_id_it_had_before_hs2p_had_a_tile_grid(tmp_path: Path):
+    """hs2p 6.1.1 added ``tiling.grid``. A run on the contour grid, its default and the
+    only grid before it, hashes the extraction hs2p 6.1.0 recorded (no ``grid``), so it
+    keeps its experiment id and a resume finds its run dir. The slide grid gets its own."""
+    contour = _make_pipeline_config(tmp_path)
+    slide = _make_pipeline_config(
+        tmp_path,
+        features=FeaturesConfig(encoder="uni2", extraction=extraction(0.5, 224, tiling_fields={"grid": "slide"})),
+    )
+
+    assert contour.features.extraction.tiling.grid == "contour"
+    tiling = canonical_experiment_payload(contour)["features"]["extraction"]["tiling"]
+    assert "grid" not in tiling
+    assert tiling["requested_tile_size_px"] == 224
+    assert build_experiment_spec(slide).experiment_id != build_experiment_spec(contour).experiment_id
+
+
 def test_build_experiment_spec_distinguishes_features_kind(tmp_path: Path):
     cached = _make_segmentation_config(tmp_path, features=_segmentation_features(kind="cached"))
     live = _make_segmentation_config(tmp_path, features=_segmentation_features(kind="live"))
