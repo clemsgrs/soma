@@ -107,6 +107,22 @@ Available commands
    metrics down by. The metrics table is printed; ``--out`` also writes
    the evaluation as JSON. See :doc:`evaluation`.
 
+``soma predict CONFIG``
+   Write segmentation label maps over whole slides with trained bundles.
+   The config has three sections: ``predict`` (``output_dir``,
+   ``bundles``, ``ensemble``, ``batch_size``, ``num_workers``,
+   ``devices``), ``cohort`` (``records``, and optionally ``splits``,
+   ``subset`` and ``fold``) and ``extraction`` (the
+   ``features.extraction`` schema). The tile size and the read spacing
+   come from the bundles, and setting other values is refused. Each
+   slide gets one label TIFF per bundle, ``<output_dir>/<bundle>/<sample_id>.tif``,
+   where class ``k`` is stored as ``k + 1`` and ``0`` means not
+   predicted, and a record ``<sample_id>.json``; ``index.parquet``
+   lists the maps. The resolved plan is written to
+   ``<output_dir>/plan.yaml`` first; ``soma predict <output_dir>/plan.yaml``
+   replays it and predicts only the slides not done yet. The same in
+   Python: :func:`soma.predict_slides`.
+
 ``soma compact-index OUTPUT_ROOT``
    Compact ``indexes/runs.csv`` to the latest row per run. Readers
    already deduplicate the append-only index; compaction saves space.

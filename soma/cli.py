@@ -1149,6 +1149,41 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _cmd_predict(args: argparse.Namespace) -> int:
+    from soma.pipeline.slide_prediction import predict_slides, slide_prediction_kwargs
+
+    try:
+        config = yaml.safe_load(Path(args.config).read_text(encoding="utf-8")) or {}
+        kwargs = slide_prediction_kwargs(config)
+        index = predict_slides(**kwargs)
+    except (ValueError, FileNotFoundError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 2
+    output_dir = Path(kwargs["output_dir"]).expanduser().resolve()
+    print(f"{len(index)} label map(s) in {output_dir}; their index is {output_dir / 'index.parquet'}")
+    return 0
+
+
+def _build_predict_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="soma predict",
+        description=(
+            "Predict a segmentation label map over whole slides with trained bundles: one "
+            "label TIFF per slide and bundle, where class k is stored as k + 1 and 0 means "
+            "not predicted. The config has a predict section (output_dir, bundles, ensemble, "
+            "batch_size, num_workers, devices), a cohort section (records, and optionally "
+            "splits, subset and fold) and an extraction section (the features.extraction "
+            "schema, without the tile size and spacing, which come from the bundles). The "
+            "resolved plan is written to <output_dir>/plan.yaml before any slide is "
+            "predicted; soma predict <output_dir>/plan.yaml replays it and predicts only "
+            "the slides not done yet."
+        ),
+    )
+    parser.add_argument("config", help="Prediction YAML, or the plan.yaml of an earlier prediction.")
+    parser.set_defaults(func=_cmd_predict)
+    return parser
+
+
 def _cmd_compact_index(args: argparse.Namespace) -> int:
     from soma.pipeline.layout import compact_run_index
 
@@ -1186,6 +1221,7 @@ def _print_top_level_help() -> None:
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
         "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
         "       soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]\n"
+        "       soma predict CONFIG\n"
         "       soma compact-index OUTPUT_ROOT\n"
         "\n"
         "commands:\n"
@@ -1197,6 +1233,7 @@ def _print_top_level_help() -> None:
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
         "  leaderboard  render a faceted view over the run dirs under an output root\n"
         "  evaluate     score a predictions parquet against a cohort's targets\n"
+        "  predict      write segmentation label maps over whole slides with trained bundles\n"
         "  compact-index  rewrite the append-only runs.csv with one row per run\n"
         "\n"
         "examples:\n"
@@ -1210,7 +1247,8 @@ def _print_top_level_help() -> None:
         "  soma reproduce ocelot --from-run-dir /runs/ocelot\n"
         "  soma reproduce eva/bach --encoder uni2 --raw-root /data/eva/bach\n"
         "  soma reproduce eva --raw-root /data/eva   # fan out over the eva/<dataset> family\n"
-        "  soma leaderboard --root /runs/sweep --vary encoder"
+        "  soma leaderboard --root /runs/sweep --vary encoder\n"
+        "  soma predict predict.yaml"
     )
 
 
@@ -1265,6 +1303,14 @@ def main(argv: list[str] | None = None) -> None:
 
     if args[0] == "evaluate":
         parser = _build_evaluate_parser()
+        parsed = parser.parse_args(args[1:])
+        code = parsed.func(parsed)
+        if code:
+            raise SystemExit(code)
+        return
+
+    if args[0] == "predict":
+        parser = _build_predict_parser()
         parsed = parser.parse_args(args[1:])
         code = parsed.func(parsed)
         if code:

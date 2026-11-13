@@ -51,7 +51,7 @@ from soma.config import hydrate, plain
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["predict_slides", "predict_slides_from_config", "slide_prediction_kwargs"]
+__all__ = ["predict_slides", "resolve_slide_prediction", "slide_prediction_kwargs"]
 
 PLAN_FILENAME = "plan.yaml"
 PROVENANCE_FILENAME = "provenance.json"
@@ -130,7 +130,10 @@ def predict_slides(
 
 
 def slide_prediction_kwargs(config: Mapping[str, Any]) -> dict[str, Any]:
-    """The :func:`predict_slides` keywords of a parsed prediction config."""
+    """The :func:`predict_slides` keywords of a parsed prediction config (or of a
+    ``plan.yaml``): its ``predict`` and ``cohort`` keys, and ``extraction``. Raises
+    ``ValueError`` for an unknown section or key, or a missing ``predict.output_dir``,
+    ``predict.bundles`` or ``cohort.records``."""
     if not isinstance(config, Mapping):
         raise ValueError(f"a prediction config is a mapping of sections, got {type(config).__name__}")
     sections = {"predict": PREDICT_KEYS, "cohort": COHORT_KEYS}
@@ -151,12 +154,6 @@ def slide_prediction_kwargs(config: Mapping[str, Any]) -> dict[str, Any]:
         if kwargs.get(required) is None:
             raise ValueError(f"{section}.{required} is required")
     return kwargs
-
-
-def predict_slides_from_config(path: str | Path) -> pd.DataFrame:
-    """:func:`predict_slides` over a YAML prediction config, or a ``plan.yaml`` it wrote."""
-    config = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
-    return predict_slides(**slide_prediction_kwargs(config or {}))
 
 
 # --- the plan --------------------------------------------------------------------------- #
