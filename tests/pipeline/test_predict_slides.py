@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -729,3 +730,16 @@ def test_devices_split_the_slides_across_one_process_each(tmp_path):
     assert maps_of(tmp_path / "parallel") == maps_of(tmp_path / "in_turn")
     logs = sorted(path.name for path in (tmp_path / "parallel" / "logs").iterdir())
     assert logs == ["worker_0.log", "worker_1.log"]
+
+
+def test_a_bundle_changed_in_place_is_refused_in_the_same_directory(tmp_path, two_slides):
+    """The plan names bundles by path; ``provenance.json`` records their digests, so a
+    bundle retrained into the same path cannot add its maps to the old ones."""
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+    soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
+    shutil.rmtree(bundle)
+    save_bundle(tmp_path / "run" / "bundle", seed=1)
+
+    with pytest.raises(ValueError, match=r"bundle .*run/bundle changed since its maps were predicted into it"):
+        soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)

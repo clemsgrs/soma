@@ -471,6 +471,24 @@ def _identities(plan: Mapping[str, Any]) -> list[dict[str, str]]:
     ]
 
 
+def _guard_bundles(output_dir: Path, identities: Sequence[Mapping[str, str]]) -> None:
+    """Refuse a launch whose bundles changed since ``output_dir``'s maps were written: the
+    plan names a bundle by its path, ``provenance.json`` by its digest."""
+    try:
+        saved = json.loads((output_dir / PROVENANCE_FILENAME).read_text(encoding="utf-8"))["bundles"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return
+    digests = {entry.get("path"): entry.get("sha256") for entry in saved if isinstance(entry, Mapping)}
+    for identity in identities:
+        before = digests.get(identity["path"])
+        if before is not None and before != identity["sha256"]:
+            raise ValueError(
+                f"Refusing to predict into {output_dir}: bundle {identity['path']} changed since "
+                f"its maps were predicted into it (sha256 {before[:12]} then, "
+                f"{identity['sha256'][:12]} now). Use another predict.output_dir."
+            )
+
+
 def _write_provenance(output_dir: Path, plan: Mapping[str, Any], identities) -> None:
     import hs2p
     import slide2vec
@@ -493,9 +511,11 @@ def _run(plan: dict[str, Any]) -> pd.DataFrame:
     output_dir = Path(plan["predict"]["output_dir"])
     slides = _slides(plan["cohort"])
     _guard_plan(output_dir, plan)
+    identities = _identities(plan)
+    _guard_bundles(output_dir, identities)
     output_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_text(output_dir / PLAN_FILENAME, yaml.safe_dump(plan, sort_keys=False))
-    _write_provenance(output_dir, plan, _identities(plan))
+    _write_provenance(output_dir, plan, identities)
     names = _output_names(plan)
     pending = [
         entry
