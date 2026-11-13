@@ -8,8 +8,9 @@ merged inflammatory-cell predictions in their source ROI polygons.
 Data and task
 -------------
 
-MONKEY contains 81 PAS-stained kidney-transplant biopsy slides from four centres,
-with lymphocyte and monocyte point annotations inside ROI polygons.
+MONKEY contains 81 PAS-stained kidney-transplant biopsy slides, one per patient,
+from four centres, with lymphocyte and monocyte point annotations inside 164 ROI
+polygons.
 
 .. list-table::
    :header-rows: 1
@@ -27,6 +28,65 @@ with lymphocyte and monocyte point annotations inside ROI polygons.
    * - Metric
      - ``froc_inflammatory``: merged inflammatory-cell FROC with greedy matching
        within 5 µm, averaged over the five test folds.
+
+.. list-table:: Fold sizes
+   :header-rows: 1
+   :stub-columns: 1
+
+   * - Fold
+     - Patients
+     - ROIs
+     - 1024 × 1024 tiles
+     - ROI area (mm²)
+     - Lymphocytes
+     - Monocytes
+   * - 0
+     - 17
+     - 37
+     - 449
+     - 12.9
+     - 16,281
+     - 7,926
+   * - 1
+     - 16
+     - 30
+     - 301
+     - 8.3
+     - 10,934
+     - 7,544
+   * - 2
+     - 16
+     - 34
+     - 351
+     - 9.2
+     - 12,495
+     - 5,246
+   * - 3
+     - 16
+     - 33
+     - 370
+     - 10.4
+     - 9,410
+     - 5,038
+   * - 4
+     - 16
+     - 30
+     - 375
+     - 10.6
+     - 9,920
+     - 5,442
+   * - total
+     - 81
+     - 164
+     - 1,846
+     - 51.5
+     - 59,040
+     - 31,196
+
+In each rotation fold ``k`` is test, fold ``k + 1`` (wrapping round to 0) is tune
+and the other three are train, so each model trains on about 49 patients and 1,100
+tiles. Neighbouring tiles overlap by 128 pixels. The curator drops 131 points that
+lie more than 5 µm outside every ROI polygon; the counts above exclude them.
 
 The official challenge test set is hidden. These cross-validation scores use the
 public training patients and a different test set from the published MONKEY
