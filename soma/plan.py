@@ -146,7 +146,14 @@ class Plan(Mapping):
 
 
 def comparable(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """:meth:`Plan.comparable` over a plan's dict form (a parsed ``plan.yaml``)."""
+    """:meth:`Plan.comparable` over a plan's dict form (a parsed ``plan.yaml``).
+
+    A tiling field that hs2p added after the plan was saved takes the one value the plan
+    meant (``LEGACY_TILING_VALUES``): a ``plan.yaml`` without ``tiling.grid`` is on the
+    contour grid.
+    """
+    from soma.extract.cache.keys import LEGACY_TILING_VALUES
+
     payload = copy.deepcopy(dict(payload))
     run = payload.get("run")
     if isinstance(run, dict):
@@ -156,6 +163,10 @@ def comparable(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(params, dict):
         for name in RESUME_EXCLUDED_LEARNER_PARAMS:
             params.pop(name, None)
+    tiling = ((payload.get("features") or {}).get("extraction") or {}).get("tiling")
+    if isinstance(tiling, dict):
+        for name, value in LEGACY_TILING_VALUES.items():
+            tiling.setdefault(name, value)
     return payload
 
 

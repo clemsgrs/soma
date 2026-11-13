@@ -33,7 +33,7 @@ def test_pyproject_has_publish_ready_metadata():
 
 
 def test_slide2vec_minimum_is_aligned_with_hs2p_6():
-    # slide2vec 7.1.0 requires hs2p 6.1.0, the same floor soma declares. Its
+    # slide2vec 7.1.0 requires hs2p 6.1.0; soma declares 6.1.1 (see the hs2p test). Its
     # ``PreprocessingConfig`` composes hs2p's tiling, segmentation, filter, mask and
     # preview dataclasses, and ``DenseOptions`` / ``ExecutionOptions`` carry the dense
     # and execution fields; soma holds the three as given (ADR 0019). 7.1.1 keeps the
@@ -66,10 +66,12 @@ def test_hs2p_minimum_provides_registered_roi_mask_reads():
     # takes ``resolve_tissue_mask`` settings as one ``SegmentationConfig``, records
     # ``null`` segmentation thresholds when no segmentation ran, and lets ``auto`` skip a
     # backend that opens a file but cannot decode it. 6.1.0 is the floor slide2vec 7.1.0
-    # requires; soma holds its mask vocabulary (``MaskSamplingConfig``) as given.
+    # requires; soma holds its mask vocabulary (``MaskSamplingConfig``) as given. 6.1.1
+    # adds ``tiling.grid``: with one floor, every soma install sees the same tiling fields,
+    # so a plan names the same fields and its cache keys come out the same everywhere.
     data = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
-    assert "hs2p>=6.1.0" in data["project"]["dependencies"]
+    assert "hs2p>=6.1.1" in data["project"]["dependencies"]
 
 
 def test_release_metadata_matches_license_and_verified_python_support():

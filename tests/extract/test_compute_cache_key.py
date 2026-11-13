@@ -145,7 +145,13 @@ def _hs2p_variations():
         value = getattr(filter_default, field.name)
         changed = (not value) if isinstance(value, bool) else value * 2
         yield f"filter.{field.name}", {"filter": replace(filter_default, **{field.name: changed})}
-    for name, value in (("tolerance", 0.1), ("overlap", 0.25), ("backend", "openslide"), ("mask_backend", "asap")):
+    for name, value in (
+        ("tolerance", 0.1),
+        ("overlap", 0.25),
+        ("grid", "slide"),
+        ("backend", "openslide"),
+        ("mask_backend", "asap"),
+    ):
         yield f"tiling.{name}", {"tiling_fields": {name: value}}
     yield "tiling.requested_spacing_um", {"spacing": 1.0}
     yield "tiling.requested_tile_size_px", {"tile_size": 256}
@@ -195,6 +201,17 @@ def test_the_order_of_merged_mask_values_leaves_the_key_alone():
     a = _resolved(masks=annotation_masks(pixel_mapping={"background": 0, "tumor": [2, 1]}))
     b = _resolved(masks=annotation_masks(pixel_mapping={"background": 0, "tumor": [1, 2]}))
     assert _tile_key(a) == _tile_key(b)
+
+
+def test_the_slide_grid_gets_its_own_tiling_and_feature_keys():
+    """hs2p 6.1.1 added ``tiling.grid``. The contour grid, its default and the only grid
+    before it, keeps the keys pinned above. The slide grid lays other tiles, so its tiling
+    and its features get other keys."""
+    contour = _resolved(tiling_fields={"grid": "contour"})
+    slide = _resolved(tiling_fields={"grid": "slide"})
+
+    assert build_tiling_cache_key(preprocessing=slide) != build_tiling_cache_key(preprocessing=contour)
+    assert _tile_key(slide) != _tile_key(contour)
 
 
 def test_only_the_execution_precision_enters_the_key():

@@ -824,3 +824,87 @@ def test_rois_are_refused_with_a_manifest_whose_parent_row_differs(tmp_path: Pat
             cache=CacheOptions(enabled=False),
             output_dir=tmp_path / "out",
         )
+
+
+def _drop_tile_grid(root: Path) -> int:
+    """Remove ``tiling.grid`` from every JSON record under ``root``, as hs2p 6.1.0 wrote
+    them before the field existed; return the number of files changed."""
+
+    def drop(value):
+        if isinstance(value, dict):
+            if isinstance(value.get("tiling"), dict):
+                value["tiling"].pop("grid", None)
+            for item in value.values():
+                drop(item)
+        elif isinstance(value, list):
+            for item in value:
+                drop(item)
+
+    changed = 0
+    for path in sorted(root.rglob("*.json")):
+        before = json.loads(path.read_text(encoding="utf-8"))
+        after = json.loads(json.dumps(before))
+        drop(after)
+        if after != before:
+            path.write_text(json.dumps(after, indent=2, sort_keys=True), encoding="utf-8")
+            changed += 1
+    return changed
+
+
+def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """hs2p 6.1.1 added ``tiling.grid``; its default, the contour grid, is the only grid
+    hs2p 6.1.0 had. A tiling and feature cache whose records hold no grid, as hs2p 6.1.0
+    wrote them, keeps its keys and is reused whole: nothing is encoded again, and no
+    identity check fails or warns."""
+    import logging
+    import warnings
+
+    from hs2p import FilterConfig
+    from slide2vec.encoders.registry import encoder_registry
+
+    from soma.config import CacheOptions
+    from soma.testing import synthetic_cohort
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    records, _ = synthetic_cohort(tmp_path / "cohort", n=2)
+    images = ImageManifest.from_csv(records)
+    cache_root = tmp_path / "cache"
+    kwargs = dict(
+        encoder="fake",  # soma.testing's weight-free encoder
+        extraction=extraction(
+            0.5,
+            32,
+            method="otsu",
+            seg_downsample=16,
+            masks=tissue_masks(0.5),
+            filter=FilterConfig(ref_tile_size=32, a_t=1),
+            tiling_fields={"backend": "openslide"},
+        ),
+        execution=ExecutionOptions(
+            num_gpus=1, num_workers_per_gpu=0, num_preprocessing_workers=0, precision="fp32", batch_size=256
+        ),
+        cache=CacheOptions(enabled=True, root_dir=cache_root),
+    )
+    encoded: list[int] = []
+    fake = encoder_registry.require("fake")
+    original = fake.encode_tiles
+    monkeypatch.setattr(fake, "encode_tiles", lambda self, batch: encoded.append(len(batch)) or original(self, batch))
+    first = soma.extract(images, output_dir=tmp_path / "first", **kwargs)
+    assert sum(encoded) > 0
+    cache_dirs = sorted(path.relative_to(tmp_path) for path in tmp_path.glob("*cache/*/*"))
+    assert _drop_tile_grid(tmp_path / "cache") + _drop_tile_grid(tmp_path / "tiling_cache") > 0
+
+    encoded.clear()
+    caplog.set_level(logging.WARNING)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        second = soma.extract(images, output_dir=tmp_path / "second", **kwargs)
+
+    assert encoded == []
+    assert [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING] == []
+    assert sorted(path.relative_to(tmp_path) for path in tmp_path.glob("*cache/*/*")) == cache_dirs
+    for sample_id in images.sample_ids:
+        assert torch.equal(second.load(sample_id), first.load(sample_id))
