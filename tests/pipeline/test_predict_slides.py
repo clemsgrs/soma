@@ -285,3 +285,119 @@ def test_each_pixel_comes_from_the_tile_the_pick_one_rule_names(tmp_path, proven
         tile_x * stride // 8, tile_y * stride // 8, (cols - tile_x * stride) // 8, (rows - tile_y * stride) // 8
     )
     np.testing.assert_array_equal(label_map.astype(int) - 1, expected)
+
+
+# --- not predicted -------------------------------------------------------------------- #
+
+
+def test_a_slide_without_tissue_gets_an_all_zero_map_and_a_warning(tmp_path):
+    """One slide's mask is empty and another has no mask over a blank (white) slide, so
+    hs2p's tissue segmentation finds nothing: each gets a map of zeros at the slide's
+    size, a record with no tiles, and a warning naming it."""
+    height, width = 120, 150
+    empty_mask = write_mask(tmp_path / "s1_mask.tif", np.zeros((height, width)))
+    s1 = write_slide(tmp_path / "s1.tif", blocky(height, width))
+    s2 = write_slide(tmp_path / "s2.tif", np.full((height, width, 3), 255, dtype=np.uint8))
+    records = write_records(
+        tmp_path / "dataset.csv",
+        [
+            {"sample_id": "s1", "image_path": str(s1), "mask_path": str(empty_mask)},
+            {"sample_id": "s2", "image_path": str(s2), "mask_path": None},
+        ],
+    )
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    with pytest.warns(UserWarning, match="no kept tile") as caught:
+        index = soma.predict_slides(
+            output_dir=tmp_path / "predictions",
+            bundles=bundle,
+            records=records,
+            extraction={"tiling": {"backend": "tifffile"}},
+        )
+
+    assert sorted(str(w.message).split("'")[1] for w in caught if "no kept tile" in str(w.message)) == ["s1", "s2"]
+    assert list(index.sample_id) == ["s1", "s2"]
+    for row in index.itertuples():
+        label_map = read_map(tmp_path / "predictions" / row.path)
+        assert label_map.shape == (height, width)
+        assert not label_map.any()
+        assert row.num_tiles == 0
+        assert row.not_predicted_fraction == 1.0
+
+
+# --- several bundles ------------------------------------------------------------------ #
+
+
+def one_slide_cohort(tmp_path):
+    """The overlap-0 slide: 9 kept tiles at x in {32, 64, 96}, y in {0, 32, 64}."""
+    height, width = 120, 150
+    slide = write_slide(tmp_path / "s1.tif", blocky(height, width))
+    tissue = np.zeros((height, width), dtype=np.uint8)
+    tissue[0:96, 32:128] = 1
+    mask = write_mask(tmp_path / "s1_mask.tif", tissue)
+    records = write_records(
+        tmp_path / "dataset.csv", [{"sample_id": "s1", "image_path": str(slide), "mask_path": str(mask)}]
+    )
+    regions = {f"t{k}": (x, y) for k, (y, x) in enumerate((y, x) for y in (0, 32, 64) for x in (32, 64, 96))}
+    return slide, records, regions
+
+
+OVERLAP_ZERO = {"tiling": {"overlap": 0.0, "backend": "tifffile"}, "masks": {"min_coverage": {"tissue": 0.5}}}
+
+
+def tile_logits(bundle_path, slide, regions) -> dict[str, torch.Tensor]:
+    """Each tile's logits ``(C, H, W)`` from the bundle's model."""
+    model = model_of(bundle_path)
+    source = tile_pixels(slide, regions)
+    with torch.no_grad():
+        return {tid: model(pixels=source.load(tid)[None]).logits[0] for tid in regions}
+
+
+@pytest.fixture
+def encoder_forwards(monkeypatch):
+    """Counts the frozen encoder stage's forwards (one per batch it encodes)."""
+    calls = []
+    forward = soma.extract.FrozenEncoder.forward
+
+    def counted(self, pixels):
+        calls.append(int(pixels.shape[0]))
+        return forward(self, pixels)
+
+    monkeypatch.setattr(soma.extract.FrozenEncoder, "forward", counted)
+    return calls
+
+
+def test_two_bundles_write_two_maps_behind_one_encoder_forward_per_batch(tmp_path, encoder_forwards):
+    slide, records, regions = one_slide_cohort(tmp_path)
+    bundles = [save_bundle(tmp_path / name / "bundle", seed=seed) for name, seed in (("a", 0), ("b", 1))]
+    expected = {name: tile_logits(bundle, slide, regions) for name, bundle in zip("ab", bundles)}
+    encoder_forwards.clear()
+
+    index = soma.predict_slides(
+        output_dir=tmp_path / "predictions", bundles=bundles, records=records, extraction=OVERLAP_ZERO, batch_size=4
+    )
+
+    assert encoder_forwards == [4, 4, 1]  # 9 tiles in batches of 4, encoded once for both bundles
+    assert sorted(index.path) == ["a/s1.tif", "b/s1.tif"]
+    maps = {row.bundle: read_map(tmp_path / "predictions" / row.path) for row in index.itertuples()}
+    assert not np.array_equal(maps["a"], maps["b"])  # two models, two maps
+    for name, logits in expected.items():
+        for tid, (x, y) in regions.items():
+            np.testing.assert_array_equal(maps[name][y : y + TILE, x : x + TILE] - 1, logits[tid].argmax(0).numpy())
+
+
+def test_ensemble_writes_the_argmax_of_the_mean_softmax(tmp_path):
+    slide, records, regions = one_slide_cohort(tmp_path)
+    bundles = [save_bundle(tmp_path / name / "bundle", seed=seed) for name, seed in (("a", 0), ("b", 1))]
+    logits = [tile_logits(bundle, slide, regions) for bundle in bundles]
+
+    index = soma.predict_slides(
+        output_dir=tmp_path / "predictions", bundles=bundles, records=records, extraction=OVERLAP_ZERO, ensemble=True
+    )
+
+    (row,) = index.itertuples()
+    assert row.path == "ensemble/s1.tif"
+    label_map = read_map(tmp_path / "predictions" / row.path)
+    for tid, (x, y) in regions.items():
+        mean = (torch.softmax(logits[0][tid], 0) + torch.softmax(logits[1][tid], 0)) / 2
+        np.testing.assert_array_equal(label_map[y : y + TILE, x : x + TILE] - 1, mean.argmax(0).numpy())
