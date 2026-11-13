@@ -743,3 +743,30 @@ def test_a_bundle_changed_in_place_is_refused_in_the_same_directory(tmp_path, tw
 
     with pytest.raises(ValueError, match=r"bundle .*run/bundle changed since its maps were predicted into it"):
         soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
+
+
+# --- the cohort ----------------------------------------------------------------------- #
+
+
+def test_splits_select_one_subset_of_one_fold(tmp_path):
+    """No target column is needed. With ``splits``, only ``subset`` of ``fold`` is
+    predicted: here the test slide of fold 1."""
+    rows = []
+    for k in range(3):
+        slide = write_slide(tmp_path / f"s{k}.tif", blocky(96, 96, seed=k))
+        mask = write_mask(tmp_path / f"s{k}_mask.tif", np.ones((96, 96)))
+        rows.append({"sample_id": f"s{k}", "image_path": str(slide), "mask_path": str(mask)})
+    records = write_records(tmp_path / "dataset.csv", rows)
+    splits = tmp_path / "splits.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["s0", "s1", "s2"] * 2,
+            "split": ["test", "train", "tune", "train", "tune", "test"],
+            "fold": [0, 0, 0, 1, 1, 1],
+        }
+    ).to_csv(splits, index=False)
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    index = predict(tmp_path, records, bundle, splits=splits, subset="test", fold=1)
+
+    assert list(index.sample_id) == ["s2"]
