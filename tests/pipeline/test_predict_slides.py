@@ -706,3 +706,26 @@ def test_peak_memory_stays_far_below_the_raw_map(tmp_path):
     assert (row.width, row.height, row.num_tiles) == (side, side, 3 * 16)
     raw = side * side
     assert rss["peak"] - rss["before"] < raw / 2
+
+
+# --- devices -------------------------------------------------------------------------- #
+
+
+def test_devices_split_the_slides_across_one_process_each(tmp_path):
+    rows = []
+    for k in range(3):
+        slide = write_slide(tmp_path / f"s{k}.tif", blocky(96, 96, seed=k))
+        mask = write_mask(tmp_path / f"s{k}_mask.tif", np.ones((96, 96)))
+        rows.append({"sample_id": f"s{k}", "image_path": str(slide), "mask_path": str(mask)})
+    records = write_records(tmp_path / "dataset.csv", rows)
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    in_turn = soma.predict_slides(output_dir=tmp_path / "in_turn", bundles=bundle, records=records, **RESUME)
+
+    parallel = soma.predict_slides(
+        output_dir=tmp_path / "parallel", bundles=bundle, records=records, devices=["cpu", "cpu"], **RESUME
+    )
+
+    assert parallel.equals(in_turn)
+    assert maps_of(tmp_path / "parallel") == maps_of(tmp_path / "in_turn")
+    logs = sorted(path.name for path in (tmp_path / "parallel" / "logs").iterdir())
+    assert logs == ["worker_0.log", "worker_1.log"]
