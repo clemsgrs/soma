@@ -403,7 +403,7 @@ def _predicted_tiles(
             else:
                 maps = [
                     model.head.postprocess(output.logits.float())["prediction"]
-                    for model, output in zip(models, outputs)
+                    for model, output in zip(models, outputs, strict=True)
                 ]
             yield batch_origins, [np.asarray(m, dtype=np.uint8) + np.uint8(1) for m in maps]
 
