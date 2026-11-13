@@ -7,6 +7,7 @@ recipe, and everything runs on the CPU. A map is read back through hs2p; its val
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 
 import numpy as np
@@ -14,6 +15,7 @@ import pandas as pd
 import pytest
 import tifffile
 import torch
+import yaml
 
 import soma
 from soma.data.images import RegionImageSource
@@ -26,6 +28,9 @@ from soma.pipeline.build import build_grid_model, bundle_encoder_stage
 
 SPACING_UM = 0.5
 TILE = 32
+#: hs2p's readers for the slides and the masks: never cuCIM, which crashes on some
+#: synthetic TIFFs.
+TIFFFILE = {"backend": "tifffile", "mask_backend": "tifffile"}
 #: The recipe of the encoder a bundle's grids came from: ``fake`` pools 8 px patches.
 RECIPE = {"encoder": "fake", "target_size": TILE, "spacing_um": SPACING_UM, "precision": "fp32"}
 
@@ -141,7 +146,7 @@ def test_overlap_zero_writes_what_soma_predict_returns_for_each_tile(tmp_path):
         output_dir=tmp_path / "predictions",
         bundles=[bundle],
         records=records,
-        extraction={"tiling": {"overlap": 0.0, "backend": "tifffile"}, "masks": {"min_coverage": {"tissue": 0.5}}},
+        extraction={"tiling": {"overlap": 0.0, **TIFFFILE}, "masks": {"min_coverage": {"tissue": 0.5}}},
         batch_size=4,
     )
 
@@ -264,7 +269,7 @@ def test_each_pixel_comes_from_the_tile_the_pick_one_rule_names(tmp_path, proven
         output_dir=tmp_path / "predictions",
         bundles=[bundle],
         records=records,
-        extraction={"tiling": {"overlap": 0.5, "backend": "tifffile", "mask_backend": "tifffile"}},
+        extraction={"tiling": {"overlap": 0.5, **TIFFFILE}},
     )
 
     (row,) = index.itertuples()
@@ -312,7 +317,7 @@ def test_a_slide_without_tissue_gets_an_all_zero_map_and_a_warning(tmp_path):
             output_dir=tmp_path / "predictions",
             bundles=bundle,
             records=records,
-            extraction={"tiling": {"backend": "tifffile"}},
+            extraction={"tiling": dict(TIFFFILE)},
         )
 
     assert sorted(str(w.message).split("'")[1] for w in caught if "no kept tile" in str(w.message)) == ["s1", "s2"]
@@ -342,7 +347,7 @@ def one_slide_cohort(tmp_path):
     return slide, records, regions
 
 
-OVERLAP_ZERO = {"tiling": {"overlap": 0.0, "backend": "tifffile"}, "masks": {"min_coverage": {"tissue": 0.5}}}
+OVERLAP_ZERO = {"tiling": {"overlap": 0.0, **TIFFFILE}, "masks": {"min_coverage": {"tissue": 0.5}}}
 
 
 def tile_logits(bundle_path, slide, regions) -> dict[str, torch.Tensor]:
@@ -417,7 +422,7 @@ def cohort(tmp_path):
 
 
 def predict(tmp_path, records, bundles, **kwargs):
-    kwargs.setdefault("extraction", {"tiling": {"backend": "tifffile"}})
+    kwargs.setdefault("extraction", {"tiling": dict(TIFFFILE)})
     return soma.predict_slides(output_dir=tmp_path / "predictions", bundles=bundles, records=records, **kwargs)
 
 
@@ -434,7 +439,7 @@ def test_the_tile_is_the_bundles_and_its_margin_whole(tmp_path, cohort, tiling, 
     bundle = save_bundle(tmp_path / "run" / "bundle")
 
     with pytest.raises(ValueError, match=match):
-        predict(tmp_path, cohort, bundle, extraction={"tiling": {"backend": "tifffile", **tiling}})
+        predict(tmp_path, cohort, bundle, extraction={"tiling": {**TIFFFILE, **tiling}})
     assert not (tmp_path / "predictions").exists()
 
 
@@ -442,7 +447,7 @@ def test_a_plan_s_own_tile_size_and_spacing_are_accepted(tmp_path, cohort):
     """``plan.yaml`` spells out the bundle's tile size and spacing, so setting them to
     the bundle's own values is what a replay does, and is accepted."""
     bundle = save_bundle(tmp_path / "run" / "bundle")
-    tiling = {"backend": "tifffile", "requested_tile_size_px": TILE, "requested_spacing_um": SPACING_UM}
+    tiling = {**TIFFFILE, "requested_tile_size_px": TILE, "requested_spacing_um": SPACING_UM}
 
     index = predict(tmp_path, cohort, bundle, extraction={"tiling": tiling})
 
@@ -498,3 +503,110 @@ def test_a_slide_coarser_than_the_read_spacing_is_refused(tmp_path):
 
     with pytest.raises(ValueError, match="slide 's1' is at 1 um/px, coarser than the bundles' read spacing of 0.5"):
         predict(tmp_path, records, bundle)
+
+
+# --- resume and drift ----------------------------------------------------------------- #
+
+
+def sha256(path) -> str:
+    import hashlib
+
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.fixture
+def two_slides(tmp_path):
+    rows = []
+    for k, sample_id in enumerate(("s1", "s2")):
+        slide = write_slide(tmp_path / f"{sample_id}.tif", blocky(96, 96, seed=k))
+        mask = write_mask(tmp_path / f"{sample_id}_mask.tif", np.ones((96, 96)))
+        rows.append({"sample_id": sample_id, "image_path": str(slide), "mask_path": str(mask)})
+    return write_records(tmp_path / "dataset.csv", rows)
+
+
+RESUME = {"extraction": {"tiling": {"overlap": 0.5, **TIFFFILE}}, "batch_size": 4}
+
+
+def maps_of(output_dir) -> dict[str, str]:
+    return {path.name: sha256(path) for path in sorted((output_dir / "run").glob("*.tif"))}
+
+
+def test_a_stopped_run_resumes_to_the_bytes_of_an_uninterrupted_one(tmp_path, two_slides, encoder_forwards, monkeypatch):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    soma.predict_slides(output_dir=tmp_path / "whole", bundles=bundle, records=two_slides, **RESUME)
+    per_slide = len(encoder_forwards) // 2
+    encoder_forwards.clear()
+
+    forward = soma.extract.FrozenEncoder.forward
+
+    def stops_in_the_second_slide(self, pixels):
+        if len(encoder_forwards) > per_slide:
+            raise KeyboardInterrupt
+        return forward(self, pixels)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(soma.extract.FrozenEncoder, "forward", stops_in_the_second_slide)
+        with pytest.raises(KeyboardInterrupt):
+            soma.predict_slides(output_dir=tmp_path / "stopped", bundles=bundle, records=two_slides, **RESUME)
+    stopped = tmp_path / "stopped"
+    assert sorted(path.name for path in (stopped / "run").iterdir()) == ["s1.json", "s1.tif"]
+    encoder_forwards.clear()
+
+    index = soma.predict_slides(output_dir=stopped, bundles=bundle, records=two_slides, **RESUME)
+
+    assert len(encoder_forwards) == per_slide  # only s2 was predicted again
+    assert maps_of(stopped) == maps_of(tmp_path / "whole")
+    assert list(index.sample_id) == ["s1", "s2"]
+    assert pd.read_parquet(stopped / "index.parquet").equals(index)
+
+
+@pytest.mark.parametrize("damage", ["missing", "truncated"])
+def test_a_map_without_a_whole_record_is_predicted_again(tmp_path, two_slides, encoder_forwards, damage):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+    soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
+    before = maps_of(output_dir)
+    per_slide = len(encoder_forwards) // 2
+    record = output_dir / "run" / "s1.json"
+    if damage == "missing":
+        record.unlink()
+    else:
+        record.write_text(record.read_text()[: len(record.read_text()) // 2])
+    encoder_forwards.clear()
+
+    soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
+
+    assert len(encoder_forwards) == per_slide  # s1 again, not s2
+    assert maps_of(output_dir) == before
+    assert json.loads(record.read_text())["sample_id"] == "s1"
+
+
+def test_a_relaunch_of_a_finished_plan_predicts_nothing(tmp_path, two_slides, encoder_forwards):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+    first = soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
+    encoder_forwards.clear()
+
+    replayed = soma.predict_slides(
+        **soma.pipeline.slide_prediction.slide_prediction_kwargs(yaml.safe_load((output_dir / "plan.yaml").read_text()))
+    )
+
+    assert encoder_forwards == []
+    assert replayed.equals(first)
+
+
+def test_a_changed_overlap_is_refused_in_the_same_directory(tmp_path, two_slides):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+    soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
+    plan = (output_dir / "plan.yaml").read_text()
+
+    with pytest.raises(ValueError, match=r"differs from the current plan \(differing keys: \['extraction.tiling.overlap'\]\)"):
+        soma.predict_slides(
+            output_dir=output_dir,
+            bundles=bundle,
+            records=two_slides,
+            extraction={"tiling": {"overlap": 0.25, **TIFFFILE}},
+            batch_size=4,
+        )
+    assert (output_dir / "plan.yaml").read_text() == plan
