@@ -64,6 +64,8 @@ COHORT_KEYS = ("records", "splits", "subset", "fold")
 PLACEMENT_KEYS = ("devices", "num_workers")
 #: The tile fields the bundles decide.
 BUNDLE_TILING_KEYS = ("requested_tile_size_px", "requested_spacing_um")
+#: The ``extraction.segmentation`` paths, stored absolute in the plan.
+SAM2_PATH_KEYS = ("sam2_checkpoint_path", "sam2_config_path")
 _DEFAULT_PIXEL_MAPPING = {"background": [0], "tissue": [1]}
 
 
@@ -314,7 +316,7 @@ def _shared_tile(infos: Sequence[Mapping[str, Any]]) -> tuple[int, float, float]
 def _extraction(given, *, tile_px: int, spacing_um: float, tolerance: float):
     """The ``extraction`` section as a ``slide2vec.PreprocessingConfig``: the tile size and
     read spacing from the bundles, the read tolerance from them unless set, the slide grid,
-    and the binary tissue vocabulary when ``masks`` names none."""
+    absolute SAM2 paths, and the binary tissue vocabulary when ``masks`` names none."""
     import slide2vec
 
     data = copy.deepcopy(plain(given)) if given is not None else {}
@@ -338,6 +340,12 @@ def _extraction(given, *, tile_px: int, spacing_um: float, tolerance: float):
         "requested_spacing_um": spacing_um,
         "grid": "slide",
     }
+    segmentation = data.get("segmentation")
+    if isinstance(segmentation, Mapping):
+        data["segmentation"] = {
+            **segmentation,
+            **{key: _absolute(segmentation[key]) for key in SAM2_PATH_KEYS if segmentation.get(key) is not None},
+        }
     masks = data.get("masks")
     if isinstance(masks, Mapping) and masks.get("pixel_mapping") is None:
         data["masks"] = {**masks, "pixel_mapping": dict(_DEFAULT_PIXEL_MAPPING)}

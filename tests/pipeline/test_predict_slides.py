@@ -459,6 +459,32 @@ def test_a_plan_s_own_tile_size_and_spacing_are_accepted(tmp_path, cohort):
     assert list(index.sample_id) == ["s1"]
 
 
+def test_relative_sam2_paths_are_stored_absolute_and_replay_from_anywhere(tmp_path, cohort, monkeypatch):
+    """A relative SAM2 checkpoint or config path resolves against the working directory,
+    so ``plan.yaml`` replays to the same plan from another one."""
+    from soma.pipeline.slide_prediction import resolve_slide_prediction, slide_prediction_kwargs
+
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    segmentation = {"method": "sam2", "sam2_checkpoint_path": "sam2/model.pt", "sam2_config_path": "sam2/model.yaml"}
+    monkeypatch.chdir(tmp_path)
+
+    plan = resolve_slide_prediction(
+        output_dir="predictions",
+        bundles=bundle,
+        records=cohort,
+        extraction={"tiling": dict(TIFFFILE), "segmentation": segmentation},
+    )
+
+    resolved = plan["extraction"]["segmentation"]
+    assert resolved["sam2_checkpoint_path"] == str(tmp_path.resolve() / "sam2" / "model.pt")
+    assert resolved["sam2_config_path"] == str(tmp_path.resolve() / "sam2" / "model.yaml")
+    saved = yaml.safe_load(yaml.safe_dump(plan, sort_keys=False))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    assert resolve_slide_prediction(**slide_prediction_kwargs(saved)) == plan
+
+
 @pytest.mark.parametrize("given", [{"subset": "test"}, {"fold": 0}], ids=["subset", "fold"])
 def test_subset_and_fold_need_splits(tmp_path, cohort, given):
     bundle = save_bundle(tmp_path / "run" / "bundle")
