@@ -157,6 +157,15 @@ def test_a_hand_built_model_saves_but_cannot_be_rebuilt_from_its_bundle(tmp_path
         soma.load(path)
 
 
+def test_a_set_shape_bundle_has_no_encoder_stage(tmp_path: Path):
+    from soma.pipeline.build import bundle_encoder_stage
+
+    result, _ = _fitted(tmp_path)
+    bundle = soma.load(soma.save(result, tmp_path / "bundle"))
+    with pytest.raises(ValueError, match="grid bundle"):
+        bundle_encoder_stage(bundle)
+
+
 def _grid_model(encoder_spec):
     geometry = GridGeometry.from_sizes(target_size=32, patch_size=8)
     torch.manual_seed(0)

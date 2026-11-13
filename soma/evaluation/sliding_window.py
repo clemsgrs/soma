@@ -179,13 +179,15 @@ class SlidingWindowSegmentationPredictor:
         """Build the fold ensemble from loaded bundles (:func:`soma.load`, one per fold).
 
         A bundle trained live carries its frozen encoder stage (bundles loaded together
-        share one stage). A bundle trained on cached grids has none, so ``encoder`` — the
-        stage that extracted those grids, e.g. :func:`soma.pipeline.build.live_encoder_for`
-        of the run's config — is put in front of its adaptor, decoder and head; its frame
-        must match the one the bundle was trained on. ``spacing_um`` defaults to the read
-        spacing the bundles record.
+        share one stage). A bundle trained on cached grids has none: the stage built from
+        the encoder recipe it records (:func:`soma.pipeline.build.bundle_encoder_stage`)
+        is put in front of its adaptor, decoder and head, one stage for every bundle with
+        the same recipe. ``encoder`` replaces that stage; its frame must match the one the
+        bundle was trained on. ``spacing_um`` defaults to the read spacing the bundles
+        record.
         """
         from soma.models.model import DenseModel
+        from soma.pipeline.build import bundle_encoder_stage
 
         if not bundles:
             raise ValueError("SlidingWindowSegmentationPredictor needs at least one bundle")
@@ -195,17 +197,15 @@ class SlidingWindowSegmentationPredictor:
         for bundle in bundles:
             model = bundle.model
             if model.encoder is None:
-                if encoder is None:
+                stage = encoder
+                if stage is None:
+                    stage = bundle_encoder_stage(bundle)
+                elif stage.geometry.layout != model.head.geometry.layout:
                     raise ValueError(
-                        "this bundle was trained on cached grids and carries no encoder stage; "
-                        "pass encoder= (the stage that extracted them)"
-                    )
-                if encoder.geometry.layout != model.head.geometry.layout:
-                    raise ValueError(
-                        f"encoder frame {encoder.geometry.layout} differs from the frame the "
+                        f"encoder frame {stage.geometry.layout} differs from the frame the "
                         f"bundle was trained on, {model.head.geometry.layout}"
                     )
-                model = DenseModel(model.decoder, model.head, encoder=encoder, adaptor=model.adaptor)
+                model = DenseModel(model.decoder, model.head, encoder=stage, adaptor=model.adaptor)
             models.append(model.to(device).eval())
         if spacing_um is None:
             spacing_um = bundles[0].preprocessing.get("spacing_um")

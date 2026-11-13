@@ -166,23 +166,35 @@ is a directory of four files:
   adaptor sections, and the encoder of a live run).
 - ``preprocessing.json``: what scoring needs beyond the model: the task family,
   class names, target schema, metrics, and for grid runs the grid geometry, read
-  spacing and tile size. A detection bundle also records the score threshold
-  chosen on tune and the matching distance.
+  spacing, tile size and ``encoder``, the recipe of the encoder the grids came
+  from (the :func:`soma.extract.live_encoder` arguments). A detection bundle also
+  records the score threshold chosen on tune and the matching distance.
 - ``provenance.json``: the soma, slide2vec and hs2p versions, the component
   record (see :ref:`component-record`), the selected epoch and its monitor
   value, the fold, the run id and the identity of the feature source (the cache
   key and feature identity, not a path).
 
 :func:`soma.load` rebuilds the model in eval mode and returns a
-:class:`soma.ModelBundle` with ``model``, ``preprocessing`` and ``provenance``.
-A live run's frozen encoder is built when the bundle loads, so missing encoder
-weights fail at load time. A bundle written by another soma major version is
-refused; another minor or patch version loads with a warning::
+:class:`soma.ModelBundle` with ``model``, ``preprocessing``, ``provenance`` and
+the ``path`` it was loaded from. A live run's frozen encoder is built when the
+bundle loads, so missing encoder weights fail at load time. A bundle written by
+another soma major version is refused; another minor or patch version loads with
+a warning::
 
    import soma
 
    bundle = soma.load("runs/.../fold_0/bundle")
    predictions = soma.predict(bundle.model, loader)
+
+A grid bundle names its encoder, so the bundle alone can predict from pixels.
+``soma.pipeline.build.bundle_encoder_stage(bundle)`` returns the frozen encoder
+stage: the one a live bundle carries, or, for a bundle trained on cached grids,
+one built from the recorded recipe. Loading a cached bundle builds no encoder;
+the helper does, once for all bundles with the same recipe. The helper refuses a
+bundle trained on a composite of several encoders, which has no single encoder
+stage. A cached bundle written by an older soma records no recipe: load it from
+its run directory, or pass that directory as ``run_dir=``, and the run's
+``plan.yaml`` supplies the recipe.
 
 ``soma.save`` writes the bundle atomically: a reader sees the previous bundle
 or the new one, never a partial one. A model built by hand in a notebook can be

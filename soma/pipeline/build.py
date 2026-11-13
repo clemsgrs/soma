@@ -109,6 +109,7 @@ __all__ = [
     "build_grid_model",
     "build_set_fold",
     "build_set_model",
+    "bundle_encoder_stage",
     "extraction_options",
     "extraction_unit",
     "live_encoder_for",
@@ -1332,6 +1333,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
     else:
         head_spec, point_source = _detection_head_spec(inputs, geometry, all_ids)
     encoder_identity = _encoder_identity(plan)
+    encoder_recipe = _encoder_recipe(plan, feature_store)
     model_spec = {
         "feature_dim": feature_dim,
         "decoder": {"name": decoder.name, "params": dict(decoder.params)},
@@ -1339,7 +1341,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
         "normalization": normalization,
         "projection": projection,
         "encoder_identity": encoder_identity,
-        "encoder": live_encoder_spec(plan) if live else None,
+        "encoder": encoder_recipe if live else None,
     }
 
     def fit_adaptor(fold_dir: Path) -> FeatureAdaptor | None:
@@ -1464,6 +1466,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
             "tile_size": _jsonable(geometry.target_size),
             "spacing_um": head_spec["params"].get("spacing_um"),
             "feature_mode": "live" if live else "cached",
+            "encoder": _jsonable(encoder_recipe),
             "metrics": _jsonable(metrics(head)),
         }
         if family == "segmentation":
@@ -1688,8 +1691,8 @@ def extraction_options(plan: Plan, *, run_dir: Path) -> dict[str, Any]:
 
 
 def live_encoder_spec(plan: Plan) -> dict[str, Any]:
-    """The :func:`soma.extract.live_encoder` arguments a ``features.kind='live'`` plan
-    describes: what a live bundle records to rebuild its frozen encoder stage."""
+    """The :func:`soma.extract.live_encoder` arguments the plan's encoder describes: what a
+    live run re-encodes with, and the encoder recipe every grid bundle records."""
     from soma.models.encoders.validation import resolve_encoder_precision
 
     encoder = plan.features.encoder
@@ -1713,6 +1716,97 @@ def live_encoder_spec(plan: Plan) -> dict[str, Any]:
         "attention_blocks": tuple(dense.attention_blocks),
         "attention_include_registers": bool(dense.attention_include_registers),
     }
+
+
+def _encoder_recipe(plan: Plan, source: Any = None) -> dict[str, Any] | None:
+    """What a grid bundle records as its encoder (``preprocessing.json``'s ``encoder``):
+    the :func:`live_encoder_spec` of the plan's encoder, ``{"composite": True}`` for a
+    composite of several encoders' grids, or ``None`` when the plan names no encoder (its
+    grids were supplied)."""
+    if plan.features.is_composite or isinstance(source, CompositeDenseFeatureStore):
+        return {"composite": True}
+    if plan.features.encoder is None:
+        return None
+    return live_encoder_spec(plan)
+
+
+def bundle_encoder_stage(bundle, *, run_dir: str | Path | None = None):
+    """The frozen encoder stage that turns pixels into the grids ``bundle`` was trained on.
+
+    ``bundle`` is a loaded grid bundle (:func:`soma.load`). A bundle trained live carries
+    its stage, built when it loaded. A bundle trained on cached grids records the recipe
+    of the encoder that extracted them (the :func:`soma.extract.live_encoder` arguments),
+    and the stage is built from it here, not at load time. Bundles with the same recipe
+    share one stage while it is in use.
+
+    A cached grid bundle written before soma recorded the recipe takes it from the
+    ``plan.yaml`` of the run that trained it: ``run_dir``, or else the run directory the
+    bundle was loaded from (``<run>/bundle`` or ``<run>/fold_<k>/bundle``).
+
+    Refused: a set-shape bundle; a bundle trained on a composite of several encoders,
+    which has no single stage; a bundle whose run was given its grids and named no
+    encoder; and a recipe whose frame differs from the one the bundle was trained on.
+    """
+    model = bundle.model
+    where = _describe(bundle)
+    if not isinstance(model, DenseModel):
+        raise ValueError(f"{where} is a set-shape bundle; only a grid bundle has an encoder stage.")
+    if model.encoder is not None:
+        return model.encoder
+    if "encoder" in bundle.preprocessing:
+        recipe = bundle.preprocessing["encoder"]
+    else:
+        recipe = _encoder_recipe(Plan.from_yaml(_run_plan_file(bundle, run_dir)))
+    if recipe is None:
+        raise ValueError(
+            f"{where} names no encoder: its run was given the grids and its config named no "
+            "encoder (features.encoder), so nothing records which encoder made them."
+        )
+    if recipe.get("composite"):
+        raise ValueError(
+            f"{where} was trained on a composite of several encoders' grids. A composite "
+            "encoder has no single frozen encoder stage, so the bundle cannot encode pixels."
+        )
+    stage = _live_stage(recipe)
+    if stage.geometry.layout != model.head.geometry.layout:
+        raise ValueError(
+            f"{where} records the encoder '{recipe['encoder']}', whose frame "
+            f"{stage.geometry.layout} differs from the frame the bundle was trained on, "
+            f"{model.head.geometry.layout}: its run was given grids this encoder did not make."
+        )
+    return stage
+
+
+def _describe(bundle) -> str:
+    return "this bundle" if bundle.path is None else f"bundle {bundle.path}"
+
+
+def _run_plan_file(bundle, run_dir: str | Path | None) -> Path:
+    """The ``plan.yaml`` that supplies the encoder recipe ``bundle`` does not record."""
+    from soma.pipeline.layout import PLAN_FILENAME
+
+    where = _describe(bundle)
+    if run_dir is not None:
+        plan_file = Path(run_dir) / PLAN_FILENAME
+        if not plan_file.is_file():
+            raise ValueError(
+                f"{where} records no encoder recipe, and {run_dir} has no {PLAN_FILENAME}: "
+                "pass the run directory that trained it."
+            )
+        return plan_file
+    if bundle.path is not None:
+        bundle_dir = Path(bundle.path).resolve()
+        candidates = [bundle_dir.parent]
+        if bundle_dir.parent.name.startswith("fold_"):
+            candidates.append(bundle_dir.parent.parent)
+        for candidate in candidates:
+            if (candidate / PLAN_FILENAME).is_file():
+                return candidate / PLAN_FILENAME
+    raise ValueError(
+        f"{where} was trained on cached grids and records no encoder recipe: soma wrote it "
+        "before bundles recorded one. Load it from the run directory that trained it, or "
+        f"pass that directory as run_dir=; its {PLAN_FILENAME} supplies the recipe."
+    )
 
 
 def live_encoder_for(plan: Plan):
