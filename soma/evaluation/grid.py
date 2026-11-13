@@ -573,8 +573,10 @@ def _reduce(resolved, counts_for: Callable[[dict[str, Any]], torch.Tensor], num_
 
 
 def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[str] = ()):
-    """Score :class:`PointPredictions` or :class:`LabelMapPredictions` (see :func:`soma.evaluate`)."""
+    """Score :class:`PointPredictions`, :class:`LabelMapPredictions` or
+    :class:`~soma.evaluation.SlideLabelMaps` (see :func:`soma.evaluate`)."""
     from soma.evaluation.scoring import Evaluation
+    from soma.evaluation.slide_label_maps import SlideLabelMaps, slide_label_map_counts
 
     if subgroups:
         raise ValueError(
@@ -584,6 +586,7 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
     _check_ids(predictions, targets)
     family = predictions.task_family
     resolved = _resolve_grid_metrics(metrics, family)
+    per_sample: list[dict[str, Any]] = []
     if isinstance(predictions, PointPredictions):
         loaded = _loaded_points(targets, predictions.sample_ids)
         cache: dict[tuple, torch.Tensor] = {}
@@ -595,39 +598,46 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
                     predictions, targets, matching=key[0], match_distance=key[1], _loaded=loaded
                 )
             return cache[key]
-    elif isinstance(predictions, LabelMapPredictions):
+    elif isinstance(predictions, (LabelMapPredictions, SlideLabelMaps)):
         if any(params for _, _, params in resolved if any(k in params for k in _MATCH_PARAMS)):
             raise ValueError("matching / match_distance apply to point predictions only")
-        rows = []
-        for sample_id in predictions.sample_ids:
-            target = targets.load(sample_id)
-            prediction = predictions[sample_id]
-            if tuple(prediction.shape) != tuple(target.shape):
-                raise ValueError(
-                    f"label map for '{sample_id}' is {tuple(prediction.shape)} but its target is "
-                    f"{tuple(target.shape)}"
-                )
-            try:
-                rows.append(
-                    label_map_counts(
-                        prediction, target, num_classes=predictions.num_classes,
-                        ignore_index=predictions.ignore_index,
-                    )
-                )
-            except ValueError as error:
-                raise ValueError(f"label map for '{sample_id}': {error}") from error
-        counts = (
-            torch.from_numpy(np.stack(rows)).to(torch.long)
-            if rows
-            else torch.zeros(0, predictions.num_classes, 3, dtype=torch.long)
-        )
+        if isinstance(predictions, SlideLabelMaps):
+            counts, per_sample = slide_label_map_counts(predictions, targets)
+        else:
+            counts = _label_map_counts_of(predictions, targets)
+        counts = torch.from_numpy(counts).to(torch.long)
 
         def counts_for(match: dict[str, Any]) -> torch.Tensor:
             return counts
     else:  # pragma: no cover - dispatch guards the type
         raise TypeError(f"not a grid prediction noun: {type(predictions).__name__}")
     values = _reduce(resolved, counts_for, predictions.num_classes) if predictions.sample_ids else {}
-    return Evaluation(metrics=values, task_family=family, num_samples=len(predictions.sample_ids))
+    return Evaluation(
+        metrics=values, task_family=family, num_samples=len(predictions.sample_ids), per_sample=per_sample
+    )
+
+
+def _label_map_counts_of(predictions: LabelMapPredictions, targets) -> np.ndarray:
+    """Each sample's ``(C, 3)`` counts, stacked in ``predictions.sample_ids`` order."""
+    rows = []
+    for sample_id in predictions.sample_ids:
+        target = targets.load(sample_id)
+        prediction = predictions[sample_id]
+        if tuple(prediction.shape) != tuple(target.shape):
+            raise ValueError(
+                f"label map for '{sample_id}' is {tuple(prediction.shape)} but its target is "
+                f"{tuple(target.shape)}"
+            )
+        try:
+            rows.append(
+                label_map_counts(
+                    prediction, target, num_classes=predictions.num_classes,
+                    ignore_index=predictions.ignore_index,
+                )
+            )
+        except ValueError as error:
+            raise ValueError(f"label map for '{sample_id}': {error}") from error
+    return np.stack(rows) if rows else np.zeros((0, predictions.num_classes, 3), dtype=np.int64)
 
 
 # --------------------------------------------------------------------------------------

@@ -169,11 +169,16 @@ def build_cli_rst() -> str:
         ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]``
            Score saved predictions against the targets in ``dataset.csv``,
            joined by ``sample_id``; no run directory is needed. ``PREDICTIONS``
-           is a predictions parquet, a points parquet (detection), or a
-           label-map directory (segmentation). A predictions parquet is scored
+           is a predictions parquet, a points parquet (detection), a
+           label-map directory (segmentation), or a ``soma predict`` output
+           (whole-slide segmentation). A predictions parquet is scored
            against the cohort's target columns, points against the files in its
            ``points_path`` column, and label maps against the class-index masks
-           in its ``label_mask_path`` column. ``--splits``
+           in its ``label_mask_path`` column. A ``soma predict`` output with one
+           bundle's maps, or one of its bundle directories, is scored against
+           the annotation rasters in ``label_mask_path``, read with the class
+           scheme each map records; a second table gives each slide's annotated
+           pixels and the share of them not predicted. ``--splits``
            selects one split (default ``test``) of one fold (default ``0``);
            without it every row of the cohort is a target. Every prediction
            needs a target and every target a prediction. ``--metrics`` takes

@@ -1032,30 +1032,48 @@ def _evaluation_targets(args: argparse.Namespace, predictions):
 
 
 def _read_predictions(path: str):
-    """A label-map directory, a points parquet, or a set-shape predictions parquet."""
+    """A label-map directory, a ``soma predict`` output (whole-slide label maps), a points
+    parquet, or a set-shape predictions parquet."""
+    from soma.evaluation import LabelMapPredictions, PointPredictions, Predictions, SlideLabelMaps
+
+    location = Path(path)
+    if location.is_dir():
+        index = location / "index.parquet"
+        if index.is_file() and _soma_kind(index) == "label_maps":
+            return LabelMapPredictions.load(location)
+        return SlideLabelMaps(location)
+    if _soma_kind(location) == "points":
+        return PointPredictions.from_parquet(location)
+    return Predictions.from_parquet(location)
+
+
+def _soma_kind(path: Path) -> str | None:
+    """The ``kind`` a parquet's soma metadata records, if any."""
     import json as _json
 
     import pyarrow.parquet as pq
 
-    from soma.evaluation import LabelMapPredictions, PointPredictions, Predictions
-
-    location = Path(path)
-    if location.is_dir():
-        return LabelMapPredictions.load(location)
-    raw = (pq.read_schema(location).metadata or {}).get(b"soma")
-    if raw is not None and _json.loads(raw).get("kind") == "points":
-        return PointPredictions.from_parquet(location)
-    return Predictions.from_parquet(location)
+    raw = (pq.read_schema(path).metadata or {}).get(b"soma")
+    return None if raw is None else _json.loads(raw).get("kind")
 
 
 def _evaluation_grid_targets(args: argparse.Namespace, predictions):
     """The annotation source a grid noun scores against: the cohort CSV's
     ``label_mask_path`` / ``points_path`` columns, restricted to one split (or every row)."""
-    from soma.data import AnnotationManifest, Cohort, LabelMapSource, PointSource
-    from soma.evaluation import LabelMapPredictions
+    from soma.data import AnnotationManifest, Cohort, ImageManifest, LabelMapSource, PointSource
+    from soma.evaluation import LabelMapPredictions, SlideLabelMaps
 
     annotations = AnnotationManifest.from_csv(args.cohort)
-    if isinstance(predictions, LabelMapPredictions):
+    if isinstance(predictions, SlideLabelMaps):
+        # Aligned to the slides, read with the backends the prediction used.
+        source = LabelMapSource.from_manifests(
+            annotations,
+            ImageManifest.from_csv(args.cohort),
+            size=(0, 0),
+            backend=predictions.mask_backend,
+            image_backend=predictions.backend,
+        )
+    elif isinstance(predictions, LabelMapPredictions):
         first = predictions[predictions.sample_ids[0]] if predictions.sample_ids else None
         size = (0, 0) if first is None else tuple(int(v) for v in first.shape)
         source = LabelMapSource.from_manifests(annotations, size=size)
@@ -1076,11 +1094,11 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     from rich.console import Console
     from rich.table import Table
 
-    from soma.evaluation import LabelMapPredictions, PointPredictions, evaluate
+    from soma.evaluation import LabelMapPredictions, PointPredictions, SlideLabelMaps, evaluate
 
     try:
         predictions = _read_predictions(args.predictions)
-        if isinstance(predictions, (LabelMapPredictions, PointPredictions)):
+        if isinstance(predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps)):
             targets = _evaluation_grid_targets(args, predictions)
         else:
             targets = _evaluation_targets(args, predictions)
@@ -1103,6 +1121,13 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     for name, value in evaluation.metrics.items():
         table.add_row(name, f"{value:.4f}" if isinstance(value, float) else str(value))
     Console().print(table)
+    if evaluation.per_sample:
+        slides = Table(title="Per slide", show_header=True, header_style="bold")
+        for column in ("Slide", "Annotated px", "Not predicted"):
+            slides.add_column(column, justify="left" if column == "Slide" else "right")
+        for row in evaluation.per_sample:
+            slides.add_row(row["sample_id"], str(row["annotated_px"]), f"{row['not_predicted_fraction']:.4f}")
+        Console().print(slides)
     if args.out is not None:
         evaluation.to_json(args.out)
         print(f"Evaluation written to {args.out}")
@@ -1116,15 +1141,17 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
             "Score predictions against a cohort's targets, joined by sample_id. Every "
             "predicted sample needs a target and every target a prediction. Set-shape "
             "predictions score against dataset.csv's target columns; label-map directories "
-            "against its label_mask_path rasters (class indices) and point predictions "
-            "against its points_path files."
+            "against its label_mask_path rasters (class indices); soma predict outputs "
+            "against its label_mask_path annotation rasters, read with the class scheme each "
+            "map records; and point predictions against its points_path files."
         ),
     )
     parser.add_argument(
         "predictions",
         help=(
-            "Predictions parquet (sample_id + the head's columns), a points parquet, or a "
-            "label-map directory (PNGs + index.parquet)."
+            "Predictions parquet (sample_id + the head's columns), a points parquet, a "
+            "label-map directory (PNGs + index.parquet), or a soma predict output directory "
+            "with one bundle's maps (or one of its bundle directories)."
         ),
     )
     parser.add_argument("--cohort", required=True, help="dataset.csv holding the targets.")
@@ -1232,7 +1259,7 @@ def _print_top_level_help() -> None:
         "  prepare-croma  acquire and decode the pinned PathoROB tile sources\n"
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
         "  leaderboard  render a faceted view over the run dirs under an output root\n"
-        "  evaluate     score a predictions parquet against a cohort's targets\n"
+        "  evaluate     score predictions against a cohort's targets\n"
         "  predict      write segmentation label maps over whole slides with trained bundles\n"
         "  compact-index  rewrite the append-only runs.csv with one row per run\n"
         "\n"

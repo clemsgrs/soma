@@ -8,116 +8,45 @@ recipe, and everything runs on the CPU. A map is read back through hs2p; its val
 from __future__ import annotations
 
 import json
-import os
 import shutil
-import subprocess
-import sys
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
-import tifffile
 import torch
 import yaml
 
 import soma
+from soma.data import build_label_remap
 from soma.data.images import RegionImageSource
 from soma.data.manifests import ImageEntry
-from soma.learn import DenseLearner, FitResult
 from soma.learn.grid import GridBatch
 from soma.models import DenseModel
 from soma.models.decoders.base import Decoder
-from soma.pipeline.build import build_grid_model, bundle_encoder_stage
-
-SPACING_UM = 0.5
-TILE = 32
-#: hs2p's readers for the slides and the masks: never cuCIM, which crashes on some
-#: synthetic TIFFs.
-TIFFFILE = {"backend": "tifffile", "mask_backend": "tifffile"}
-#: The recipe of the encoder a bundle's grids came from: ``fake`` pools 8 px patches.
-RECIPE = {"encoder": "fake", "target_size": TILE, "spacing_um": SPACING_UM, "precision": "fp32"}
+from soma.pipeline.build import bundle_encoder_stage
+from tests.whole_slides import (
+    MEMORY_PRELUDE,
+    RECIPE,
+    SPACING_UM,
+    TIFFFILE,
+    TILE,
+    blocky,
+    peak_rss_of,
+    read_map,
+    save_bundle,
+    write_large_slide,
+    write_mask,
+    write_pyramid,
+    write_records,
+    write_slide,
+)
 
 
 @pytest.fixture(autouse=True)
 def cpu_only(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
-
-
-def _px_per_cm(spacing_um: float) -> float:
-    return 1e4 / spacing_um
-
-
-def write_slide(path, image: np.ndarray, *, spacing_um: float = SPACING_UM):
-    """A single-level tiled RGB TIFF at ``spacing_um``."""
-    tifffile.imwrite(
-        path,
-        image,
-        photometric="rgb",
-        tile=(16, 16),
-        resolution=(_px_per_cm(spacing_um), _px_per_cm(spacing_um)),
-        resolutionunit="CENTIMETER",
-    )
-    return path
-
-
-def write_mask(path, mask: np.ndarray, *, spacing_um: float = SPACING_UM):
-    """A single-level tiled tissue mask (1 = tissue) at ``spacing_um``."""
-    tifffile.imwrite(
-        path,
-        mask.astype(np.uint8),
-        tile=(16, 16),
-        resolution=(_px_per_cm(spacing_um), _px_per_cm(spacing_um)),
-        resolutionunit="CENTIMETER",
-    )
-    return path
-
-
-def blocky(height: int, width: int, *, seed: int = 0, block: int = 8) -> np.ndarray:
-    """An RGB image of random ``block`` px squares: every patch the encoder pools differs."""
-    rng = np.random.default_rng(seed)
-    cells = rng.integers(0, 256, size=(-(-height // block), -(-width // block), 3), dtype=np.uint8)
-    return np.ascontiguousarray(cells.repeat(block, 0).repeat(block, 1)[:height, :width])
-
-
-def write_records(path, rows: list[dict]) -> str:
-    pd.DataFrame(rows).to_csv(path, index=False)
-    return str(path)
-
-
-def save_bundle(path, *, seed: int = 0, num_classes: int = 3, decoder=None, **preprocessing):
-    """A segmentation bundle over the ``fake`` encoder's grids, with random weights."""
-    stage = soma.extract.live_encoder(**RECIPE)
-    torch.manual_seed(seed)
-    model = build_grid_model(
-        feature_dim=stage.feature_dim,
-        decoder=decoder or {"name": "linear", "params": {}},
-        head={"name": "segmentation", "params": {"num_classes": num_classes, "geometry": stage.geometry}},
-    )
-    fit = FitResult(DenseLearner(model), pd.DataFrame(), 0, ("loss", 0.0), None, 0)
-    recorded = {
-        "shape": "grid",
-        "task_family": "segmentation",
-        "num_classes": num_classes,
-        "class_names": [f"class_{k}" for k in range(num_classes)],
-        "tile_size": [TILE, TILE],
-        "spacing_um": SPACING_UM,
-        "encoder": dict(RECIPE),
-        **preprocessing,
-    }
-    return soma.save(fit, path, preprocessing=recorded)
-
-
-def read_map(path) -> np.ndarray:
-    """The base level of a written label TIFF, read through hs2p."""
-    from hs2p.wsi.wsi import WSI
-
-    wsi = WSI(path=path, backend="tifffile")
-    width, height = wsi.level_dimensions[0]
-    region = np.asarray(wsi.read_region((0, 0), 0, (width, height)))
-    return region[..., 0] if region.ndim == 3 else region
 
 
 def model_of(bundle_path) -> DenseModel:
@@ -234,20 +163,6 @@ def provenance_decoder(monkeypatch):
     monkeypatch.setattr(decoder_registry, "_entries", dict(decoder_registry._entries))
     soma.register("decoders", "provenance", ProvenanceDecoder, params=ProvenanceParams)
     return {"name": "provenance", "params": {}}
-
-
-def write_pyramid(path, read_level: np.ndarray, *, downsample: int, read_spacing_um: float = SPACING_UM):
-    """A two-level tiled RGB TIFF: ``read_level`` at ``read_spacing_um`` is level 1, and
-    level 0 repeats each of its pixels ``downsample`` times on each axis."""
-    level0 = read_level.repeat(downsample, 0).repeat(downsample, 1)
-    base_spacing = read_spacing_um / downsample
-    with tifffile.TiffWriter(path) as tiff:
-        options = {"photometric": "rgb", "tile": (16, 16), "resolutionunit": "CENTIMETER"}
-        resolution = _px_per_cm(base_spacing)
-        tiff.write(level0, subifds=1, resolution=(resolution, resolution), **options)
-        resolution = _px_per_cm(read_spacing_um)
-        tiff.write(read_level, subfiletype=1, resolution=(resolution, resolution), **options)
-    return path, level0.shape[:2], base_spacing
 
 
 def block_coordinates(height: int, width: int) -> np.ndarray:
@@ -505,8 +420,19 @@ def test_bundles_must_agree_on_tile_size_and_spacing(tmp_path, cohort, other):
         predict(tmp_path, cohort, bundles)
 
 
-def test_an_ensemble_needs_one_class_scheme(tmp_path, cohort):
-    bundles = [save_bundle(tmp_path / "a" / "bundle"), save_bundle(tmp_path / "b" / "bundle", num_classes=4)]
+@pytest.mark.parametrize(
+    "other",
+    [
+        {"num_classes": 4},
+        {"head": {"label_remap": build_label_remap({"class_0": [1], "class_1": [2], "class_2": [3]}, ignore=[0])}},
+        {"head": {"ignore_index": 254}},
+    ],
+    ids=["classes", "raw-values", "ignore"],
+)
+def test_an_ensemble_needs_one_class_scheme(tmp_path, cohort, other):
+    """The one map an ensemble writes records one class scheme: the bundles must agree on
+    their classes, the raw annotation values that form them and the values ignored."""
+    bundles = [save_bundle(tmp_path / "a" / "bundle"), save_bundle(tmp_path / "b" / "bundle", **other)]
 
     with pytest.raises(ValueError, match="must share one class scheme"):
         predict(tmp_path, cohort, bundles, ensemble=True)
@@ -648,53 +574,16 @@ def test_a_changed_overlap_is_refused_in_the_same_directory(tmp_path, two_slides
 #: The child process of the memory test: it predicts a small slide first (imports, the
 #: bundle, the reader), resets the peak RSS, predicts the large slide and prints the RSS
 #: before it and the peak during it.
-MEMORY_CHILD = r"""
-import json, re, sys
-from pathlib import Path
-
-import soma
-
-def status(key):
-    text = Path("/proc/self/status").read_text()
-    return int(re.search(rf"^{key}:\s+(\d+) kB", text, re.M).group(1)) * 1024
-
+MEMORY_CHILD = MEMORY_PRELUDE + r"""
 tmp = Path(sys.argv[1])
 extraction = {"tiling": {"backend": "tifffile", "mask_backend": "tifffile"}}
 bundle = str(tmp / "run" / "bundle")
 soma.predict_slides(output_dir=tmp / "warm", bundles=bundle, records=str(tmp / "small.csv"), extraction=extraction)
-try:
-    Path("/proc/self/clear_refs").write_text("5")  # the peak restarts from here
-except OSError:
-    pass  # the peak then includes the warm-up's, which only makes the bound harder
+reset_peak()
 before = status("VmRSS")
 soma.predict_slides(output_dir=tmp / "large", bundles=bundle, records=str(tmp / "large.csv"), extraction=extraction, batch_size=64)
 print(json.dumps({"before": before, "peak": status("VmHWM")}))
 """
-
-
-def write_large_slide(path, side: int, *, tile: int = 512):
-    """A ``side`` x ``side`` px uniform RGB pyramid at 0.5 um/px, written tile by tile,
-    with levels down to below 512 px so hs2p reads the mask on a small grid."""
-    downsamples = [4**k for k in range(8) if side // 4**k >= 512]
-    block = np.full((tile, tile, 3), 200, dtype=np.uint8)
-    with tifffile.TiffWriter(path, bigtiff=True) as tiff:
-        for k, downsample in enumerate(downsamples):
-            size = side // downsample
-            resolution = _px_per_cm(SPACING_UM * downsample)
-            tiles = (block for _ in range((-(-size // tile)) ** 2))
-            options = {"subifds": len(downsamples) - 1} if k == 0 else {"subfiletype": 1}
-            tiff.write(
-                tiles,
-                shape=(size, size, 3),
-                dtype=np.uint8,
-                tile=(tile, tile),
-                photometric="rgb",
-                compression="zlib",
-                resolution=(resolution, resolution),
-                resolutionunit="CENTIMETER",
-                **options,
-            )
-    return path
 
 
 def test_peak_memory_stays_far_below_the_raw_map(tmp_path):
@@ -716,19 +605,9 @@ def test_peak_memory_stays_far_below_the_raw_map(tmp_path):
             [{"sample_id": name, "image_path": str(tmp_path / f"{name}.tif"), "mask_path": str(tmp_path / f"{name}_mask.tif")}],
         )
     save_bundle(tmp_path / "run" / "bundle")
-    checkout = str(Path(soma.__file__).resolve().parents[1])
-    env = {
-        **os.environ,
-        "PYTHONPATH": os.pathsep.join(filter(None, [checkout, os.environ.get("PYTHONPATH")])),
-        "CUDA_VISIBLE_DEVICES": "",
-    }
 
-    done = subprocess.run(
-        [sys.executable, "-c", MEMORY_CHILD, str(tmp_path)], capture_output=True, text=True, env=env, timeout=300
-    )
+    rss = peak_rss_of(MEMORY_CHILD, str(tmp_path))
 
-    assert done.returncode == 0, done.stderr[-4000:]
-    rss = json.loads(done.stdout.strip().splitlines()[-1])
     (row,) = pd.read_parquet(tmp_path / "large" / "index.parquet").itertuples()
     assert (row.width, row.height, row.num_tiles) == (side, side, 3 * 16)
     raw = side * side

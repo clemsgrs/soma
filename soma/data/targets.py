@@ -259,6 +259,16 @@ class LabelMapSource:
     def entries(self) -> dict[str, LabelMapEntry]:
         return dict(self._entries)
 
+    @property
+    def backend(self) -> str:
+        """The hs2p backend that reads the annotation rasters."""
+        return self._backend
+
+    @property
+    def image_backend(self) -> str:
+        """The hs2p backend that reads the images the rasters are aligned to."""
+        return self._image_backend
+
     def load(self, sample_id: str) -> Tensor:
         from soma.extract.dense.reader import read_mask_at_spacing
         from soma.extract.spacing import resolve_effective_spacing_um

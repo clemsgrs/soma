@@ -170,6 +170,61 @@ scores label maps against the masks in the cohort CSV's ``label_mask_path``
 column and points against the files in its ``points_path`` column; both must
 already hold class indices.
 
+.. _whole-slide-scoring:
+
+Whole-slide label maps
+~~~~~~~~~~~~~~~~~~~~~~
+
+:func:`soma.predict_slides` (``soma predict``) writes one label TIFF per slide.
+:class:`~soma.evaluation.SlideLabelMaps` is a handle on one bundle's directory of
+them, and :func:`soma.evaluate` scores it against a
+:class:`~soma.data.LabelMapSource` of the slides' annotation rasters:
+
+.. code-block:: python
+
+   import soma
+   from soma.data import AnnotationManifest, ImageManifest, LabelMapSource
+   from soma.evaluation import SlideLabelMaps
+
+   maps = SlideLabelMaps("predictions/beetle-test")
+   targets = LabelMapSource.from_manifests(
+       AnnotationManifest.from_csv("dataset.csv"),
+       ImageManifest.from_csv("dataset.csv"),  # aligns each raster to its slide
+       size=(0, 0),
+       backend=maps.mask_backend,
+       image_backend=maps.backend,
+   )
+   evaluation = soma.evaluate(maps, targets.subset(maps.sample_ids))
+   evaluation.per_sample  # one row of counts per slide
+
+``soma evaluate predictions/beetle-test --cohort dataset.csv`` does the same.
+The directory is a prediction output with one bundle's maps, or one of its
+bundle directories. A slide is predicted when its ``<sample_id>.json`` record
+exists.
+
+Each slide is read one window at a time on the map's pixel grid, so neither the
+map nor the annotation raster is held in memory. hs2p aligns an annotation
+raster at another resolution to the slide and reads it at the map's spacing.
+The class scheme is the one each map records from its bundle's head: the raw
+annotation values of each class, the raw values to ignore, and the vocabulary
+the raster is read against, as in training. The class scheme, spacing and
+size of the target source are not used.
+
+- A pixel whose annotation value is ignored is not scored.
+- An annotated pixel of class ``c`` that no kept tile covered (value 0 in the
+  map) is a false negative for ``c`` and a false positive for no class.
+- A map pixel that lies partly off the slide is not scored.
+
+Each slide gives one row of counts to the same reducers as
+:class:`~soma.evaluation.LabelMapPredictions`. ``Evaluation.per_sample`` holds
+the rows: ``annotated_px``, ``not_predicted_px``, ``not_predicted_fraction``
+(the annotated pixels not predicted, over all annotated pixels) and
+``tp_class_<c>``, ``fp_class_<c>``, ``fn_class_<c>`` per class.
+
+These scores are not comparable to a run's test metrics. A run scores only the
+ROIs it samples where an annotation class meets ``min_coverage``; a whole-slide
+score covers every annotated pixel of the slide.
+
 Reference
 ---------
 
@@ -192,6 +247,9 @@ Reference
 
 .. autoclass:: soma.evaluation.LabelMapPredictions
    :members: save, load
+
+.. autoclass:: soma.evaluation.SlideLabelMaps
+   :members: sample_ids, classes, backend, mask_backend
 
 .. autoclass:: soma.evaluation.PointPredictions
    :members: with_threshold, to_parquet, from_parquet
