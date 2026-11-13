@@ -44,7 +44,7 @@ from soma import learn
 from soma.learn import FitResult, ModelBundle, fit, load, save
 from soma.learn.seed import seed_everything
 from soma import pipeline
-from soma.pipeline import Pipeline, PipelineResult
+from soma.pipeline import Pipeline, PipelineResult, predict_slides
 from soma import testing
 
 __all__ = [
@@ -52,6 +52,7 @@ __all__ = [
     "extract",
     "fit",
     "predict",
+    "predict_slides",
     "evaluate",
     "save",
     "load",

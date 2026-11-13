@@ -45,6 +45,7 @@ import torch.nn.functional as F
 from soma.data.geometry import DenseGridGeometry
 from soma.extract.dense.reader import read_image_at_spacing
 from soma.extract.dense.sliding import cover_origins
+from soma.models.model import forward_sharing_encoder, mean_softmax
 
 __all__ = [
     "PredictionResult",
@@ -351,18 +352,11 @@ class SlidingWindowSegmentationPredictor:
         ``pixels`` are the batch's raw uint8 tiles, which a model with an image-prior
         decoder reads as its side input. Fold models sharing one encoder stage (the
         multi-fold case built by :meth:`from_bundles`) run the expensive encoder
-        forward **once** and every fold's adaptor + decoder + head on the shared grid;
-        otherwise each model encodes the batch itself.
+        forward **once** and every fold's adaptor + decoder + head on the shared grid
+        (:func:`~soma.models.model.forward_sharing_encoder`).
         """
-        models = list(self.models)
-        shared = all(m.encoder is models[0].encoder for m in models[1:])
-        grid = models[0].encode(X) if shared else None
-        acc: torch.Tensor | None = None
-        for model in models:
-            encoded = grid if shared else model.encode(X)
-            s = torch.softmax(model.forward_from_grid(encoded, pixels).logits, dim=1)
-            acc = s if acc is None else acc + s
-        return (acc / len(models)).float().cpu().numpy()
+        outputs = forward_sharing_encoder(list(self.models), X, pixels)
+        return mean_softmax(outputs).float().cpu().numpy()
 
     def _plan_resample(
         self, is_flat: bool, native_spacing_um: float | None, allow_upsample: bool

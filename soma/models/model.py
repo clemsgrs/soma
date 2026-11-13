@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 
 import torch
@@ -228,3 +229,41 @@ class DenseModel(nn.Module):
                 raise ValueError("a DenseModel without an encoder stage reads cached features")
             grid = features
         return self.forward_from_grid(grid, pixels)
+
+
+def forward_sharing_encoder(
+    models: Sequence[DenseModel], inputs: Tensor, pixels: Tensor | None = None
+) -> Iterator[DenseModelOutput]:
+    """Run each of ``models`` over one batch, with one encoder forward per distinct stage.
+
+    Bundles with the same encoder recipe share one frozen stage object (see
+    :func:`soma.pipeline.build.bundle_encoder_stage`). The models whose ``encoder`` is
+    that object encode ``inputs`` once, and each runs its own adaptor, decoder and head
+    on the shared grid. ``inputs`` is what the stage takes: raw uint8 pixels, or pixels
+    its preprocessor prepared. ``pixels``, the raw uint8 batch, is the side input of
+    image-prior decoders. Yields one output per model, in order, each computed only when
+    it is asked for, so a caller that reduces them as they come holds one model's
+    full-resolution logits at a time.
+    """
+    grids: dict[int, Tensor] = {}
+    for model in models:
+        key = id(model.encoder)
+        if key not in grids:
+            grids[key] = model.encode(inputs)
+        yield model.forward_from_grid(grids[key], pixels)
+
+
+def mean_softmax(outputs: Iterable[DenseModelOutput]) -> Tensor:
+    """An ensemble's per-pixel class probabilities: the mean of its outputs' softmaxes,
+    ``(B, C, H, W)``. ``outputs`` is consumed one at a time (it may be the generator of
+    :func:`forward_sharing_encoder`), so only the running sum is kept."""
+    total: Tensor | None = None
+    count = 0
+    for output in outputs:
+        probabilities = torch.softmax(output.logits, dim=1)
+        total = probabilities if total is None else total + probabilities
+        count += 1
+        del output, probabilities  # not held while the next output is computed
+    if total is None:
+        raise ValueError("mean_softmax needs at least one output")
+    return total / count
