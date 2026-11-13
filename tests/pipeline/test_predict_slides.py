@@ -401,3 +401,100 @@ def test_ensemble_writes_the_argmax_of_the_mean_softmax(tmp_path):
     for tid, (x, y) in regions.items():
         mean = (torch.softmax(logits[0][tid], 0) + torch.softmax(logits[1][tid], 0)) / 2
         np.testing.assert_array_equal(label_map[y : y + TILE, x : x + TILE] - 1, mean.argmax(0).numpy())
+
+
+# --- refusals ------------------------------------------------------------------------- #
+
+
+@pytest.fixture
+def cohort(tmp_path):
+    """One small slide with tissue everywhere, and its records."""
+    slide = write_slide(tmp_path / "s1.tif", blocky(96, 96))
+    mask = write_mask(tmp_path / "s1_mask.tif", np.ones((96, 96)))
+    return write_records(
+        tmp_path / "dataset.csv", [{"sample_id": "s1", "image_path": str(slide), "mask_path": str(mask)}]
+    )
+
+
+def predict(tmp_path, records, bundles, **kwargs):
+    kwargs.setdefault("extraction", {"tiling": {"backend": "tifffile"}})
+    return soma.predict_slides(output_dir=tmp_path / "predictions", bundles=bundles, records=records, **kwargs)
+
+
+@pytest.mark.parametrize(
+    ("tiling", "match"),
+    [
+        ({"requested_tile_size_px": 64}, "tiling.requested_tile_size_px is 64.*come from the bundles"),
+        ({"requested_spacing_um": 1.0}, "tiling.requested_spacing_um is 1.0.*come from the bundles"),
+        ({"overlap": 0.3}, "margin of 4.8 px.*not a whole number"),
+    ],
+    ids=["tile-size", "spacing", "non-integer-margin"],
+)
+def test_the_tile_is_the_bundles_and_its_margin_whole(tmp_path, cohort, tiling, match):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    with pytest.raises(ValueError, match=match):
+        predict(tmp_path, cohort, bundle, extraction={"tiling": {"backend": "tifffile", **tiling}})
+    assert not (tmp_path / "predictions").exists()
+
+
+def test_a_plan_s_own_tile_size_and_spacing_are_accepted(tmp_path, cohort):
+    """``plan.yaml`` spells out the bundle's tile size and spacing, so setting them to
+    the bundle's own values is what a replay does, and is accepted."""
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    tiling = {"backend": "tifffile", "requested_tile_size_px": TILE, "requested_spacing_um": SPACING_UM}
+
+    index = predict(tmp_path, cohort, bundle, extraction={"tiling": tiling})
+
+    assert list(index.sample_id) == ["s1"]
+
+
+@pytest.mark.parametrize("given", [{"subset": "test"}, {"fold": 0}], ids=["subset", "fold"])
+def test_subset_and_fold_need_splits(tmp_path, cohort, given):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    with pytest.raises(ValueError, match="select from cohort.splits; set cohort.splits"):
+        predict(tmp_path, cohort, bundle, **given)
+
+
+@pytest.mark.parametrize(
+    "other",
+    [{"tile_size": [64, 64]}, {"spacing_um": 1.0}],
+    ids=["tile-size", "spacing"],
+)
+def test_bundles_must_agree_on_tile_size_and_spacing(tmp_path, cohort, other):
+    bundles = [save_bundle(tmp_path / "a" / "bundle"), save_bundle(tmp_path / "b" / "bundle", **other)]
+
+    with pytest.raises(ValueError, match="must agree on tile size, read spacing"):
+        predict(tmp_path, cohort, bundles)
+
+
+def test_an_ensemble_needs_one_class_scheme(tmp_path, cohort):
+    bundles = [save_bundle(tmp_path / "a" / "bundle"), save_bundle(tmp_path / "b" / "bundle", num_classes=4)]
+
+    with pytest.raises(ValueError, match="must share one class scheme"):
+        predict(tmp_path, cohort, bundles, ensemble=True)
+
+
+@pytest.mark.parametrize(
+    ("recorded", "match"),
+    [
+        ({"encoder": {"composite": True, "encoders": [RECIPE, RECIPE]}}, "composite of several encoders"),
+        ({"task_family": "detection"}, "is a detection bundle.*segmentation label maps"),
+    ],
+    ids=["composite", "detection"],
+)
+def test_a_composite_or_detection_bundle_is_refused(tmp_path, cohort, recorded, match):
+    bundle = save_bundle(tmp_path / "run" / "bundle", **recorded)
+
+    with pytest.raises(ValueError, match=match):
+        predict(tmp_path, cohort, bundle)
+
+
+def test_a_slide_coarser_than_the_read_spacing_is_refused(tmp_path):
+    slide = write_slide(tmp_path / "s1.tif", blocky(96, 96), spacing_um=1.0)
+    records = write_records(tmp_path / "dataset.csv", [{"sample_id": "s1", "image_path": str(slide)}])
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    with pytest.raises(ValueError, match="slide 's1' is at 1 um/px, coarser than the bundles' read spacing of 0.5"):
+        predict(tmp_path, records, bundle)
