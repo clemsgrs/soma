@@ -19,6 +19,7 @@ VERBS = {
     "extract",
     "fit",
     "predict",
+    "predict_slides",
     "evaluate",
     "save",
     "load",
@@ -228,6 +229,7 @@ def test_the_root_holds_no_other_public_name_than_its_exports_and_modules():
         ("LabelMapPredictions", "soma.evaluation"),
         ("Evaluation", "soma.evaluation"),
         ("Pipeline", "soma.pipeline"),
+        ("predict_slides", "soma.pipeline"),
         ("PipelineResult", "soma.pipeline"),
     ],
 )
