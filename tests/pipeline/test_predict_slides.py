@@ -8,7 +8,11 @@ recipe, and everything runs on the CPU. A map is read back through hs2p; its val
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -610,3 +614,95 @@ def test_a_changed_overlap_is_refused_in_the_same_directory(tmp_path, two_slides
             batch_size=4,
         )
     assert (output_dir / "plan.yaml").read_text() == plan
+
+
+# --- memory --------------------------------------------------------------------------- #
+
+#: The child process of the memory test: it predicts a small slide first (imports, the
+#: bundle, the reader), resets the peak RSS, predicts the large slide and prints the RSS
+#: before it and the peak during it.
+MEMORY_CHILD = r"""
+import json, re, sys
+from pathlib import Path
+
+import soma
+
+def status(key):
+    text = Path("/proc/self/status").read_text()
+    return int(re.search(rf"^{key}:\s+(\d+) kB", text, re.M).group(1)) * 1024
+
+tmp = Path(sys.argv[1])
+extraction = {"tiling": {"backend": "tifffile", "mask_backend": "tifffile"}}
+bundle = str(tmp / "run" / "bundle")
+soma.predict_slides(output_dir=tmp / "warm", bundles=bundle, records=str(tmp / "small.csv"), extraction=extraction)
+try:
+    Path("/proc/self/clear_refs").write_text("5")  # the peak restarts from here
+except OSError:
+    pass  # the peak then includes the warm-up's, which only makes the bound harder
+before = status("VmRSS")
+soma.predict_slides(output_dir=tmp / "large", bundles=bundle, records=str(tmp / "large.csv"), extraction=extraction, batch_size=64)
+print(json.dumps({"before": before, "peak": status("VmHWM")}))
+"""
+
+
+def write_large_slide(path, side: int, *, tile: int = 512):
+    """A ``side`` x ``side`` px uniform RGB pyramid at 0.5 um/px, written tile by tile,
+    with levels down to below 512 px so hs2p reads the mask on a small grid."""
+    downsamples = [4**k for k in range(8) if side // 4**k >= 512]
+    block = np.full((tile, tile, 3), 200, dtype=np.uint8)
+    with tifffile.TiffWriter(path, bigtiff=True) as tiff:
+        for k, downsample in enumerate(downsamples):
+            size = side // downsample
+            resolution = _px_per_cm(SPACING_UM * downsample)
+            tiles = (block for _ in range((-(-size // tile)) ** 2))
+            options = {"subifds": len(downsamples) - 1} if k == 0 else {"subfiletype": 1}
+            tiff.write(
+                tiles,
+                shape=(size, size, 3),
+                dtype=np.uint8,
+                tile=(tile, tile),
+                photometric="rgb",
+                compression="zlib",
+                resolution=(resolution, resolution),
+                resolutionunit="CENTIMETER",
+                **options,
+            )
+    return path
+
+
+def test_peak_memory_stays_far_below_the_raw_map(tmp_path):
+    """A 32768 x 32768 px map (1 GiB as raw uint8) with three tissue patches in rows far
+    apart. The band holds a strip of rows; hs2p's writer holds the reduced levels, about
+    a third of the map. The peak RSS while predicting stays below half the raw map."""
+    side = 32768
+    write_large_slide(tmp_path / "large.tif", side)
+    coarse = 32  # the mask is at 16 um/px
+    tissue = np.zeros((side // coarse, side // coarse), dtype=np.uint8)
+    for row, col in ((128, 128), (512, 512), (896, 768)):
+        tissue[row : row + 4, col : col + 4] = 1
+    write_mask(tmp_path / "large_mask.tif", tissue, spacing_um=SPACING_UM * coarse)
+    write_slide(tmp_path / "small.tif", blocky(96, 96))
+    write_mask(tmp_path / "small_mask.tif", np.ones((96, 96)))
+    for name in ("large", "small"):
+        write_records(
+            tmp_path / f"{name}.csv",
+            [{"sample_id": name, "image_path": str(tmp_path / f"{name}.tif"), "mask_path": str(tmp_path / f"{name}_mask.tif")}],
+        )
+    save_bundle(tmp_path / "run" / "bundle")
+    checkout = str(Path(soma.__file__).resolve().parents[1])
+    env = {
+        **os.environ,
+        "PYTHONPATH": os.pathsep.join(filter(None, [checkout, os.environ.get("PYTHONPATH")])),
+        "CUDA_VISIBLE_DEVICES": "",
+    }
+
+    done = subprocess.run(
+        [sys.executable, "-c", MEMORY_CHILD, str(tmp_path)], capture_output=True, text=True, env=env, timeout=300
+    )
+
+    assert done.returncode == 0, done.stderr[-4000:]
+    rss = json.loads(done.stdout.strip().splitlines()[-1])
+    (row,) = pd.read_parquet(tmp_path / "large" / "index.parquet").itertuples()
+    assert (row.width, row.height, row.num_tiles) == (side, side, 3 * 16)
+    raw = side * side
+    assert rss["peak"] - rss["before"] < raw / 2
