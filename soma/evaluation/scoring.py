@@ -43,21 +43,26 @@ class Evaluation:
     ``metrics`` maps each metric to its value (plus ``coverage`` and the sample counts
     when the predictions carry placeholders); ``subgroups`` holds the per-column,
     per-group metrics and permutation p-values (``{"metrics": ..., "stats": ...}``, empty
-    without subgroup columns).
+    without subgroup columns). ``per_sample`` holds one row of counts per slide for
+    :class:`~soma.evaluation.SlideLabelMaps`, and is empty otherwise.
     """
 
     metrics: dict[str, float]
     task_family: str
     num_samples: int
     subgroups: dict[str, Any] = field(default_factory=dict)
+    per_sample: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "task_family": self.task_family,
             "num_samples": self.num_samples,
             "metrics": dict(self.metrics),
             "subgroups": dict(self.subgroups),
         }
+        if self.per_sample:
+            result["per_sample"] = [dict(row) for row in self.per_sample]
+        return result
 
     def to_json(self, path: str | Path | None = None) -> str:
         """The evaluation as JSON text; also written to ``path`` when given."""
@@ -219,6 +224,10 @@ def evaluate(
     * :class:`~soma.evaluation.LabelMapPredictions` against a
       :class:`~soma.data.LabelMapSource`: per-image confusion counts reduced to Dice,
       IoU and the per-class scores.
+    * :class:`~soma.evaluation.SlideLabelMaps` (the label TIFFs of
+      :func:`soma.predict_slides`) against a :class:`~soma.data.LabelMapSource` of the
+      slides' annotation rasters: both read window by window, one row of counts per
+      slide in ``Evaluation.per_sample``, then the same reducers.
 
     Both sides must cover the same ids: an unknown prediction id, a target without a
     prediction, or a duplicate id is refused. Fill samples the model could not score with
@@ -235,8 +244,9 @@ def evaluate(
         subgroups: Target columns to break the metrics down by (set shape only).
     """
     from soma.evaluation.grid import LabelMapPredictions, PointPredictions, evaluate_grid
+    from soma.evaluation.slide_label_maps import SlideLabelMaps
 
-    if isinstance(predictions, (LabelMapPredictions, PointPredictions)):
+    if isinstance(predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps)):
         return evaluate_grid(predictions, targets, metrics=metrics, subgroups=subgroups)
     family = predictions.task_family
     if _is_default(metrics) and _output_columns(predictions):

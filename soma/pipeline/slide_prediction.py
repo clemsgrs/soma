@@ -191,11 +191,12 @@ def resolve_slide_prediction(
     infos = [_bundle_info(path) for path in bundle_dirs]
     tile_px, spacing_um, tolerance = _shared_tile(infos)
     if ensemble:
-        schemes = {(info["num_classes"], tuple(info["class_names"] or ())) for info in infos}
-        if len(schemes) > 1:
+        keys = ("num_classes", "class_names", "ignore_index", "label_remap")
+        if len({json.dumps([info[key] for key in keys]) for info in infos}) > 1:
             raise ValueError(
                 "predict.ensemble averages the bundles' softmax, so they must share one class "
-                f"scheme; these bundles have {_listing(infos, ('num_classes', 'class_names'))}"
+                "scheme: the classes, the raw annotation values that form them (label_remap) "
+                f"and the values ignored; these bundles have {_listing(infos, keys[:3])}"
             )
     for info in infos:
         if info["num_classes"] > MAX_CLASSES:
@@ -294,6 +295,8 @@ def _bundle_info(path: Path) -> dict[str, Any]:
         "tolerance": float(tolerance),
         "num_classes": int(preprocessing["num_classes"]),
         "class_names": preprocessing.get("class_names"),
+        "ignore_index": int(preprocessing.get("ignore_index", 255)),
+        "label_remap": preprocessing.get("label_remap"),
     }
 
 
@@ -664,10 +667,10 @@ def _predict_slide(plan, models, names, identities, entry, output_dir: Path) -> 
         "overlap": float(tiling.overlap),
     }
     if ensemble:
-        metadata = [{**shared, "values": _value_names(models[0].head), "bundles": identities}]
+        metadata = [{**shared, **_class_scheme(models[0].head), "bundles": identities}]
     else:
         metadata = [
-            {**shared, "values": _value_names(model.head), "bundles": [identity]}
+            {**shared, **_class_scheme(model.head), "bundles": [identity]}
             for model, identity in zip(models, identities)
         ]
     file = f"{entry.sample_id}.tif"
@@ -711,6 +714,31 @@ def _predict_slide(plan, models, names, identities, entry, output_dir: Path) -> 
 def _value_names(head) -> dict[str, str]:
     """The map's value-to-name mapping: 0 is not predicted, class ``k`` is ``k + 1``."""
     return {"0": "not predicted", **{str(k + 1): str(name) for k, name in enumerate(head.classes)}}
+
+
+def _class_scheme(head) -> dict[str, Any]:
+    """What a map records to be scored as the head was trained.
+
+    ``values`` names each stored value. ``classes`` lists, in class order, the raw
+    annotation values each class is made of, and ``ignore`` the raw values left out of loss
+    and metrics. ``pixel_mapping`` is the vocabulary hs2p reads an annotation raster
+    against. Without a class scheme, the head reads class ``k`` from raw value ``k``.
+    """
+    import numpy as np
+
+    remap, ignore_index = head.label_remap, int(head.ignore_index)
+    if remap is None:
+        classes = {str(name): [k] for k, name in enumerate(head.classes)}
+        ignore = [ignore_index] if 0 <= ignore_index <= 255 else []
+    else:
+        remap = np.asarray(remap)
+        classes = {str(name): np.flatnonzero(remap == k).tolist() for k, name in enumerate(head.classes)}
+        ignore = np.flatnonzero(remap == ignore_index).tolist()
+    pixel_mapping = {
+        str(name): [int(v) for v in value] if isinstance(value, (list, tuple)) else int(value)
+        for name, value in head.mask_vocabulary.items()
+    }
+    return {"values": _value_names(head), "classes": classes, "ignore": ignore, "pixel_mapping": pixel_mapping}
 
 
 def _kept_tiles(entry, extraction):
