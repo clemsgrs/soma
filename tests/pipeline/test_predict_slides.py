@@ -7,6 +7,8 @@ recipe, and everything runs on the CPU. A map is read back through hs2p; its val
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -19,6 +21,7 @@ from soma.data.manifests import ImageEntry
 from soma.learn import DenseLearner, FitResult
 from soma.learn.grid import GridBatch
 from soma.models import DenseModel
+from soma.models.decoders.base import Decoder
 from soma.pipeline.build import build_grid_model, bundle_encoder_stage
 
 SPACING_UM = 0.5
@@ -165,3 +168,120 @@ def test_overlap_zero_writes_what_soma_predict_returns_for_each_tile(tmp_path):
     assert not label_map[~predicted].any()
     assert row.num_tiles == 9
     assert row.not_predicted_fraction == pytest.approx(1 - 9 * TILE * TILE / (height * width))
+
+
+# --- pick one: which tile each pixel comes from --------------------------------------- #
+
+#: Classes of the provenance decoder: its value at a pixel names the tile and the patch.
+PROVENANCE_CLASSES = 250
+
+
+def provenance_class(origin_block_x, origin_block_y, patch_x, patch_y):
+    """The class the provenance decoder gives patch ``(patch_x, patch_y)`` of the tile whose
+    first patch is block ``(origin_block_x, origin_block_y)`` of the read level."""
+    return (13 * origin_block_x + 29 * origin_block_y + 3 * patch_x + 5 * patch_y) % PROVENANCE_CLASSES
+
+
+@dataclass
+class ProvenanceParams:
+    """The provenance decoder has no params."""
+
+
+class ProvenanceDecoder(Decoder):
+    """Reads where its tile is from the pixels and paints each 8 px patch with
+    :func:`provenance_class`.
+
+    The provenance slide is one colour per 8 px block of the read level, red the block's
+    column and green its row, so the ``fake`` encoder's patch means are those colours
+    exactly: patch ``(0, 0)`` names the tile's origin, and a patch's index its place in
+    the tile.
+    """
+
+    def __init__(self, *, input_dim: int, num_classes: int) -> None:
+        super().__init__()
+        self._num_classes = int(num_classes)
+
+    @property
+    def num_classes(self) -> int:
+        return self._num_classes
+
+    def forward(self, X):
+        colours = torch.round((X * 0.25 + 0.5) * 255).long()  # the fake encoder's normalisation
+        batch, _, rows, cols = X.shape
+        patch_y, patch_x = torch.meshgrid(torch.arange(rows), torch.arange(cols), indexing="ij")
+        classes = provenance_class(
+            colours[:, 0, :1, :1], colours[:, 1, :1, :1], patch_x[None], patch_y[None]
+        )
+        logits = torch.nn.functional.one_hot(classes, self._num_classes).permute(0, 3, 1, 2).float()
+        return logits.repeat_interleave(8, dim=2).repeat_interleave(8, dim=3)
+
+
+@pytest.fixture
+def provenance_decoder(monkeypatch):
+    """Register :class:`ProvenanceDecoder` for one test, then restore the registry."""
+    from soma.models import decoder_registry
+
+    monkeypatch.setattr(decoder_registry, "_entries", dict(decoder_registry._entries))
+    soma.register("decoders", "provenance", ProvenanceDecoder, params=ProvenanceParams)
+    return {"name": "provenance", "params": {}}
+
+
+def write_pyramid(path, read_level: np.ndarray, *, downsample: int, read_spacing_um: float = SPACING_UM):
+    """A two-level tiled RGB TIFF: ``read_level`` at ``read_spacing_um`` is level 1, and
+    level 0 repeats each of its pixels ``downsample`` times on each axis."""
+    level0 = read_level.repeat(downsample, 0).repeat(downsample, 1)
+    base_spacing = read_spacing_um / downsample
+    with tifffile.TiffWriter(path) as tiff:
+        options = {"photometric": "rgb", "tile": (16, 16), "resolutionunit": "CENTIMETER"}
+        resolution = _px_per_cm(base_spacing)
+        tiff.write(level0, subifds=1, resolution=(resolution, resolution), **options)
+        resolution = _px_per_cm(read_spacing_um)
+        tiff.write(read_level, subfiletype=1, resolution=(resolution, resolution), **options)
+    return path, level0.shape[:2], base_spacing
+
+
+def block_coordinates(height: int, width: int) -> np.ndarray:
+    """RGB: red the column and green the row of each 8 px block."""
+    rows, cols = np.mgrid[0:height, 0:width]
+    return np.stack([cols // 8, rows // 8, np.full_like(rows, 128)], axis=-1).astype(np.uint8)
+
+
+def test_each_pixel_comes_from_the_tile_the_pick_one_rule_names(tmp_path, provenance_decoder):
+    """Overlap 0.5 on 32 px tiles: a 16 px stride and an 8 px margin. The slide is read at
+    a level of downsample 3, so the level-0 stride is 48 px and no tile origin divides
+    into map pixels by a power of two. Every map pixel, including the first row and
+    column and the right and bottom edges, holds the class of the tile the rule names:
+    tile 0 for the first 24 px of an axis, then tile ``(p - 8) // 16``."""
+    read_h, read_w = 104, 134  # 6.5 by 8.4 strides: the last tiles overhang the edges
+    slide, (height, width), base_spacing = write_pyramid(tmp_path / "s1.tif", block_coordinates(read_h, read_w), downsample=3)
+    mask = write_mask(tmp_path / "s1_mask.tif", np.ones((height, width)), spacing_um=base_spacing)
+    records = write_records(
+        tmp_path / "dataset.csv", [{"sample_id": "s1", "image_path": str(slide), "mask_path": str(mask)}]
+    )
+    bundle = save_bundle(tmp_path / "run" / "bundle", num_classes=PROVENANCE_CLASSES, decoder=provenance_decoder)
+
+    index = soma.predict_slides(
+        output_dir=tmp_path / "predictions",
+        bundles=[bundle],
+        records=records,
+        extraction={"tiling": {"overlap": 0.5, "backend": "tifffile", "mask_backend": "tifffile"}},
+    )
+
+    (row,) = index.itertuples()
+    # The lattice: origins every 48 level-0 px (16 px at the read level, downsample 3),
+    # so the map is the read level's pixel grid.
+    assert (row.width, row.height) == (read_w, read_h)
+    assert row.spacing_um == pytest.approx(SPACING_UM)
+    assert row.num_tiles == len(range(0, width, 48)) * len(range(0, height, 48))
+    label_map = read_map(tmp_path / "predictions" / row.path)
+    stride, margin = 16, 8
+
+    def tile_of(position: np.ndarray) -> np.ndarray:
+        return np.where(position < stride + margin, 0, (position - margin) // stride)
+
+    rows, cols = np.mgrid[0:read_h, 0:read_w]
+    tile_x, tile_y = tile_of(cols), tile_of(rows)
+    expected = provenance_class(
+        tile_x * stride // 8, tile_y * stride // 8, (cols - tile_x * stride) // 8, (rows - tile_y * stride) // 8
+    )
+    np.testing.assert_array_equal(label_map.astype(int) - 1, expected)
