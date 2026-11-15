@@ -10,8 +10,10 @@ Data and task
 -------------
 
 OCELOT (Ryu *et al.*, CVPR 2023) pairs cell patches with tissue patches cropped from
-TCGA whole-slide images. The benchmark uses the cell patches only: 1024 × 1024
-pixel H&E crops at 0.2 µm/px, each with a point per cell.
+TCGA whole-slide images of six organs: kidney, endometrium, bladder, prostate,
+stomach, and head and neck. The benchmark uses the cell patches only: 1024 × 1024
+pixel H&E crops at 0.2 µm/px, each with a point per cell. Each patch is one tile
+of about 0.2 × 0.2 mm.
 
 .. list-table::
    :header-rows: 1
@@ -28,6 +30,51 @@ pixel H&E crops at 0.2 µm/px, each with a point per cell.
    * - Metric
      - ``mean_f1``: F1 at a matching distance of 3 µm, averaged over the two
        classes. Matching is greedy, as in the official evaluation.
+
+.. list-table:: Split sizes
+   :header-rows: 1
+   :stub-columns: 1
+
+   * - Split
+     - Patches
+     - Slides
+     - Patients
+     - Area (mm²)
+     - Tumour cells
+     - Background cells
+   * - train
+     - 400
+     - 173
+     - 132
+     - 15.8
+     - 42,505
+     - 23,332
+   * - tune
+     - 137
+     - 65
+     - 46
+     - 5.4
+     - 16,312
+     - 8,400
+   * - test
+     - 126
+     - 65
+     - 57
+     - 5.0
+     - 12,874
+     - 9,603
+   * - total
+     - 663
+     - 303
+     - 213
+     - 26.2
+     - 71,691
+     - 41,335
+
+The official split keeps each slide in one split but not each patient: 21 patients
+have slides in more than one split, so the patient total is lower than the sum of
+the splits. soma keeps the official split so scores stay comparable with other
+OCELOT results.
 
 Protocol
 --------
@@ -65,7 +112,7 @@ The recipe is fixed and only the encoder varies.
 Results
 -------
 
-soma's ``mean_f1`` on the official OCELOT test set (126 cases in v1.0.1), three seeds
+soma's ``mean_f1`` on the official OCELOT test set (126 patches in v1.0.1), three seeds
 per encoder, best first.
 
 .. include:: _generated/ocelot-results.rst

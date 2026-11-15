@@ -8,8 +8,10 @@ and scores its predictions after stitching them back to their source regions.
 Data and task
 -------------
 
-MIDOG 2022 contains H&E regions from several tumour types and scanners, with
-annotations for mitotic figures and hard-negative lookalikes.
+MIDOG 2022 contains 354 labelled H&E regions, one per case, from five tumour types
+(human breast cancer, human neuroendocrine tumour, canine lung cancer, canine
+lymphoma and canine cutaneous mast cell tumour) and four scanners. The regions
+carry 9,501 mitotic figures and 11,051 hard-negative lookalikes.
 
 .. list-table::
    :header-rows: 1
@@ -21,12 +23,45 @@ annotations for mitotic figures and hard-negative lookalikes.
      - Detect mitotic figures as points, with one positive class. Hard-negative
        annotations do not form a second detection class.
    * - Splits
-     - One deterministic, patient/domain-stratified local split of the public
-       labelled data: 60% train, 20% tune and 20% test. All regions from a patient
-       stay together.
+     - One deterministic local split of the public labelled data, stratified by
+       tumour type: 60% train, 20% tune and 20% test. Each region is a separate
+       case, and every tumour type appears in every split.
    * - Metric
      - ``f1``: native stitched-ROI F1, using Hungarian one-to-one matching within
        7.5 µm and pooling the match counts across test regions.
+
+.. list-table:: Split sizes
+   :header-rows: 1
+   :stub-columns: 1
+
+   * - Split
+     - Regions
+     - 1024 × 1024 tiles
+     - Area (mm²)
+     - Mitotic figures
+   * - train
+     - 212
+     - 10,176
+     - 461.1
+     - 5,929
+   * - tune
+     - 71
+     - 3,408
+     - 154.4
+     - 1,853
+   * - test
+     - 71
+     - 3,408
+     - 155.7
+     - 1,719
+   * - total
+     - 354
+     - 16,992
+     - 771.2
+     - 9,501
+
+Neighbouring tiles overlap by 128 pixels, so the area column is the better measure
+of how much tissue each split holds. Areas use the nominal 0.25 µm/px.
 
 The official challenge test set is hidden. These local held-out scores use a
 different test set from the published MIDOG leaderboard.
