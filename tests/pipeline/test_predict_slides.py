@@ -374,6 +374,61 @@ def test_a_plan_s_own_tile_size_and_spacing_are_accepted(tmp_path, cohort):
     assert list(index.sample_id) == ["s1"]
 
 
+# --- the slide reader ----------------------------------------------------------------- #
+
+#: An extraction that names the mask reader only: the slide reader is left to the bundles.
+MASK_READER_ONLY = {"tiling": {"mask_backend": "tifffile"}}
+
+
+def reader_recipe(backend: str) -> dict:
+    """What a bundle records when its slides were read with ``backend``."""
+    return {"encoder": {**RECIPE, "backend": backend}}
+
+
+@pytest.mark.parametrize(
+    ("recorded", "planned"),
+    [(reader_recipe("tifffile"), "tifffile"), ({}, "auto")],
+    ids=["recorded", "not-recorded"],
+)
+def test_the_slide_reader_defaults_to_the_one_the_bundle_records(tmp_path, cohort, recorded, planned):
+    """With no ``extraction.tiling.backend``, the plan reads the slides with the reader
+    the bundle was trained with; a bundle that records none is read with ``auto``."""
+    from soma.pipeline.slide_prediction import resolve_slide_prediction
+
+    bundle = save_bundle(tmp_path / "run" / "bundle", **recorded)
+
+    plan = resolve_slide_prediction(
+        output_dir=tmp_path / "predictions", bundles=bundle, records=cohort, extraction=MASK_READER_ONLY
+    )
+
+    assert plan["extraction"]["tiling"]["backend"] == planned
+
+
+def test_a_config_reader_other_than_the_bundles_is_used_with_a_warning_naming_both(tmp_path, cohort):
+    bundle = save_bundle(tmp_path / "run" / "bundle", **reader_recipe("openslide"))
+
+    with pytest.warns(UserWarning, match=r"extraction\.tiling\.backend is 'tifffile'.*'openslide'"):
+        predict(tmp_path, cohort, bundle, extraction={"tiling": dict(TIFFFILE)})
+
+    plan = yaml.safe_load((tmp_path / "predictions" / "plan.yaml").read_text())
+    assert plan["extraction"]["tiling"]["backend"] == "tifffile"
+
+
+def test_bundles_trained_with_different_readers_need_the_config_to_name_one(tmp_path, cohort):
+    bundles = [
+        save_bundle(tmp_path / "a" / "bundle", **reader_recipe("tifffile")),
+        save_bundle(tmp_path / "b" / "bundle", **reader_recipe("openslide")),
+    ]
+
+    with pytest.raises(ValueError, match=r"different readers: .*/a/bundle with 'tifffile'; .*/b/bundle with 'openslide'"):
+        predict(tmp_path, cohort, bundles, extraction=MASK_READER_ONLY)
+    assert not (tmp_path / "predictions").exists()
+
+    with pytest.warns(UserWarning, match=r"/b/bundle with 'openslide'"):
+        index = predict(tmp_path, cohort, bundles, extraction={"tiling": dict(TIFFFILE)})
+    assert sorted(index.bundle) == ["a", "b"]
+
+
 def test_relative_sam2_paths_are_stored_absolute_and_replay_from_anywhere(tmp_path, cohort, monkeypatch):
     """A relative SAM2 checkpoint or config path resolves against the working directory,
     so ``plan.yaml`` replays to the same plan from another one."""
@@ -567,6 +622,26 @@ def test_a_changed_overlap_is_refused_in_the_same_directory(tmp_path, two_slides
             batch_size=4,
         )
     assert (output_dir / "plan.yaml").read_text() == plan
+
+
+def test_a_directory_predicted_with_another_reader_is_refused_with_how_to_keep_it(tmp_path, cohort):
+    """A directory predicted when the slide reader did not come from the bundles has
+    ``auto`` in its ``plan.yaml``. The same config now plans the bundle's reader, so the
+    relaunch is refused, and the message says how to keep the directory's reader."""
+    from soma.pipeline.slide_prediction import resolve_slide_prediction
+
+    bundle = save_bundle(tmp_path / "run" / "bundle", **reader_recipe("tifffile"))
+    output_dir = tmp_path / "predictions"
+    before = resolve_slide_prediction(output_dir=output_dir, bundles=bundle, records=cohort, extraction=MASK_READER_ONLY)
+    before["extraction"]["tiling"].update(backend="auto", requested_backend="auto")
+    output_dir.mkdir()
+    (output_dir / "plan.yaml").write_text(yaml.safe_dump(before, sort_keys=False))
+
+    with pytest.raises(
+        ValueError,
+        match=r"read with 'auto'.*set extraction\.tiling\.backend: auto to keep it\. Use another predict\.output_dir",
+    ):
+        predict(tmp_path, cohort, bundle, extraction=MASK_READER_ONLY)
 
 
 # --- memory --------------------------------------------------------------------------- #

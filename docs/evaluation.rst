@@ -202,6 +202,22 @@ The directory is a prediction output with one bundle's maps, or one of its
 bundle directories. A slide is predicted when its ``<sample_id>.json`` record
 exists.
 
+The slides and the annotation rasters are read with the hs2p readers the
+prediction's ``plan.yaml`` records (``maps.backend`` and ``maps.mask_backend``).
+``soma predict`` reads the slides with the reader the bundles were trained with,
+unless its config sets ``extraction.tiling.backend``, and the masks with
+``extraction.tiling.mask_backend``. To read with other readers, pass
+``--backend`` for the slides and ``--mask-backend`` for the annotation rasters:
+
+.. code-block:: bash
+
+   soma evaluate predictions/beetle-test --cohort dataset.csv \
+       --backend openslide --mask-backend tifffile
+
+In Python, pass the readers to ``LabelMapSource.from_manifests`` as
+``image_backend`` and ``backend``. Both options apply to a ``soma predict``
+output only; ``soma evaluate`` refuses them for other predictions.
+
 Each slide is read one window at a time on the map's pixel grid, so neither the
 map nor the annotation raster is held in memory. hs2p aligns an annotation
 raster at another resolution to the slide and reads it at the map's spacing.

@@ -706,6 +706,31 @@ def test_grid_evaluate_scores_zero_padded_sample_ids(tmp_path: Path, splits):
     assert (scored["num_samples"], scored["metrics"]["mean_f1"]) == (len(ids), 1.0)
 
 
+@pytest.mark.parametrize(
+    ("kind", "option"), [("set", "--backend"), ("points", "--mask-backend")], ids=["set-backend", "points-mask-backend"]
+)
+def test_evaluate_refuses_the_slide_readers_for_other_predictions(tmp_path: Path, capsys, kind, option):
+    """``--backend`` and ``--mask-backend`` choose the readers of a ``soma predict``
+    output's slides and annotation rasters; other predictions read neither."""
+    from soma.cli import main
+    from soma.evaluation import PointPredictions
+
+    dataset_csv, _ = _zero_padded_cohort(tmp_path / "cohort")
+    ids = ["001", "002", "003", "004"]
+    predictions = tmp_path / f"{kind}.parquet"
+    if kind == "set":
+        pd.DataFrame({"sample_id": ids, "predicted_value": [0.0, 1.0, 2.0, 3.0]}).to_parquet(predictions, index=False)
+    else:
+        frame = pd.DataFrame([(sample_id, 2, 3, 0, 0.9) for sample_id in ids], columns=["sample_id", "x", "y", "class", "score"])
+        PointPredictions(frame, classes=["cell"], sample_ids=ids, match_distance_px=2.0).to_parquet(predictions)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["evaluate", str(predictions), "--cohort", str(dataset_csv), option, "tifffile"])
+
+    assert exit_info.value.code == 2
+    assert f"{option} only applies to a soma predict output" in capsys.readouterr().err
+
+
 # --- Help / no-args ---
 
 
