@@ -399,6 +399,21 @@ def test_a_plan_saved_before_hs2p_had_a_tile_grid_resumes_in_its_run_dir(tmp_pat
     assert open_run(_plan(resumed), config=resumed, num_folds=1)[0].run_dir == layout.run_dir
 
 
+def test_a_plan_saved_before_cohorts_had_a_train_subset_resumes_in_its_run_dir(tmp_path: Path):
+    """A plan.yaml saved before ``cohort.train_subset`` existed trains on the whole train
+    split, which is what the unset field means, so the run resumes."""
+    started = _make_config(tmp_path)
+    layout, _ = open_run(_plan(started), config=started, num_folds=1)
+    plan_path = layout.run_dir / "plan.yaml"
+    saved = yaml.safe_load(plan_path.read_text())
+    assert saved["cohort"].pop("train_subset") is None
+    plan_path.write_text(yaml.safe_dump(saved))
+
+    resumed = _with_run(started, resume=True)
+
+    assert open_run(_plan(resumed), config=resumed, num_folds=1)[0].run_dir == layout.run_dir
+
+
 def test_a_plan_saved_before_hs2p_had_a_tile_grid_refuses_a_slide_grid_resume(tmp_path: Path):
     run_dir = tmp_path / "run"
     _record(run_dir, _make_config(tmp_path))

@@ -18,11 +18,13 @@ Identity version 9 hashes the ``train`` and ``tune`` manifest
 slices and the run's *plan* (see :ref:`plan-yaml`): the features section as
 extraction resolves it, the cohort options, the loaders' batch size, sampler and
 augmentation, the learner with every leaf's params, the trainer and the
-evaluation. Representation-only runs instead hash their configured evaluation
-split and representation settings.
+evaluation. With ``cohort.train_subset``, it also hashes the sorted ids the
+file lists, so each subset is its own experiment (see :ref:`train-subset`).
+Representation-only runs instead hash their configured evaluation split and
+representation settings.
 
 The ``run`` section (output directory, seed, run id, resume, mirror root, fold
-selection), the cohort file paths, the loader worker settings,
+selection), the cohort file paths (the train subset's too), the loader worker settings,
 ``trainer.device``, the grid-output save toggles and
 ``evaluation.overwrite_test`` do not change experiment identity. Enabled
 attention-heatmap settings do, because they change generated artifacts.

@@ -209,6 +209,7 @@ in the rest and writes it to the run's ``plan.yaml``. Component params
      collapse: null
      tune_is_test: false
      allow_missing_tune: false
+     train_subset: null
    features:
      kind: cached
      encoder:

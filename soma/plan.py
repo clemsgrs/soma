@@ -43,6 +43,7 @@ __all__ = [
     "head_family",
     "learner_shape",
     "load_cohort",
+    "load_train_subset",
     "resolve",
     "revalidated",
     "sample_unit",
@@ -150,7 +151,8 @@ def comparable(payload: Mapping[str, Any]) -> dict[str, Any]:
 
     A tiling field that hs2p added after the plan was saved takes the one value the plan
     meant (``LEGACY_TILING_VALUES``): a ``plan.yaml`` without ``tiling.grid`` is on the
-    contour grid.
+    contour grid. An unset ``cohort.train_subset`` is left out, so a plan without a
+    subset compares equal to a ``plan.yaml`` saved before the field existed.
     """
     from soma.extract.cache.keys import LEGACY_TILING_VALUES
 
@@ -163,6 +165,9 @@ def comparable(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(params, dict):
         for name in RESUME_EXCLUDED_LEARNER_PARAMS:
             params.pop(name, None)
+    cohort = payload.get("cohort")
+    if isinstance(cohort, dict) and cohort.get("train_subset") is None:
+        cohort.pop("train_subset", None)
     tiling = ((payload.get("features") or {}).get("extraction") or {}).get("tiling")
     if isinstance(tiling, dict):
         for name, value in LEGACY_TILING_VALUES.items():
@@ -309,6 +314,16 @@ def load_cohort(config: ExperimentConfig):
             f"(binning: {binning}); drop the column or set binning: column."
         )
     return cohort.with_test_from_tune() if config.cohort.tune_is_test else cohort
+
+
+def load_train_subset(config: ExperimentConfig | Plan) -> tuple[str, ...] | None:
+    """The sample ids ``cohort.train_subset`` lists, one per line of the file (blank
+    lines skipped), or ``None`` when the config lists none."""
+    path = config.cohort.train_subset
+    if path is None:
+        return None
+    lines = Path(path).read_text(encoding="utf-8").splitlines()
+    return tuple(line.strip() for line in lines if line.strip())
 
 
 # --- check: the cross-section rules ----------------------------------------------------
@@ -550,6 +565,8 @@ def _check_representation(config: ExperimentConfig) -> None:
         raise ValueError("representation v1 scores tile embeddings: use a tile-level encoder.")
     if config.loaders.augment is not None:
         raise ValueError("representation v1 takes no augmentation.")
+    if config.cohort.train_subset is not None:
+        raise ValueError("A representation run trains nothing: drop cohort.train_subset.")
 
 
 def _check_loaders(config: ExperimentConfig, registries, *, family: str, shape: str, decoder) -> None:

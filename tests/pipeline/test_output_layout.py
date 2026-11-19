@@ -480,6 +480,24 @@ def test_build_experiment_spec_distinguishes_how_the_cohort_is_split(tmp_path: P
     ).experiment_id
 
 
+def test_the_ids_a_train_subset_lists_are_part_of_the_experiment_identity(tmp_path: Path):
+    """Two subsets are two experiments, and neither is the run without a subset. The ids
+    count, not the file: the same ids listed in another file, in another order, are the
+    same experiment."""
+
+    def experiment_id(subset: str | None = None, name: str = "subset.txt") -> str:
+        cohort = {}
+        if subset is not None:
+            cohort["train_subset"] = _write_csv(tmp_path / name, subset)
+        return build_experiment_spec(_make_pipeline_config(tmp_path, cohort=cohort)).experiment_id
+
+    first, second = experiment_id("s0\n", "first.txt"), experiment_id("s1\n", "second.txt")
+    both = experiment_id("s0\ns1\n", "both.txt")
+
+    assert len({experiment_id(), first, second, both}) == 4
+    assert experiment_id("s1\n\ns0\n", "both_reordered.txt") == both
+
+
 def test_build_experiment_spec_distinguishes_dense_decoder_settings(tmp_path: Path):
     shallow_decoder = _make_segmentation_config(
         tmp_path, decoder={"name": "lightweight_conv", "params": {"hidden_dim": 64}}

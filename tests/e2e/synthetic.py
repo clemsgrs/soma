@@ -349,6 +349,52 @@ def make_dense_dataset(
     return dataset_csv, splits_csv
 
 
+def make_segmentation_slides(root: Path, n: int = 6, size: int = 192, seed: int = 0) -> tuple[Path, Path]:
+    """Whole slides for segmentation: discs of two classes on background, and an
+    annotation raster of the same size (0 background, 1 and 2 the discs).
+
+    The last two slides are the tune and the test slide; the others train.
+    """
+    import tifffile
+
+    root.mkdir(parents=True)
+    rng = np.random.default_rng(seed)
+    yy, xx = np.ogrid[:size, :size]
+    rows = []
+    for index in range(n):
+        sample_id = f"slide{index}"
+        image = np.empty((size, size, 3), dtype=np.int16)
+        image[:] = BACKGROUND
+        annotation = np.zeros((size, size), dtype=np.uint8)
+        for cls in (1, 2):
+            for _ in range(6):
+                x, y = (int(v) for v in rng.integers(12, size - 12, 2))
+                disc = (xx - x) ** 2 + (yy - y) ** 2 < int(rng.integers(8, 16)) ** 2
+                annotation[disc] = cls
+                image[disc] = CLASS_COLOURS[cls]
+        write_tiff(root / f"{sample_id}.tif", noisy(image, rng, 10))
+        tifffile.imwrite(
+            root / f"{sample_id}_annotation.tif",
+            annotation,
+            tile=(16, 16),
+            resolution=_RESOLUTION,
+            resolutionunit="CENTIMETER",
+        )
+        rows.append(
+            {
+                "sample_id": sample_id,
+                "image_path": str(root / f"{sample_id}.tif"),
+                "label_mask_path": str(root / f"{sample_id}_annotation.tif"),
+            }
+        )
+    slides_csv = root / "slides.csv"
+    pd.DataFrame(rows).to_csv(slides_csv, index=False)
+    splits_csv = root / "splits.csv"
+    split = ["train"] * (n - 2) + ["tune", "test"]
+    pd.DataFrame({"sample_id": [row["sample_id"] for row in rows], "split": split}).to_csv(splits_csv, index=False)
+    return slides_csv, splits_csv
+
+
 def write_coordinates_artifact(
     output_dir: Path,
     *,

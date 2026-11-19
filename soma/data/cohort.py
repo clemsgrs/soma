@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from numbers import Integral, Real
@@ -101,6 +102,11 @@ def _frozen(fold: FoldSplit) -> FoldSplit:
         tune=tuple(fold.tune),
         tests=MappingProxyType({str(name): tuple(ids) for name, ids in fold.tests.items()}),
     )
+
+
+def _and_more(ids: Sequence[str]) -> str:
+    """`` (and N more)`` after the first of ``ids`` an error names, or nothing."""
+    return f" (and {len(ids) - 1} more)" if len(ids) > 1 else ""
 
 
 def _is_blank(value: Any) -> bool:
@@ -502,6 +508,49 @@ class Cohort:
             )
             folds.append(replace(fold, tests={"test": fold.tune}, test_from_tune=True))
         return Cohort(self._records, folds, unit=self._unit, target_names=self._target_names)
+
+    def with_train_subset(self, sample_ids: Sequence[str]) -> "Cohort":
+        """A cohort whose folds train on the listed ``sample_ids`` only.
+
+        Each fold's train split keeps the ids that are listed, in split order; tune and
+        test are unchanged, so no sample moves across splits. One list serves every fold:
+        an id the cohort does not have, an id listed twice, or an id outside a fold's
+        train split is an error, and so is an empty list.
+        """
+        ids = [str(sample_id) for sample_id in sample_ids]
+        if not ids:
+            raise ValueError("The train subset lists no sample, so no fold has anything to train on.")
+        repeated = [sid for sid, count in Counter(ids).items() if count > 1]
+        if repeated:
+            raise ValueError(
+                f"The train subset lists {repeated[0]!r} twice{_and_more(repeated)}; list each sample once."
+            )
+        unknown = [sid for sid in ids if sid not in self._by_id]
+        if unknown:
+            raise ValueError(
+                f"The train subset lists {unknown[0]!r}{_and_more(unknown)}, which the cohort does not have."
+            )
+        listed = set(ids)
+        for index, fold in enumerate(self._folds):
+            train = set(fold.train)
+            outside = [sid for sid in ids if sid not in train]
+            if outside:
+                sid = outside[0]
+                held_out = {"tune": fold.tune, **fold.tests}
+                split = next((name for name, members in held_out.items() if sid in members), None)
+                where = f"its {split!r} split" if split else "none of its splits"
+                raise ValueError(
+                    f"The train subset lists {sid!r}, which fold {index} puts in {where}, not in "
+                    "train. Every listed sample must be in the train split of every fold."
+                )
+        folds = [replace(fold, train=tuple(sid for sid in fold.train if sid in listed)) for fold in self._folds]
+        return Cohort(
+            self._records,
+            folds,
+            unit=self._unit,
+            allow_missing_test=True,
+            target_names=self._target_names,
+        )
 
     def derived(self, children: Mapping[str, str]) -> "Cohort":
         """A cohort of ``children`` (child id -> parent ``sample_id``), each inheriting its

@@ -542,6 +542,15 @@ def test_a_representation_run_is_task_free_cached_and_seed_zero(files):
         check(experiment(*files, head=None, seed=1, evaluation={"representation": options}))
 
 
+def test_a_representation_run_trains_nothing_so_it_takes_no_train_subset(files, tmp_path: Path):
+    options = CRoMaOptions(confounder_column="center", split="test")
+    subset = tmp_path / "subset.txt"
+    subset.write_text("s0\n")
+    config = experiment(*files, head=None, cohort={"train_subset": subset}, evaluation={"representation": options})
+    with pytest.raises(ValueError, match="cohort.train_subset"):
+        check(config)
+
+
 def test_a_plan_holds_the_upstream_dataclasses_and_writes_primitives(files):
     plan = _resolve(experiment(*files, aggregator="abmil", features=FeaturesConfig(extraction=extraction(0.5, 224))))
     assert isinstance(plan.features.execution, slide2vec.ExecutionOptions)

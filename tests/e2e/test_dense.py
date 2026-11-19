@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 
+import pandas as pd
 import pytest
 import yaml
 
@@ -18,7 +19,7 @@ from soma.cli import main as soma_main
 from soma.evaluation import LabelMapPredictions, PointPredictions
 from soma.testing import FakeEncoder
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, Run, learner_section, run_soma, trainer_section
-from tests.e2e.synthetic import SPACING_UM, make_dense_dataset
+from tests.e2e.synthetic import SPACING_UM, make_dense_dataset, make_segmentation_slides
 
 #: The dense grid cache keys of the cached scenarios (pinned in slice 6c; moved once in
 #: slice 8, when the scenarios took soma.testing's ``fake`` encoder).
@@ -128,6 +129,144 @@ def test_detection_is_learned(tmp_path, encoder_name, encoded_images, new_artifa
     predictions = PointPredictions.from_parquet(run.run_dir / "predictions_test.parquet")
     artifact.check_equal("predictions_test/ids", sorted(predictions.sample_ids), ["roi10", "roi11"])
     artifact.check_equal("thresholds_file/absent", (run.run_dir / "detection_thresholds.json").exists(), False)
+    artifact.assert_passed()
+
+
+#: The whole-slide scenario's ROI size: each 192 px slide holds 3 x 3 ROIs.
+WHOLE_SLIDE_ROI_PX = 64
+
+
+def _whole_slide_config(tmp_path, encoder_name, slides_csv, splits_csv, *, train_subset=None, draws_per_epoch=None):
+    """Segmentation over ROIs sampled from whole slides, trained with the ``uniform`` ROI
+    batch sampler. The slides are read with OpenSlide and the annotation rasters with
+    tifffile (never cuCIM, which crashes on some synthetic TIFFs)."""
+    cohort = {"records": str(slides_csv), "splits": str(splits_csv)}
+    if train_subset is not None:
+        cohort["train_subset"] = str(train_subset)
+    return {
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
+        "cohort": cohort,
+        "features": {
+            "kind": "cached",
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": WHOLE_SLIDE_ROI_PX,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                    "mask_backend": "tifffile",
+                },
+                "masks": {
+                    "pixel_mapping": {"background": 0, "light": 1, "dark": 2},
+                    "min_coverage": {"background": 0.0, "light": 0.0, "dark": 0.0},
+                    "output_mode": "merged",
+                },
+            },
+            "dense": {"spacing_um": SPACING_UM, "target_size": WHOLE_SLIDE_ROI_PX, "backend": "openslide"},
+            "execution": {**CPU_EXECUTION, "batch_size": 8},
+            "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
+        },
+        "loaders": {
+            "batch_size": 4,
+            **CPU_LOADER,
+            "sampler": {"name": "uniform", "params": {"draws_per_epoch": draws_per_epoch}},
+        },
+        "learner": learner_section(
+            "dense",
+            {
+                "decoder": {"name": "lightweight_conv"},
+                "head": {
+                    "name": "segmentation",
+                    "params": {"classes": {"background": [0], "light": [1], "dark": [2]}},
+                },
+            },
+            learning_rate=3e-3,
+            normalization={"method": "zscore"},
+        ),
+        "trainer": trainer_section(10),
+        "evaluation": {"metrics": ["mean_dice"], "save_overlays": False},
+    }
+
+
+def _drawn_rois(run: Run) -> list[list[str]]:
+    """The ROIs the run's ROI batch sampler drew in each epoch."""
+    audit = json.loads((run.run_dir / "roi_batch_sampling.json").read_text())
+    return [sorted(epoch["roi_draw_counts"]) for epoch in audit["epochs"]]
+
+
+def _scored_ids(run: Run, split: str) -> list[str]:
+    return sorted(LabelMapPredictions.load(run.run_dir / f"predictions_{split}").sample_ids)
+
+
+def _cache_keys(cache_root) -> list[str]:
+    """Every cache entry, as ``<kind>/<key>``: the ROI sampling, the grids and the ROI
+    population."""
+    return sorted(path.relative_to(cache_root).as_posix() for path in cache_root.glob("*/*"))
+
+
+def _run_json(run: Run, name: str) -> dict:
+    return json.loads((run.run_dir / name).read_text())
+
+
+def test_whole_slide_segmentation_trains_on_a_listed_subset_of_its_rois(
+    tmp_path, encoder_name, encoded_images, new_artifact
+):
+    """``cohort.train_subset`` narrows the train split to the listed ROIs after they
+    inherit their slides' splits: tune and test keep every ROI, and the run reuses the ROI
+    sampling, the grids and the ROI population of the run without it. The ``uniform``
+    sampler draws from the listed ROIs, so it cannot draw more of them per epoch than the
+    list holds."""
+    artifact = new_artifact("dense_whole_slide_train_subset")
+    slides_csv, splits_csv = make_segmentation_slides(tmp_path / "data")
+    full = run_soma(_whole_slide_config(tmp_path, encoder_name, slides_csv, splits_csv), tmp_path / "full.yaml")
+    encoded_by_full, cached_by_full = sum(encoded_images), _cache_keys(tmp_path / "cache")
+
+    # The subset names ROIs of the ROI table the first extraction wrote: two of each
+    # training slide, listed in another order than the table's.
+    rois = pd.read_csv(full.run_dir / "segmentation_rois" / "dataset.csv")
+    train_slides = sorted(pd.read_csv(splits_csv).query("split == 'train'")["sample_id"])
+    listed = [roi for slide in train_slides for roi in rois.query("slide_id == @slide")["sample_id"][:2]]
+    subset_file = tmp_path / "rung_0008.txt"
+    subset_file.write_text("\n".join(reversed(listed)) + "\n")
+    subset = run_soma(
+        _whole_slide_config(
+            tmp_path, encoder_name, slides_csv, splits_csv, train_subset=subset_file, draws_per_epoch=8
+        ),
+        tmp_path / "subset.yaml",
+    )
+
+    artifact.record_run("full", full)
+    artifact.record_run("subset", subset)
+    artifact.check_training_reduced_loss("full", full)
+    artifact.check_training_reduced_loss("subset", subset)
+    train_rois = sorted(rois[rois["slide_id"].isin(train_slides)]["sample_id"])
+    artifact.check_equal("full/drawn_rois", _drawn_rois(full), [train_rois] * 10)
+    artifact.check_equal("subset/drawn_rois", _drawn_rois(subset), [sorted(listed)] * 10)
+    for split in ("tune", "test"):
+        artifact.check_equal(f"subset/{split}_ids", _scored_ids(subset, split), _scored_ids(full, split))
+    artifact.check_equal("subset/rois_encoded", sum(encoded_images) - encoded_by_full, 0)
+    # One ROI sampling, one grid cache and one ROI population serve both runs.
+    artifact.check_equal(
+        "full/cache_kinds",
+        [key.split("/")[0] for key in cached_by_full],
+        ["dense", "roi_sampling", "segmentation_roi_population"],
+    )
+    artifact.check_equal("subset/cache_keys", _cache_keys(tmp_path / "cache"), cached_by_full)
+    population_key = [_run_json(run, "segmentation_roi_population.json")["cache_key"] for run in (full, subset)]
+    artifact.check_equal("subset/roi_population_key", population_key[1], population_key[0])
+    # The fitted statistics see the subset: the feature adaptor is fitted on the listed ROIs.
+    artifact.check_equal("subset/adaptor_support", _run_json(subset, "feature_adapter.json")["n_support_samples"], 8)
+    # Another training set is another experiment.
+    artifact.check_equal("subset/own_experiment", subset.run_dir.parents[1] != full.run_dir.parents[1], True)
+
+    overdrawn = _whole_slide_config(
+        tmp_path, encoder_name, slides_csv, splits_csv, train_subset=subset_file, draws_per_epoch=12
+    )
+    with pytest.raises(ValueError) as overdraw:
+        run_soma(overdrawn, tmp_path / "overdrawn.yaml")
+    artifact.check_equal("overdrawn/error", "draws_per_epoch=12 exceeds 8 ROIs" in str(overdraw.value), True)
     artifact.assert_passed()
 
 
