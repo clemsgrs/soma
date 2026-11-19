@@ -290,6 +290,31 @@ def test_an_object_on_a_seam_of_a_resampled_slide_appears_once(tmp_path, decoder
     assert points == pytest.approx([(7 * scale, 16 * scale), (seam[0], 16 * scale), (34 + 24 * scale, 16 * scale)])
 
 
+def test_a_whole_stride_stays_exclusive_on_a_slide_read_without_resampling(tmp_path, decoders):
+    """Level 0 is at 0.4766 um, within the tolerance of the bundle's 0.5 um, so it is read
+    as is: 32 px tiles at overlap 0.25 have a 4 px margin and a 24 px stride, and a tile
+    keeps ``[4, 28)``. Every tile puts one peak at column 28, the first column of its far
+    margin, so none reaches the output. In floats the step in tile pixels comes out a
+    hair above 24 at this spacing; it must not let column 28 in."""
+    records = one_slide(tmp_path, np.full((96, 96, 3), 120, dtype=np.uint8), spacing_um=0.4766)
+    bundle = save_detection_bundle(
+        tmp_path / "run" / "bundle",
+        decoder={"name": decoders["fixed-peaks"]["name"], "params": {"peaks": [[28, 16]]}},
+        match_distance=2.0,
+    )
+
+    index = soma.predict_slides(
+        output_dir=tmp_path / "predictions",
+        bundles=bundle,
+        records=records,
+        extraction={"tiling": {"overlap": 0.25, **TIFFFILE}, "masks": {"min_coverage": {"tissue": 0.9}}},
+    )
+
+    (row,) = index.itertuples()
+    assert row.num_tiles > 1
+    assert points_of(tmp_path / "predictions" / row.path) == []
+
+
 # --- level 0 ------------------------------------------------------------------------------- #
 
 

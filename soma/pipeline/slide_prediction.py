@@ -899,6 +899,7 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
         * int(tiling.requested_tile_size_px)
         / int(tiles.read_tile_size_px)
     )
+    step_px = round(step_px, 6)  # float noise must not move a whole-pixel boundary
     shared = {
         "sample_id": entry.sample_id,
         "ensemble": ensemble,
