@@ -9,7 +9,7 @@ For Built-in Benchmarks, this is chosen over a hand-written folder template beca
 ## Considered and rejected
 
 - **Protocol-as-data (pure declarative specs).** Rejected: EVA's protocol genuinely computes and OCELOT needs a custom scorer, so a static spec only ends up sprouting a `custom_scorer: path.py` escape hatch — protocol-as-code wearing a data costume.
-- **Folder convention under `examples/` for Built-in Benchmarks.** Rejected: leaves discoverability entirely to docs; nothing ties expected numbers to the leaderboard except convention. This does not reject `examples/<project>/` for Project protocols.
+- **Folder convention under `examples/` for Built-in Benchmarks.** Rejected: leaves discoverability entirely to docs; nothing ties expected numbers to the leaderboard except convention. Project protocols are a separate matter: they live in their own repositories (ADR 0010).
 
 ## Consequences
 
