@@ -33,8 +33,10 @@ Artefact
 --------
 A parquet with columns ``x`` and ``y`` (level-0 pixels, float64), ``class`` (int64) and
 ``score`` (float64). Its schema metadata (key ``soma``, JSON, ``kind: slide_points``)
-records what scoring needs: the classes, the matching and NMS distances in µm, the slide's
-level-0 and read spacings, and what the caller adds (the bundles, their tune threshold).
+records what scoring needs: the matching and NMS distances in µm, the slide's level-0
+spacing, and what the caller adds: the class scheme the bundle was trained with
+(``classes``, class name → the annotated ids that form it, in class order, and ``drop``,
+the annotated ids dropped), the read spacing, the bundles and their tune threshold.
 """
 
 from __future__ import annotations
@@ -88,8 +90,10 @@ def predict_slide_points(
     ``(width, height)`` at ``level0_spacing_um``. Each tile is read at ``spacing_um``
     (``tolerance``, ``backend``) from ``image``. Without ``ensemble`` there is one path
     (and one ``metadata`` mapping, stored in the file) per model; with it there is one,
-    and the peaks come from the models' mean heatmap, with the first model's head. A slide
-    without a kept tile gets a parquet without rows. Returns each parquet's point count.
+    and the peaks come from the models' mean heatmap, with the first model's head. Each
+    ``metadata`` mapping holds the class scheme: ``classes`` (one entry per class of its
+    head, in class order) and ``drop``. A slide without a kept tile gets a parquet
+    without rows. Returns each parquet's point count.
     """
     models = list(models)
     paths = [Path(path) for path in paths]
@@ -186,7 +190,6 @@ def _metadata(head, extra: Mapping[str, Any], level0_spacing_um: float) -> dict[
         "kind": SLIDE_POINTS_KIND,
         "task_family": "detection",
         "soma_version": str(soma.__version__),
-        "classes": [str(name) for name in head.classes],
         "match_distance_um": float(head.match_distance),
         "nms_distance_um": float(head.nms_distance),
         "min_score": float(head.min_score),
