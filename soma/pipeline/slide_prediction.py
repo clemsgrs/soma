@@ -116,8 +116,9 @@ def predict_slides(
     pixels, and one per-class NMS over the slide removes the duplicates across seams
     (:mod:`soma.evaluation.whole_slide_points`). The parquet holds every peak above the
     head's ``min_score``, with columns ``x``, ``y``, ``class`` and ``score``; the bundle's
-    tune threshold is recorded, not applied. With an overlap, the margin
-    (``tile * overlap / 2``) must be at least the head's NMS distance.
+    tune threshold is recorded, not applied, and so is its class scheme (``class_scheme``
+    in its ``preprocessing.json``; a bundle that records none is refused). With an
+    overlap, the margin (``tile * overlap / 2``) must be at least the head's NMS distance.
 
     The slides are read with the reader the bundles were trained with (the ``backend``
     their encoder recipe records), unless ``extraction.tiling.backend`` names one. Bundles
@@ -325,6 +326,7 @@ def _bundle_info(path: Path) -> dict[str, Any]:
     else:
         head = _detection_head(path)
         info["class_names"] = [str(name) for name in head.classes]
+        info["class_scheme"] = _detection_scheme(preprocessing, head.classes, where=where)
         info["match_distance_um"] = float(head.match_distance)
         info["nms_distance_um"] = float(head.nms_distance)
         info["min_score"] = float(head.min_score)
@@ -359,7 +361,7 @@ def _shared_family(infos: Sequence[Mapping[str, Any]]) -> str:
 #: What the bundles of an ensemble must share, per family: one file records one of each.
 _ENSEMBLE_KEYS = {
     "segmentation": ("num_classes", "class_names", "ignore_index", "label_remap"),
-    "detection": ("num_classes", "class_names", "match_distance_um", "nms_distance_um", "min_score"),
+    "detection": ("num_classes", "class_names", "class_scheme", "match_distance_um", "nms_distance_um", "min_score"),
 }
 
 
@@ -375,8 +377,9 @@ def _check_ensemble(infos: Sequence[Mapping[str, Any]], family: str) -> None:
         )
     raise ValueError(
         "predict.ensemble averages the bundles' heatmaps and takes one set of peaks from the "
-        "mean, so they must share the classes, the matching and NMS distances and min_score; "
-        f"these bundles have {_listing(infos, keys)}"
+        "mean, so they must share the classes, the matching and NMS distances and min_score, "
+        "and one class scheme (class_scheme): the annotated ids that form each class and the "
+        f"ids dropped; these bundles have {_listing(infos, keys)}"
     )
 
 
@@ -909,12 +912,14 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
         "overlap": float(tiling.overlap),
     }
     if ensemble:
-        # An ensemble's scores are a mean no bundle was tuned on: it has no threshold.
-        metadata = [{**shared, "bundles": identities, "threshold": None}]
+        # An ensemble's scores are a mean no bundle was tuned on: it has no threshold. Its
+        # bundles share one class scheme (the plan checks it).
+        recorded = _recorded_points(identities[0]["path"], models[0].head)
+        metadata = [{**shared, **recorded, "bundles": identities, "threshold": None}]
     else:
         metadata = [
-            {**shared, "bundles": [identity], "threshold": _tune_threshold(identity["path"])}
-            for identity in identities
+            {**shared, **_recorded_points(identity["path"], model.head), "bundles": [identity]}
+            for model, identity in zip(models, identities)
         ]
     file = f"{entry.sample_id}.parquet"
     counts = predict_slide_points(
@@ -949,13 +954,50 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
         atomic_write_text(_record_path(output_dir, name, entry.sample_id), json.dumps(record, indent=2) + "\n")
 
 
-def _tune_threshold(bundle_path: str):
-    """The operating threshold a detection bundle recorded: a float, or one per class
-    name; ``None`` when it records none."""
+def _recorded_points(bundle_path: str, head) -> dict[str, Any]:
+    """What a detection bundle's points files copy from its ``preprocessing.json``: the
+    class scheme, in the head's class order, and the operating threshold (a float, or one
+    per class name; ``None`` when the bundle records none)."""
     from soma.learn.bundle import PREPROCESSING
 
     preprocessing = json.loads((Path(bundle_path) / PREPROCESSING).read_text(encoding="utf-8"))
-    return preprocessing.get("score_threshold")
+    scheme = _detection_scheme(preprocessing, head.classes, where=f"bundle {bundle_path}")
+    return {**scheme, "threshold": preprocessing.get("score_threshold")}
+
+
+def _detection_scheme(preprocessing: Mapping[str, Any], class_names, *, where: str) -> dict[str, Any]:
+    """The class scheme a detection bundle records: ``classes`` (class name → annotated
+    ids) in the order of ``class_names``, and ``drop`` (the annotated ids dropped). The
+    bundle's JSON is written with sorted keys, so the order of its mapping is not the class
+    order. A scheme added by hand to an older bundle is checked as a run's config is."""
+    from soma._internal.class_scheme import assign_raw_values, recorded_scheme
+
+    scheme = preprocessing.get("class_scheme")
+    if scheme is None:
+        raise ValueError(
+            f"{where} records no class scheme (class_scheme in its preprocessing.json): it "
+            "was trained before soma recorded one, so its points could not be scored. Train "
+            "it again, or add class_scheme to its preprocessing.json from the run's config: "
+            "classes (each class name and the annotated ids that form it) and drop (the "
+            "annotated ids dropped, [] for none)."
+        )
+    names = [str(name) for name in class_names]
+    invalid = f"{where} records an invalid class_scheme {scheme!r}"
+    classes = scheme.get("classes") if isinstance(scheme, Mapping) else None
+    if not isinstance(classes, Mapping) or sorted(str(name) for name in classes) != sorted(names):
+        raise ValueError(
+            f"{invalid}: its classes must have one entry per class of the bundle ({names}), "
+            "each listing the annotated ids that form the class"
+        )
+    if "drop" not in scheme:
+        raise ValueError(f"{invalid}: it needs a drop list (the annotated ids dropped, [] for none)")
+    try:
+        class_of, dropped = assign_raw_values(
+            {name: classes[name] for name in names}, excluded=scheme["drop"], excluded_name="drop"
+        )
+    except ValueError as error:
+        raise ValueError(f"{invalid}: {error}") from None
+    return recorded_scheme(names, class_of, dropped, excluded_key="drop")
 
 
 def _value_names(head) -> dict[str, str]:
