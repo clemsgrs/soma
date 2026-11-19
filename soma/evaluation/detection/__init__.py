@@ -4,7 +4,8 @@ Pure, weight-free pieces the :class:`soma.models.heads.detection.DetectionHead` 
 :func:`soma.evaluate` compose, each unit-testable on tiny explicit inputs:
 
 * :mod:`soma.evaluation.detection.peaks` — local-maxima + NMS + threshold peak extraction
-  that turns a predicted heatmap back into ``(x, y, class, score)`` points.
+  that turns a predicted heatmap back into ``(x, y, class, score)`` points, and the
+  per-class greedy NMS that merges the points of several tiles.
 * :mod:`soma.evaluation.detection.matching` — class-aware F1@δ point matching (Hungarian /
   greedy), per-image TP/FP/FN accumulation, the global + per-image-macro reduce, the
   per-class threshold sweep, and the one-pass greedy sweep (per-image score histograms
@@ -33,10 +34,11 @@ from soma.evaluation.detection.matching import (
     sweep_score_histograms,
     sweep_score_thresholds,
 )
-from soma.evaluation.detection.peaks import extract_peaks
+from soma.evaluation.detection.peaks import extract_peaks, greedy_point_nms
 
 __all__ = [
     "extract_peaks",
+    "greedy_point_nms",
     "ClassMatch",
     "match_assignment",
     "match_points",

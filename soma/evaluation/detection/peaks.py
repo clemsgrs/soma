@@ -25,7 +25,7 @@ import torch.nn.functional as F
 from scipy.spatial import cKDTree
 from torch import Tensor
 
-__all__ = ["extract_peaks"]
+__all__ = ["extract_peaks", "greedy_point_nms"]
 
 
 #: Hard ceiling on candidates per class fed to the NMS. Real heatmaps
@@ -140,3 +140,45 @@ def extract_peaks(
         np.concatenate(all_cls, axis=0),
         np.concatenate(all_score, axis=0),
     )
+
+
+def greedy_point_nms(
+    xy: np.ndarray, scores: np.ndarray, classes: np.ndarray, min_distance: float
+) -> np.ndarray:
+    """Per-class greedy NMS over a point list, the rule :func:`extract_peaks` applies within
+    one heatmap: keep the highest score first, and drop any later point of the same class
+    closer than ``min_distance``. Returns the kept row indices, ascending.
+
+    It removes the duplicates of points gathered from several tiles: the per-ROI tile
+    stitch of the tiled detection benchmarks, and the seams of a whole-slide prediction.
+
+    A uniform spatial hash (cell size ``min_distance``) keeps this O(n): a point can only
+    conflict with kept points in its own or an adjacent cell, and kept points within a cell
+    are at least ``min_distance`` apart, so each cell holds O(1) of them.
+    """
+    if xy.shape[0] == 0:
+        return np.zeros((0,), dtype=np.int64)
+    md = float(min_distance)
+    md_sq = md * md
+    inv = 1.0 / md
+    kept: list[int] = []
+    cells: dict[tuple[int, int, int], list[int]] = {}  # (class, cell_x, cell_y) -> kept indices
+    for i in np.argsort(-scores, kind="stable"):
+        c = int(classes[i])
+        x, y = float(xy[i, 0]), float(xy[i, 1])
+        cx, cy = math.floor(x * inv), math.floor(y * inv)
+        conflict = False
+        for gx in (cx - 1, cx, cx + 1):
+            for gy in (cy - 1, cy, cy + 1):
+                for j in cells.get((c, gx, gy), ()):
+                    if (x - float(xy[j, 0])) ** 2 + (y - float(xy[j, 1])) ** 2 < md_sq:
+                        conflict = True
+                        break
+                if conflict:
+                    break
+            if conflict:
+                break
+        if not conflict:
+            kept.append(int(i))
+            cells.setdefault((c, cx, cy), []).append(int(i))
+    return np.sort(np.asarray(kept, dtype=np.int64))
