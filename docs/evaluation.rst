@@ -241,6 +241,49 @@ These scores are not comparable to a run's test metrics. A run scores only the
 ROIs it samples where an annotation class meets ``min_coverage``; a whole-slide
 score covers every annotated pixel of the slide.
 
+.. _whole-slide-points:
+
+Whole-slide detection points
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With detection bundles, :func:`soma.predict_slides` (``soma predict``) writes one
+points parquet per slide and bundle, ``<output_dir>/<bundle>/<sample_id>.parquet``.
+The bundles of one call are all segmentation bundles or all detection bundles.
+
+The parquet has four columns: ``x`` and ``y`` in the slide's level-0 pixels,
+``class`` (the class index) and ``score``. It holds every peak above the head's
+``min_score``. No threshold is applied, so a threshold can be chosen later.
+Its schema metadata (key ``soma``) records:
+
+- the classes;
+- the matching and NMS distances, in µm;
+- the slide's level-0 spacing and the read spacing;
+- the bundle's identity;
+- the bundle's tune threshold (``threshold``).
+
+Each tile's peaks are found in the tile, then placed on the slide from the
+tile's level-0 origin and the slide's spacings. Each tile keeps only the
+peaks in the region it contributes, by the label maps' pick-one rule:
+
+- With ``overlap: 0``, a tile keeps all its peaks.
+- With an overlap, a tile drops the peaks in its margin, ``tile * overlap / 2``
+  pixels on each side. The tiles of the slide's first row and first column keep
+  the peaks in their outer margin.
+
+One NMS per class over the whole slide then removes the duplicates that two
+tiles found on either side of a seam. It uses the head's NMS distance, which
+is the matching distance unless the head sets one. With an overlap, the margin
+must be at least the NMS distance, or the config is refused.
+
+With ``ensemble: true``, the bundles' heatmaps are averaged before the peaks are
+found. The bundles must then share the classes, both distances and
+``min_score``. An ensemble records no threshold.
+
+A slide with no kept tile, or with no peak, gets a parquet with no rows. The
+``index.parquet`` row of each slide gives ``width``, ``height`` and ``spacing_um``
+of its level 0, ``num_tiles`` and ``num_points``. ``soma evaluate`` does not
+score these parquets yet.
+
 Reference
 ---------
 
