@@ -81,10 +81,11 @@ Training on a subset
 --------------------
 
 ``cohort.train_subset`` names a text file with one sample id per line. Each
-fold then trains on the listed ids of its train split only, in the split's
-order. Tune and test do not change. Use it to train the same experiment on
-less data, for example to measure how a model scales with the number of
-annotated samples.
+line is read literally, like the ids in the CSV files: a space is part of the
+id. Empty lines are skipped. Each fold then trains on the listed ids of its
+train split only, in the split's order. Tune and test do not change. Use it
+to train the same experiment on less data, for example to measure how a model
+scales with the number of annotated samples.
 
 .. code-block:: yaml
 
@@ -98,7 +99,8 @@ annotated samples.
   the cohort does not have, and an id that a fold puts in tune or test. The
   error names the fold and the id.
 - The ids are the run's samples. When the run samples ROIs from whole slides,
-  they are ROI ids, not slide ids (see :ref:`segmentation-train-subset`).
+  they are ROI ids, not slide ids (see :ref:`segmentation-train-subset`). A
+  patient run (``cohort.collapse: patient_id``) refuses ``cohort.train_subset``.
 - What the run fits on the train split sees the subset only: the feature
   normalization, the ROI batch sampler and the survival bins.
 - The listed ids are part of the :doc:`experiment identity <outputs>`: two

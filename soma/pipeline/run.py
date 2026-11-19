@@ -166,12 +166,15 @@ class Pipeline:
         #: False in a fold's worker process: the launch that started it summarizes the run.
         self._summarizes = True
         self._cohort, self._image_manifest, self._annotation_manifest = load_pipeline_data(config)
-        self._plan = resolve(config, self._cohort)
-        self._train_subset = load_train_subset(self._plan)
-        if self._train_subset is not None and not annotation_sampled(self._plan):
-            # A list that does not fit the folds fails here, before anything is extracted.
+        self._train_subset = load_train_subset(config)
+        trained = self._cohort
+        if self._train_subset is not None and not annotation_sampled(config):
+            # A list that does not fit the folds fails here, before anything is extracted,
+            # and the head's fit check in resolve sees the folds the run trains. The plan
+            # does not move: what resolve infers reads the records, which narrowing keeps.
             # ROI ids exist only once the slides are sampled: _trained_folds checks those.
-            self._cohort.with_train_subset(self._train_subset)
+            trained = self._cohort.with_train_subset(self._train_subset)
+        self._plan = resolve(config, trained)
 
     @property
     def config(self) -> ExperimentConfig:

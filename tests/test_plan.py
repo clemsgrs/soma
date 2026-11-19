@@ -17,7 +17,7 @@ from hs2p import TilingConfig
 
 from soma import ExperimentConfig, Plan, presets, resolve
 from soma.config import Component, CRoMaOptions, EncoderLeaf, FeaturesConfig
-from soma.plan import check, load_cohort
+from soma.plan import check, load_cohort, load_train_subset
 from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
 
@@ -549,6 +549,38 @@ def test_a_representation_run_trains_nothing_so_it_takes_no_train_subset(files, 
     config = experiment(*files, head=None, cohort={"train_subset": subset}, evaluation={"representation": options})
     with pytest.raises(ValueError, match="cohort.train_subset"):
         check(config)
+
+
+def test_a_patient_run_takes_no_train_subset(files, tmp_path: Path):
+    # The list names samples (slides), but a patient run trains on patients.
+    subset = tmp_path / "subset.txt"
+    subset.write_text("s0\n")
+    config = experiment(*files, cohort={"collapse": "patient_id", "train_subset": subset})
+    with pytest.raises(ValueError, match=r"cohort\.train_subset .*cohort\.collapse: patient_id"):
+        check(config)
+
+
+def test_the_train_subset_file_is_read_literally(tmp_path: Path):
+    # " s0 " and "s0" are two ids, as the cohort CSVs read them. A Windows line end ends
+    # a line, as in a CSV; only empty lines are skipped.
+    root = tmp_path / "data"
+    root.mkdir()
+    ids = [" s0 ", "s0", "s1", "s2", "s3", "s4", "s5"]
+    records, splits = root / "dataset.csv", root / "splits.csv"
+    pd.DataFrame(
+        {"sample_id": ids, "image_path": [f"/slides/{i}.tif" for i in range(7)], "label": ["a", "b"] * 3 + ["a"]}
+    ).to_csv(records, index=False)
+    pd.DataFrame({"sample_id": ids, "split": ["train"] * 5 + ["tune", "test"]}).to_csv(splits, index=False)
+    subset = tmp_path / "subset.txt"
+    subset.write_bytes(b" s0 \r\ns1\r\n\r\n")
+    config = experiment(records, splits, cohort={"train_subset": subset})
+    cohort = load_cohort(config)
+    assert load_train_subset(config) == (" s0 ", "s1")
+    assert cohort.with_train_subset(load_train_subset(config)).folds[0].train == (" s0 ", "s1")
+    # A stray space is part of the id, and the error shows it.
+    subset.write_text("s1 \n")
+    with pytest.raises(ValueError, match=r"lists 's1 ', which the cohort does not have"):
+        cohort.with_train_subset(load_train_subset(config))
 
 
 def test_a_plan_holds_the_upstream_dataclasses_and_writes_primitives(files):

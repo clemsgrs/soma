@@ -56,3 +56,55 @@ def test_a_train_subset_outside_a_folds_train_split_fails_before_the_run_starts(
     with pytest.raises(ValueError, match=r"'s0'.*fold 1.*'tune'"):
         Pipeline(config, source=source)
     assert not (tmp_path / "outputs").exists()
+
+
+def test_the_plan_is_inferred_from_the_whole_cohort(tmp_path: Path):
+    # Both listed slides are tumor; the label map still holds both classes.
+    config, source = _config(tmp_path, "s0\ns2\n")
+
+    head = Pipeline(config, source=source).plan.learner.params["head"]
+
+    assert head.params["label_map"] == {"normal": 0, "tumor": 1}
+
+
+def _survival_config(tmp_path: Path, train_times: list[float], subset: str):
+    """A ``train_quantiles`` run with three bins over the uncensored ``train_times``,
+    then one tune and one test sample."""
+    ids = [f"s{i}" for i in range(len(train_times) + 2)]
+    data = tmp_path / "data"
+    data.mkdir()
+    records, splits = data / "dataset.csv", data / "splits.csv"
+    pd.DataFrame(
+        {"sample_id": ids, "image_path": [f"/slides/{s}.svs" for s in ids], "time": [*train_times, 1.0, 2.0], "event": 1}
+    ).to_csv(records, index=False)
+    pd.DataFrame({"sample_id": ids, "split": ["train"] * len(train_times) + ["tune", "test"]}).to_csv(splits, index=False)
+    subset_file = tmp_path / "subset.txt"
+    subset_file.write_text(subset)
+    return experiment(
+        records,
+        splits,
+        output_dir=tmp_path / "outputs",
+        head="discrete_survival",
+        head_params={"binning": "train_quantiles", "num_bins": 3},
+        aggregator="mean_pool",
+        cohort={"train_subset": str(subset_file)},
+    )
+
+
+def test_the_survival_bins_are_checked_on_the_listed_training_samples(tmp_path: Path):
+    # The whole train split [1, 2, 2, 2, 2, 2, 3] ties the 1/3 and 2/3 cut points at 2;
+    # the listed times [1, 2, 3] do not.
+    config = _survival_config(tmp_path, [1.0, 2.0, 2.0, 2.0, 2.0, 2.0, 3.0], "s0\ns1\ns6\n")
+
+    head = Pipeline(config).plan.learner.params["head"]
+
+    assert head.params["num_bins"] == 3 and head.params["bin_edges"] is None
+
+
+def test_a_subset_too_small_for_the_survival_bins_fails_before_the_run_starts(tmp_path: Path):
+    # Seven distinct times form three bins; the two listed do not.
+    config = _survival_config(tmp_path, [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], "s0\ns1\n")
+
+    with pytest.raises(ValueError, match=r"^Fold 0: .*num_bins=3 .* 2 uncensored training time\(s\)"):
+        Pipeline(config)
+    assert not (tmp_path / "outputs").exists()

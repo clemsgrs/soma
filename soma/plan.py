@@ -317,13 +317,20 @@ def load_cohort(config: ExperimentConfig):
 
 
 def load_train_subset(config: ExperimentConfig | Plan) -> tuple[str, ...] | None:
-    """The sample ids ``cohort.train_subset`` lists, one per line of the file (blank
-    lines skipped), or ``None`` when the config lists none."""
+    """The sample ids ``cohort.train_subset`` lists, one per line of the file, or ``None``
+    when the config lists none.
+
+    Each line is read literally, like the ids of the cohort CSVs: spaces are part of the
+    id. Only empty lines are skipped. A line ends at ``\\n``, ``\\r\\n`` or ``\\r``, as a
+    CSV row does.
+    """
     path = config.cohort.train_subset
     if path is None:
         return None
-    lines = Path(path).read_text(encoding="utf-8").splitlines()
-    return tuple(line.strip() for line in lines if line.strip())
+    # read_text turns \r\n and \r into \n (universal newlines); splitlines() would also
+    # split on characters (\f, \v, ...) that a CSV keeps in an id.
+    lines = Path(path).read_text(encoding="utf-8").split("\n")
+    return tuple(line for line in lines if line)
 
 
 # --- check: the cross-section rules ----------------------------------------------------
@@ -343,6 +350,11 @@ def check(config: ExperimentConfig) -> None:
 def _check(config: ExperimentConfig) -> None:
     registries = _registries()
     features, evaluation = config.features, config.evaluation
+    if config.cohort.train_subset is not None and config.cohort.collapse == "patient_id":
+        raise ValueError(
+            "cohort.train_subset lists sample ids, but cohort.collapse: patient_id trains on "
+            "patients: drop one of the two."
+        )
     if evaluation.representation is not None:
         _check_representation(config)
         return
@@ -805,8 +817,9 @@ def _resolve_head(config: ExperimentConfig, head: Component, cohort: Any, regist
     params = registry.canonical_params(head.name, {**explicit, **inferred, **given})
     # The head's fit hook runs per fold at train time; a fold it cannot fit (too few
     # uncensored times for the survival bins, or every training case in one fixed bin)
-    # fails here, before anything is extracted. What it fits stays out of the plan, which
-    # is the same for every fold.
+    # fails here, before anything is extracted. The folds are ``cohort``'s: a Pipeline
+    # narrows them to ``cohort.train_subset`` first, so this sees what each fold trains
+    # on. What it fits stays out of the plan, which is the same for every fold.
     for fold, records in enumerate(_fold_training_records(config, cohort)):
         try:
             with logging_fold(fold):
