@@ -1,14 +1,18 @@
 """Whole-slide prediction: a segmentation bundle trained on ROIs, then ``soma predict``
-and ``soma evaluate``.
+and ``soma evaluate``; a detection bundle trained on ROIs, then ``soma predict``.
 
-The run trains on the dense segmentation ROIs (discs of two colours on background) over
-the weight-free ``fake`` encoder's cached grids. ``soma predict`` then cuts larger slides
-with the same discs into hs2p's slide grid, runs the bundle over every tile behind its
-frozen encoder stage, and writes one label TIFF per slide. ``soma evaluate`` scores the
-maps against the slides' annotation rasters.
+The segmentation run trains on the dense segmentation ROIs (discs of two colours on
+background) over the weight-free ``fake`` encoder's cached grids. ``soma predict`` then
+cuts larger slides with the same discs into hs2p's slide grid, runs the bundle over every
+tile behind its frozen encoder stage, and writes one label TIFF per slide. ``soma
+evaluate`` scores the maps against the slides' annotation rasters.
 
-The run reads its ROIs with OpenSlide, and its bundle records that reader. The prediction
-config names no slide reader, so ``soma predict`` reads the slides with OpenSlide too.
+The detection run trains on the dense detection ROIs (small squares of two colours, their
+centres the points). ``soma predict`` writes one points parquet per slide.
+
+The runs read their ROIs with OpenSlide, and their bundles record that reader. The
+prediction configs name no slide reader, so ``soma predict`` reads the slides with
+OpenSlide too.
 """
 
 from __future__ import annotations
@@ -17,10 +21,12 @@ import json
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import tifffile
 import yaml
 
 from soma.cli import main as soma_main
+from soma.evaluation.detection import match_points
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, sha256, trainer_section
 from tests.e2e.synthetic import BACKGROUND, CLASS_COLOURS, SPACING_UM, make_dense_dataset, noisy, write_tiff
 
@@ -29,8 +35,9 @@ ROI_PX = 96
 IGNORED_ROWS = 16
 
 
-def segmentation_config(tmp_path, encoder_name):
-    dataset_csv, splits_csv = make_dense_dataset(tmp_path / "data", "segmentation", size=ROI_PX)
+def dense_config(tmp_path, encoder_name, kind, *, head, metrics, epochs):
+    """A run over the ``kind`` dense ROIs, cached through the ``fake`` encoder."""
+    dataset_csv, splits_csv = make_dense_dataset(tmp_path / "data", kind, size=ROI_PX)
     return {
         "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
         "cohort": {"records": str(dataset_csv), "splits": str(splits_csv)},
@@ -52,16 +59,24 @@ def segmentation_config(tmp_path, encoder_name):
         "loaders": {"batch_size": 4, **CPU_LOADER},
         "learner": learner_section(
             "dense",
-            {
-                "decoder": {"name": "lightweight_conv"},
-                "head": {"name": "segmentation", "params": {"num_classes": 3}},
-            },
+            {"decoder": {"name": "lightweight_conv"}, "head": head},
             learning_rate=3e-3,
             normalization={"method": "zscore"},
         ),
-        "trainer": trainer_section(20),
-        "evaluation": {"metrics": ["mean_dice"]},
+        "trainer": trainer_section(epochs),
+        "evaluation": {"metrics": metrics},
     }
+
+
+def segmentation_config(tmp_path, encoder_name):
+    return dense_config(
+        tmp_path,
+        encoder_name,
+        "segmentation",
+        head={"name": "segmentation", "params": {"num_classes": 3}},
+        metrics=["mean_dice"],
+        epochs=20,
+    )
 
 
 def write_disc_slide(root, sample_id, *, height, width, seed):
@@ -232,4 +247,138 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
     rescored = json.loads((tmp_path / "readers.json").read_text())
     artifact.check_equal("evaluate_readers/metrics", rescored["metrics"], scored["metrics"])
     artifact.check_equal("evaluate_readers/per_sample", rescored["per_sample"] == scored["per_sample"], True)
+    artifact.assert_passed()
+
+
+# --- detection --------------------------------------------------------------------------- #
+
+#: The detection head's matching distance in um; its NMS distance is the same.
+MATCH_DISTANCE_UM = 3.0
+
+
+def detection_config(tmp_path, encoder_name):
+    return dense_config(
+        tmp_path,
+        encoder_name,
+        "detection",
+        head={"name": "detection", "params": {"num_classes": 2, "match_distance": MATCH_DISTANCE_UM, "sigma": 1.5}},
+        metrics=["mean_f1", "f1_per_class"],
+        epochs=30,
+    )
+
+
+def write_cell_slide(root, sample_id, *, height, width, seed):
+    """A slide of 11 px cells of both classes on background, one near each node of a
+    32 px lattice (some on the seams of a 96 px grid at overlap 0.5), and a mask of tissue
+    everywhere. Returns its row and the cells' ``(x, y, class)``, the class from 0."""
+    rng = np.random.default_rng(seed)
+    image = np.empty((height, width, 3), dtype=np.int16)
+    image[:] = BACKGROUND
+    cells = []
+    for y0 in range(16, height - 15, 32):
+        for x0 in range(16, width - 15, 32):
+            x, y = (int(v) for v in np.array([x0, y0]) + rng.integers(-6, 7, 2))
+            x, y = min(max(x, 6), width - 7), min(max(y, 6), height - 7)
+            cls = int(rng.integers(1, 3))
+            image[y - 5 : y + 6, x - 5 : x + 6] = CLASS_COLOURS[cls]
+            cells.append((x, y, cls - 1))
+    write_tiff(root / f"{sample_id}.tif", noisy(image, rng, 10))
+    resolution = (1e4 / SPACING_UM, 1e4 / SPACING_UM)
+    tifffile.imwrite(
+        root / f"{sample_id}_mask.tif",
+        np.ones((height, width), dtype=np.uint8),
+        tile=(16, 16),
+        resolution=resolution,
+        resolutionunit="CENTIMETER",
+    )
+    row = {"sample_id": sample_id, "image_path": f"slides/{sample_id}.tif", "mask_path": f"slides/{sample_id}_mask.tif"}
+    return row, np.asarray(cells, dtype=np.float64)
+
+
+def closest_same_class_px(points: pd.DataFrame) -> float:
+    """The smallest distance between two points of one class (inf without a pair)."""
+    closest = np.inf
+    for _, group in points.groupby("class"):
+        xy = group[["x", "y"]].to_numpy()
+        if len(xy) > 1:
+            distances = np.sqrt(((xy[:, None] - xy[None]) ** 2).sum(-1))
+            closest = min(closest, float(distances[np.triu_indices(len(xy), 1)].min()))
+    return closest
+
+
+def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
+    tmp_path, monkeypatch, encoder_name, encoded_images, new_artifact
+):
+    artifact = new_artifact("predict_detection_slides")
+    run = run_soma(detection_config(tmp_path, encoder_name), tmp_path / "config.yaml")
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+
+    (tmp_path / "slides").mkdir()
+    row, cells = write_cell_slide(tmp_path / "slides", "slide0", height=192, width=288, seed=0)
+    pd.DataFrame([row]).to_csv(tmp_path / "slides.csv", index=False)
+    config = {
+        "predict": {"output_dir": "predictions", "bundles": str(run.run_dir.relative_to(tmp_path)), "batch_size": 8},
+        "cohort": {"records": "slides.csv"},
+        # A 24 px (12 um) margin, wider than the 3 um NMS distance.
+        "extraction": {"tiling": {"overlap": 0.5, "mask_backend": "tifffile"}},
+    }
+    (tmp_path / "predict.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    monkeypatch.chdir(tmp_path)
+    encoded_images.clear()
+
+    soma_main(["predict", "predict.yaml"])
+
+    output_dir = tmp_path / "predictions"
+    plan = yaml.safe_load((output_dir / "plan.yaml").read_text())
+    artifact.check_equal("plan/bundles", plan["predict"]["bundles"] == [str(run.run_dir / "bundle")], True)
+    artifact.check_equal("plan/backend", plan["extraction"]["tiling"]["backend"], "openslide")
+    artifact.check_at_least("tiles_encoded", sum(encoded_images), 1)
+    index = pd.read_parquet(output_dir / "index.parquet")
+    # One parquet per slide, in a folder named after the bundle's run.
+    artifact.check_equal("index/paths", list(index.path) == [f"{run.run_dir.name}/slide0.parquet"], True)
+    artifact.check_equal("index/num_tiles", int(index.num_tiles[0]), 4 * 6)  # the 48 px lattice over 192 x 288
+    path = output_dir / index.path[0]
+    points = pd.read_parquet(path)
+    artifact.check_equal("parquet/columns", list(points.columns), ["x", "y", "class", "score"])
+    artifact.check_equal("index/num_points", int(index.num_points[0]), len(points))
+    metadata = json.loads(pq.read_schema(path).metadata[b"soma"])
+    recorded = json.loads((run.run_dir / "bundle" / "preprocessing.json").read_text())["score_threshold"]
+    artifact.check_equal("metadata/kind", metadata["kind"], "slide_points")
+    artifact.check_equal("metadata/classes", metadata["classes"], ["class_0", "class_1"])
+    artifact.check_equal("metadata/match_distance_um", metadata["match_distance_um"], MATCH_DISTANCE_UM)
+    artifact.check_equal("metadata/nms_distance_um", metadata["nms_distance_um"], MATCH_DISTANCE_UM)
+    artifact.check_equal("metadata/level0_spacing_um", metadata["level0_spacing_um"], SPACING_UM)
+    artifact.check_equal("metadata/threshold", metadata["threshold"] == recorded, True)
+    # The seam NMS leaves no two points of one class closer than the NMS distance.
+    artifact.check_at_least("points/closest_same_class_px", closest_same_class_px(points), MATCH_DISTANCE_UM / SPACING_UM)
+    # No threshold is applied to the rows: the parquet keeps the peaks below the bundle's.
+    thresholds = recorded if isinstance(recorded, dict) else {name: recorded for name in metadata["classes"]}
+    cut = points["class"].map(lambda c: thresholds[metadata["classes"][c]])
+    artifact.check_at_least("points/below_threshold", int((points.score < cut).sum()), 1)
+    # The points land on the drawn cells in level-0 pixels: every cell is found by a point
+    # of its class, and some score threshold scores the slide well. (The bundle's own
+    # threshold, picked on two tune ROIs, is not the check.)
+    f1 = {}
+    for threshold in [0.0, *sorted(set(points.score))]:
+        kept = points[points.score >= threshold]
+        tp, fp, fn = match_points(
+            kept[["x", "y"]].to_numpy(),
+            kept["class"].to_numpy(),
+            kept.score.to_numpy(),
+            cells[:, :2],
+            cells[:, 2].astype(np.int64),
+            num_classes=2,
+            delta=MATCH_DISTANCE_UM / SPACING_UM,
+        ).sum(axis=0)
+        f1[threshold] = (int(fn), round(float(2 * tp / (2 * tp + fp + fn)), 6))
+    artifact.check_equal("slide0/cells_missed_at_min_score", f1[0.0][0], 0)
+    artifact.check_at_least("slide0/best_f1", max(score for _, score in f1.values()), 0.8)
+
+    # The plan replays: the slide is done, so nothing is encoded and the parquet is the same.
+    before = sha256(path)
+    encoded_images.clear()
+    soma_main(["predict", "predictions/plan.yaml"])
+    artifact.check_equal("replay/tiles_encoded", sum(encoded_images), 0)
+    artifact.check_equal("replay/points_unchanged", sha256(path) == before, True)
     artifact.assert_passed()
