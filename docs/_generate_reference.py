@@ -211,7 +211,9 @@ def build_cli_rst() -> str:
            predicted. A detection bundle writes a points parquet,
            ``<output_dir>/<bundle>/<sample_id>.parquet``, with ``x`` and ``y``
            in level-0 pixels, ``class`` and ``score``: every peak above the
-           head's ``min_score``, with no threshold applied. With an overlap,
+           head's ``min_score``, with no threshold applied. Its metadata records
+           the bundle's class scheme, and a detection bundle that records none
+           is refused. With an overlap,
            its margin (``tile * overlap / 2``) must be at least the head's NMS
            distance. ``index.parquet`` lists the files. The resolved plan is written to
            ``<output_dir>/plan.yaml`` first; ``soma predict <output_dir>/plan.yaml``

@@ -255,11 +255,20 @@ The parquet has four columns: ``x`` and ``y`` in the slide's level-0 pixels,
 ``min_score``. No threshold is applied, so a threshold can be chosen later.
 Its schema metadata (key ``soma``) records:
 
-- the classes;
+- the class scheme the bundle was trained with: ``classes`` maps each class
+  name to the annotated ids that form it, in class order, and ``drop`` lists
+  the dropped ids (see :ref:`detection-classes`);
 - the matching and NMS distances, in µm;
 - the slide's level-0 spacing and the read spacing;
 - the bundle's identity;
 - the bundle's tune threshold (``threshold``).
+
+The scheme comes from the bundle's ``preprocessing.json``. A bundle trained
+before soma recorded it has no ``class_scheme``, and ``soma predict`` refuses
+it before it writes anything. Train the bundle again, or add ``class_scheme``
+to its ``preprocessing.json`` from the run's config, for example
+``{"classes": {"mnl": [0, 1]}, "drop": [2]}``. The class names must be the
+bundle's own.
 
 Each tile's peaks are found in the tile, then placed on the slide from the
 tile's level-0 origin and the slide's spacings. Each tile keeps only the
@@ -280,8 +289,9 @@ is the matching distance unless the head sets one. With an overlap, the margin
 must be at least the NMS distance, or the config is refused.
 
 With ``ensemble: true``, the bundles' heatmaps are averaged before the peaks are
-found. The bundles must then share the classes, both distances and
-``min_score``. An ensemble records no threshold.
+found. The bundles must then share the class scheme (the classes, their
+annotated ids and the dropped ids), both distances and ``min_score``. An
+ensemble records no threshold.
 
 A slide with no kept tile, or with no peak, gets a parquet with no rows. The
 ``index.parquet`` row of each slide gives ``width``, ``height`` and ``spacing_um``

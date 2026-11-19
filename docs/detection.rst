@@ -100,6 +100,15 @@ The class scheme is not part of the feature cache key: regrouping classes reuses
 the cached features. ``num_classes`` is derived from ``classes``. Point files
 that already hold 0-based class indices may set ``num_classes`` alone.
 
+The bundle records the class scheme as ``class_scheme`` in its
+``preprocessing.json``, in the shape of the config: ``classes`` maps each class
+name to its annotated ids, and ``drop`` lists the dropped ids (``[]`` when there
+are none). The ids of each class are sorted. The class order is the order of
+``class_names``, because the file's keys are sorted. A run that sets
+``num_classes`` alone records ``classes: {class_0: [0], class_1: [1], ...}`` and
+``drop: []``. ``soma predict`` copies the scheme into each points file, so the
+points can be scored against the annotated ids (see :ref:`whole-slide-points`).
+
 .. _detection-ignore-masks:
 
 Ignore masks

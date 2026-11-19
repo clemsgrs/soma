@@ -156,6 +156,8 @@ def save_detection_bundle(
     nms_distance: float | None = None,
     min_score: float = 0.01,
     score_threshold=0.5,
+    classes: dict[str, list[int]] | None = None,
+    drop: list[int] = (),
     seed: int = 0,
     **preprocessing,
 ):
@@ -163,11 +165,15 @@ def save_detection_bundle(
     encoder's frame (origin 0, one level-0 pixel per pixel), as a run records it.
 
     ``match_distance`` and ``nms_distance`` are in µm; ``score_threshold`` is the tune
-    threshold the bundle records. ``preprocessing`` overrides what the bundle records in
-    ``preprocessing.json``.
+    threshold the bundle records. ``classes`` and ``drop`` are the run's class scheme;
+    without ``classes`` the bundle has ``num_classes`` classes and records the identity
+    scheme. ``preprocessing`` overrides what the bundle records in ``preprocessing.json``.
     """
     stage = soma.extract.live_encoder(**RECIPE)
     torch.manual_seed(seed)
+    if classes is None:
+        classes = {f"class_{index}": [index] for index in range(num_classes)}
+    num_classes = len(classes)
     head = {
         "num_classes": num_classes,
         "geometry": stage.geometry,
@@ -175,6 +181,7 @@ def save_detection_bundle(
         "match_distance": match_distance,
         "nms_distance": nms_distance,
         "min_score": min_score,
+        "class_names": list(classes),
     }
     model = build_grid_model(
         feature_dim=stage.feature_dim, decoder=decoder, head={"name": "detection", "params": head}
@@ -192,6 +199,7 @@ def save_detection_bundle(
         "matching": "hungarian",
         "min_score": min_score,
         "score_threshold": score_threshold,
+        "class_scheme": {"classes": {name: list(ids) for name, ids in classes.items()}, "drop": list(drop)},
         **preprocessing,
     }
     return soma.save(fit, path, preprocessing=recorded)

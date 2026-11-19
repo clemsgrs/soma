@@ -254,17 +254,29 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
 
 #: The detection head's matching distance in um; its NMS distance is the same.
 MATCH_DISTANCE_UM = 3.0
+#: The run's classes: the ROIs' points hold id 0 for the light cells and 1 for the dark.
+CLASSES = {"light": [0], "dark": [1]}
+#: The id of the one point each ROI's points file also holds, on the background: dropped.
+DROPPED = 2
 
 
 def detection_config(tmp_path, encoder_name):
-    return dense_config(
+    config = dense_config(
         tmp_path,
         encoder_name,
         "detection",
-        head={"name": "detection", "params": {"num_classes": 2, "match_distance": MATCH_DISTANCE_UM, "sigma": 1.5}},
+        head={
+            "name": "detection",
+            "params": {"classes": CLASSES, "drop": [DROPPED], "match_distance": MATCH_DISTANCE_UM, "sigma": 1.5},
+        },
         metrics=["mean_f1", "f1_per_class"],
         epochs=30,
     )
+    for points_path in pd.read_csv(config["cohort"]["records"]).points_path:
+        points = pd.read_csv(points_path)
+        dropped = pd.DataFrame([{"x": 2, "y": 2, "class": DROPPED}])
+        pd.concat([points, dropped], ignore_index=True).to_csv(points_path, index=False)
+    return config
 
 
 def write_cell_slide(root, sample_id, *, height, width, seed):
@@ -343,9 +355,14 @@ def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
     artifact.check_equal("parquet/columns", list(points.columns), ["x", "y", "class", "score"])
     artifact.check_equal("index/num_points", int(index.num_points[0]), len(points))
     metadata = json.loads(pq.read_schema(path).metadata[b"soma"])
-    recorded = json.loads((run.run_dir / "bundle" / "preprocessing.json").read_text())["score_threshold"]
+    preprocessing = json.loads((run.run_dir / "bundle" / "preprocessing.json").read_text())
+    recorded = preprocessing["score_threshold"]
+    # The bundle records the run's class scheme, and the parquet copies it in class order.
+    artifact.check_equal("bundle/class_scheme", preprocessing["class_scheme"], {"classes": CLASSES, "drop": [DROPPED]})
     artifact.check_equal("metadata/kind", metadata["kind"], "slide_points")
-    artifact.check_equal("metadata/classes", metadata["classes"], ["class_0", "class_1"])
+    artifact.check_equal("metadata/classes", metadata["classes"], CLASSES)
+    artifact.check_equal("metadata/class_order", list(metadata["classes"]), list(CLASSES))
+    artifact.check_equal("metadata/drop", metadata["drop"], [DROPPED])
     artifact.check_equal("metadata/match_distance_um", metadata["match_distance_um"], MATCH_DISTANCE_UM)
     artifact.check_equal("metadata/nms_distance_um", metadata["nms_distance_um"], MATCH_DISTANCE_UM)
     artifact.check_equal("metadata/level0_spacing_um", metadata["level0_spacing_um"], SPACING_UM)
@@ -353,8 +370,9 @@ def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
     # The seam NMS leaves no two points of one class closer than the NMS distance.
     artifact.check_at_least("points/closest_same_class_px", closest_same_class_px(points), MATCH_DISTANCE_UM / SPACING_UM)
     # No threshold is applied to the rows: the parquet keeps the peaks below the bundle's.
-    thresholds = recorded if isinstance(recorded, dict) else {name: recorded for name in metadata["classes"]}
-    cut = points["class"].map(lambda c: thresholds[metadata["classes"][c]])
+    names = list(metadata["classes"])
+    thresholds = recorded if isinstance(recorded, dict) else {name: recorded for name in names}
+    cut = points["class"].map(lambda c: thresholds[names[c]])
     artifact.check_at_least("points/below_threshold", int((points.score < cut).sum()), 1)
     # The points land on the drawn cells in level-0 pixels: every cell is found by a point
     # of its class, and some score threshold scores the slide well. (The bundle's own

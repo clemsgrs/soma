@@ -129,6 +129,12 @@ def test_detection_is_learned(tmp_path, encoder_name, encoded_images, new_artifa
     predictions = PointPredictions.from_parquet(run.run_dir / "predictions_test.parquet")
     artifact.check_equal("predictions_test/ids", sorted(predictions.sample_ids), ["roi10", "roi11"])
     artifact.check_equal("thresholds_file/absent", (run.run_dir / "detection_thresholds.json").exists(), False)
+    # With num_classes alone the points hold class indices: the bundle records the identity.
+    artifact.check_equal(
+        "bundle/class_scheme",
+        soma.load(run.run_dir / "bundle").preprocessing["class_scheme"],
+        {"classes": {"class_0": [0], "class_1": [1]}, "drop": []},
+    )
     artifact.assert_passed()
 
 
