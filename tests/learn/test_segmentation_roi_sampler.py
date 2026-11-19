@@ -390,6 +390,22 @@ def test_uniform_draws_above_the_pool_draw_every_roi_equally_often(
     assert set(epoch["roi_draw_counts"].values()) <= {fewest_draws, most_draws}
 
 
+def test_uniform_draws_above_the_pool_shuffle_each_pass_afresh() -> None:
+    """Twelve draws over five ROIs are three new shuffles ([1,4,2,3,0], [4,2,1,0,3],
+    [0,2,...]) cut to twelve, not the first shuffle repeated."""
+    sample_ids = [f"roi-{index}" for index in range(5)]
+    sampler = UniformRoiBatchSampler(
+        sample_ids=sample_ids,
+        class_pixel_counts=[[1, 1] for _ in sample_ids],
+        batch_size=4,
+        draws_per_epoch=12,
+        seed=11,
+    )
+    sampler.set_epoch(0)
+
+    assert list(sampler) == [[1, 4, 2, 3], [0, 4, 2, 1], [0, 3, 0, 2]]
+
+
 def test_uniform_pool_smaller_than_a_batch_fills_whole_batches_with_repeats() -> None:
     """Three ROIs, batches of four, eight draws: the batches repeat ROIs to stay whole."""
     sampler = UniformRoiBatchSampler(
