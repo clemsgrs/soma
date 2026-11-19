@@ -1065,13 +1065,14 @@ def _evaluation_grid_targets(args: argparse.Namespace, predictions):
 
     annotations = AnnotationManifest.from_csv(args.cohort)
     if isinstance(predictions, SlideLabelMaps):
-        # Aligned to the slides, read with the backends the prediction used.
+        # Aligned to the slides, read with the readers the prediction used unless the
+        # command names others.
         source = LabelMapSource.from_manifests(
             annotations,
             ImageManifest.from_csv(args.cohort),
             size=(0, 0),
-            backend=predictions.mask_backend,
-            image_backend=predictions.backend,
+            backend=args.mask_backend or predictions.mask_backend,
+            image_backend=args.backend or predictions.backend,
         )
     elif isinstance(predictions, LabelMapPredictions):
         first = predictions[predictions.sample_ids[0]] if predictions.sample_ids else None
@@ -1090,6 +1091,19 @@ def _evaluation_grid_targets(args: argparse.Namespace, predictions):
     return source.subset(annotations.sample_ids)
 
 
+def _check_slide_readers(args: argparse.Namespace, predictions) -> None:
+    """Refuse ``--backend`` and ``--mask-backend`` for predictions that read no slide."""
+    from soma.evaluation import SlideLabelMaps
+
+    given = [flag for flag, value in (("--backend", args.backend), ("--mask-backend", args.mask_backend)) if value]
+    if given and not isinstance(predictions, SlideLabelMaps):
+        raise ValueError(
+            f"{' and '.join(given)} only {'applies' if len(given) == 1 else 'apply'} to a soma "
+            f"predict output, whose slides and annotation rasters are read; {args.predictions} "
+            "is not one"
+        )
+
+
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     from rich.console import Console
     from rich.table import Table
@@ -1098,6 +1112,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
 
     try:
         predictions = _read_predictions(args.predictions)
+        _check_slide_readers(args, predictions)
         if isinstance(predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps)):
             targets = _evaluation_grid_targets(args, predictions)
         else:
@@ -1143,7 +1158,8 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
             "predictions score against dataset.csv's target columns; label-map directories "
             "against its label_mask_path rasters (class indices); soma predict outputs "
             "against its label_mask_path annotation rasters, read with the class scheme each "
-            "map records; and point predictions against its points_path files."
+            "map records and the readers of its plan.yaml unless --backend and "
+            "--mask-backend name others; and point predictions against its points_path files."
         ),
     )
     parser.add_argument(
@@ -1172,6 +1188,22 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
         "--subgroups", nargs="+", default=None, help="Metadata columns to break metrics down by."
     )
     parser.add_argument("--out", default=None, help="Write the evaluation as JSON to this path.")
+    parser.add_argument(
+        "--backend",
+        default=None,
+        help=(
+            "hs2p reader of the slides, for a soma predict output (default: the one its "
+            "plan.yaml records)."
+        ),
+    )
+    parser.add_argument(
+        "--mask-backend",
+        default=None,
+        help=(
+            "hs2p reader of the annotation rasters, for a soma predict output (default: the "
+            "one its plan.yaml records)."
+        ),
+    )
     parser.set_defaults(func=_cmd_evaluate)
     return parser
 
@@ -1201,9 +1233,10 @@ def _build_predict_parser() -> argparse.ArgumentParser:
             "batch_size, num_workers, devices), a cohort section (records, and optionally "
             "splits, subset and fold) and an extraction section (the features.extraction "
             "schema, without the tile size and spacing, which come from the bundles). The "
-            "resolved plan is written to <output_dir>/plan.yaml before any slide is "
-            "predicted; soma predict <output_dir>/plan.yaml replays it and predicts only "
-            "the slides not done yet."
+            "slides are read with the reader the bundles record unless "
+            "extraction.tiling.backend names one. The resolved plan is written to "
+            "<output_dir>/plan.yaml before any slide is predicted; soma predict "
+            "<output_dir>/plan.yaml replays it and predicts only the slides not done yet."
         ),
     )
     parser.add_argument("config", help="Prediction YAML, or the plan.yaml of an earlier prediction.")
@@ -1247,7 +1280,7 @@ def _print_top_level_help() -> None:
         "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
         "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
-        "       soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]\n"
+        "       soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME]\n"
         "       soma predict CONFIG\n"
         "       soma compact-index OUTPUT_ROOT\n"
         "\n"

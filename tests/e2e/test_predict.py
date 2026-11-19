@@ -6,6 +6,9 @@ the weight-free ``fake`` encoder's cached grids. ``soma predict`` then cuts larg
 with the same discs into hs2p's slide grid, runs the bundle over every tile behind its
 frozen encoder stage, and writes one label TIFF per slide. ``soma evaluate`` scores the
 maps against the slides' annotation rasters.
+
+The run reads its ROIs with OpenSlide, and its bundle records that reader. The prediction
+config names no slide reader, so ``soma predict`` reads the slides with OpenSlide too.
 """
 
 from __future__ import annotations
@@ -108,8 +111,14 @@ def mean_dice(predicted: np.ndarray, truth: np.ndarray) -> float:
     return float(dice(class_counts(predicted, truth)).mean())
 
 
+def readers_of(opened, paths) -> list[str]:
+    """The names of the hs2p readers that opened any of ``paths``."""
+    wanted = {path.resolve() for path in paths}
+    return sorted({reader for path, reader in opened if path in wanted})
+
+
 def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
-    tmp_path, monkeypatch, encoder_name, encoded_images, new_artifact
+    tmp_path, monkeypatch, encoder_name, encoded_images, opened_files, new_artifact
 ):
     artifact = new_artifact("predict_segmentation_slides")
     run = run_soma(segmentation_config(tmp_path, encoder_name), tmp_path / "config.yaml")
@@ -125,11 +134,15 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
     config = {
         "predict": {"output_dir": "predictions", "bundles": str(run.run_dir.relative_to(tmp_path)), "batch_size": 8},
         "cohort": {"records": "slides.csv"},
-        "extraction": {"tiling": {"overlap": 0.5, "backend": "openslide", "mask_backend": "tifffile"}},
+        # No slide reader: the bundle's. The masks are read with tifffile.
+        "extraction": {"tiling": {"overlap": 0.5, "mask_backend": "tifffile"}},
     }
     (tmp_path / "predict.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
     monkeypatch.chdir(tmp_path)  # the config's relative paths resolve against the working directory
+    slides = [tmp_path / "slides" / f"{row['sample_id']}.tif" for row in rows]
+    annotations = [tmp_path / row["label_mask_path"] for row in rows]
     encoded_images.clear()
+    opened_files.clear()
 
     soma_main(["predict", "predict.yaml"])
 
@@ -141,6 +154,9 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
     artifact.check_equal("plan/output_dir", plan["predict"]["output_dir"] == str(output_dir), True)
     artifact.check_equal("plan/tile_size_px", plan["extraction"]["tiling"]["requested_tile_size_px"], ROI_PX)
     artifact.check_equal("plan/spacing_um", plan["extraction"]["tiling"]["requested_spacing_um"], SPACING_UM)
+    # The bundle's slide reader is planned, and every slide is read with it.
+    artifact.check_equal("plan/backend", plan["extraction"]["tiling"]["backend"], "openslide")
+    artifact.check_equal("predict/slide_readers", readers_of(opened_files, slides), ["openslide"])
     artifact.check_at_least("tiles_encoded", sum(encoded_images), 1)
     index = pd.read_parquet(output_dir / "index.parquet")
     artifact.check_equal("index/sample_ids", list(index.sample_id), ["slide0", "slide1"])
@@ -175,11 +191,15 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
     artifact.check_equal("replay/maps_unchanged", replayed == maps, True)
 
     # soma evaluate on the output directory: the maps, streamed against the annotation
-    # rasters, score what the arrays give by hand once the ignored rows are left out.
+    # rasters, score what the arrays give by hand once the ignored rows are left out. The
+    # slides and the rasters are read with the readers of plan.yaml.
+    opened_files.clear()
     soma_main(
         ["evaluate", "predictions", "--cohort", "slides.csv", "--metrics", "mean_dice",
          "dataset_global_mean_dice", "--out", "evaluation.json"]
     )
+    artifact.check_equal("evaluate/slide_readers", readers_of(opened_files, slides), ["openslide"])
+    artifact.check_equal("evaluate/annotation_readers", readers_of(opened_files, annotations), ["tifffile"])
     scored = json.loads((tmp_path / "evaluation.json").read_text())
     counts = {
         sid: class_counts(label_maps[sid][IGNORED_ROWS:].astype(int) - 1, truths[sid][IGNORED_ROWS:])
@@ -199,4 +219,17 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
         artifact.check_equal(
             f"evaluate/{row['sample_id']}/tp_class_1", row["tp_class_1"], int(counts[row["sample_id"]][1, 0])
         )
+
+    # --backend and --mask-backend replace the readers of plan.yaml. Both readers decode
+    # the same pixels here, so the scores do not change.
+    opened_files.clear()
+    soma_main(
+        ["evaluate", "predictions", "--cohort", "slides.csv", "--metrics", "mean_dice",
+         "dataset_global_mean_dice", "--backend", "tifffile", "--mask-backend", "pil", "--out", "readers.json"]
+    )
+    artifact.check_equal("evaluate_readers/slide_readers", readers_of(opened_files, slides), ["tifffile"])
+    artifact.check_equal("evaluate_readers/annotation_readers", readers_of(opened_files, annotations), ["pil"])
+    rescored = json.loads((tmp_path / "readers.json").read_text())
+    artifact.check_equal("evaluate_readers/metrics", rescored["metrics"], scored["metrics"])
+    artifact.check_equal("evaluate_readers/per_sample", rescored["per_sample"] == scored["per_sample"], True)
     artifact.assert_passed()

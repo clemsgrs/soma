@@ -59,6 +59,32 @@ def encoded_images(monkeypatch) -> list[int]:
 
 
 @pytest.fixture
+def opened_files(monkeypatch) -> list[tuple[Path, str]]:
+    """Every file an hs2p reader opens, resolved, with the reader's name: lets a scenario
+    prove which reader decoded a slide or an annotation raster."""
+    from hs2p.wsi import backends
+
+    opened: list[tuple[Path, str]] = []
+    readers = {
+        "asap": backends.ASAPReader,
+        "cucim": backends.CuCIMReader,
+        "openslide": backends.OpenSlideReader,
+        "pil": backends.PILReader,
+        "tifffile": backends.TifffileReader,
+        "vips": backends.VIPSReader,
+    }
+    for name, reader in readers.items():
+        original = reader.__init__
+
+        def recording(self, path, *args, _original=original, _name=name, **kwargs):
+            opened.append((Path(path).resolve(), _name))
+            _original(self, path, *args, **kwargs)
+
+        monkeypatch.setattr(reader, "__init__", recording)
+    return opened
+
+
+@pytest.fixture
 def scored_models(monkeypatch) -> list[SimpleNamespace]:
     """Every ``soma.evaluation.predict`` call of the run, in call order: the learner, its
     model, the loader and the predictions it returned.

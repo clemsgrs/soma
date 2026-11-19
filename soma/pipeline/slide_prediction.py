@@ -15,15 +15,16 @@ A prediction config has three sections::
       subset: test                # which split's slides; requires splits
       fold: 0
     extraction:                   # the features.extraction schema
-      tiling: {overlap: 0.5}      # tile size and spacing come from the bundle
+      tiling: {overlap: 0.5}      # tile size, spacing and slide reader come from the bundle
       segmentation: {method: hsv}
       filter: null
       masks: {min_coverage: {tissue: 0.01}}
 
 It resolves to a plan, written as ``plan.yaml`` in the output directory before any slide
 is predicted: every path absolute, a run directory expanded to its bundles, and the
-extraction spelled in full, with the tile size, the read spacing and the read tolerance
-taken from the bundles. ``soma predict <output_dir>/plan.yaml`` replays or resumes it.
+extraction spelled in full, with the tile size, the read spacing, the read tolerance and
+the slide reader (``tiling.backend``) taken from the bundles. ``soma predict
+<output_dir>/plan.yaml`` replays or resumes it.
 
 The output directory holds ``plan.yaml``, ``provenance.json`` (versions and bundle
 identities), one directory per bundle (``ensemble`` with ``ensemble: true``) with one label
@@ -103,6 +104,13 @@ def predict_slides(
     spacing and run through each bundle's model, behind one encoder forward for the
     bundles that share an encoder recipe. Each map pixel takes the class of one tile
     (:mod:`soma.evaluation.whole_slide`), stored as class + 1; 0 is "not predicted".
+
+    The slides are read with the reader the bundles were trained with (the ``backend``
+    their encoder recipe records), unless ``extraction.tiling.backend`` names one. Bundles
+    that record different readers are refused unless it does, and a reader other than a
+    bundle's is used with a warning. A bundle that records no reader leaves the choice to
+    the others, and ``auto`` when none records one. A ``slide2vec.PreprocessingConfig``
+    always names its reader. The masks are read with ``extraction.tiling.mask_backend``.
 
     Without ``splits`` every row of ``records`` is predicted; with it, the ``subset``
     split (default ``test``) of fold ``fold`` (default 0). ``ensemble`` writes one map per
@@ -204,7 +212,7 @@ def resolve_slide_prediction(
                 f"bundle {info['path']} has {info['num_classes']} classes; a label map holds "
                 f"at most {MAX_CLASSES} (class k is stored as k + 1 in uint8)"
             )
-    preprocessing = _extraction(extraction, tile_px=tile_px, spacing_um=spacing_um, tolerance=tolerance)
+    preprocessing = _extraction(extraction, tile_px=tile_px, spacing_um=spacing_um, tolerance=tolerance, infos=infos)
     stitch_margin_px(tile_px, preprocessing.tiling.overlap)
     return {
         "predict": {
@@ -288,11 +296,13 @@ def _bundle_info(path: Path) -> dict[str, Any]:
     if spacing is None:
         raise ValueError(f"{where} records no read spacing (spacing_um)")
     tolerance = recipe.get("tolerance", 0.05) if isinstance(recipe, Mapping) else 0.05
+    backend = recipe.get("backend") if isinstance(recipe, Mapping) else None
     return {
         "path": str(path),
         "tile_px": int(tile[0]),
         "spacing_um": float(spacing),
         "tolerance": float(tolerance),
+        "backend": None if backend is None else str(backend),
         "num_classes": int(preprocessing["num_classes"]),
         "class_names": preprocessing.get("class_names"),
         "ignore_index": int(preprocessing.get("ignore_index", 255)),
@@ -316,10 +326,39 @@ def _shared_tile(infos: Sequence[Mapping[str, Any]]) -> tuple[int, float, float]
     return first["tile_px"], first["spacing_um"], first["tolerance"]
 
 
-def _extraction(given, *, tile_px: int, spacing_um: float, tolerance: float):
+def _slide_reader(configured: str | None, infos: Sequence[Mapping[str, Any]]) -> str:
+    """The reader of the slides: ``extraction.tiling.backend``, or else the one the bundles
+    record. A bundle that records none (one saved before soma recorded it) leaves the
+    choice to the others, and ``auto`` when no bundle records one."""
+    recording = [info for info in infos if info["backend"] is not None]
+    if configured is None:
+        if len({info["backend"] for info in recording}) > 1:
+            raise ValueError(
+                "the bundles of one prediction were trained on slides read with different "
+                f"readers: {_readers(recording)}. Name the reader to predict with in "
+                "extraction.tiling.backend."
+            )
+        return recording[0]["backend"] if recording else "auto"
+    others = [info for info in recording if info["backend"] != configured]
+    if others:
+        warnings.warn(
+            f"extraction.tiling.backend is {configured!r}, but these bundles were trained on "
+            f"slides read with another reader: {_readers(others)}. The slides are read with "
+            f"{configured!r}, which may decode their pixels differently than in training.",
+            stacklevel=2,
+        )
+    return str(configured)
+
+
+def _readers(infos: Sequence[Mapping[str, Any]]) -> str:
+    return "; ".join(f"{info['path']} with {info['backend']!r}" for info in infos)
+
+
+def _extraction(given, *, tile_px: int, spacing_um: float, tolerance: float, infos: Sequence[Mapping[str, Any]]):
     """The ``extraction`` section as a ``slide2vec.PreprocessingConfig``: the tile size and
-    read spacing from the bundles, the read tolerance from them unless set, the slide grid,
-    absolute SAM2 paths, and the binary tissue vocabulary when ``masks`` names none."""
+    read spacing from the bundles, the read tolerance and the slide reader from them unless
+    set, the slide grid, absolute SAM2 paths, and the binary tissue vocabulary when
+    ``masks`` names none."""
     import slide2vec
 
     data = copy.deepcopy(plain(given)) if given is not None else {}
@@ -335,10 +374,15 @@ def _extraction(given, *, tile_px: int, spacing_um: float, tolerance: float):
             )
     if tiling.get("grid", "slide") != "slide":
         raise ValueError(f"extraction.tiling.grid must be 'slide' for whole-slide prediction, got {tiling['grid']!r}")
+    # ``backend`` and ``mask_backend`` name the readers. hs2p tiles with its ``requested_*``
+    # record of them, which a saved plan.yaml holds: drop it so hs2p fills it from the plan.
+    for key in ("requested_backend", "requested_mask_backend"):
+        tiling.pop(key, None)
     data["tiling"] = {
         "tolerance": tolerance,
         "overlap": 0.0,
         **tiling,
+        "backend": _slide_reader(tiling.get("backend"), infos),
         "requested_tile_size_px": tile_px,
         "requested_spacing_um": spacing_um,
         "grid": "slide",
@@ -397,9 +441,22 @@ def _guard_plan(output_dir: Path, plan: Mapping[str, Any]) -> None:
     if differing:
         raise ValueError(
             f"Refusing to predict into {output_dir}: its {PLAN_FILENAME} differs from the "
-            f"current plan (differing keys: {differing}). Use another predict.output_dir, or "
-            "the settings it was written with."
+            f"current plan (differing keys: {differing}).{_reader_hint(saved, plan, differing)} "
+            "Use another predict.output_dir, or the settings it was written with."
         )
+
+
+def _reader_hint(saved: Mapping[str, Any], plan: Mapping[str, Any], differing: Sequence[str]) -> str:
+    """How to keep the slide reader a directory was predicted with, when it differs."""
+    if "extraction.tiling.backend" not in differing:
+        return ""
+    before = ((saved.get("extraction") or {}).get("tiling") or {}).get("backend")
+    now = plan["extraction"]["tiling"]["backend"]
+    return (
+        f" Its slides were read with {before!r}; the current plan reads them with {now!r}, "
+        "the reader the bundles record unless the config names one: set "
+        f"extraction.tiling.backend: {before} to keep it."
+    )
 
 
 # --- the run ---------------------------------------------------------------------------- #

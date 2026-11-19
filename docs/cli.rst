@@ -91,7 +91,7 @@ Available commands
    narrows the encoders to ``tile``, ``slide``, or ``patient``.
    :func:`soma.components` returns the same listing in Python.
 
-``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON]``
+``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME]``
    Score saved predictions against the targets in ``dataset.csv``,
    joined by ``sample_id``; no run directory is needed. ``PREDICTIONS``
    is a predictions parquet, a points parquet (detection), a
@@ -103,7 +103,11 @@ Available commands
    bundle's maps, or one of its bundle directories, is scored against
    the annotation rasters in ``label_mask_path``, read with the class
    scheme each map records; a second table gives each slide's annotated
-   pixels and the share of them not predicted. ``--splits``
+   pixels and the share of them not predicted. Its slides and
+   annotation rasters are read with the hs2p readers its ``plan.yaml``
+   records; ``--backend`` names another reader for the slides and
+   ``--mask-backend`` another one for the annotation rasters. Both
+   options are refused for other predictions. ``--splits``
    selects one split (default ``test``) of one fold (default ``0``);
    without it every row of the cohort is a target. Every prediction
    needs a target and every target a prediction. ``--metrics`` takes
@@ -119,7 +123,12 @@ Available commands
    ``devices``), ``cohort`` (``records``, and optionally ``splits``,
    ``subset`` and ``fold``) and ``extraction`` (the
    ``features.extraction`` schema). The tile size and the read spacing
-   come from the bundles, and setting other values is refused. Each
+   come from the bundles, and setting other values is refused. The
+   slides are read with the reader the bundles were trained with,
+   unless ``extraction.tiling.backend`` names one: bundles that record
+   different readers are refused unless it does, a reader other than a
+   bundle's is used with a warning, and when no bundle records a reader
+   the slides are read with ``auto``. Each
    slide gets one label TIFF per bundle, ``<output_dir>/<bundle>/<sample_id>.tif``,
    where class ``k`` is stored as ``k + 1`` and ``0`` means not
    predicted, and a record ``<sample_id>.json``; ``index.parquet``
