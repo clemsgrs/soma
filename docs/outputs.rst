@@ -168,7 +168,8 @@ is a directory of four files:
   class names, target schema, metrics, and for grid runs the grid geometry, read
   spacing, tile size and ``encoder``, the recipe of the encoder the grids came
   from (the :func:`soma.extract.live_encoder` arguments). A detection bundle also
-  records the score threshold chosen on tune and the matching distance.
+  records the score threshold chosen on tune, the matching distance and the class
+  scheme (``class_scheme``, see :ref:`detection-classes`).
 - ``provenance.json``: the soma, slide2vec and hs2p versions, the component
   record (see :ref:`component-record`), the selected epoch and its monitor
   value, the fold, the run id and the identity of the feature source (the cache
