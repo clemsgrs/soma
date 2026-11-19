@@ -117,7 +117,8 @@ Available commands
    the evaluation as JSON. See :doc:`evaluation`.
 
 ``soma predict CONFIG``
-   Write segmentation label maps over whole slides with trained bundles.
+   Predict over whole slides with trained segmentation or detection
+   bundles, all of one family.
    The config has three sections: ``predict`` (``output_dir``,
    ``bundles``, ``ensemble``, ``batch_size``, ``num_workers``,
    ``devices``), ``cohort`` (``records``, and optionally ``splits``,
@@ -128,11 +129,16 @@ Available commands
    unless ``extraction.tiling.backend`` names one: bundles that record
    different readers are refused unless it does, a reader other than a
    bundle's is used with a warning, and when no bundle records a reader
-   the slides are read with ``auto``. Each
-   slide gets one label TIFF per bundle, ``<output_dir>/<bundle>/<sample_id>.tif``,
+   the slides are read with ``auto``. Each slide gets one file per
+   bundle and a record ``<sample_id>.json``. A segmentation bundle
+   writes a label TIFF, ``<output_dir>/<bundle>/<sample_id>.tif``,
    where class ``k`` is stored as ``k + 1`` and ``0`` means not
-   predicted, and a record ``<sample_id>.json``; ``index.parquet``
-   lists the maps. The resolved plan is written to
+   predicted. A detection bundle writes a points parquet,
+   ``<output_dir>/<bundle>/<sample_id>.parquet``, with ``x`` and ``y``
+   in level-0 pixels, ``class`` and ``score``: every peak above the
+   head's ``min_score``, with no threshold applied. With an overlap,
+   its margin (``tile * overlap / 2``) must be at least the head's NMS
+   distance. ``index.parquet`` lists the files. The resolved plan is written to
    ``<output_dir>/plan.yaml`` first; ``soma predict <output_dir>/plan.yaml``
    replays it and predicts only the slides not done yet. The same in
    Python: :func:`soma.predict_slides`.

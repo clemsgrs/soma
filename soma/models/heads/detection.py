@@ -165,10 +165,12 @@ class DetectionHead(TaskHead):
         self.sigma_px = (
             self.delta_px / 3.0 if sigma is None else _positive("sigma", sigma) / self.spacing_um
         )
+        #: The NMS radius in µm (δ unless set).
+        self.nms_distance = (
+            self.match_distance if nms_distance is None else _positive("nms_distance", nms_distance)
+        )
         self.nms_distance_px = (
-            self.delta_px
-            if nms_distance is None
-            else _positive("nms_distance", nms_distance) / self.spacing_um
+            self.delta_px if nms_distance is None else self.nms_distance / self.spacing_um
         )
         self.min_score = float(min_score)
         self.fixed_threshold = float(fixed_threshold)
@@ -395,17 +397,30 @@ class DetectionHead(TaskHead):
 
     # --- predictions ------------------------------------------------------- #
 
-    def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
-        """Every peak above ``min_score`` per image as ``(k, 4)`` level-0 ``(x, y, class, score)``."""
-        points = []
+    def frame_peaks(self, raw_output: Tensor) -> list[np.ndarray]:
+        """Every peak above ``min_score`` per image of a ``(B, C, H, W)`` heatmap, as
+        ``(k, 4)`` ``(x, y, class, score)`` rows in target-frame pixels.
+
+        The rows are not mapped to level 0, so a caller that knows where each image lies
+        (a whole-slide tile) places them itself, whatever frame the head is bound to.
+        """
+        peaks = []
         for b in range(raw_output.shape[0]):
             xy, cls, score = self._peaks(raw_output[b], self.min_score)
             rows = np.zeros((xy.shape[0], 4), dtype=np.float64)
             if xy.shape[0]:
-                rows[:, :2] = self.to_level0(xy)
+                rows[:, :2] = xy
                 rows[:, 2] = cls
                 rows[:, 3] = score
-            points.append(rows)
+            peaks.append(rows)
+        return peaks
+
+    def postprocess(self, raw_output: Tensor) -> dict[str, Any]:
+        """Every peak above ``min_score`` per image as ``(k, 4)`` level-0 ``(x, y, class, score)``."""
+        points = self.frame_peaks(raw_output)
+        for rows in points:
+            if rows.shape[0]:
+                rows[:, :2] = self.to_level0(rows[:, :2])
         return {"points": points}
 
     @property

@@ -1219,7 +1219,7 @@ def _cmd_predict(args: argparse.Namespace) -> int:
         print(f"Error: {error}", file=sys.stderr)
         return 2
     output_dir = Path(kwargs["output_dir"]).expanduser().resolve()
-    print(f"{len(index)} label map(s) in {output_dir}; their index is {output_dir / 'index.parquet'}")
+    print(f"{len(index)} prediction(s) in {output_dir}; their index is {output_dir / 'index.parquet'}")
     return 0
 
 
@@ -1227,9 +1227,11 @@ def _build_predict_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="soma predict",
         description=(
-            "Predict a segmentation label map over whole slides with trained bundles: one "
-            "label TIFF per slide and bundle, where class k is stored as k + 1 and 0 means "
-            "not predicted. The config has a predict section (output_dir, bundles, ensemble, "
+            "Predict over whole slides with trained segmentation or detection bundles: one "
+            "file per slide and bundle. A segmentation bundle writes a label TIFF, where class "
+            "k is stored as k + 1 and 0 means not predicted; a detection bundle writes a "
+            "parquet of points (x and y in level-0 pixels, class, score), with no threshold "
+            "applied. The config has a predict section (output_dir, bundles, ensemble, "
             "batch_size, num_workers, devices), a cohort section (records, and optionally "
             "splits, subset and fold) and an extraction section (the features.extraction "
             "schema, without the tile size and spacing, which come from the bundles). The "
@@ -1293,7 +1295,7 @@ def _print_top_level_help() -> None:
         "  reproduce    curate → run → score a registered benchmark, check its tolerance band\n"
         "  leaderboard  render a faceted view over the run dirs under an output root\n"
         "  evaluate     score predictions against a cohort's targets\n"
-        "  predict      write segmentation label maps over whole slides with trained bundles\n"
+        "  predict      predict label maps or points over whole slides with trained bundles\n"
         "  compact-index  rewrite the append-only runs.csv with one row per run\n"
         "\n"
         "examples:\n"

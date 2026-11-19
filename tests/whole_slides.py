@@ -1,4 +1,5 @@
-"""Synthetic whole slides, masks and segmentation bundles for the whole-slide tests.
+"""Synthetic whole slides, masks and segmentation and detection bundles for the
+whole-slide tests.
 
 The slides are small tiled TIFFs read through hs2p's ``tifffile`` reader (never cuCIM,
 which crashes on some synthetic TIFFs), and the bundles carry the weight-free ``fake``
@@ -18,8 +19,11 @@ import tifffile
 import torch
 
 import soma
+from soma.data.images import RegionImageSource
+from soma.data.manifests import ImageEntry
 from soma.learn import DenseLearner, FitResult
-from soma.pipeline.build import build_grid_model
+from soma.models import DenseModel
+from soma.pipeline.build import build_grid_model, bundle_encoder_stage
 
 SPACING_UM = 0.5
 TILE = 32
@@ -141,6 +145,70 @@ def save_bundle(path, *, seed: int = 0, num_classes: int = 3, decoder=None, head
         **preprocessing,
     }
     return soma.save(fit, path, preprocessing=recorded)
+
+
+def save_detection_bundle(
+    path,
+    *,
+    decoder,
+    num_classes: int = 1,
+    match_distance: float = 3.0,
+    nms_distance: float | None = None,
+    min_score: float = 0.01,
+    score_threshold=0.5,
+    seed: int = 0,
+    **preprocessing,
+):
+    """A detection bundle over the ``fake`` encoder's grids, its head bound to the
+    encoder's frame (origin 0, one level-0 pixel per pixel), as a run records it.
+
+    ``match_distance`` and ``nms_distance`` are in µm; ``score_threshold`` is the tune
+    threshold the bundle records. ``preprocessing`` overrides what the bundle records in
+    ``preprocessing.json``.
+    """
+    stage = soma.extract.live_encoder(**RECIPE)
+    torch.manual_seed(seed)
+    head = {
+        "num_classes": num_classes,
+        "geometry": stage.geometry,
+        "spacing_um": SPACING_UM,
+        "match_distance": match_distance,
+        "nms_distance": nms_distance,
+        "min_score": min_score,
+    }
+    model = build_grid_model(
+        feature_dim=stage.feature_dim, decoder=decoder, head={"name": "detection", "params": head}
+    )
+    fit = FitResult(DenseLearner(model), pd.DataFrame(), 0, ("loss", 0.0), None, 0)
+    recorded = {
+        "shape": "grid",
+        "task_family": "detection",
+        "num_classes": num_classes,
+        "class_names": list(model.head.class_names),
+        "tile_size": [TILE, TILE],
+        "spacing_um": SPACING_UM,
+        "encoder": dict(RECIPE),
+        "match_distance": match_distance,
+        "matching": "hungarian",
+        "min_score": min_score,
+        "score_threshold": score_threshold,
+        **preprocessing,
+    }
+    return soma.save(fit, path, preprocessing=recorded)
+
+
+def model_of(bundle_path) -> DenseModel:
+    """The bundle's model behind its frozen encoder stage, as ``predict_slides`` runs it."""
+    bundle = soma.load(bundle_path)
+    stage = bundle_encoder_stage(bundle)
+    model = bundle.model
+    return DenseModel(model.decoder, model.head, encoder=stage, adaptor=model.adaptor).eval()
+
+
+def tile_pixels(slide_path, regions: dict[str, tuple[int, int]]) -> RegionImageSource:
+    """The ``TILE`` px windows of a slide at ``SPACING_UM``, one per level-0 origin."""
+    entries = {tid: ImageEntry(sample_id=tid, image_path=slide_path) for tid in regions}
+    return RegionImageSource(entries, regions=regions, size=TILE, spacing_um=SPACING_UM, backend="tifffile")
 
 
 def read_map(path) -> np.ndarray:

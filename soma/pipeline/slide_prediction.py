@@ -1,4 +1,5 @@
-"""``soma predict`` and :func:`predict_slides`: segmentation label maps over whole slides.
+"""``soma predict`` and :func:`predict_slides`: segmentation label maps and detection
+points over whole slides.
 
 A prediction config has three sections::
 
@@ -27,10 +28,12 @@ the slide reader (``tiling.backend``) taken from the bundles. ``soma predict
 <output_dir>/plan.yaml`` replays or resumes it.
 
 The output directory holds ``plan.yaml``, ``provenance.json`` (versions and bundle
-identities), one directory per bundle (``ensemble`` with ``ensemble: true``) with one label
-TIFF and one record (``<sample_id>.json``) per slide, and ``index.parquet``, assembled
-from the records at the end. A slide is done when each of its records exists and parses;
-a relaunch predicts the others only.
+identities), one directory per bundle (``ensemble`` with ``ensemble: true``) with one
+prediction file and one record (``<sample_id>.json``) per slide, and ``index.parquet``,
+assembled from the records at the end. A segmentation bundle writes a label TIFF per slide
+(:mod:`soma.evaluation.whole_slide`), a detection bundle a points parquet
+(:mod:`soma.evaluation.whole_slide_points`). A slide is done when each of its records
+exists and parses; a relaunch predicts the others only.
 """
 
 from __future__ import annotations
@@ -65,6 +68,8 @@ COHORT_KEYS = ("records", "splits", "subset", "fold")
 PLACEMENT_KEYS = ("devices", "num_workers")
 #: The tile fields the bundles decide.
 BUNDLE_TILING_KEYS = ("requested_tile_size_px", "requested_spacing_um")
+#: The task families soma predict writes a prediction for, one file kind each.
+FAMILIES = ("segmentation", "detection")
 #: The ``extraction.segmentation`` paths, stored absolute in the plan.
 SAM2_PATH_KEYS = ("sam2_checkpoint_path", "sam2_config_path")
 _DEFAULT_PIXEL_MAPPING = {"background": [0], "tissue": [1]}
@@ -87,7 +92,8 @@ def predict_slides(
     devices: Sequence[str | int] | None = None,
     extraction: Mapping[str, Any] | Any = None,
 ) -> pd.DataFrame:
-    """Predict a segmentation label map over every slide of a cohort, one TIFF per slide.
+    """Predict over every slide of a cohort: one file per slide and bundle, a label TIFF
+    for a segmentation bundle and a points parquet for a detection bundle.
 
     One keyword per config key (see the module docstring for the config): ``output_dir``,
     ``bundles``, ``ensemble``, ``batch_size``, ``num_workers`` and ``devices`` are the
@@ -96,14 +102,22 @@ def predict_slides(
     ``slide2vec.PreprocessingConfig``). Relative paths resolve against the working
     directory.
 
-    ``bundles`` are segmentation bundles (:func:`soma.save`) that agree on tile size and
-    read spacing, or one run directory, which stands for its bundles. Each slide is cut
-    into hs2p's slide grid with ``extraction.tiling.overlap``; a tile is kept when its
-    row's ``mask_path``, or else hs2p's tissue segmentation, covers at least
-    ``extraction.masks.min_coverage`` of it. Kept tiles are read at the bundles' read
-    spacing and run through each bundle's model, behind one encoder forward for the
-    bundles that share an encoder recipe. Each map pixel takes the class of one tile
+    ``bundles`` are segmentation or detection bundles (:func:`soma.save`), all of one
+    family, that agree on tile size and read spacing, or one run directory, which stands
+    for its bundles. Each slide is cut into hs2p's slide grid with
+    ``extraction.tiling.overlap``; a tile is kept when its row's ``mask_path``, or else
+    hs2p's tissue segmentation, covers at least ``extraction.masks.min_coverage`` of it.
+    Kept tiles are read at the bundles' read spacing and run through each bundle's model,
+    behind one encoder forward for the bundles that share an encoder recipe.
+
+    Segmentation: each map pixel takes the class of one tile
     (:mod:`soma.evaluation.whole_slide`), stored as class + 1; 0 is "not predicted".
+    Detection: each tile keeps the peaks in the region it contributes, lifted to level-0
+    pixels, and one per-class NMS over the slide removes the duplicates across seams
+    (:mod:`soma.evaluation.whole_slide_points`). The parquet holds every peak above the
+    head's ``min_score``, with columns ``x``, ``y``, ``class`` and ``score``; the bundle's
+    tune threshold is recorded, not applied. With an overlap, the margin
+    (``tile * overlap / 2``) must be at least the head's NMS distance.
 
     The slides are read with the reader the bundles were trained with (the ``backend``
     their encoder recipe records), unless ``extraction.tiling.backend`` names one. Bundles
@@ -113,15 +127,18 @@ def predict_slides(
     always names its reader. The masks are read with ``extraction.tiling.mask_backend``.
 
     Without ``splits`` every row of ``records`` is predicted; with it, the ``subset``
-    split (default ``test``) of fold ``fold`` (default 0). ``ensemble`` writes one map per
-    slide, the argmax of the bundles' mean softmax, instead of one per bundle.
+    split (default ``test``) of fold ``fold`` (default 0). ``ensemble`` writes one file per
+    slide instead of one per bundle: the argmax of the bundles' mean softmax, or the peaks
+    of their mean heatmap, with no threshold recorded.
     ``devices`` (``[0, 1]``, ``["cpu"]``) predicts in one new process per device, the
     slides split across them; by default the slides are predicted in this process.
 
-    Returns the index of the maps, also written as ``index.parquet``: one row per map
+    Returns the index of the files, also written as ``index.parquet``: one row per file
     with its ``bundle`` directory, ``sample_id``, ``path`` (relative to ``output_dir``),
-    ``width``, ``height``, ``spacing_um``, ``read_spacing_um``, ``num_tiles`` and
-    ``not_predicted_fraction``.
+    ``width``, ``height``, ``spacing_um``, ``read_spacing_um`` and ``num_tiles``, then
+    ``not_predicted_fraction`` for label maps or ``num_points`` for points. ``width``,
+    ``height`` and ``spacing_um`` are the frame of the file: the map's pixels, or the
+    slide's level 0 for points.
     """
     plan = resolve_slide_prediction(
         output_dir=output_dir,
@@ -197,23 +214,21 @@ def resolve_slide_prediction(
         devices = list(resolve_devices(list(devices)))
     bundle_dirs = _bundle_dirs(bundles)
     infos = [_bundle_info(path) for path in bundle_dirs]
+    family = _shared_family(infos)
     tile_px, spacing_um, tolerance = _shared_tile(infos)
     if ensemble:
-        keys = ("num_classes", "class_names", "ignore_index", "label_remap")
-        if len({json.dumps([info[key] for key in keys]) for info in infos}) > 1:
-            raise ValueError(
-                "predict.ensemble averages the bundles' softmax, so they must share one class "
-                "scheme: the classes, the raw annotation values that form them (label_remap) "
-                f"and the values ignored; these bundles have {_listing(infos, keys[:3])}"
-            )
+        _check_ensemble(infos, family)
     for info in infos:
-        if info["num_classes"] > MAX_CLASSES:
+        if family == "segmentation" and info["num_classes"] > MAX_CLASSES:
             raise ValueError(
                 f"bundle {info['path']} has {info['num_classes']} classes; a label map holds "
                 f"at most {MAX_CLASSES} (class k is stored as k + 1 in uint8)"
             )
     preprocessing = _extraction(extraction, tile_px=tile_px, spacing_um=spacing_um, tolerance=tolerance, infos=infos)
-    stitch_margin_px(tile_px, preprocessing.tiling.overlap)
+    overlap = float(preprocessing.tiling.overlap)
+    margin = stitch_margin_px(tile_px, overlap)
+    if family == "detection" and overlap > 0:
+        _check_margin(infos, tile_px=tile_px, overlap=overlap, margin_px=margin, spacing_um=spacing_um)
     return {
         "predict": {
             "output_dir": str(_absolute(output_dir)),
@@ -273,13 +288,10 @@ def _bundle_info(path: Path) -> dict[str, Any]:
     preprocessing = json.loads((path / PREPROCESSING).read_text(encoding="utf-8"))
     where = f"bundle {path}"
     if preprocessing.get("shape") != "grid":
-        raise ValueError(f"{where} is not a grid bundle; soma predict writes segmentation label maps")
+        raise ValueError(f"{where} is not a grid bundle; soma predict needs a segmentation or detection bundle")
     family = preprocessing.get("task_family")
-    if family != "segmentation":
-        raise ValueError(
-            f"{where} is a {family} bundle; soma predict writes segmentation label maps and "
-            "does not predict detection bundles yet"
-        )
+    if family not in FAMILIES:
+        raise ValueError(f"{where} is a {family} bundle; soma predict needs a segmentation or detection bundle")
     recipe = preprocessing.get("encoder")
     if isinstance(recipe, Mapping) and recipe.get("composite"):
         raise ValueError(
@@ -297,17 +309,100 @@ def _bundle_info(path: Path) -> dict[str, Any]:
         raise ValueError(f"{where} records no read spacing (spacing_um)")
     tolerance = recipe.get("tolerance", 0.05) if isinstance(recipe, Mapping) else 0.05
     backend = recipe.get("backend") if isinstance(recipe, Mapping) else None
-    return {
+    info = {
         "path": str(path),
+        "task_family": family,
         "tile_px": int(tile[0]),
         "spacing_um": float(spacing),
         "tolerance": float(tolerance),
         "backend": None if backend is None else str(backend),
         "num_classes": int(preprocessing["num_classes"]),
         "class_names": preprocessing.get("class_names"),
-        "ignore_index": int(preprocessing.get("ignore_index", 255)),
-        "label_remap": preprocessing.get("label_remap"),
     }
+    if family == "segmentation":
+        info["ignore_index"] = int(preprocessing.get("ignore_index", 255))
+        info["label_remap"] = preprocessing.get("label_remap")
+    else:
+        head = _detection_head(path)
+        info["match_distance_um"] = float(head.match_distance)
+        info["nms_distance_um"] = float(head.nms_distance)
+        info["min_score"] = float(head.min_score)
+    return info
+
+
+def _detection_head(path: Path):
+    """A detection bundle's head, built from its ``model.json`` alone: its distances are
+    there, and building the whole model would load the encoder."""
+    from soma.learn.bundle import MODEL, _decode
+    from soma.models.heads.registry import task_registry
+
+    recipe = json.loads((path / MODEL).read_text(encoding="utf-8"))
+    spec = (recipe.get("params") or {}).get("head")
+    if not isinstance(spec, Mapping) or "name" not in spec:
+        raise ValueError(f"bundle {path} records no head in its {MODEL}, so soma predict cannot read its NMS distance")
+    spec = _decode(dict(spec))
+    return task_registry.resolve(spec["name"])(**spec.get("params", {}))
+
+
+def _shared_family(infos: Sequence[Mapping[str, Any]]) -> str:
+    """The task family every bundle shares: one call writes one kind of file."""
+    families = {info["task_family"] for info in infos}
+    if len(families) > 1:
+        raise ValueError(
+            "the bundles of one prediction must be of one task family; these are "
+            f"{_listing(infos, ('task_family',))}"
+        )
+    return families.pop()
+
+
+#: What the bundles of an ensemble must share, per family: one file records one of each.
+_ENSEMBLE_KEYS = {
+    "segmentation": ("num_classes", "class_names", "ignore_index", "label_remap"),
+    "detection": ("num_classes", "class_names", "match_distance_um", "nms_distance_um", "min_score"),
+}
+
+
+def _check_ensemble(infos: Sequence[Mapping[str, Any]], family: str) -> None:
+    keys = _ENSEMBLE_KEYS[family]
+    if len({json.dumps([info[key] for key in keys]) for info in infos}) <= 1:
+        return
+    if family == "segmentation":
+        raise ValueError(
+            "predict.ensemble averages the bundles' softmax, so they must share one class "
+            "scheme: the classes, the raw annotation values that form them (label_remap) "
+            f"and the values ignored; these bundles have {_listing(infos, keys[:3])}"
+        )
+    raise ValueError(
+        "predict.ensemble averages the bundles' heatmaps and takes one set of peaks from the "
+        "mean, so they must share the classes, the matching and NMS distances and min_score; "
+        f"these bundles have {_listing(infos, keys)}"
+    )
+
+
+def _check_margin(infos, *, tile_px: int, overlap: float, margin_px: int, spacing_um: float) -> None:
+    """Refuse a margin narrower than a detection bundle's NMS distance: a tile keeps the
+    peaks in its middle only, and each of them must be found with its whole NMS
+    neighbourhood inside the tile."""
+    import math
+
+    margin_um = margin_px * spacing_um
+    for info in infos:
+        nms_um = info["nms_distance_um"]
+        if margin_um >= nms_um * (1 - 1e-9):
+            continue
+        needed = 2 * math.ceil(nms_um / spacing_um - 1e-9) / tile_px
+        hint = (
+            f"Use an overlap of at least {needed:g}, or 0."
+            if needed < 1
+            else "No overlap below 1 leaves a margin that wide: use an overlap of 0."
+        )
+        raise ValueError(
+            f"extraction.tiling.overlap {overlap:g} leaves a margin of {margin_px} px "
+            f"({margin_um:g} um) on each side of a {tile_px} px tile, less than the NMS "
+            f"distance of bundle {info['path']} ({nms_um:g} um). A tile keeps the peaks in "
+            "its middle only, and finds each of them with its whole NMS neighbourhood inside "
+            f"the tile only when the margin is at least that distance. {hint}"
+        )
 
 
 def _listing(infos: Sequence[Mapping[str, Any]], keys: Sequence[str]) -> str:
@@ -598,9 +693,17 @@ def _run(plan: dict[str, Any]) -> pd.DataFrame:
         predict_shard(plan, ids)
     elif ids:
         _predict_on_devices(plan, ids, devices)
-    index = _index(output_dir, names, slides)
+    index = _index(output_dir, names, slides, _RECORD_FIELDS[_plan_family(plan)])
     atomic_write_bytes(output_dir / INDEX_FILENAME, _parquet_bytes(index))
     return index
+
+
+def _plan_family(plan: Mapping[str, Any]) -> str:
+    """The task family of the plan's bundles (the plan admits only one)."""
+    from soma.learn.bundle import PREPROCESSING
+
+    path = Path(plan["predict"]["bundles"][0]) / PREPROCESSING
+    return str(json.loads(path.read_text(encoding="utf-8"))["task_family"])
 
 
 def _parquet_bytes(frame: pd.DataFrame) -> bytes:
@@ -627,7 +730,7 @@ def _check_spacings(slides, tiling: Mapping[str, Any]) -> None:
             )
 
 
-def _index(output_dir: Path, names: Sequence[str], slides) -> pd.DataFrame:
+def _index(output_dir: Path, names: Sequence[str], slides, fields: Sequence[str]) -> pd.DataFrame:
     rows = []
     for name in names:
         for entry in slides:
@@ -639,14 +742,18 @@ def _index(output_dir: Path, names: Sequence[str], slides) -> pd.DataFrame:
                     "bundle": name,
                     "sample_id": record["sample_id"],
                     "path": f"{name}/{record['file']}",
-                    **{key: record[key] for key in _RECORD_FIELDS},
+                    **{key: record[key] for key in fields},
                 }
             )
-    columns = ["bundle", "sample_id", "path", *_RECORD_FIELDS]
+    columns = ["bundle", "sample_id", "path", *fields]
     return pd.DataFrame(rows, columns=columns)
 
 
-_RECORD_FIELDS = ("width", "height", "spacing_um", "read_spacing_um", "num_tiles", "not_predicted_fraction")
+#: The index columns each family's records give, after ``bundle``, ``sample_id`` and ``path``.
+_RECORD_FIELDS = {
+    "segmentation": ("width", "height", "spacing_um", "read_spacing_um", "num_tiles", "not_predicted_fraction"),
+    "detection": ("width", "height", "spacing_um", "read_spacing_um", "num_tiles", "num_points"),
+}
 
 
 def _predict_on_devices(plan: dict[str, Any], ids: list[str], devices: Sequence[str]) -> None:
@@ -703,11 +810,27 @@ def _models(bundle_paths: Sequence[str], device) -> list:
 def _predict_slide(plan, models, names, identities, entry, output_dir: Path) -> None:
     import slide2vec
 
+    extraction = hydrate(slide2vec.PreprocessingConfig, plan["extraction"], "extraction")
+    origins, grid = _kept_tiles(entry, extraction)
+    for name in names:
+        (output_dir / name).mkdir(parents=True, exist_ok=True)
+    detection = models[0].head.task_family == "detection"
+    if not origins:
+        empty = "its points file has no rows" if detection else "its label map is all zeros, not predicted"
+        warnings.warn(
+            f"slide '{entry.sample_id}' has no kept tile (no tissue under the mask or the "
+            f"tissue segmentation): {empty}",
+            stacklevel=2,
+        )
+    write = _write_slide_points if detection else _write_label_maps
+    write(plan, models, names, identities, entry, output_dir, extraction=extraction, origins=origins, grid=grid)
+    logger.info("Predicted slide %s: %d tile(s)", entry.sample_id, len(origins))
+
+
+def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, *, extraction, origins, grid) -> None:
     from soma.evaluation.whole_slide import SlideFrame, predict_slide_label_maps
 
-    extraction = hydrate(slide2vec.PreprocessingConfig, plan["extraction"], "extraction")
     tiling = extraction.tiling
-    origins, grid = _kept_tiles(entry, extraction)
     frame = SlideFrame.from_grid(
         tile_px=tiling.requested_tile_size_px,
         overlap=tiling.overlap,
@@ -731,14 +854,6 @@ def _predict_slide(plan, models, names, identities, entry, output_dir: Path) -> 
             for model, identity in zip(models, identities)
         ]
     file = f"{entry.sample_id}.tif"
-    for name in names:
-        (output_dir / name).mkdir(parents=True, exist_ok=True)
-    if not origins:
-        warnings.warn(
-            f"slide '{entry.sample_id}' has no kept tile (no tissue under the mask or the "
-            "tissue segmentation): its label map is all zeros, not predicted",
-            stacklevel=2,
-        )
     fractions = predict_slide_label_maps(
         models,
         image=entry,
@@ -765,7 +880,69 @@ def _predict_slide(plan, models, names, identities, entry, output_dir: Path) -> 
             "not_predicted_fraction": fraction,
         }
         atomic_write_text(_record_path(output_dir, name, entry.sample_id), json.dumps(record, indent=2) + "\n")
-    logger.info("Predicted slide %s: %d tile(s)", entry.sample_id, len(origins))
+
+
+def _write_slide_points(plan, models, names, identities, entry, output_dir: Path, *, extraction, origins, grid) -> None:
+    from soma.evaluation.whole_slide_points import predict_slide_points
+
+    tiling = extraction.tiling
+    ensemble = plan["predict"]["ensemble"]
+    level0_spacing = float(grid.tiles.base_spacing_um)
+    width, height = (int(v) for v in grid.tiles.slide_dimensions)
+    shared = {
+        "sample_id": entry.sample_id,
+        "ensemble": ensemble,
+        "read_spacing_um": float(tiling.requested_spacing_um),
+        "tile_size_px": int(tiling.requested_tile_size_px),
+        "overlap": float(tiling.overlap),
+    }
+    if ensemble:
+        # An ensemble's scores are a mean no bundle was tuned on: it has no threshold.
+        metadata = [{**shared, "bundles": identities, "threshold": None}]
+    else:
+        metadata = [
+            {**shared, "bundles": [identity], "threshold": _tune_threshold(identity["path"])}
+            for identity in identities
+        ]
+    file = f"{entry.sample_id}.parquet"
+    counts = predict_slide_points(
+        models,
+        image=entry,
+        origins=origins,
+        tile_px=int(tiling.requested_tile_size_px),
+        overlap=float(tiling.overlap),
+        slide_size=(width, height),
+        level0_spacing_um=level0_spacing,
+        paths=[output_dir / name / file for name in names],
+        metadata=metadata,
+        spacing_um=float(tiling.requested_spacing_um),
+        ensemble=ensemble,
+        backend=tiling.backend,
+        tolerance=float(tiling.tolerance),
+        batch_size=plan["predict"]["batch_size"],
+        num_workers=plan["predict"]["num_workers"],
+    )
+    for name, count in zip(names, counts):
+        record = {
+            "sample_id": entry.sample_id,
+            "file": file,
+            "width": width,
+            "height": height,
+            "spacing_um": level0_spacing,
+            "read_spacing_um": float(tiling.requested_spacing_um),
+            "num_tiles": len(origins),
+            "num_points": count,
+        }
+        atomic_write_text(_record_path(output_dir, name, entry.sample_id), json.dumps(record, indent=2) + "\n")
+
+
+def _tune_threshold(bundle_path: str):
+    """The operating threshold a detection bundle recorded: a float, or one per class
+    name; ``None`` when it records none."""
+    from soma.learn.bundle import PREPROCESSING
+
+    preprocessing = json.loads((Path(bundle_path) / PREPROCESSING).read_text(encoding="utf-8"))
+    return preprocessing.get("score_threshold")
 
 
 def _value_names(head) -> dict[str, str]:
