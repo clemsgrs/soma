@@ -399,6 +399,28 @@ def test_a_bundle_that_records_no_reader_is_read_with_auto(tmp_path, cohort):
     assert plan["extraction"]["tiling"]["backend"] == "auto"
 
 
+def test_a_saved_plan_without_its_reader_tiles_with_the_bundles_reader(tmp_path, cohort):
+    """A saved ``plan.yaml`` also holds hs2p's ``requested_backend``, which hs2p tiles
+    with. When ``backend`` is removed from it to take the bundle's reader, the old
+    ``requested_backend`` must not stay behind."""
+    from soma.pipeline.slide_prediction import resolve_slide_prediction
+
+    bundle = save_bundle(tmp_path / "run" / "bundle", **reader_recipe("openslide"))
+    with pytest.warns(UserWarning, match=r"extraction\.tiling\.backend is 'tifffile'"):
+        saved = resolve_slide_prediction(
+            output_dir=tmp_path / "predictions", bundles=bundle, records=cohort, extraction={"tiling": dict(TIFFFILE)}
+        )
+    extraction = saved["extraction"]
+    del extraction["tiling"]["backend"]
+
+    plan = resolve_slide_prediction(
+        output_dir=tmp_path / "predictions", bundles=bundle, records=cohort, extraction=extraction
+    )
+
+    tiling = plan["extraction"]["tiling"]
+    assert (tiling["backend"], tiling["requested_backend"]) == ("openslide", "openslide")
+
+
 def test_a_config_reader_other_than_the_bundles_is_used_with_a_warning_naming_both(tmp_path, cohort):
     bundle = save_bundle(tmp_path / "run" / "bundle", **reader_recipe("openslide"))
 
