@@ -49,7 +49,6 @@ from __future__ import annotations
 
 import csv
 import json
-import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -66,6 +65,7 @@ from soma.benchmark.registry import (
 from soma.config import ExperimentConfig
 from soma.benchmark.curation import CuratedManifest
 from soma.benchmark.tiles import tile_detection_manifest
+from soma.evaluation.detection import greedy_point_nms
 from soma.evaluation.detection.matching import match_assignment
 
 __all__ = [
@@ -402,47 +402,6 @@ def per_image_arrays(
     return pred_xy, pred_score, pred_class, gt_xy, gt_class, area
 
 
-def _greedy_point_nms(
-    xy: np.ndarray, scores: np.ndarray, classes: np.ndarray, min_distance: float
-) -> np.ndarray:
-    """Per-class greedy NMS over a point list — the same rule as the within-tile peak NMS
-    (:func:`soma.evaluation.detection.peaks.extract_peaks`): keep the highest score first, drop any
-    later same-class point within ``min_distance``. Returns the kept row indices (ascending).
-
-    A uniform spatial hash (cell size ``min_distance``) keeps this O(n): a point can only
-    conflict with kept points in its own or an adjacent cell, and kept points within a cell
-    are ≥ ``min_distance`` apart so each cell holds O(1) of them. This matters for the
-    per-ROI threshold sweep, which stitches every tune candidate peak (threshold 0) at once —
-    a naive pairwise loop there is quadratic in tens of thousands of points.
-    """
-    if xy.shape[0] == 0:
-        return np.zeros((0,), dtype=np.int64)
-    md = float(min_distance)
-    md_sq = md * md
-    inv = 1.0 / md
-    kept: list[int] = []
-    cells: dict[tuple[int, int, int], list[int]] = {}  # (class, cell_x, cell_y) -> kept indices
-    for i in np.argsort(-scores, kind="stable"):
-        c = int(classes[i])
-        x, y = float(xy[i, 0]), float(xy[i, 1])
-        cx, cy = math.floor(x * inv), math.floor(y * inv)
-        conflict = False
-        for gx in (cx - 1, cx, cx + 1):
-            for gy in (cy - 1, cy, cy + 1):
-                for j in cells.get((c, gx, gy), ()):
-                    if (x - float(xy[j, 0])) ** 2 + (y - float(xy[j, 1])) ** 2 < md_sq:
-                        conflict = True
-                        break
-                if conflict:
-                    break
-            if conflict:
-                break
-        if not conflict:
-            kept.append(int(i))
-            cells.setdefault((c, cx, cy), []).append(int(i))
-    return np.sort(np.asarray(kept, dtype=np.int64))
-
-
 # Overlap copies of one GT point differ by the float32 rounding of their tile-local
 # coordinates (~1e-4 px at ROI scale), so an exact-coordinate dedup keeps both copies of
 # an arbitrary-float point (MONKEY's mm-converted annotations). Distinct same-class
@@ -522,14 +481,14 @@ def stitch_tiles_to_rois(samples: Sequence[SamplePrediction], cohort, head) -> l
         pxy = np.asarray(g["pxy"], dtype=np.float64).reshape(-1, 2)
         psc = np.asarray(g["psc"], dtype=np.float64).reshape(-1)
         pcl = np.asarray(g["pcl"], dtype=np.int64).reshape(-1)
-        keep = _greedy_point_nms(pxy, psc, pcl, head.nms_distance_px * frame_scale)
+        keep = greedy_point_nms(pxy, psc, pcl, head.nms_distance_px * frame_scale)
         pxy, psc, pcl = pxy[keep], psc[keep], pcl[keep]
 
         gt = g["gt"]
         gxy = np.asarray([(x, y) for x, y, _ in gt], dtype=np.float64).reshape(-1, 2)
         gcl = np.asarray([c for _, _, c in gt], dtype=np.int64).reshape(-1)
         # Equal scores keep the first copy of each annotation, in tile order.
-        keep = _greedy_point_nms(gxy, np.zeros(len(gt)), gcl, _GT_COPY_TOLERANCE_PX)
+        keep = greedy_point_nms(gxy, np.zeros(len(gt)), gcl, _GT_COPY_TOLERANCE_PX)
         gxy, gcl = gxy[keep], gcl[keep]
 
         matched = np.zeros(pxy.shape[0], dtype=bool)

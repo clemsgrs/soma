@@ -19,12 +19,8 @@ import yaml
 
 import soma
 from soma.data import build_label_remap
-from soma.data.images import RegionImageSource
-from soma.data.manifests import ImageEntry
 from soma.learn.grid import GridBatch
-from soma.models import DenseModel
 from soma.models.decoders.base import Decoder
-from soma.pipeline.build import bundle_encoder_stage
 from tests.whole_slides import (
     MEMORY_PRELUDE,
     RECIPE,
@@ -32,9 +28,11 @@ from tests.whole_slides import (
     TIFFFILE,
     TILE,
     blocky,
+    model_of,
     peak_rss_of,
     read_map,
     save_bundle,
+    tile_pixels,
     write_large_slide,
     write_mask,
     write_pyramid,
@@ -47,19 +45,6 @@ from tests.whole_slides import (
 def cpu_only(monkeypatch):
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
-
-
-def model_of(bundle_path) -> DenseModel:
-    """The bundle's model behind its frozen encoder stage, as ``predict_slides`` runs it."""
-    bundle = soma.load(bundle_path)
-    stage = bundle_encoder_stage(bundle)
-    model = bundle.model
-    return DenseModel(model.decoder, model.head, encoder=stage, adaptor=model.adaptor).eval()
-
-
-def tile_pixels(slide_path, regions: dict[str, tuple[int, int]]) -> RegionImageSource:
-    entries = {tid: ImageEntry(sample_id=tid, image_path=slide_path) for tid in regions}
-    return RegionImageSource(entries, regions=regions, size=TILE, spacing_um=SPACING_UM, backend="tifffile")
 
 
 def test_overlap_zero_writes_what_soma_predict_returns_for_each_tile(tmp_path):
@@ -516,11 +501,11 @@ def test_an_ensemble_needs_one_class_scheme(tmp_path, cohort, other):
     ("recorded", "match"),
     [
         ({"encoder": {"composite": True, "encoders": [RECIPE, RECIPE]}}, "composite of several encoders"),
-        ({"task_family": "detection"}, "is a detection bundle.*segmentation label maps"),
+        ({"task_family": "regression"}, "is a regression bundle; soma predict needs a segmentation or detection bundle"),
     ],
-    ids=["composite", "detection"],
+    ids=["composite", "other-family"],
 )
-def test_a_composite_or_detection_bundle_is_refused(tmp_path, cohort, recorded, match):
+def test_a_composite_or_other_family_bundle_is_refused(tmp_path, cohort, recorded, match):
     bundle = save_bundle(tmp_path / "run" / "bundle", **recorded)
 
     with pytest.raises(ValueError, match=match):

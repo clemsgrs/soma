@@ -376,18 +376,65 @@ def _predicted_tiles(
     uint8 array per map, class ``k`` as ``k + 1``."""
     if not origins:
         return
-    ids = [f"{x}_{y}" for x, y in origins]
-    source = RegionImageSource(
+    source = tile_source(
+        models, image=image, origins=origins, spacing_um=spacing_um, backend=backend, tolerance=tolerance
+    )
+    for batch_origins, outputs in tile_outputs(
+        models, source=source, origins=origins, batch_size=batch_size, num_workers=num_workers
+    ):
+        if ensemble:
+            maps = [mean_softmax(outputs).argmax(dim=1).to(torch.uint8).cpu().numpy()]
+        else:
+            maps = [
+                model.head.postprocess(output.logits.float())["prediction"]
+                for model, output in zip(models, outputs, strict=True)
+            ]
+        yield batch_origins, [np.asarray(m, dtype=np.uint8) + np.uint8(1) for m in maps]
+
+
+def tile_id(origin: tuple[int, int]) -> str:
+    """The id of the tile at level-0 ``origin`` in :func:`tile_source`."""
+    return f"{int(origin[0])}_{int(origin[1])}"
+
+
+def tile_source(
+    models,
+    *,
+    image: ImageEntry,
+    origins: Sequence[tuple[int, int]],
+    spacing_um: float,
+    backend: str,
+    tolerance: float,
+) -> RegionImageSource:
+    """The kept tiles of one slide, one id per origin (:func:`tile_id`), at the models'
+    tile size and ``spacing_um``."""
+    ids = [tile_id(origin) for origin in origins]
+    return RegionImageSource(
         {
             tid: ImageEntry(sample_id=tid, image_path=image.image_path, spacing_at_level_0=image.spacing_at_level_0)
             for tid in ids
         },
-        regions=dict(zip(ids, origins)),
+        regions=dict(zip(ids, ((int(x), int(y)) for x, y in origins))),
         size=models[0].head.geometry.target_size,
         spacing_um=spacing_um,
         backend=backend,
         tolerance=tolerance,
     )
+
+
+def tile_outputs(
+    models,
+    *,
+    source: RegionImageSource,
+    origins: Sequence[tuple[int, int]],
+    batch_size: int,
+    num_workers: int,
+):
+    """Yield ``(origins, outputs)`` per batch of the tiles at ``origins``, in order:
+    ``outputs`` lazily yields each model's output, behind one encoder forward for the
+    models that share a stage (:func:`~soma.models.model.forward_sharing_encoder`).
+    Consume ``outputs`` before the next batch."""
+    ids = [tile_id(origin) for origin in origins]
     loader = DataLoader(_Tiles(source, ids), batch_size=int(batch_size), num_workers=int(num_workers), shuffle=False)
     encoder = models[0].encoder
     input_device = torch.device(getattr(encoder, "input_device", None) or _device_of(models[0]))
@@ -397,15 +444,7 @@ def _predicted_tiles(
             count = int(pixels.shape[0])
             batch_origins = origins[start : start + count]
             start += count
-            outputs = forward_sharing_encoder(models, pixels.to(input_device), pixels)
-            if ensemble:
-                maps = [mean_softmax(outputs).argmax(dim=1).to(torch.uint8).cpu().numpy()]
-            else:
-                maps = [
-                    model.head.postprocess(output.logits.float())["prediction"]
-                    for model, output in zip(models, outputs, strict=True)
-                ]
-            yield batch_origins, [np.asarray(m, dtype=np.uint8) + np.uint8(1) for m in maps]
+            yield batch_origins, forward_sharing_encoder(models, pixels.to(input_device), pixels)
 
 
 def _device_of(model) -> torch.device:
