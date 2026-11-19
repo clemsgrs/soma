@@ -1,15 +1,16 @@
 # Project protocols live outside the installable core
 
-A Project protocol lives under `examples/<project>/` (or in an external provider
-package) while its authoritative scientific contract is provisional or it has not been
-explicitly accepted as a Built-in Benchmark. It may contain named dataset adapters,
-recipes, results, publication policy, submission formats, and campaign orchestration
-without making those surfaces part of soma's installed interface.
+A Project protocol lives in its own repository, which pins a soma release, while its
+authoritative scientific contract is provisional or it has not been explicitly accepted
+as a Built-in Benchmark. It may contain named dataset adapters, recipes, results,
+publication policy, submission formats, and campaign orchestration without making those
+surfaces part of soma's installed interface. `examples/` in this repository holds small
+usage examples only.
 
 A mechanism belongs in `soma` when its interface and synthetic tests require no dataset
 name, fixed cohort, fixed class count, known sample IDs, or publication-specific policy.
-Project code may be fully tested in this repository without being distributed in the
-wheel.
+When a project needs a mechanism that soma lacks, the mechanism lands in soma first and
+the project moves its pin to the release that contains it.
 
 A project becomes eligible for promotion only once an authoritative public release is
 stable enough to pin its dataset identity, cohort and splits, preprocessing, model and
@@ -38,7 +39,17 @@ reference data, and other required protocol assets move with it under ADR 0002.
 
 ## Placement rule
 
-Before promotion, deleting `examples/<project>/` must remove that project's names,
+Before promotion, deleting the project's repository must remove that project's names,
 cohort constants, submission rules, and paper decisions. It must not remove soma's
 ability to curate a Manifest, validate a cache, train a model, compute sufficient
 statistics, or publish and recover run artifacts.
+
+## Amendment (2026-11-19): projects move out of `examples/`
+
+This ADR first placed a Project protocol under `examples/<project>/`, tested in this
+repository but left out of the wheel. That did not hold. A campaign needs one frozen
+stack for weeks, and code in this tree moves with every core refactor: the 2.0 prune
+removed `examples/beetle/` and `examples/detection_benchmark/`, and the issues written
+against them went stale. A project now lives in its own repository and pins soma, as
+`clemsgrs/beetle-solution` and `clemsgrs/climb` (annotation efficiency) do. The rule
+for what belongs in soma, and the promotion path to a Built-in Benchmark, are unchanged.
