@@ -374,10 +374,10 @@ def _extraction(given, *, tile_px: int, spacing_um: float, tolerance: float, inf
             )
     if tiling.get("grid", "slide") != "slide":
         raise ValueError(f"extraction.tiling.grid must be 'slide' for whole-slide prediction, got {tiling['grid']!r}")
-    if tiling.get("backend") is None:
-        # hs2p tiles with ``requested_backend``, which a saved plan.yaml holds: let it
-        # follow the reader taken from the bundles.
-        tiling.pop("requested_backend", None)
+    # ``backend`` and ``mask_backend`` name the readers. hs2p tiles with its ``requested_*``
+    # record of them, which a saved plan.yaml holds: drop it so hs2p fills it from the plan.
+    for key in ("requested_backend", "requested_mask_backend"):
+        tiling.pop(key, None)
     data["tiling"] = {
         "tolerance": tolerance,
         "overlap": 0.0,

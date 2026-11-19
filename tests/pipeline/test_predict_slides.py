@@ -399,26 +399,28 @@ def test_a_bundle_that_records_no_reader_is_read_with_auto(tmp_path, cohort):
     assert plan["extraction"]["tiling"]["backend"] == "auto"
 
 
-def test_a_saved_plan_without_its_reader_tiles_with_the_bundles_reader(tmp_path, cohort):
-    """A saved ``plan.yaml`` also holds hs2p's ``requested_backend``, which hs2p tiles
-    with. When ``backend`` is removed from it to take the bundle's reader, the old
-    ``requested_backend`` must not stay behind."""
+@pytest.mark.filterwarnings("ignore:extraction.tiling.backend is 'tifffile'")
+@pytest.mark.parametrize(
+    ("saved", "edited", "reader"),
+    [(None, "tifffile", "tifffile"), ("tifffile", None, "openslide")],
+    ids=["edited", "unset"],
+)
+def test_a_saved_plan_tiles_with_the_readers_it_names(tmp_path, cohort, saved, edited, reader):
+    """``backend`` and ``mask_backend`` name the readers. A saved ``plan.yaml`` also holds
+    hs2p's ``requested_backend`` and ``requested_mask_backend``, which hs2p tiles with:
+    when the readers are changed, the old values must not stay behind."""
     from soma.pipeline.slide_prediction import resolve_slide_prediction
 
     bundle = save_bundle(tmp_path / "run" / "bundle", **reader_recipe("openslide"))
-    with pytest.warns(UserWarning, match=r"extraction\.tiling\.backend is 'tifffile'"):
-        saved = resolve_slide_prediction(
-            output_dir=tmp_path / "predictions", bundles=bundle, records=cohort, extraction={"tiling": dict(TIFFFILE)}
-        )
-    extraction = saved["extraction"]
-    del extraction["tiling"]["backend"]
+    where = {"output_dir": tmp_path / "predictions", "bundles": bundle, "records": cohort}
+    given = {"tiling": {"backend": saved, "mask_backend": "tifffile"}}
+    extraction = resolve_slide_prediction(**where, extraction=given)["extraction"]
+    extraction["tiling"].update(backend=edited, mask_backend="pil")
 
-    plan = resolve_slide_prediction(
-        output_dir=tmp_path / "predictions", bundles=bundle, records=cohort, extraction=extraction
-    )
+    tiling = resolve_slide_prediction(**where, extraction=extraction)["extraction"]["tiling"]
 
-    tiling = plan["extraction"]["tiling"]
-    assert (tiling["backend"], tiling["requested_backend"]) == ("openslide", "openslide")
+    assert tiling["requested_backend"] == tiling["backend"] == reader
+    assert tiling["requested_mask_backend"] == tiling["mask_backend"] == "pil"
 
 
 def test_a_config_reader_other_than_the_bundles_is_used_with_a_warning_naming_both(tmp_path, cohort):
