@@ -111,8 +111,7 @@ def predict_slide_points(
             models, source=source, origins=ordered, batch_size=batch_size, num_workers=num_workers
         ):
             if ensemble:
-                heatmap = torch.stack([output.logits.float() for output in outputs]).mean(dim=0)
-                peaks = [heads[0].frame_peaks(heatmap)]
+                peaks = [heads[0].frame_peaks(_mean_heatmap(outputs))]
             else:
                 peaks = [
                     model.head.frame_peaks(output.logits.float())
@@ -140,6 +139,19 @@ def predict_slide_points(
         atomic_write_bytes(path, _parquet_bytes(rows, _metadata(head, meta, level0_spacing_um)))
         counts.append(int(rows.shape[0]))
     return counts
+
+
+def _mean_heatmap(outputs) -> torch.Tensor:
+    """An ensemble's mean heatmap, ``(B, C, H, W)``. ``outputs`` is consumed one at a time,
+    as :func:`~soma.models.model.mean_softmax` does, so only the running sum is kept."""
+    total: torch.Tensor | None = None
+    count = 0
+    for output in outputs:
+        heatmap = output.logits.float()
+        total = heatmap if total is None else total + heatmap
+        count += 1
+        del output, heatmap  # not held while the next output is computed
+    return total / count
 
 
 def _contributed(
