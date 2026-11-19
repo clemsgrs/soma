@@ -295,7 +295,9 @@ fixed draw budget rather than a unique pass over the dataset. Leave
 the sampler's ``draws_per_epoch`` null to use the largest whole-effective-batch
 budget (``batch_size * accumulate_grad_batches``) no larger than the training ROI count,
 which keeps ROI exposure constant across batch-size and accumulation trade-offs.
-An explicit budget takes precedence and must contain whole loader batches. Each
+An explicit budget takes precedence and must contain whole loader batches. With
+``uniform``, a ``draws_per_epoch`` above the ROI count repeats the shuffled pass, so
+every ROI is drawn equally often, give or take one draw. Each
 fold writes ``roi_batch_sampling.json`` with the resolved budget, configured
 ratios, and the per-epoch requested classes, selected ROIs, class-pixel
 exposure, and repeat counts.

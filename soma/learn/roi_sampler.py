@@ -134,12 +134,6 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
                 )
             self._class_request_ratios = None
             self._request_probabilities = None
-            if self._draws_per_epoch > len(self._sample_ids):
-                raise ValueError(
-                    "Uniform ROI sampling traverses each ROI at most once per epoch, so "
-                    f"draws_per_epoch={self._draws_per_epoch} exceeds "
-                    f"{len(self._sample_ids)} ROIs."
-                )
 
     def __len__(self) -> int:
         return self._draws_per_epoch // self._batch_size
@@ -147,7 +141,12 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
     def __iter__(self) -> Iterator[list[int]]:
         rng = np.random.default_rng(np.random.SeedSequence([self._seed, self._epoch]))
         if self._strategy == "uniform":
-            indices = rng.permutation(len(self._sample_ids))[: self._draws_per_epoch].tolist()
+            # Fresh shuffled passes over the ROIs, cut to the draw budget: every ROI is
+            # drawn floor(d/N) or ceil(d/N) times, and a budget within the pool is one pass.
+            num_rois = len(self._sample_ids)
+            passes = -(-self._draws_per_epoch // num_rois)
+            indices = np.concatenate([rng.permutation(num_rois) for _ in range(passes)])
+            indices = indices[: self._draws_per_epoch].tolist()
             requests: list[int | None] = [None] * self._draws_per_epoch
         else:
             indices = []
@@ -244,9 +243,12 @@ class SegmentationRoiBatchSampler(Sampler[list[int]]):
 
 
 class UniformRoiBatchSampler(SegmentationRoiBatchSampler):
-    """The ``uniform`` ROI batch strategy: each ROI at most once per epoch, in a seeded
-    random order. ``draws_per_epoch=None`` rounds the ROIs down to whole effective
-    optimization batches."""
+    """The ``uniform`` ROI batch strategy: seeded shuffled passes over the ROIs, cut to
+    the draw budget. A budget up to the ROI count draws each ROI at most once per
+    epoch; a larger one repeats the shuffled pass, so each of the ``N`` ROIs is drawn
+    ``floor(d / N)`` or ``ceil(d / N)`` times and a batch may hold the same ROI twice.
+    ``draws_per_epoch=None`` rounds the ROIs down to whole effective optimization
+    batches."""
 
     def __init__(
         self,
