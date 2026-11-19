@@ -37,7 +37,7 @@ from soma.models.aggregators.registry import aggregator_registry
 from soma.extract.cache import resolve_cache_root
 from slide2vec import DenseOptions, PreprocessingConfig
 
-from soma._internal.class_scheme import resolve_classes
+from soma._internal.class_scheme import recorded_scheme, resolve_classes
 from soma._internal.logging import logging_fold
 from soma.config import (
     Component,
@@ -1329,9 +1329,9 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
 
     if family == "segmentation":
         head_spec = _segmentation_head_spec(inputs, geometry)
-        point_source = None
+        point_source = class_scheme = None
     else:
-        head_spec, point_source = _detection_head_spec(inputs, geometry, all_ids)
+        head_spec, point_source, class_scheme = _detection_head_spec(inputs, geometry, all_ids)
     encoder_identity = _encoder_identity(plan)
     encoder_recipe = _encoder_recipe(plan, feature_store)
     model_spec = {
@@ -1473,6 +1473,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
             metadata["ignore_index"] = int(head.ignore_index)
             metadata["label_remap"] = _jsonable(head.label_remap)
         else:
+            metadata["class_scheme"] = class_scheme
             metadata["match_distance"] = float(head.match_distance)
             metadata["matching"] = head.matching
             metadata["min_score"] = float(head.min_score)
@@ -1558,14 +1559,18 @@ def _require_configured_spacing(inputs: RunInputs, sample_ids: Sequence[str]) ->
 
 
 def _detection_head_spec(inputs: RunInputs, geometry, sample_ids):
-    """``({name, params}, PointSource)`` of a detection run: classes from the head's class
-    scheme (``classes`` / ``drop`` / ``num_classes``), distances converted at the run's
-    one spacing."""
+    """``({name, params}, PointSource, class scheme)`` of a detection run: classes from the
+    head's class scheme (``classes`` / ``drop`` / ``num_classes``), distances converted at
+    the run's one spacing. The class scheme is what the bundle records, in the shape of the
+    run config: ``classes`` (class name → annotated ids, in class order) and ``drop``."""
     head = inputs.plan.learner.params["head"]
     scheme = head_params(head)
     num_classes, class_names, class_remap, dropped = resolve_classes(
         scheme, excluded_key="drop", subject="detection"
     )
+    # Without ``classes`` the points already hold class indices: class k is annotated id k.
+    class_of = class_remap if class_remap is not None else {k: k for k in range(num_classes)}
+    class_scheme = recorded_scheme(class_names, class_of, dropped, excluded_key="drop")
     if inputs.annotations is None:
         raise ValueError("a detection run needs the cohort's annotation manifest (points_path).")
     point_source = PointSource.from_manifest(
@@ -1588,7 +1593,7 @@ def _detection_head_spec(inputs: RunInputs, geometry, sample_ids):
             **params,
         },
     }
-    return spec, point_source
+    return spec, point_source, class_scheme
 
 
 def _grid_callbacks(inputs: RunInputs, fold_dir: Path, split_name: str, overlay_images) -> list[Any]:

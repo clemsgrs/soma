@@ -396,6 +396,48 @@ def test_a_margin_as_wide_as_the_nms_distance_is_accepted(tmp_path, cohort, deco
     assert list(index.sample_id) == ["s1"]
 
 
+def test_a_bundle_without_a_recorded_class_scheme_is_refused_before_anything_is_written(tmp_path, cohort, decoders):
+    """A bundle trained before soma recorded the class scheme has no ``class_scheme`` in its
+    ``preprocessing.json``: its points could not be scored. The refusal names the bundle
+    and the two ways out."""
+    bundle = save_detection_bundle(tmp_path / "run" / "bundle", decoder=decoders["marker"])
+    path = bundle / "preprocessing.json"
+    preprocessing = json.loads(path.read_text())
+    del preprocessing["class_scheme"]
+    path.write_text(json.dumps(preprocessing))
+    output_dir = tmp_path / "predictions"
+
+    with pytest.raises(ValueError) as refused:
+        soma.predict_slides(output_dir=output_dir, bundles=bundle, records=cohort, extraction=OVERLAP_ZERO)
+
+    message = str(refused.value)
+    assert f"bundle {bundle} records no class scheme" in message
+    assert "Train it again, or add class_scheme to its preprocessing.json from the run's config" in message
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize(
+    ("scheme", "reason"),
+    [
+        ({"classes": {"mitosis": [0]}, "drop": []}, r"one entry per class of the bundle \(\['class_0'\]\)"),
+        ({"classes": {"class_0": [0]}}, "a drop list"),
+        ({"classes": {"class_0": ["0"]}, "drop": []}, "raw values must be non-negative integers, got '0'"),
+        ({"classes": {"class_0": [0]}, "drop": [0]}, "both list raw value 0"),
+    ],
+    ids=["class-names", "no-drop", "id-not-an-integer", "id-twice"],
+)
+def test_a_class_scheme_written_by_hand_is_checked_before_anything_is_written(tmp_path, cohort, decoders, scheme, reason):
+    """The scheme of an older bundle can be added by hand: it must name the bundle's own
+    classes, hold a ``drop`` list, and give each annotated id, an integer, to one class or
+    to ``drop``."""
+    bundle = save_detection_bundle(tmp_path / "run" / "bundle", decoder=decoders["marker"], class_scheme=scheme)
+    output_dir = tmp_path / "predictions"
+
+    with pytest.raises(ValueError, match=f"bundle {bundle} records an invalid class_scheme.*{reason}"):
+        soma.predict_slides(output_dir=output_dir, bundles=bundle, records=cohort, extraction=OVERLAP_ZERO)
+    assert not output_dir.exists()
+
+
 def test_segmentation_and_detection_bundles_are_not_mixed(tmp_path, cohort, decoders):
     from tests.whole_slides import save_bundle
 
@@ -427,6 +469,31 @@ def test_a_detection_ensemble_needs_one_set_of_peak_settings(tmp_path, cohort, d
         )
 
 
+@pytest.mark.parametrize(
+    "other",
+    [{"classes": {"mitosis": [1, 2]}, "drop": [3]}, {"classes": {"mitosis": [1]}, "drop": [2, 3]}],
+    ids=["annotated-ids", "drop"],
+)
+def test_a_detection_ensemble_needs_one_class_scheme(tmp_path, cohort, decoders, other):
+    """Two bundles with the same class names are one ensemble only when the same annotated
+    ids form each class and the same ids are dropped: their points are scored against one
+    ground truth. The refusal lists both schemes."""
+    bundles = [
+        save_detection_bundle(tmp_path / "a" / "bundle", decoder=decoders["marker"], classes={"mitosis": [1]}, drop=[3]),
+        save_detection_bundle(tmp_path / "b" / "bundle", decoder=decoders["marker"], **other),
+    ]
+
+    with pytest.raises(ValueError, match="the annotated ids that form each class and the ids dropped") as refused:
+        soma.predict_slides(
+            output_dir=tmp_path / "predictions", bundles=bundles, records=cohort, extraction=OVERLAP_ZERO, ensemble=True
+        )
+
+    message = str(refused.value)
+    assert f"{bundles[0]}: " in message and f"{bundles[1]}: " in message
+    assert "{'classes': {'mitosis': [1]}, 'drop': [3]}" in message
+    assert f"{{'classes': {other['classes']}, 'drop': {other['drop']}}}" in message
+
+
 # --- the artefact -------------------------------------------------------------------------- #
 
 
@@ -436,11 +503,17 @@ def metadata_of(path) -> dict:
 
 def test_the_parquet_records_what_scoring_needs_and_applies_no_threshold(tmp_path, cohort, decoders):
     """Every peak above ``min_score`` is a row, the one below the bundle's tune threshold
-    too; the threshold, the classes, the distances in um, the spacings and the bundle's
-    identity are in the schema metadata."""
+    too; the threshold, the class scheme (each class's annotated ids, in class order, and
+    the dropped ids), the distances in um, the spacings and the bundle's identity are in
+    the schema metadata."""
     records = one_slide(tmp_path, marker_slide(96, 96, [(20, 20, 10), (60, 60, 100)]))
     bundle = save_detection_bundle(
-        tmp_path / "run" / "bundle", decoder=decoders["marker"], match_distance=3.0, score_threshold={"class_0": 0.7}
+        tmp_path / "run" / "bundle",
+        decoder=decoders["marker"],
+        match_distance=3.0,
+        classes={"mitosis": [1, 3], "mimic": [0]},
+        drop=[2],
+        score_threshold={"mitosis": 0.7, "mimic": 0.5},
     )
 
     index = soma.predict_slides(
@@ -456,10 +529,12 @@ def test_the_parquet_records_what_scoring_needs_and_applies_no_threshold(tmp_pat
     assert identity["path"] == str(bundle)
     meta = metadata_of(path)
     assert meta.pop("soma_version") == soma.__version__
+    assert list(meta["classes"]) == ["mitosis", "mimic"]  # the class order
     assert meta == {
         "kind": "slide_points",
         "task_family": "detection",
-        "classes": ["class_0"],
+        "classes": {"mitosis": [1, 3], "mimic": [0]},
+        "drop": [2],
         "match_distance_um": 3.0,
         "nms_distance_um": 3.0,
         "min_score": 0.01,
@@ -470,7 +545,7 @@ def test_the_parquet_records_what_scoring_needs_and_applies_no_threshold(tmp_pat
         "tile_size_px": TILE,
         "overlap": 0.0,
         "bundles": [identity],
-        "threshold": {"class_0": 0.7},
+        "threshold": {"mitosis": 0.7, "mimic": 0.5},
     }
     (row,) = index.itertuples()
     assert (row.width, row.height, row.spacing_um, row.num_tiles, row.num_points) == (96, 96, SPACING_UM, 9, 2)
