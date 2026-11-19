@@ -324,6 +324,7 @@ def _bundle_info(path: Path) -> dict[str, Any]:
         info["label_remap"] = preprocessing.get("label_remap")
     else:
         head = _detection_head(path)
+        info["class_names"] = [str(name) for name in head.classes]
         info["match_distance_um"] = float(head.match_distance)
         info["nms_distance_um"] = float(head.nms_distance)
         info["min_score"] = float(head.min_score)
