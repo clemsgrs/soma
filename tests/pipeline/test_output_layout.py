@@ -483,7 +483,8 @@ def test_build_experiment_spec_distinguishes_how_the_cohort_is_split(tmp_path: P
 def test_the_ids_a_train_subset_lists_are_part_of_the_experiment_identity(tmp_path: Path):
     """Two subsets are two experiments, and neither is the run without a subset. The ids
     count, not the file: the same ids listed in another file, in another order, are the
-    same experiment."""
+    same experiment. A list that repeats an id is not the list without the repeat, so a
+    resume with it cannot open that list's run."""
 
     def experiment_id(subset: str | None = None, name: str = "subset.txt") -> str:
         cohort = {}
@@ -496,6 +497,7 @@ def test_the_ids_a_train_subset_lists_are_part_of_the_experiment_identity(tmp_pa
 
     assert len({experiment_id(), first, second, both}) == 4
     assert experiment_id("s1\n\ns0\n", "both_reordered.txt") == both
+    assert experiment_id("s0\ns1\ns1\n", "both_repeated.txt") != both
 
 
 def test_build_experiment_spec_distinguishes_dense_decoder_settings(tmp_path: Path):

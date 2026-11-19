@@ -366,8 +366,10 @@ def _plan_identity(plan: Plan) -> dict[str, Any]:
             payload[section].pop(name, None)
     subset = load_train_subset(plan)
     if subset is not None:
-        # The listed ids, not the file's path. Unset adds nothing to the identity.
-        digest = hashlib.sha256(_stable_json({"sample_ids": sorted(set(subset))}).encode("utf-8")).hexdigest()
+        # The listed ids, not the file's path, repeats kept: a list that repeats an id is
+        # invalid and must not land on the run of the list without the repeat. Unset adds
+        # nothing to the identity.
+        digest = hashlib.sha256(_stable_json({"sample_ids": sorted(subset)}).encode("utf-8")).hexdigest()
         payload["cohort"]["train_subset"] = {"checksum": digest}
     return payload
 
