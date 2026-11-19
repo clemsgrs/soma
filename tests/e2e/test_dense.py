@@ -124,6 +124,7 @@ def test_uniform_roi_sampling_draws_more_rois_than_the_pool(tmp_path, encoder_na
     audit = json.loads((run.run_dir / "roi_batch_sampling.json").read_text())
     artifact.record_run("run", run)
     artifact.check_training_reduced_loss("run", run)
+    artifact.check_at_least("test/mean_dice", run.summary["test/mean_dice"], 0.8)
     artifact.check_equal("roi_batch_sampling/draws_per_epoch", audit["draws_per_epoch"], 20)
     artifact.check_equal(
         "roi_batch_sampling/unique_roi_count",
