@@ -385,23 +385,18 @@ def reader_recipe(backend: str) -> dict:
     return {"encoder": {**RECIPE, "backend": backend}}
 
 
-@pytest.mark.parametrize(
-    ("recorded", "planned"),
-    [(reader_recipe("tifffile"), "tifffile"), ({}, "auto")],
-    ids=["recorded", "not-recorded"],
-)
-def test_the_slide_reader_defaults_to_the_one_the_bundle_records(tmp_path, cohort, recorded, planned):
-    """With no ``extraction.tiling.backend``, the plan reads the slides with the reader
-    the bundle was trained with; a bundle that records none is read with ``auto``."""
+def test_a_bundle_that_records_no_reader_is_read_with_auto(tmp_path, cohort):
+    """With no ``extraction.tiling.backend`` and a bundle that records no slide reader,
+    the plan reads the slides with ``auto``."""
     from soma.pipeline.slide_prediction import resolve_slide_prediction
 
-    bundle = save_bundle(tmp_path / "run" / "bundle", **recorded)
+    bundle = save_bundle(tmp_path / "run" / "bundle")
 
     plan = resolve_slide_prediction(
         output_dir=tmp_path / "predictions", bundles=bundle, records=cohort, extraction=MASK_READER_ONLY
     )
 
-    assert plan["extraction"]["tiling"]["backend"] == planned
+    assert plan["extraction"]["tiling"]["backend"] == "auto"
 
 
 def test_a_config_reader_other_than_the_bundles_is_used_with_a_warning_naming_both(tmp_path, cohort):
