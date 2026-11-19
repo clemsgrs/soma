@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-__all__ = ["assign_raw_values", "resolve_classes"]
+__all__ = ["assign_raw_values", "recorded_scheme", "resolve_classes"]
 
 
 def _raw_values(owner: str, values: Any, max_value: int | None) -> list[int]:
@@ -111,3 +111,17 @@ def resolve_classes(
             "classes in its 'classes'; drop num_classes (it is derived)."
         )
     return len(classes), tuple(str(name) for name in classes), class_of, tuple(excluded_values)
+
+
+def recorded_scheme(
+    class_names: Sequence[str], class_of: Mapping[int, int], excluded: Sequence[int], *, excluded_key: str
+) -> dict[str, Any]:
+    """A resolved class scheme in the shape of the run config, as an artefact records it:
+    ``classes`` (class name → its raw values, sorted, in class order) and ``excluded_key``
+    (the excluded raw values, sorted)."""
+    return {
+        "classes": {
+            str(name): sorted(raw for raw, index in class_of.items() if index == k) for k, name in enumerate(class_names)
+        },
+        excluded_key: sorted(int(raw) for raw in excluded),
+    }
