@@ -164,6 +164,21 @@ def points_of(path) -> list[tuple[float, float, int, float]]:
     return sorted((float(r.x), float(r.y), int(r[2]), float(r.score)) for r in frame.itertuples(index=False))
 
 
+def assert_same_points(actual, expected) -> None:
+    """``actual`` holds ``expected``'s rows in the same order: a class id (an ``int`` in
+    ``actual``) matches exactly, every other value within ``pytest.approx``'s default
+    tolerance. The rows go to ``pytest.approx`` one value at a time because pytest 9.2
+    refuses a list of tuples ("does not support nested data structures")."""
+    assert len(actual) == len(expected), f"{len(actual)} rows, expected {len(expected)}: {actual}"
+    for index, (got, want) in enumerate(zip(actual, expected)):
+        assert len(got) == len(want), f"row {index}: {got}, expected {want}"
+        for value, wanted in zip(got, want):
+            if isinstance(value, int):
+                assert value == wanted, f"row {index}: {got}, expected {want}"
+            else:
+                assert value == pytest.approx(wanted), f"row {index}: {got}, expected {want}"
+
+
 def tile_points(bundle, slide, regions: dict[str, tuple[int, int]]) -> list[tuple[float, float, int, float]]:
     """``soma.predict`` over the tiles at ``regions``, each tile's points moved by its
     level-0 origin (the bundle's head is bound at origin 0, one level-0 pixel per pixel)."""
@@ -202,8 +217,8 @@ def test_overlap_zero_points_are_soma_predict_s_points_moved_to_level_0(tmp_path
     assert row.num_tiles == 12
     points = points_of(tmp_path / "predictions" / row.path)
     regions = {f"{x}_{y}": (x, y) for x in (0, 32, 64, 96) for y in (0, 32, 64)}
-    assert points == pytest.approx(tile_points(bundle, tmp_path / "s1.tif", regions))
-    assert points == pytest.approx(sorted((x, y, 0, score(blue)) for x, y, blue in markers))
+    assert_same_points(points, tile_points(bundle, tmp_path / "s1.tif", regions))
+    assert_same_points(points, sorted((x, y, 0, score(blue)) for x, y, blue in markers))
     assert row.num_points == len(markers)
 
 
@@ -222,9 +237,8 @@ def test_an_object_on_a_seam_found_by_both_tiles_appears_once(tmp_path, decoders
     )
 
     (row,) = index.itertuples()
-    assert points_of(tmp_path / "predictions" / row.path) == pytest.approx(
-        [(31, 10, 0, score(200)), (50, 25, 0, score(150))]
-    )
+    points = points_of(tmp_path / "predictions" / row.path)
+    assert_same_points(points, [(31, 10, 0, score(200)), (50, 25, 0, score(150))])
 
 
 # --- overlap above 0: pick one by location ----------------------------------------------- #
@@ -287,7 +301,7 @@ def test_an_object_on_a_seam_of_a_resampled_slide_appears_once(tmp_path, decoder
     points = [(x, y) for x, y, _, _ in points_of(tmp_path / "predictions" / row.path)]
     # The first tile also keeps its column 7 (it is the first column); the second keeps
     # its column 24 (no tile follows it).
-    assert points == pytest.approx([(7 * scale, 16 * scale), (seam[0], 16 * scale), (34 + 24 * scale, 16 * scale)])
+    assert_same_points(points, [(7 * scale, 16 * scale), (seam[0], 16 * scale), (34 + 24 * scale, 16 * scale)])
 
 
 def test_a_whole_stride_stays_exclusive_on_a_slide_read_without_resampling(tmp_path, decoders):
@@ -434,7 +448,7 @@ def test_the_parquet_records_what_scoring_needs_and_applies_no_threshold(tmp_pat
     )
 
     path = tmp_path / "predictions" / "run" / "s1.parquet"
-    assert points_of(path) == pytest.approx([(20, 20, 0, score(10)), (60, 60, 0, score(100))])
+    assert_same_points(points_of(path), [(20, 20, 0, score(10)), (60, 60, 0, score(100))])
     assert score(10) < 0.7
     schema = pq.read_schema(path)
     assert [str(schema.field(name).type) for name in ("x", "y", "class", "score")] == ["double", "double", "int64", "double"]
@@ -530,8 +544,8 @@ def test_two_bundles_write_two_parquets_behind_one_encoder_forward_per_batch(tmp
 
     assert encoder_forwards == [4, 4, 1]  # 9 tiles in batches of 4, encoded once for both bundles
     assert list(index.path) == ["a/s1.parquet", "b/s1.parquet"]
-    assert points_of(tmp_path / "predictions" / "a" / "s1.parquet") == pytest.approx([(40, 50, 0, score(200))])
-    assert points_of(tmp_path / "predictions" / "b" / "s1.parquet") == pytest.approx([(40, 50, 0, score(200, 0.2))])
+    assert_same_points(points_of(tmp_path / "predictions" / "a" / "s1.parquet"), [(40, 50, 0, score(200))])
+    assert_same_points(points_of(tmp_path / "predictions" / "b" / "s1.parquet"), [(40, 50, 0, score(200, 0.2))])
 
 
 def test_an_ensemble_takes_the_peaks_of_the_mean_heatmap_and_records_no_threshold(tmp_path, decoders):
@@ -547,7 +561,7 @@ def test_an_ensemble_takes_the_peaks_of_the_mean_heatmap_and_records_no_threshol
     (row,) = index.itertuples()
     assert row.path == "ensemble/s1.parquet"
     path = tmp_path / "predictions" / row.path
-    assert points_of(path) == pytest.approx([(40, 50, 0, (score(200) + score(200, 0.2)) / 2)])
+    assert_same_points(points_of(path), [(40, 50, 0, (score(200) + score(200, 0.2)) / 2)])
     meta = metadata_of(path)
     assert meta["ensemble"] is True
     assert meta["threshold"] is None
