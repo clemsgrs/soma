@@ -101,8 +101,9 @@ table. Every listed ROI must come from a training slide of every fold.
 Runs over different subsets of the same slides share the cached ROIs, their
 grids and the per-ROI class counts (see :doc:`caching`): only the first run
 extracts. Each subset is its own experiment. With a ``loaders.sampler``, the sampler draws
-from the listed ROIs only, so ``uniform`` with ``draws_per_epoch`` above the
-number of listed ROIs is refused.
+from the listed ROIs only. With ``uniform``, a ``draws_per_epoch`` above the
+number of listed ROIs repeats them: each listed ROI is drawn equally often,
+give or take one draw.
 
 Classes
 -------

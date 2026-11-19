@@ -258,8 +258,8 @@ def test_whole_slide_segmentation_trains_on_a_listed_subset_of_its_rois(
     """``cohort.train_subset`` narrows the train split to the listed ROIs after they
     inherit their slides' splits: tune and test keep every ROI, and the run reuses the ROI
     sampling, the grids and the ROI population of the run without it. The ``uniform``
-    sampler draws from the listed ROIs, so it cannot draw more of them per epoch than the
-    list holds."""
+    sampler draws from the listed ROIs only, so a ``draws_per_epoch`` above the number of
+    listed ROIs repeats them: 12 draws over 8 ROIs draw four of them once and four twice."""
     artifact = new_artifact("dense_whole_slide_train_subset")
     slides_csv, splits_csv = make_segmentation_slides(tmp_path / "data")
     full = run_soma(_whole_slide_config(tmp_path, encoder_name, slides_csv, splits_csv), tmp_path / "full.yaml")
@@ -303,12 +303,26 @@ def test_whole_slide_segmentation_trains_on_a_listed_subset_of_its_rois(
     # Another training set is another experiment.
     artifact.check_equal("subset/own_experiment", subset.run_dir.parents[1] != full.run_dir.parents[1], True)
 
-    overdrawn = _whole_slide_config(
-        tmp_path, encoder_name, slides_csv, splits_csv, train_subset=subset_file, draws_per_epoch=12
+    # More draws per epoch than listed ROIs repeat the listed ROIs, and only them.
+    repeated = run_soma(
+        _whole_slide_config(
+            tmp_path, encoder_name, slides_csv, splits_csv, train_subset=subset_file, draws_per_epoch=12
+        ),
+        tmp_path / "repeated.yaml",
     )
-    with pytest.raises(ValueError) as overdraw:
-        run_soma(overdrawn, tmp_path / "overdrawn.yaml")
-    artifact.check_equal("overdrawn/error", "draws_per_epoch=12 exceeds 8 ROIs" in str(overdraw.value), True)
+    audit = _run_json(repeated, "roi_batch_sampling.json")
+    artifact.record_run("repeated", repeated)
+    artifact.check_training_reduced_loss("repeated", repeated)
+    artifact.check_equal("repeated/draws_per_epoch", audit["draws_per_epoch"], 12)
+    artifact.check_equal(
+        "repeated/unique_roi_count", [epoch["unique_roi_count"] for epoch in audit["epochs"]], [8] * 10
+    )
+    artifact.check_equal("repeated/drawn_rois", _drawn_rois(repeated), [sorted(listed)] * 10)
+    artifact.check_equal(
+        "repeated/draws_per_roi",
+        [sorted(epoch["roi_draw_counts"].values()) for epoch in audit["epochs"]],
+        [[1] * 4 + [2] * 4] * 10,
+    )
     artifact.assert_passed()
 
 
