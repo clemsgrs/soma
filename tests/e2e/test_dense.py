@@ -105,8 +105,8 @@ def test_segmentation_is_learned(tmp_path, encoder_name, encoded_images, new_art
 
 def test_uniform_roi_sampling_draws_more_rois_than_the_pool(tmp_path, encoder_name, new_artifact):
     """``loaders.sampler: uniform`` with more draws per epoch than training ROIs: each
-    epoch repeats the shuffled pass, so the 8 train ROIs are drawn 2 or 3 times in an
-    epoch of 20 draws, and the decoder still learns."""
+    epoch repeats the shuffled pass, so in every epoch of 20 draws four of the 8 train
+    ROIs are drawn twice and four three times, and the decoder still learns."""
     artifact = new_artifact("dense_segmentation_uniform_repeats")
     epochs = 10
     config = _config(
@@ -132,8 +132,8 @@ def test_uniform_roi_sampling_draws_more_rois_than_the_pool(tmp_path, encoder_na
     )
     artifact.check_equal(
         "roi_batch_sampling/draws_per_roi",
-        sorted({count for epoch in audit["epochs"] for count in epoch["roi_draw_counts"].values()}),
-        [2, 3],
+        [sorted(epoch["roi_draw_counts"].values()) for epoch in audit["epochs"]],
+        [[2] * 4 + [3] * 4] * epochs,
     )
     artifact.assert_passed()
 
