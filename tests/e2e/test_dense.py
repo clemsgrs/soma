@@ -103,6 +103,41 @@ def test_segmentation_is_learned(tmp_path, encoder_name, encoded_images, new_art
     artifact.assert_passed()
 
 
+def test_uniform_roi_sampling_draws_more_rois_than_the_pool(tmp_path, encoder_name, new_artifact):
+    """``loaders.sampler: uniform`` with more draws per epoch than training ROIs: each
+    epoch repeats the shuffled pass, so the 8 train ROIs are drawn 2 or 3 times in an
+    epoch of 20 draws, and the decoder still learns."""
+    artifact = new_artifact("dense_segmentation_uniform_repeats")
+    epochs = 10
+    config = _config(
+        tmp_path,
+        encoder_name,
+        "segmentation",
+        roi_px=96,
+        head={"name": "segmentation", "params": {"num_classes": 3}},
+        metrics=["mean_dice"],
+        epochs=epochs,
+    )
+    config["loaders"]["sampler"] = {"name": "uniform", "params": {"draws_per_epoch": 20}}
+    run = run_soma(config, tmp_path / "config.yaml")
+
+    audit = json.loads((run.run_dir / "roi_batch_sampling.json").read_text())
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    artifact.check_equal("roi_batch_sampling/draws_per_epoch", audit["draws_per_epoch"], 20)
+    artifact.check_equal(
+        "roi_batch_sampling/unique_roi_count",
+        [epoch["unique_roi_count"] for epoch in audit["epochs"]],
+        [8] * epochs,
+    )
+    artifact.check_equal(
+        "roi_batch_sampling/draws_per_roi",
+        sorted({count for epoch in audit["epochs"] for count in epoch["roi_draw_counts"].values()}),
+        [2, 3],
+    )
+    artifact.assert_passed()
+
+
 def test_detection_is_learned(tmp_path, encoder_name, encoded_images, new_artifact):
     artifact = new_artifact("dense_detection")
     config = _config(
