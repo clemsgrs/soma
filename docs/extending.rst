@@ -377,6 +377,10 @@ The head methods worth overriding are:
   one label map per sample and the detection head every peak above ``min_score``,
   in level-0 pixels. Whole-slide sliding-window segmentation bypasses it: the
   predictor blends the folds' softmaxes across tiles and takes the argmax itself.
+  Whole-slide detection bypasses it too: it calls the detection head's
+  ``frame_peaks``, which gives the peaks in tile pixels, and places them on the
+  slide itself. So a subclass that changes the peaks overrides ``frame_peaks``;
+  ``postprocess`` calls ``frame_peaks``, so tile-level prediction follows.
 - ``prediction_columns`` and ``to_columns(processed)``, what :func:`soma.predict`
   writes. The base class covers the classification, ordinal, regression and
   survival families; a head of a new family overrides both. A grid head also

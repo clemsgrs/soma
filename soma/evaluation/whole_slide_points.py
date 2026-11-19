@@ -17,13 +17,16 @@ frame it was trained in, plays no part.
 
 Stitching
 ---------
-Pick one, by location, as for the label maps. ``margin`` is ``tile * overlap / 2`` pixels.
-A tile keeps the peaks in ``[margin, tile - margin)`` on each axis, from 0 on an axis where
-its origin is 0 (the slide's first row and column), and only those on the slide. With
-``overlap: 0`` a tile keeps all its peaks. Then one per-class greedy NMS over the slide, at
-the head's NMS distance in level-0 pixels, removes the duplicates the two sides of a seam
-found (:func:`~soma.evaluation.detection.greedy_point_nms`). With an overlap the margin must
-be at least the NMS distance, so a tile finds each peak it keeps with the peak's whole NMS
+Pick one, by location, as for the label maps. ``margin`` is ``tile * overlap / 2`` pixels
+and ``step`` is the grid's step in the tile's own pixels. A tile keeps the peaks in
+``[margin, margin + step)`` on each axis, from 0 on an axis where its origin is 0 (the
+slide's first row and column), and only those on the slide. ``step`` is usually
+``tile - 2 * margin``. On a slide resampled to the read spacing it can differ by a fraction
+of a pixel, because hs2p rounds the step in the pixels it reads. With ``overlap: 0`` a tile
+keeps all its peaks. Then one per-class greedy NMS over the slide, at the head's NMS
+distance in level-0 pixels, removes the duplicates the two sides of a seam found
+(:func:`~soma.evaluation.detection.greedy_point_nms`). With an overlap the margin must be at
+least the NMS distance, so a tile finds each peak it keeps with the peak's whole NMS
 neighbourhood inside the tile.
 
 Artefact
@@ -63,6 +66,7 @@ def predict_slide_points(
     image: ImageEntry,
     origins: Sequence[tuple[int, int]],
     tile_px: int,
+    step_px: float,
     overlap: float,
     slide_size: tuple[int, int],
     level0_spacing_um: float,
@@ -79,7 +83,8 @@ def predict_slide_points(
 
     ``models`` are :class:`~soma.models.model.DenseModel` models with a detection head and
     a frozen encoder stage, in eval mode on their device. ``origins`` are the level-0
-    origins of the kept tiles on the slide grid; ``slide_size`` is the slide's level-0
+    origins of the kept tiles on the slide grid, and ``step_px`` is the grid's step in the
+    pixels of a ``tile_px`` tile; ``slide_size`` is the slide's level-0
     ``(width, height)`` at ``level0_spacing_um``. Each tile is read at ``spacing_um``
     (``tolerance``, ``backend``) from ``image``. Without ``ensemble`` there is one path
     (and one ``metadata`` mapping, stored in the file) per model; with it there is one,
@@ -122,6 +127,7 @@ def predict_slide_points(
                             origin=origin,
                             scale=float(geometry.level0_px_per_token_px),
                             tile_px=int(tile_px),
+                            step_px=float(step_px),
                             margin=margin,
                             slide_size=(width, height),
                         )
@@ -142,17 +148,19 @@ def _contributed(
     origin: tuple[int, int],
     scale: float,
     tile_px: int,
+    step_px: float,
     margin: int,
     slide_size: tuple[int, int],
 ) -> np.ndarray:
     """A tile's ``(k, 4)`` tile-pixel peaks that fall in the region it contributes, in
-    level-0 pixels: ``[margin, tile - margin)`` on each axis, from 0 where the origin is 0,
-    and on the slide."""
+    level-0 pixels: ``[margin, margin + step_px)`` on each axis, from 0 where the origin is
+    0, the whole tile without a margin, and on the slide."""
     rows = np.asarray(rows, dtype=np.float64).reshape(-1, 4)
     keep = np.ones(rows.shape[0], dtype=bool)
+    last = tile_px if margin == 0 else margin + step_px
     for axis, start in enumerate(origin):
         first = 0 if int(start) == 0 else margin
-        keep &= (rows[:, axis] >= first) & (rows[:, axis] < tile_px - margin)
+        keep &= (rows[:, axis] >= first) & (rows[:, axis] < last)
     rows = rows[keep].copy()
     rows[:, 0] = origin[0] + rows[:, 0] * scale
     rows[:, 1] = origin[1] + rows[:, 1] * scale

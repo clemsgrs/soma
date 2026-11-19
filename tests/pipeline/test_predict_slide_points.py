@@ -85,7 +85,9 @@ class MarkerDecoder(Decoder):
 
 @dataclass
 class FixedPeaksParams:
-    """The fixed-peaks decoder has no params."""
+    """``peaks`` are the tile pixels ``(x, y)`` of the peaks; :data:`FIXED_PEAKS` when unset."""
+
+    peaks: list | None = None
 
 
 #: The tile-frame pixels ``(x, y)`` where the fixed-peaks decoder puts a peak in every tile.
@@ -100,11 +102,12 @@ FIXED_PEAKS = {
 
 
 class FixedPeaksDecoder(Decoder):
-    """The same peaks in every tile, whatever its pixels: :data:`FIXED_PEAKS`."""
+    """The same peaks in every tile, whatever its pixels: ``peaks``, or :data:`FIXED_PEAKS`."""
 
-    def __init__(self, *, input_dim: int, num_classes: int) -> None:
+    def __init__(self, *, input_dim: int, num_classes: int, peaks=None) -> None:
         super().__init__()
         self._num_classes = int(num_classes)
+        self._peaks = [tuple(peak) for peak in peaks] if peaks else list(FIXED_PEAKS.values())
 
     @property
     def num_classes(self) -> int:
@@ -113,7 +116,7 @@ class FixedPeaksDecoder(Decoder):
     def forward(self, X):
         batch, _, rows, cols = X.shape
         logits = torch.full((batch, self._num_classes, rows * 8, cols * 8), BACKGROUND_LOGIT)
-        for x, y in FIXED_PEAKS.values():
+        for x, y in self._peaks:
             logits[:, 0, y, x] = 4.0
         return logits
 
@@ -253,6 +256,38 @@ def test_a_tile_keeps_the_peaks_in_the_region_it_contributes(tmp_path, decoders)
     expected = sorted((float(x), float(y)) for x, y in middle + first_column + first_row + corner)
     points = points_of(tmp_path / "predictions" / row.path)
     assert [(x, y) for x, y, _, _ in points] == expected
+
+
+def test_an_object_on_a_seam_of_a_resampled_slide_appears_once(tmp_path, decoders):
+    """Level 0 is at 0.5 * 32 / 67 um, so a 32 px tile at 0.5 um reads 67 level-0 px.
+    hs2p rounds the step there, to 34 level-0 px: 16.24 tile px, not the 16 px stride.
+    One object near level-0 x = 50 is at column 24 of the first tile and at column 7 of
+    the second (origin 34). A tile keeps ``[margin, margin + step)`` in its own pixels,
+    ``[8, 24.24)`` here, so the first tile keeps the object and the second drops it.
+    With ``[8, 24)`` neither tile kept it."""
+    level0_spacing = SPACING_UM * TILE / 67
+    records = one_slide(tmp_path, np.full((67, 101, 3), 120, dtype=np.uint8), spacing_um=level0_spacing)
+    bundle = save_detection_bundle(
+        tmp_path / "run" / "bundle",
+        decoder={"name": decoders["fixed-peaks"]["name"], "params": {"peaks": [[24, 16], [7, 16]]}},
+    )
+
+    index = soma.predict_slides(
+        output_dir=tmp_path / "predictions",
+        bundles=bundle,
+        records=records,
+        extraction={"tiling": {"overlap": 0.5, **TIFFFILE}, "masks": {"min_coverage": {"tissue": 0.9}}},
+    )
+
+    (row,) = index.itertuples()
+    assert row.num_tiles == 2  # level-0 origins 0 and 34, one row
+    scale = 67 / TILE  # level-0 px per tile px
+    seam = (24 * scale, 34 + 7 * scale)  # the object as the two tiles place it
+    assert seam[0] - seam[1] < 2  # 1.6 level-0 px apart: one object
+    points = [(x, y) for x, y, _, _ in points_of(tmp_path / "predictions" / row.path)]
+    # The first tile also keeps its column 7 (it is the first column); the second keeps
+    # its column 24 (no tile follows it).
+    assert points == pytest.approx([(7 * scale, 16 * scale), (seam[0], 16 * scale), (34 + 24 * scale, 16 * scale)])
 
 
 # --- level 0 ------------------------------------------------------------------------------- #

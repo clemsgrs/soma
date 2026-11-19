@@ -887,8 +887,18 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
 
     tiling = extraction.tiling
     ensemble = plan["predict"]["ensemble"]
-    level0_spacing = float(grid.tiles.base_spacing_um)
-    width, height = (int(v) for v in grid.tiles.slide_dimensions)
+    tiles = grid.tiles
+    level0_spacing = float(tiles.base_spacing_um)
+    width, height = (int(v) for v in tiles.slide_dimensions)
+    # hs2p rounds the step in the pixels it reads, so in tile pixels it is not always
+    # tile - 2 * margin (on a slide resampled to the read spacing).
+    step_px = (
+        grid.step_px_lv0
+        * level0_spacing
+        / float(tiles.read_spacing_um)
+        * int(tiling.requested_tile_size_px)
+        / int(tiles.read_tile_size_px)
+    )
     shared = {
         "sample_id": entry.sample_id,
         "ensemble": ensemble,
@@ -910,6 +920,7 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
         image=entry,
         origins=origins,
         tile_px=int(tiling.requested_tile_size_px),
+        step_px=step_px,
         overlap=float(tiling.overlap),
         slide_size=(width, height),
         level0_spacing_um=level0_spacing,

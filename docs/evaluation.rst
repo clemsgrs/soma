@@ -266,9 +266,13 @@ tile's level-0 origin and the slide's spacings. Each tile keeps only the
 peaks in the region it contributes, by the label maps' pick-one rule:
 
 - With ``overlap: 0``, a tile keeps all its peaks.
-- With an overlap, a tile drops the peaks in its margin, ``tile * overlap / 2``
-  pixels on each side. The tiles of the slide's first row and first column keep
-  the peaks in their outer margin.
+- With an overlap, the margin is ``tile * overlap / 2`` pixels. On each axis, a
+  tile keeps the peaks from ``margin`` to ``margin + step``, where ``step`` is
+  the grid's step in the tile's pixels. The step is usually
+  ``tile - 2 * margin``. On a slide resampled to the read spacing, it can differ
+  by a fraction of a pixel, because hs2p rounds the step in the pixels it reads.
+  The tiles of the slide's first row and first column also keep the peaks in
+  their outer margin.
 
 One NMS per class over the whole slide then removes the duplicates that two
 tiles found on either side of a seam. It uses the head's NMS distance, which
