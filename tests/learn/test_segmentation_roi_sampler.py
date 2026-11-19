@@ -20,7 +20,7 @@ def _segmentation_loaders(**loaders):
     )
     check(config)
     return config.loaders
-from soma.learn.roi_sampler import SegmentationRoiBatchSampler
+from soma.learn.roi_sampler import SegmentationRoiBatchSampler, UniformRoiBatchSampler
 
 
 @pytest.mark.parametrize(
@@ -318,6 +318,118 @@ def test_positive_ratio_rejects_an_unsupported_class() -> None:
             draws_per_epoch=4,
             strategy="class_conditioned",
             class_request_ratios=[1, 1, 0.1],
+        )
+
+
+@pytest.mark.parametrize(
+    ("num_rois", "draws_per_epoch", "batch_size", "seed", "epoch", "expected_batches"),
+    [
+        (10, 8, 4, 0, 0, [[4, 6, 2, 7], [3, 5, 9, 0]]),
+        (10, 8, 4, 0, 3, [[2, 7, 8, 3], [4, 9, 1, 6]]),
+        (10, 10, 5, 7, 0, [[8, 0, 7, 1, 3], [6, 2, 4, 5, 9]]),
+        (12, 6, 3, 13, 2, [[0, 9, 11], [1, 6, 5]]),
+    ],
+)
+def test_uniform_draws_within_the_pool_keep_their_pinned_order(
+    num_rois: int,
+    draws_per_epoch: int,
+    batch_size: int,
+    seed: int,
+    epoch: int,
+    expected_batches: list[list[int]],
+) -> None:
+    """A draw count up to the ROI count is one shuffled pass, with the ROIs and order
+    pinned here, so existing runs and pinned plans keep their batches."""
+    sample_ids = [f"roi-{index}" for index in range(num_rois)]
+    sampler = UniformRoiBatchSampler(
+        sample_ids=sample_ids,
+        class_pixel_counts=[[1, 1] for _ in sample_ids],
+        batch_size=batch_size,
+        draws_per_epoch=draws_per_epoch,
+        seed=seed,
+    )
+    sampler.set_epoch(epoch)
+
+    assert list(sampler) == expected_batches
+
+
+@pytest.mark.parametrize(
+    ("num_rois", "draws_per_epoch", "batch_size", "fewest_draws", "most_draws"),
+    [
+        (5, 10, 2, 2, 2),
+        (5, 12, 4, 2, 3),
+        (7, 64, 8, 9, 10),
+        (64, 1024, 16, 16, 16),
+    ],
+)
+def test_uniform_draws_above_the_pool_draw_every_roi_equally_often(
+    num_rois: int,
+    draws_per_epoch: int,
+    batch_size: int,
+    fewest_draws: int,
+    most_draws: int,
+) -> None:
+    """More draws than ROIs repeat the shuffled pass: every ROI is drawn, each one
+    floor(d/N) or ceil(d/N) times, in whole batches."""
+    sample_ids = [f"roi-{index}" for index in range(num_rois)]
+    sampler = UniformRoiBatchSampler(
+        sample_ids=sample_ids,
+        class_pixel_counts=[[1, 1] for _ in sample_ids],
+        batch_size=batch_size,
+        draws_per_epoch=draws_per_epoch,
+        seed=11,
+    )
+
+    batches = list(sampler)
+    epoch = sampler.audit()["epochs"][0]
+
+    assert [len(batch) for batch in batches] == [batch_size] * (draws_per_epoch // batch_size)
+    assert sampler.audit()["draws_per_epoch"] == draws_per_epoch
+    assert epoch["unique_roi_count"] == num_rois
+    assert sum(epoch["roi_draw_counts"].values()) == draws_per_epoch
+    assert set(epoch["roi_draw_counts"].values()) <= {fewest_draws, most_draws}
+
+
+def test_uniform_draws_above_the_pool_shuffle_each_pass_afresh() -> None:
+    """Twelve draws over five ROIs are three new shuffles ([1,4,2,3,0], [4,2,1,0,3],
+    [0,2,...]) cut to twelve, not the first shuffle repeated."""
+    sample_ids = [f"roi-{index}" for index in range(5)]
+    sampler = UniformRoiBatchSampler(
+        sample_ids=sample_ids,
+        class_pixel_counts=[[1, 1] for _ in sample_ids],
+        batch_size=4,
+        draws_per_epoch=12,
+        seed=11,
+    )
+    sampler.set_epoch(0)
+
+    assert list(sampler) == [[1, 4, 2, 3], [0, 4, 2, 1], [0, 3, 0, 2]]
+
+
+def test_uniform_pool_smaller_than_a_batch_fills_whole_batches_with_repeats() -> None:
+    """Three ROIs, batches of four, eight draws: the batches repeat ROIs to stay whole."""
+    sampler = UniformRoiBatchSampler(
+        sample_ids=["a", "b", "c"],
+        class_pixel_counts=[[1, 1], [1, 1], [1, 1]],
+        batch_size=4,
+        draws_per_epoch=8,
+    )
+
+    batches = list(sampler)
+    epoch = sampler.audit()["epochs"][0]
+
+    assert [len(batch) for batch in batches] == [4, 4]
+    assert epoch["unique_roi_count"] == 3
+    assert sorted(epoch["roi_draw_counts"].values()) == [2, 3, 3]
+
+
+def test_uniform_default_draw_budget_still_needs_one_whole_batch_of_rois() -> None:
+    with pytest.raises(ValueError, match="at least one whole effective training batch"):
+        UniformRoiBatchSampler(
+            sample_ids=["a", "b", "c"],
+            class_pixel_counts=[[1, 1], [1, 1], [1, 1]],
+            batch_size=4,
+            draws_per_epoch=None,
         )
 
 
