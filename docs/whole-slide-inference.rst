@@ -152,9 +152,11 @@ working directory. The keys:
      - The values of the ``mask_path`` rasters (default
        ``{background: [0], tissue: [1]}``). With other classes, a tile is
        kept where those classes cover it, as in
-       :ref:`preprocessing-source-masks`: for example, to predict inside a
-       tumour mask only. Then every predicted slide needs a ``mask_path``,
-       because a slide without one stops the run instead of being segmented.
+       :ref:`preprocessing-source-masks`: for example, to predict only the
+       tiles a tumour mask covers. Each kept tile is predicted in full, also
+       outside the mask. Such a mapping needs a ``mask_path`` on every
+       predicted slide, because a slide without one stops the run instead of
+       being segmented.
 
 .. _whole-slide-plan:
 
@@ -195,12 +197,16 @@ grid does not follow the tissue, so neighbouring tiles always line up.
 A tile is kept when tissue covers at least ``extraction.masks.min_coverage`` of
 it. The tissue is the slide's ``mask_path`` raster when the records give one,
 and hs2p's tissue segmentation otherwise. A tile with no tissue is never kept.
+The tissue selects tiles, not pixels or points: each kept tile is predicted in
+full, also where it holds no tissue.
 
 With the default ``extraction.filter``, hs2p first drops each tissue region
 whose area is at most four tiles (``a_t: 4``, see :doc:`preprocessing`), and
-only then measures coverage. No tile of such a region is kept, so its pixels
-are not predicted, and its annotated pixels count as misses when the slide is
-scored (see :ref:`whole-slide-scoring`). To keep every region, set
+only then measures coverage. The tissue of such a region counts towards no
+tile's coverage. Its pixels are not predicted, unless a tile kept for nearby
+tissue contributes them (see :ref:`whole-slide-stitching`). The annotated
+pixels that stay unpredicted count as misses when the slide is scored (see
+:ref:`whole-slide-scoring`). To keep every region, set
 ``extraction.filter.a_t: 0``. A ``pixel_mapping`` with other classes already
 keeps regions of any size.
 
