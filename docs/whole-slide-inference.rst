@@ -196,6 +196,14 @@ A tile is kept when tissue covers at least ``extraction.masks.min_coverage`` of
 it. The tissue is the slide's ``mask_path`` raster when the records give one,
 and hs2p's tissue segmentation otherwise. A tile with no tissue is never kept.
 
+With the default ``extraction.filter``, hs2p first drops each tissue region
+whose area is at most four tiles (``a_t: 4``, see :doc:`preprocessing`), and
+only then measures coverage. No tile of such a region is kept, so its pixels
+are not predicted, and its annotated pixels count as misses when the slide is
+scored (see :ref:`whole-slide-scoring`). To keep every region, set
+``extraction.filter.a_t: 0``. A ``pixel_mapping`` with other classes already
+keeps regions of any size.
+
 Each kept tile is read at the bundles' read spacing: from a pyramid level within
 the tolerance, or resampled from a finer level. soma never upsamples a slide. A
 slide whose level 0 is coarser than the read spacing, beyond the tolerance, is
