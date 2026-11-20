@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,7 @@ from soma.data.images import RegionImageSource
 from soma.data.manifests import ImageEntry
 from soma.learn import DenseLearner, FitResult
 from soma.models import DenseModel
+from soma.models.decoders.base import Decoder
 from soma.pipeline.build import build_grid_model, bundle_encoder_stage
 
 SPACING_UM = 0.5
@@ -265,3 +267,66 @@ def reset_peak():
     except OSError:
         pass  # the peak then includes what came before, which only makes a bound harder
 """
+
+
+# --- a weight-free detection decoder ----------------------------------------------------- #
+
+#: The logit of a pixel without a peak: its score is far below any ``min_score``.
+BACKGROUND_LOGIT = -20.0
+#: The colour of a slide block that holds no marker (red is never 254 or 255).
+BACKGROUND_RGB = (40, 40, 40)
+
+
+@dataclass
+class MarkerParams:
+    """``gain`` scales the logit of every peak the marker decoder puts."""
+
+    gain: float = 1.0
+
+
+class MarkerDecoder(Decoder):
+    """Puts one peak where the slide says, read from the pixels.
+
+    A slide block of 8 px is a marker when its red is 255 (a class 0 peak) or 254 (a
+    class 1 peak) and its green below 64 (the white a read past the slide's edge returns
+    is not): its green is ``8 * dy + dx``, the peak's pixel in the block, and its blue the
+    peak's logit, ``gain * blue / 20``. The ``fake`` encoder's tokens are those block
+    colours exactly, so the peaks are known level-0 positions. Every other pixel has the
+    background logit.
+    """
+
+    def __init__(self, *, input_dim: int, num_classes: int, gain: float = 1.0) -> None:
+        super().__init__()
+        self._num_classes = int(num_classes)
+        self._gain = float(gain)
+
+    @property
+    def num_classes(self) -> int:
+        return self._num_classes
+
+    def forward(self, X):
+        colours = torch.round((X * 0.25 + 0.5) * 255).long()  # the fake encoder's normalisation
+        batch, _, rows, cols = X.shape
+        logits = torch.full((batch, self._num_classes, rows * 8, cols * 8), BACKGROUND_LOGIT)
+        b, r, c = torch.nonzero((colours[:, 0] >= 254) & (colours[:, 1] < 64), as_tuple=True)
+        green, blue, kind = colours[b, 1, r, c], colours[b, 2, r, c], 255 - colours[b, 0, r, c]
+        logits[b, kind, r * 8 + green // 8, c * 8 + green % 8] = self._gain * blue.float() / 20
+        return logits
+
+
+def marker_slide(height: int, width: int, markers) -> np.ndarray:
+    """An RGB image of 8 px blocks: one marker block per ``(x, y, blue)`` or ``(x, y, blue,
+    class)``, its peak at pixel ``(x, y)`` with logit ``blue / 20`` in class 0 or 1; every
+    other block is the background."""
+    image = np.empty((height, width, 3), dtype=np.uint8)
+    image[...] = BACKGROUND_RGB
+    for x, y, blue, *kind in markers:
+        block_x, block_y = x // 8 * 8, y // 8 * 8
+        red = 255 - (kind[0] if kind else 0)
+        image[block_y : block_y + 8, block_x : block_x + 8] = (red, 8 * (y % 8) + x % 8, blue)
+    return image
+
+
+def score(blue: float, gain: float = 1.0) -> float:
+    """The score of a marker peak of logit ``gain * blue / 20``."""
+    return float(torch.sigmoid(torch.tensor(gain * blue / 20, dtype=torch.float32)))

@@ -30,6 +30,7 @@ from soma.evaluation.metrics import (
 from soma.evaluation.predictions import Predictions
 from soma.evaluation.scoring import Evaluation, compare, evaluate
 from soma.evaluation.slide_label_maps import SlideLabelMaps
+from soma.evaluation.slide_points import SlidePoints
 
 __all__ = [
     "Baseline",
@@ -43,6 +44,7 @@ __all__ = [
     "SaveOverlays",
     "SaveProbabilities",
     "SlideLabelMaps",
+    "SlidePoints",
     "VALID_METRICS",
     "compare",
     "compute_metrics",

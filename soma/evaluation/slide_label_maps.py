@@ -130,8 +130,9 @@ def slide_label_map_counts(maps: SlideLabelMaps, targets) -> tuple[np.ndarray, l
 # --- the directory ------------------------------------------------------------------ #
 
 
-def _map_directory(path: Path) -> tuple[Path, Path]:
-    """The prediction output directory and the directory of the maps ``path`` names."""
+def _map_directory(path: Path, what: str = "maps") -> tuple[Path, Path]:
+    """The prediction output directory and the directory of the ``what`` (maps or points)
+    ``path`` names."""
     import pandas as pd
 
     from soma.pipeline.slide_prediction import INDEX_FILENAME
@@ -141,7 +142,7 @@ def _map_directory(path: Path) -> tuple[Path, Path]:
         bundles = sorted(set(pd.read_parquet(path / INDEX_FILENAME, columns=["bundle"])["bundle"]))
         if len(bundles) != 1:
             raise ValueError(
-                f"{path} holds the maps of {len(bundles)} bundles {bundles}; score one "
+                f"{path} holds the {what} of {len(bundles)} bundles {bundles}; score one "
                 "bundle's directory, such as "
                 f"{path / (bundles[0] if bundles else '<bundle>')}"
             )

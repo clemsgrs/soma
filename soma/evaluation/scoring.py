@@ -44,7 +44,8 @@ class Evaluation:
     when the predictions carry placeholders); ``subgroups`` holds the per-column,
     per-group metrics and permutation p-values (``{"metrics": ..., "stats": ...}``, empty
     without subgroup columns). ``per_sample`` holds one row of counts per slide for
-    :class:`~soma.evaluation.SlideLabelMaps`, and is empty otherwise.
+    :class:`~soma.evaluation.SlideLabelMaps` and :class:`~soma.evaluation.SlidePoints`,
+    and is empty otherwise.
     """
 
     metrics: dict[str, float]
@@ -228,6 +229,11 @@ def evaluate(
       :func:`soma.predict_slides`) against a :class:`~soma.data.LabelMapSource` of the
       slides' annotation rasters: both read window by window, one row of counts per
       slide in ``Evaluation.per_sample``, then the same reducers.
+    * :class:`~soma.evaluation.SlidePoints` (the points parquets of
+      :func:`soma.predict_slides`) against a :class:`~soma.data.PointSource` of the
+      slides' annotated points: the class scheme and the threshold the points record,
+      matching within the bundle's distance in µm (a ``match_distance`` param is in µm
+      too), one row of counts per slide in ``Evaluation.per_sample``.
 
     Both sides must cover the same ids: an unknown prediction id, a target without a
     prediction, or a duplicate id is refused. Fill samples the model could not score with
@@ -245,8 +251,9 @@ def evaluate(
     """
     from soma.evaluation.grid import LabelMapPredictions, PointPredictions, evaluate_grid
     from soma.evaluation.slide_label_maps import SlideLabelMaps
+    from soma.evaluation.slide_points import SlidePoints
 
-    if isinstance(predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps)):
+    if isinstance(predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps, SlidePoints)):
         return evaluate_grid(predictions, targets, metrics=metrics, subgroups=subgroups)
     family = predictions.task_family
     if _is_default(metrics) and _output_columns(predictions):

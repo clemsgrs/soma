@@ -19,6 +19,11 @@ higher ones. So one matching pass over every prediction, binned by score
 (:func:`greedy_score_histogram`), gives the exact counts at every threshold
 (:func:`counts_at_thresholds`) and the per-class best F1 (:func:`sweep_score_histograms`).
 
+**Sparse.** Only the prediction and annotation pairs within ``delta`` are listed (a
+KD-tree query), so matching a whole slide's points never builds the full distance matrix.
+Hungarian matching solves each connected group of these pairs on its own; greedy matching
+walks each prediction's pairs in the dense matcher's order, so it makes the same pairs.
+
 All distances are in the same (target-frame) pixel units as ``delta`` — the head
 resolves ``delta`` from µm/px via the run spacing before calling in.
 """
@@ -30,6 +35,9 @@ from dataclasses import dataclass
 import numpy as np
 import torch
 from scipy.optimize import linear_sum_assignment
+from scipy.sparse import coo_matrix, csr_matrix
+from scipy.sparse.csgraph import connected_components, min_weight_full_bipartite_matching
+from scipy.spatial import cKDTree
 from torch import Tensor
 
 __all__ = [
@@ -108,42 +116,136 @@ def match_single_class(
     if n_pred == 0 or n_gt == 0:
         return ClassMatch(pairs=empty, n_pred=n_pred, n_gt=n_gt)
 
-    # Pairwise Euclidean distance (n_pred, n_gt).
-    diff = pred_xy[:, None, :] - gt_xy[None, :, :]
-    dist = np.sqrt((diff**2).sum(axis=2))
-    within = dist <= float(delta)
-
-    if method == "hungarian":
-        # Optimal one-to-one over a cost matrix; forbid > δ pairs with a large finite
-        # cost, then drop any assigned pair that ended up beyond δ.
-        big = float(delta) * 1e6 + 1.0
-        cost = np.where(within, dist, big)
-        rows, cols = linear_sum_assignment(cost)
-        pairs = [(int(r), int(c)) for r, c in zip(rows, cols) if within[r, c]]
-    elif method == "greedy":
-        # Sort predictions by descending score; each claims the nearest unclaimed
-        # in-δ GT. OCELOT's official convention. The sort is stable (ties claim in input
-        # order), so the predictions above any threshold claim exactly as they do in the
-        # full set: what makes the one-pass sweep exact. A prediction with no GT in reach
-        # claims nothing, so only the others enter the loop.
-        order = np.argsort(-pred_score, kind="stable")
-        order = order[within[order].any(axis=1)]
-        claimed = np.zeros(n_gt, dtype=bool)
-        pairs = []
-        for r in order:
-            in_range = within[r] & ~claimed
-            if not in_range.any():
-                continue
-            masked = np.where(in_range, dist[r], np.inf)
-            g = int(np.argmin(masked))
-            claimed[g] = True
-            pairs.append((int(r), g))
-    else:
+    if method not in VALID_MATCHING:
         raise ValueError(f"unknown matching method {method!r}; use one of {VALID_MATCHING}.")
+    pred_xy = np.asarray(pred_xy, dtype=np.float64).reshape(-1, 2)
+    gt_xy = np.asarray(gt_xy, dtype=np.float64).reshape(-1, 2)
+    rows, cols, dist = _pairs_in_reach(pred_xy, gt_xy, float(delta))
+    if method == "hungarian":
+        pairs = _hungarian_pairs(rows, cols, dist, n_pred, n_gt, float(delta))
+    else:
+        pairs = _greedy_pairs(rows, cols, dist, np.asarray(pred_score, dtype=np.float64).reshape(-1))
+    return ClassMatch(pairs=pairs, n_pred=n_pred, n_gt=n_gt)
 
-    return ClassMatch(
-        pairs=np.asarray(pairs, dtype=np.int64).reshape(-1, 2), n_pred=n_pred, n_gt=n_gt
+
+def _pairs_in_reach(
+    pred_xy: np.ndarray, gt_xy: np.ndarray, delta: float
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Every ``(pred, gt)`` pair at most ``delta`` apart, and its distance.
+
+    A KD-tree lists the candidates within a radius a hair wider than ``delta``; the
+    distance is then computed as ``sqrt(dx**2 + dy**2)``, the dense matrix's arithmetic,
+    and the strict ``<= delta`` test is applied to it. So a pair exactly ``delta`` apart
+    is kept or dropped exactly as the dense matrix would. Rows are sorted by prediction,
+    then annotation.
+    """
+    radius = delta * (1 + 1e-9) + 1e-9
+    found = cKDTree(pred_xy).sparse_distance_matrix(cKDTree(gt_xy), radius, output_type="ndarray")
+    rows = found["i"].astype(np.int64)
+    cols = found["j"].astype(np.int64)
+    dist = np.sqrt(((pred_xy[rows] - gt_xy[cols]) ** 2).sum(axis=1))
+    keep = dist <= delta
+    rows, cols, dist = rows[keep], cols[keep], dist[keep]
+    order = np.lexsort((cols, rows))
+    return rows[order], cols[order], dist[order]
+
+
+#: A connected group of pairs in reach with more ``predictions x annotations`` than this
+#: is solved on its sparse pairs; a smaller one on its dense cost matrix.
+_DENSE_GROUP_ENTRIES = 1_000_000
+
+
+def _hungarian_pairs(
+    rows: np.ndarray, cols: np.ndarray, dist: np.ndarray, n_pred: int, n_gt: int, delta: float
+) -> np.ndarray:
+    """The most pairs in reach that a one-to-one matching can make, and among those the
+    ones of least total distance, solved per connected group of pairs in reach.
+
+    The dense matcher solved one assignment over the full matrix, with a cost beyond
+    ``delta`` so large that it first maximizes the number of pairs in reach. Pairs of two
+    groups never share a point, so that optimum is the union of the groups' optima.
+    """
+    if rows.size == 0:
+        return np.zeros((0, 2), dtype=np.int64)
+    graph = coo_matrix((np.ones(rows.size), (rows, n_pred + cols)), shape=(n_pred + n_gt,) * 2)
+    _, labels = connected_components(graph, directed=False)
+    group = labels[rows]
+    order = np.argsort(group, kind="stable")
+    bounds = np.flatnonzero(np.diff(group[order])) + 1
+    pairs: list[np.ndarray] = []
+    lone: list[int] = []  # groups of a single pair: one prediction, one annotation
+    big = float(delta) * 1e6 + 1.0
+    for members in np.split(order, bounds):
+        if members.size == 1:
+            lone.append(int(members[0]))
+            continue
+        preds, local_rows = np.unique(rows[members], return_inverse=True)
+        gts, local_cols = np.unique(cols[members], return_inverse=True)
+        if preds.size * gts.size <= _DENSE_GROUP_ENTRIES:
+            cost = np.full((preds.size, gts.size), big)
+            cost[local_rows, local_cols] = dist[members]
+            r, c = linear_sum_assignment(cost)
+            kept = cost[r, c] < big
+            r, c = r[kept], c[kept]
+        else:
+            r, c = _sparse_assignment(local_rows, local_cols, dist[members], preds.size, gts.size, delta)
+        pairs.append(np.stack([preds[r], gts[c]], axis=1))
+    if lone:
+        pairs.append(np.stack([rows[lone], cols[lone]], axis=1))
+    out = np.concatenate(pairs).astype(np.int64)
+    return out[np.argsort(out[:, 0], kind="stable")]
+
+
+def _sparse_assignment(
+    rows: np.ndarray, cols: np.ndarray, dist: np.ndarray, n_pred: int, n_gt: int, delta: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """The dense objective on sparse pairs: each prediction may also take a dummy
+    annotation of its own at a cost beyond any matching's total distance, so the least
+    cost full matching makes the most pairs in reach, then the shortest ones. Every
+    weight is shifted by 1, as the solver reads an explicit zero weight as no edge."""
+    dummy = n_pred * (float(delta) + 1.0) + 2.0
+    graph = csr_matrix(
+        (
+            np.concatenate([dist + 1.0, np.full(n_pred, dummy)]),
+            (np.concatenate([rows, np.arange(n_pred)]), np.concatenate([cols, n_gt + np.arange(n_pred)])),
+        ),
+        shape=(n_pred, n_gt + n_pred),
     )
+    r, c = min_weight_full_bipartite_matching(graph)
+    kept = c < n_gt
+    return r[kept], c[kept]
+
+
+def _greedy_pairs(
+    rows: np.ndarray, cols: np.ndarray, dist: np.ndarray, pred_score: np.ndarray
+) -> np.ndarray:
+    """Predictions claim by descending score (a stable sort: ties in input order), each the
+    nearest unclaimed annotation in reach (ties: the lowest index)."""
+    rank = np.empty(pred_score.shape[0], dtype=np.int64)
+    rank[np.argsort(-pred_score, kind="stable")] = np.arange(pred_score.shape[0])
+    order = np.lexsort((cols, dist, rank[rows]))
+    claimed: set[int] = set()
+    done: set[int] = set()
+    pairs: list[tuple[int, int]] = []
+    for r, g in zip(rows[order].tolist(), cols[order].tolist()):
+        if r in done or g in claimed:
+            continue
+        done.add(r)
+        claimed.add(g)
+        pairs.append((r, g))
+    return np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+
+
+def _near_any(xy: np.ndarray, gt_xy: np.ndarray, delta_sq: float) -> np.ndarray:
+    """Which points have an annotation within ``sqrt(delta_sq)``: ``dx**2 + dy**2 <=
+    delta_sq`` on the KD-tree's candidates."""
+    radius = float(np.sqrt(delta_sq)) * (1 + 1e-9) + 1e-9
+    found = cKDTree(xy).sparse_distance_matrix(cKDTree(gt_xy), radius, output_type="ndarray")
+    rows = found["i"].astype(np.int64)
+    d_sq = ((xy[rows] - gt_xy[found["j"].astype(np.int64)]) ** 2).sum(axis=1)
+    near = np.zeros(xy.shape[0], dtype=bool)
+    near[rows[d_sq <= delta_sq]] = True
+    return near
 
 
 def match_assignment(
@@ -392,8 +494,7 @@ def sweep_score_thresholds(
                 continue
             xy_i = np.asarray(per_image_pred_xy[i], dtype=np.float64).reshape(-1, 2)[sel]
             sc_i = np.asarray(per_image_pred_score[i], dtype=np.float64).reshape(-1)[sel]
-            d_sq = ((xy_i[:, None, :] - gxy[None, :, :]) ** 2).sum(axis=2).min(axis=1)
-            near_gt_scores.append(sc_i[d_sq <= delta_sq])
+            near_gt_scores.append(sc_i[_near_any(xy_i, gxy, delta_sq)])
         quantiles = np.linspace(0.0, 1.0, int(num_candidates))
         lo, hi = float(class_scores.min()), float(class_scores.max())
         grids = [

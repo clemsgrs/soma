@@ -20,9 +20,14 @@ import soma
 from soma.learn.grid import GridBatch
 from soma.models.decoders.base import Decoder
 from tests.whole_slides import (
+    BACKGROUND_LOGIT,
     SPACING_UM,
     TIFFFILE,
     TILE,
+    MarkerDecoder,
+    MarkerParams,
+    marker_slide,
+    score,
     model_of,
     tile_pixels,
     save_detection_bundle,
@@ -40,48 +45,6 @@ def cpu_only(monkeypatch):
 
 
 # --- weight-free decoders --------------------------------------------------------------- #
-
-#: The logit of a pixel without a peak: its score is far below any ``min_score``.
-BACKGROUND_LOGIT = -20.0
-#: The colour of a slide block that holds no marker (red is never 255).
-BACKGROUND_RGB = (40, 40, 40)
-
-
-@dataclass
-class MarkerParams:
-    """``gain`` scales the logit of every peak the marker decoder puts."""
-
-    gain: float = 1.0
-
-
-class MarkerDecoder(Decoder):
-    """Puts one peak where the slide says, read from the pixels.
-
-    A slide block of 8 px is a marker when its red is 255 and its green below 64 (the white
-    a read past the slide's edge returns is not): its green is ``8 * dy + dx``, the peak's
-    pixel in the block, and its blue the peak's logit, ``gain * blue / 20``. The ``fake``
-    encoder's tokens are those block colours exactly, so the peaks are known level-0
-    positions. Every other pixel has the background logit.
-    """
-
-    def __init__(self, *, input_dim: int, num_classes: int, gain: float = 1.0) -> None:
-        super().__init__()
-        self._num_classes = int(num_classes)
-        self._gain = float(gain)
-
-    @property
-    def num_classes(self) -> int:
-        return self._num_classes
-
-    def forward(self, X):
-        colours = torch.round((X * 0.25 + 0.5) * 255).long()  # the fake encoder's normalisation
-        batch, _, rows, cols = X.shape
-        logits = torch.full((batch, self._num_classes, rows * 8, cols * 8), BACKGROUND_LOGIT)
-        b, r, c = torch.nonzero((colours[:, 0] == 255) & (colours[:, 1] < 64), as_tuple=True)
-        green, blue = colours[b, 1, r, c], colours[b, 2, r, c]
-        logits[b, 0, r * 8 + green // 8, c * 8 + green % 8] = self._gain * blue.float() / 20
-        return logits
-
 
 @dataclass
 class FixedPeaksParams:
@@ -130,21 +93,6 @@ def decoders(monkeypatch):
     soma.register("decoders", "marker", MarkerDecoder, params=MarkerParams)
     soma.register("decoders", "fixed-peaks", FixedPeaksDecoder, params=FixedPeaksParams)
     return {"marker": {"name": "marker", "params": {}}, "fixed-peaks": {"name": "fixed-peaks", "params": {}}}
-
-
-def marker_slide(height: int, width: int, markers) -> np.ndarray:
-    """An RGB image of 8 px blocks: one marker block per ``(x, y, blue)``, its peak at
-    pixel ``(x, y)`` with logit ``blue / 20``; every other block is the background."""
-    image = np.empty((height, width, 3), dtype=np.uint8)
-    image[...] = BACKGROUND_RGB
-    for x, y, blue in markers:
-        block_x, block_y = x // 8 * 8, y // 8 * 8
-        image[block_y : block_y + 8, block_x : block_x + 8] = (255, 8 * (y % 8) + x % 8, blue)
-    return image
-
-
-def score(blue: float, gain: float = 1.0) -> float:
-    return float(torch.sigmoid(torch.tensor(gain * blue / 20, dtype=torch.float32)))
 
 
 def one_slide(tmp_path, image: np.ndarray, *, spacing_um: float = SPACING_UM, mask=None) -> str:

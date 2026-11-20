@@ -91,12 +91,12 @@ Available commands
    narrows the encoders to ``tile``, ``slide``, or ``patient``.
    :func:`soma.components` returns the same listing in Python.
 
-``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME]``
+``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME] [--threshold T]``
    Score saved predictions against the targets in ``dataset.csv``,
    joined by ``sample_id``; no run directory is needed. ``PREDICTIONS``
    is a predictions parquet, a points parquet (detection), a
    label-map directory (segmentation), or a ``soma predict`` output
-   (whole-slide segmentation). A predictions parquet is scored
+   (whole-slide segmentation or detection). A predictions parquet is scored
    against the cohort's target columns, points against the files in its
    ``points_path`` column, and label maps against the class-index masks
    in its ``label_mask_path`` column. A ``soma predict`` output with one
@@ -106,8 +106,17 @@ Available commands
    pixels and the share of them not predicted. Its slides and
    annotation rasters are read with the hs2p readers its ``plan.yaml``
    records; ``--backend`` names another reader for the slides and
-   ``--mask-backend`` another one for the annotation rasters. Both
-   options are refused for other predictions. ``--splits``
+   ``--mask-backend`` another one for the annotation rasters. A
+   ``soma predict`` output with one bundle's points is scored against
+   the annotated points in ``points_path`` and the ignore masks in
+   ``ignore_mask_path``, with the class scheme and the tune threshold
+   each points file records; a second table gives each slide's
+   annotated area and counts. ``--mask-backend`` names another reader
+   for its ignore masks. ``--threshold`` keeps the points scoring at
+   least that value: it replaces the recorded threshold, and an
+   ensemble's points, which record none, need it. ``--backend`` and
+   ``--mask-backend`` are refused for predictions that read no slide
+   or mask, and ``--threshold`` for predictions without points. ``--splits``
    selects one split (default ``test``) of one fold (default ``0``);
    without it every row of the cohort is a target. Every prediction
    needs a target and every target a prediction. ``--metrics`` takes

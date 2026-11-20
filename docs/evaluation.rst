@@ -168,7 +168,8 @@ Per-sample confusion matrices are recomputable from saved label maps with
 ``soma evaluate`` also accepts a label-map directory or a points parquet. It
 scores label maps against the masks in the cohort CSV's ``label_mask_path``
 column and points against the files in its ``points_path`` column; both must
-already hold class indices.
+already hold class indices. ``--threshold`` keeps the points scoring at least
+that value.
 
 .. _whole-slide-scoring:
 
@@ -295,8 +296,83 @@ ensemble records no threshold.
 
 A slide with no kept tile, or with no peak, gets a parquet with no rows. The
 ``index.parquet`` row of each slide gives ``width``, ``height`` and ``spacing_um``
-of its level 0, ``num_tiles`` and ``num_points``. ``soma evaluate`` does not
-score these parquets yet.
+of its level 0, ``num_tiles`` and ``num_points``.
+
+.. _whole-slide-points-scoring:
+
+Scoring whole-slide points
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:class:`~soma.evaluation.SlidePoints` is a handle on one bundle's directory of
+points parquets, and :func:`soma.evaluate` scores it against a
+:class:`~soma.data.PointSource` of the slides' annotated points:
+
+.. code-block:: python
+
+   import soma
+   from soma.data import AnnotationManifest, PointSource
+   from soma.evaluation import SlidePoints
+
+   points = SlidePoints("predictions/midog-test")
+   targets = PointSource.from_manifest(AnnotationManifest.from_csv("dataset.csv"))
+   evaluation = soma.evaluate(points, targets.subset(points.sample_ids))
+   evaluation.per_sample  # one row of counts per slide
+
+``soma evaluate predictions/midog-test --cohort dataset.csv`` does the same.
+The directory is a prediction output with one bundle's points, or one of its
+bundle directories. The cohort CSV gives each slide's ``points_path``, a
+``x,y,class`` file in level-0 pixels that holds the dataset's own annotated
+ids, and optionally its ``ignore_mask_path``.
+
+The class scheme is the one each parquet records from its bundle: the annotated
+ids of each class, and the ids dropped. A points file written before soma
+recorded the scheme is refused: predict the slides again. The class scheme of
+the target source is not used.
+
+- An annotated point whose id is dropped is removed. A prediction there is a
+  false positive.
+- An annotated id that the scheme neither gives a class nor drops is refused.
+- A prediction scoring below the threshold is removed.
+- With an ignore mask, a point (annotated or predicted) on a mask pixel of 255
+  is not scored. The mask may have any resolution that covers the slide: hs2p
+  aligns it to the slide's level 0 and reads it with the reader the
+  prediction's ``plan.yaml`` records (``points.mask_backend``), or
+  ``--mask-backend``. Its pixels must be 0 (annotated) or 255 (not annotated);
+  another value is refused. Without a mask, the whole slide is annotated.
+- Predictions are matched to the annotations of their class within the
+  bundle's matching distance, in µm, at each slide's own spacing. Matching is
+  Hungarian by default. A metric leaf with ``matching: greedy`` matches by
+  descending score, and ``match_distance`` sets another distance, in µm.
+
+The threshold is the bundle's tune threshold, which the parquet records
+(``points.threshold``). An ensemble's points record none, and are refused until
+one is set. Pick one on a tune split with
+:func:`~soma.evaluation.sweep_threshold`, which takes
+:class:`~soma.evaluation.SlidePoints` too, and set it with ``with_threshold``.
+``soma evaluate --threshold T`` sets one value for every class:
+
+.. code-block:: python
+
+   from soma.evaluation import sweep_threshold
+
+   tune = SlidePoints("predictions/tune")  # an ensemble's points
+   threshold, _ = sweep_threshold(tune, targets.subset(tune.sample_ids), per_class=True)
+   test = SlidePoints("predictions/test").with_threshold(threshold)
+   evaluation = soma.evaluate(test, targets.subset(test.sample_ids))
+
+Each slide gives one row of counts to the same reducers as
+:class:`~soma.evaluation.PointPredictions`. ``Evaluation.per_sample`` holds the
+rows: ``annotated_area_mm2`` (the annotated mask pixels times their area, or the
+whole slide without a mask) and ``tp_class_<c>``, ``fp_class_<c>``,
+``fn_class_<c>`` per class.
+
+Matching lists only the pairs of points within the matching distance, so a
+slide with many points takes little memory: 100,000 predictions against 20,000
+annotations of one class match in about a second.
+
+These scores are not comparable to a run's test metrics. A run scores the ROIs
+or tiles of its test split; a whole-slide score covers every annotated point of
+the slide, and every prediction outside the ignored region.
 
 Reference
 ---------
@@ -323,6 +399,9 @@ Reference
 
 .. autoclass:: soma.evaluation.SlideLabelMaps
    :members: sample_ids, classes, backend, mask_backend
+
+.. autoclass:: soma.evaluation.SlidePoints
+   :members: sample_ids, classes, class_scheme, match_distance_um, threshold, mask_backend, with_threshold
 
 .. autoclass:: soma.evaluation.PointPredictions
    :members: with_threshold, to_parquet, from_parquet

@@ -731,6 +731,22 @@ def test_evaluate_refuses_the_slide_readers_for_other_predictions(tmp_path: Path
     assert f"{option} only applies to a soma predict output" in capsys.readouterr().err
 
 
+def test_evaluate_refuses_a_threshold_for_predictions_without_points(tmp_path: Path, capsys):
+    """``--threshold`` cuts detection points by score; set predictions hold none."""
+    from soma.cli import main
+
+    dataset_csv, _ = _zero_padded_cohort(tmp_path / "cohort")
+    predictions = tmp_path / "set.parquet"
+    ids = ["001", "002", "003", "004"]
+    pd.DataFrame({"sample_id": ids, "predicted_value": [0.0, 1.0, 2.0, 3.0]}).to_parquet(predictions, index=False)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["evaluate", str(predictions), "--cohort", str(dataset_csv), "--threshold", "0.5"])
+
+    assert exit_info.value.code == 2
+    assert "--threshold only applies to detection points" in capsys.readouterr().err
+
+
 # --- Help / no-args ---
 
 
