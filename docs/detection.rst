@@ -106,8 +106,9 @@ name to its annotated ids, and ``drop`` lists the dropped ids (``[]`` when there
 are none). The ids of each class are sorted. The class order is the order of
 ``class_names``, because the file's keys are sorted. A run that sets
 ``num_classes`` alone records ``classes: {class_0: [0], class_1: [1], ...}`` and
-``drop: []``. ``soma predict`` copies the scheme into each points file, so the
-points can be scored against the annotated ids (see :ref:`whole-slide-points`).
+``drop: []``. ``soma predict`` copies the scheme into each points file, so
+``soma evaluate`` scores the points against the annotated ids (see
+:ref:`whole-slide-points-scoring`).
 
 .. _detection-ignore-masks:
 
@@ -296,7 +297,8 @@ inference (see :ref:`grid-predictions`). Point overlays and raw heatmaps are
 optional; see :doc:`outputs`.
 
 To predict points over whole slides with a trained bundle, use ``soma predict``
-(see :ref:`whole-slide-points`).
+(see :ref:`whole-slide-points`), and score them with ``soma evaluate`` (see
+:ref:`whole-slide-points-scoring`).
 
 Task head
 ---------

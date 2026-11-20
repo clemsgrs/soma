@@ -1,5 +1,6 @@
 """Whole-slide prediction: a segmentation bundle trained on ROIs, then ``soma predict``
-and ``soma evaluate``; a detection bundle trained on ROIs, then ``soma predict``.
+and ``soma evaluate``; a detection bundle trained on ROIs, then ``soma predict`` and
+``soma evaluate``.
 
 The segmentation run trains on the dense segmentation ROIs (discs of two colours on
 background) over the weight-free ``fake`` encoder's cached grids. ``soma predict`` then
@@ -8,7 +9,8 @@ tile behind its frozen encoder stage, and writes one label TIFF per slide. ``som
 evaluate`` scores the maps against the slides' annotation rasters.
 
 The detection run trains on the dense detection ROIs (small squares of two colours, their
-centres the points). ``soma predict`` writes one points parquet per slide.
+centres the points). ``soma predict`` writes one points parquet per slide, and ``soma
+evaluate`` scores the points against the slide's annotated cells.
 
 The runs read their ROIs with OpenSlide, and their bundles record that reader. The
 prediction configs name no slide reader, so ``soma predict`` reads the slides with
@@ -258,6 +260,8 @@ MATCH_DISTANCE_UM = 3.0
 CLASSES = {"light": [0], "dark": [1]}
 #: The id of the one point each ROI's points file also holds, on the background: dropped.
 DROPPED = 2
+#: The first level-0 column the slide's ignore mask marks not annotated.
+IGNORED_FROM_PX = 224
 
 
 def detection_config(tmp_path, encoder_name):
@@ -399,4 +403,55 @@ def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
     soma_main(["predict", "predictions/plan.yaml"])
     artifact.check_equal("replay/tiles_encoded", sum(encoded_images), 0)
     artifact.check_equal("replay/points_unchanged", sha256(path) == before, True)
+
+    # soma evaluate on the output directory: the points at the bundle's threshold, against
+    # the slide's cells. The annotated points hold the run's ids (0 light, 1 dark) and one
+    # dropped point (id 2). The ignore mask, at a quarter of the slide's resolution, marks
+    # the columns from x = 224 px not annotated.
+    ignore = np.zeros((192 // 4, 288 // 4), dtype=np.uint8)
+    ignore[:, IGNORED_FROM_PX // 4 :] = 255
+    resolution = (1e4 / (4 * SPACING_UM), 1e4 / (4 * SPACING_UM))
+    tifffile.imwrite(
+        tmp_path / "slides" / "slide0_ignore.tif", ignore, tile=(16, 16), resolution=resolution, resolutionunit="CENTIMETER"
+    )
+    annotated = pd.DataFrame(cells, columns=["x", "y", "class"]).astype({"class": int})
+    dropped = pd.DataFrame([{"x": 4, "y": 4, "class": DROPPED}])
+    pd.concat([annotated, dropped], ignore_index=True).to_csv(tmp_path / "slides" / "slide0_points.csv", index=False)
+    annotations = {"sample_id": "slide0", "points_path": "slides/slide0_points.csv", "ignore_mask_path": "slides/slide0_ignore.tif"}
+    pd.DataFrame([annotations]).to_csv(tmp_path / "annotations.csv", index=False)
+
+    soma_main(["evaluate", "predictions", "--cohort", "annotations.csv", "--metrics", "mean_f1", "f1_per_class", "--out", "points.json"])
+
+    # By hand: the points at or above the bundle's threshold and the cells left of the
+    # ignored columns. The cells sit on a 32 px lattice, at most 6 px off their node, so
+    # no point is within 3 um (6 px) of two cells. Per class, a cell is found when a point
+    # of its class is that close to it, and every other point is a false positive.
+    def by_hand(threshold_of_row) -> np.ndarray:
+        kept = points[(points.score >= threshold_of_row) & (np.rint(points.x) < IGNORED_FROM_PX)]
+        seen = cells[np.rint(cells[:, 0]) < IGNORED_FROM_PX]
+        counts = []
+        for c in range(2):
+            xy = kept.loc[kept["class"] == c, ["x", "y"]].to_numpy()
+            nodes = seen[seen[:, 2] == c, :2]
+            distances = np.sqrt(((nodes[:, None] - xy[None]) ** 2).sum(-1))
+            found = int((distances <= MATCH_DISTANCE_UM / SPACING_UM).any(axis=1).sum())
+            counts.append((found, len(xy) - found, len(nodes) - found))
+        return np.asarray(counts)
+
+    def check_scored(prefix: str, scored: dict, counts: np.ndarray) -> None:
+        f1 = [2 * tp / (2 * tp + fp + fn) for tp, fp, fn in counts.tolist()]
+        artifact.check_equal(f"{prefix}/num_samples", scored["num_samples"], 1)
+        for c in range(2):
+            artifact.check_equal(f"{prefix}/f1_class_{c}", round(scored["metrics"][f"f1_class_{c}"], 6), round(f1[c], 6))
+        artifact.check_equal(f"{prefix}/mean_f1", round(scored["metrics"]["mean_f1"], 6), round(sum(f1) / 2, 6))
+        (row,) = scored["per_sample"]
+        recorded_counts = [[row[f"{kind}_class_{c}"] for kind in ("tp", "fp", "fn")] for c in range(2)]
+        artifact.check_equal(f"{prefix}/counts", recorded_counts, counts.tolist())
+        # The annotated area: the mask's 56 x 48 supervised pixels of 2 um x 2 um.
+        artifact.check_equal(f"{prefix}/annotated_area_mm2", round(row["annotated_area_mm2"], 9), 56 * 48 * 4 / 1e6)
+
+    check_scored("evaluate", json.loads((tmp_path / "points.json").read_text()), by_hand(cut))
+    # --threshold replaces the bundle's: at 0 every peak is scored.
+    soma_main(["evaluate", "predictions", "--cohort", "annotations.csv", "--threshold", "0", "--metrics", "mean_f1", "f1_per_class", "--out", "all.json"])
+    check_scored("evaluate_threshold", json.loads((tmp_path / "all.json").read_text()), by_hand(0.0))
     artifact.assert_passed()

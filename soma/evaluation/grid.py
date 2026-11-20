@@ -148,19 +148,7 @@ class PointPredictions:
         )
 
     def _class_thresholds(self, threshold) -> np.ndarray:
-        if isinstance(threshold, Mapping):
-            names = {str(name): index for index, name in enumerate(self._classes)}
-            values = np.full(self.num_classes, -np.inf)
-            for key, value in threshold.items():
-                index = key if isinstance(key, (int, np.integer)) else names.get(key)
-                if index is None or not 0 <= int(index) < self.num_classes:
-                    raise ValueError(f"threshold names unknown class {key!r}; classes are {list(self._classes)}")
-                values[int(index)] = float(value)
-            unset = [self._classes[i] for i in range(self.num_classes) if values[i] == -np.inf]
-            if unset:
-                raise ValueError(f"a per-class threshold needs every class; missing {unset}")
-            return values
-        return np.full(self.num_classes, float(threshold))
+        return _class_thresholds(threshold, self._classes)
 
     def with_threshold(self, threshold: float | Mapping[Any, float]) -> "PointPredictions":
         """Keep the points scoring at least ``threshold`` (a scalar, or ``{class: t}`` for
@@ -230,6 +218,24 @@ class PointPredictions:
 # --------------------------------------------------------------------------------------
 # LabelMapPredictions
 # --------------------------------------------------------------------------------------
+
+
+def _class_thresholds(threshold, classes: Sequence[Any]) -> np.ndarray:
+    """One threshold per class: ``threshold`` itself, or its ``{class: t}`` entries keyed
+    by class index or name, which must name every class."""
+    if isinstance(threshold, Mapping):
+        names = {str(name): index for index, name in enumerate(classes)}
+        values = np.full(len(classes), -np.inf)
+        for key, value in threshold.items():
+            index = key if isinstance(key, (int, np.integer)) else names.get(key)
+            if index is None or not 0 <= int(index) < len(classes):
+                raise ValueError(f"threshold names unknown class {key!r}; classes are {list(classes)}")
+            values[int(index)] = float(value)
+        unset = [classes[i] for i in range(len(classes)) if values[i] == -np.inf]
+        if unset:
+            raise ValueError(f"a per-class threshold needs every class; missing {unset}")
+        return values
+    return np.full(len(classes), float(threshold))
 
 
 def _geometry_dict(geometry) -> dict[str, Any] | None:
@@ -559,6 +565,13 @@ def _resolve_grid_metrics(metrics, family: str) -> list[tuple[str, Callable, dic
 _MATCH_PARAMS = ("matching", "match_distance")
 
 
+def _match_key(params: Mapping[str, Any], default_distance: float) -> tuple[str, float]:
+    """A metric's ``(matching, match_distance)``, the defaults filled in: an omitted
+    distance is ``default_distance``, so it equals that distance given explicitly."""
+    distance = params.get("match_distance")
+    return (params.get("matching", "hungarian"), float(default_distance if distance is None else distance))
+
+
 def _reduce(resolved, counts_for: Callable[[dict[str, Any]], torch.Tensor], num_classes: int) -> dict[str, float]:
     values: dict[str, float] = {}
     for name, fn, params in resolved:
@@ -573,10 +586,12 @@ def _reduce(resolved, counts_for: Callable[[dict[str, Any]], torch.Tensor], num_
 
 
 def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[str] = ()):
-    """Score :class:`PointPredictions`, :class:`LabelMapPredictions` or
-    :class:`~soma.evaluation.SlideLabelMaps` (see :func:`soma.evaluate`)."""
+    """Score :class:`PointPredictions`, :class:`LabelMapPredictions`,
+    :class:`~soma.evaluation.SlideLabelMaps` or :class:`~soma.evaluation.SlidePoints` (see
+    :func:`soma.evaluate`)."""
     from soma.evaluation.scoring import Evaluation
     from soma.evaluation.slide_label_maps import SlideLabelMaps, slide_label_map_counts
+    from soma.evaluation.slide_points import SlidePoints, scored_slide_points
 
     if subgroups:
         raise ValueError(
@@ -587,17 +602,27 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
     family = predictions.task_family
     resolved = _resolve_grid_metrics(metrics, family)
     per_sample: list[dict[str, Any]] = []
+    slide_rows = None
+    if isinstance(predictions, SlidePoints):
+        # Scored as point predictions in µm: one matching distance for any slide spacing.
+        predictions, targets, slide_rows = scored_slide_points(predictions, targets)
     if isinstance(predictions, PointPredictions):
         loaded = _loaded_points(targets, predictions.sample_ids)
         cache: dict[tuple, torch.Tensor] = {}
 
         def counts_for(match: dict[str, Any]) -> torch.Tensor:
-            key = (match.get("matching", "hungarian"), match.get("match_distance"))
+            key = _match_key(match, predictions.match_distance_px)
             if key not in cache:
                 cache[key] = point_counts(
                     predictions, targets, matching=key[0], match_distance=key[1], _loaded=loaded
                 )
             return cache[key]
+
+        if slide_rows is not None:
+            # The rows use the matching every metric names; the default when they differ.
+            named = {_match_key(params, predictions.match_distance_px) for _, _, params in resolved}
+            match = dict(zip(_MATCH_PARAMS, named.pop())) if len(named) == 1 else {}
+            per_sample = _with_counts(slide_rows, counts_for(match))
     elif isinstance(predictions, (LabelMapPredictions, SlideLabelMaps)):
         if any(params for _, _, params in resolved if any(k in params for k in _MATCH_PARAMS)):
             raise ValueError("matching / match_distance apply to point predictions only")
@@ -615,6 +640,18 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
     return Evaluation(
         metrics=values, task_family=family, num_samples=len(predictions.sample_ids), per_sample=per_sample
     )
+
+
+def _with_counts(rows: Sequence[dict[str, Any]], counts: torch.Tensor) -> list[dict[str, Any]]:
+    """Each slide's report row with its per-class true positives, false positives and
+    false negatives."""
+    out = []
+    for row, slide in zip(rows, counts.tolist()):
+        row = dict(row)
+        for c, (tp, fp, fn) in enumerate(slide):
+            row[f"tp_class_{c}"], row[f"fp_class_{c}"], row[f"fn_class_{c}"] = tp, fp, fn
+        out.append(row)
+    return out
 
 
 def _label_map_counts_of(predictions: LabelMapPredictions, targets) -> np.ndarray:
@@ -674,7 +711,7 @@ def _candidate_grid(scores: np.ndarray, num: int = 50) -> np.ndarray:
 
 
 def sweep_threshold(
-    predictions: PointPredictions,
+    predictions,
     targets,
     metric: str = "mean_f1",
     grid: Sequence[float] | None = None,
@@ -697,12 +734,22 @@ def sweep_threshold(
     the ``1 / SCORE_BINS`` grid over ``[0, 1]`` (scores must lie there): one greedy
     matching pass gives the F1 at every threshold, as in the detection head's
     training-time validation.
+
+    ``predictions`` may also be :class:`~soma.evaluation.SlidePoints`, against a
+    :class:`~soma.data.PointSource` of the slides' annotated points. The sweep ignores the
+    threshold the points record, so it also picks one for an ensemble's points, which
+    record none. ``match_distance`` is then in µm. Set the picked threshold with
+    :meth:`~soma.evaluation.SlidePoints.with_threshold`.
     """
     from soma.evaluation.detection.matching import sweep_score_thresholds
     from soma.evaluation.metrics import metric_registry
+    from soma.evaluation.slide_points import SlidePoints, scored_slide_points
 
+    if isinstance(predictions, SlidePoints):
+        _check_ids(predictions, targets)
+        predictions, targets, _ = scored_slide_points(predictions, targets, thresholded=False)
     if not isinstance(predictions, PointPredictions):
-        raise TypeError("sweep_threshold applies to PointPredictions")
+        raise TypeError("sweep_threshold applies to PointPredictions and SlidePoints")
     _check_ids(predictions, targets)
     cached = _LoadedPoints(targets, predictions.sample_ids)
     leaf = {"name": metric, "params": {"matching": matching, **({} if match_distance is None else {"match_distance": match_distance})}}

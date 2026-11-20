@@ -1031,20 +1031,35 @@ def _evaluation_targets(args: argparse.Namespace, predictions):
     return cohort.targets("test")
 
 
-def _read_predictions(path: str):
-    """A label-map directory, a ``soma predict`` output (whole-slide label maps), a points
-    parquet, or a set-shape predictions parquet."""
-    from soma.evaluation import LabelMapPredictions, PointPredictions, Predictions, SlideLabelMaps
+def _read_predictions(path: str, *, mask_backend: str | None = None):
+    """A label-map directory, a ``soma predict`` output (whole-slide label maps or points),
+    a points parquet, or a set-shape predictions parquet. ``mask_backend`` reads the
+    ignore masks of whole-slide points."""
+    from soma.evaluation import LabelMapPredictions, PointPredictions, Predictions, SlideLabelMaps, SlidePoints
 
     location = Path(path)
     if location.is_dir():
         index = location / "index.parquet"
         if index.is_file() and _soma_kind(index) == "label_maps":
             return LabelMapPredictions.load(location)
+        if _predicts_points(location):
+            return SlidePoints(location, mask_backend=mask_backend)
         return SlideLabelMaps(location)
     if _soma_kind(location) == "points":
         return PointPredictions.from_parquet(location)
     return Predictions.from_parquet(location)
+
+
+def _predicts_points(location: Path) -> bool:
+    """Whether ``location`` is a ``soma predict`` output of detection points, or one of its
+    bundle directories: its ``index.parquet`` counts each slide's points."""
+    import pyarrow.parquet as pq
+
+    location = location.resolve()  # the parent of a relative ``.`` is ``.`` itself
+    for index in (location / "index.parquet", location.parent / "index.parquet"):
+        if index.is_file():
+            return "num_points" in pq.read_schema(index).names
+    return False
 
 
 def _soma_kind(path: Path) -> str | None:
@@ -1092,28 +1107,38 @@ def _evaluation_grid_targets(args: argparse.Namespace, predictions):
 
 
 def _check_slide_readers(args: argparse.Namespace, predictions) -> None:
-    """Refuse ``--backend`` and ``--mask-backend`` for predictions that read no slide."""
-    from soma.evaluation import SlideLabelMaps
+    """Refuse ``--backend`` and ``--mask-backend`` for predictions that read no slide or no
+    mask, and ``--threshold`` for predictions without scores."""
+    from soma.evaluation import PointPredictions, SlideLabelMaps, SlidePoints
 
     given = [flag for flag, value in (("--backend", args.backend), ("--mask-backend", args.mask_backend)) if value]
-    if given and not isinstance(predictions, SlideLabelMaps):
+    if isinstance(predictions, SlidePoints) and args.backend:
+        raise ValueError(
+            "--backend only applies to the label maps of a soma predict output, whose slides "
+            f"are read; the points in {args.predictions} are scored without their slides"
+        )
+    if given and not isinstance(predictions, (SlideLabelMaps, SlidePoints)):
         raise ValueError(
             f"{' and '.join(given)} only {'applies' if len(given) == 1 else 'apply'} to a soma "
             f"predict output, whose slides and annotation rasters are read; {args.predictions} "
             "is not one"
         )
+    if args.threshold is not None and not isinstance(predictions, (PointPredictions, SlidePoints)):
+        raise ValueError(f"--threshold only applies to detection points; {args.predictions} holds none")
 
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:
     from rich.console import Console
     from rich.table import Table
 
-    from soma.evaluation import LabelMapPredictions, PointPredictions, SlideLabelMaps, evaluate
+    from soma.evaluation import LabelMapPredictions, PointPredictions, SlideLabelMaps, SlidePoints, evaluate
 
     try:
-        predictions = _read_predictions(args.predictions)
+        predictions = _read_predictions(args.predictions, mask_backend=args.mask_backend)
         _check_slide_readers(args, predictions)
-        if isinstance(predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps)):
+        if args.threshold is not None:
+            predictions = predictions.with_threshold(args.threshold)
+        if isinstance(predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps, SlidePoints)):
             targets = _evaluation_grid_targets(args, predictions)
         else:
             targets = _evaluation_targets(args, predictions)
@@ -1137,16 +1162,29 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
         table.add_row(name, f"{value:.4f}" if isinstance(value, float) else str(value))
     Console().print(table)
     if evaluation.per_sample:
-        slides = Table(title="Per slide", show_header=True, header_style="bold")
-        for column in ("Slide", "Annotated px", "Not predicted"):
-            slides.add_column(column, justify="left" if column == "Slide" else "right")
-        for row in evaluation.per_sample:
-            slides.add_row(row["sample_id"], str(row["annotated_px"]), f"{row['not_predicted_fraction']:.4f}")
-        Console().print(slides)
+        Console().print(_per_slide_table(evaluation.per_sample, points=isinstance(predictions, SlidePoints)))
     if args.out is not None:
         evaluation.to_json(args.out)
         print(f"Evaluation written to {args.out}")
     return 0
+
+
+def _per_slide_table(rows, *, points: bool):
+    """Each slide's row: its annotated pixels and the share not predicted (label maps), or
+    its annotated area and its counts over the classes (points)."""
+    from rich.table import Table
+
+    columns = ("Slide", "Annotated mm²", "TP", "FP", "FN") if points else ("Slide", "Annotated px", "Not predicted")
+    table = Table(title="Per slide", show_header=True, header_style="bold")
+    for column in columns:
+        table.add_column(column, justify="left" if column == "Slide" else "right")
+    for row in rows:
+        if points:
+            counts = [sum(v for k, v in row.items() if k.startswith(f"{kind}_class_")) for kind in ("tp", "fp", "fn")]
+            table.add_row(row["sample_id"], f"{row['annotated_area_mm2']:.4f}", *map(str, counts))
+        else:
+            table.add_row(row["sample_id"], str(row["annotated_px"]), f"{row['not_predicted_fraction']:.4f}")
+    return table
 
 
 def _build_evaluate_parser() -> argparse.ArgumentParser:
@@ -1156,10 +1194,12 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
             "Score predictions against a cohort's targets, joined by sample_id. Every "
             "predicted sample needs a target and every target a prediction. Set-shape "
             "predictions score against dataset.csv's target columns; label-map directories "
-            "against its label_mask_path rasters (class indices); soma predict outputs "
-            "against its label_mask_path annotation rasters, read with the class scheme each "
-            "map records and the readers of its plan.yaml unless --backend and "
-            "--mask-backend name others; and point predictions against its points_path files."
+            "against its label_mask_path rasters (class indices); soma predict outputs of "
+            "label maps against its label_mask_path annotation rasters, read with the class "
+            "scheme each map records and the readers of its plan.yaml unless --backend and "
+            "--mask-backend name others; soma predict outputs of points against its "
+            "points_path files and ignore_mask_path masks, with the class scheme and the "
+            "threshold the points record; and point predictions against its points_path files."
         ),
     )
     parser.add_argument(
@@ -1167,7 +1207,7 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
         help=(
             "Predictions parquet (sample_id + the head's columns), a points parquet, a "
             "label-map directory (PNGs + index.parquet), or a soma predict output directory "
-            "with one bundle's maps (or one of its bundle directories)."
+            "with one bundle's maps or points (or one of its bundle directories)."
         ),
     )
     parser.add_argument("--cohort", required=True, help="dataset.csv holding the targets.")
@@ -1192,16 +1232,26 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
         "--backend",
         default=None,
         help=(
-            "hs2p reader of the slides, for a soma predict output (default: the one its "
-            "plan.yaml records)."
+            "hs2p reader of the slides, for a soma predict output of label maps (default: "
+            "the one its plan.yaml records)."
         ),
     )
     parser.add_argument(
         "--mask-backend",
         default=None,
         help=(
-            "hs2p reader of the annotation rasters, for a soma predict output (default: the "
-            "one its plan.yaml records)."
+            "hs2p reader of the annotation rasters or ignore masks, for a soma predict "
+            "output (default: the one its plan.yaml records)."
+        ),
+    )
+    parser.add_argument(
+        "--threshold",
+        type=float,
+        default=None,
+        help=(
+            "Score threshold of detection points: keep the points scoring at least this "
+            "(default: the bundle's tune threshold for a soma predict output, none for a "
+            "points parquet). An ensemble's points need one."
         ),
     )
     parser.set_defaults(func=_cmd_evaluate)
@@ -1282,7 +1332,7 @@ def _print_top_level_help() -> None:
         "       soma prepare-croma RAW_ROOT [--rebuild]\n"
         "       soma reproduce NAME [--from-run-dir DIR] [--seeds N] [--raw-root DIR]\n"
         "       soma leaderboard [NAME] --root OUTPUT_ROOT [--vary AXIS] [--fix AXIS=VALUE] [--like DIR]\n"
-        "       soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME]\n"
+        "       soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME] [--threshold T]\n"
         "       soma predict CONFIG\n"
         "       soma compact-index OUTPUT_ROOT\n"
         "\n"
