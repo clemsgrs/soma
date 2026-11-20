@@ -153,7 +153,8 @@ working directory. The keys:
        ``{background: [0], tissue: [1]}``). With other classes, a tile is
        kept where those classes cover it, as in
        :ref:`preprocessing-source-masks`: for example, to predict inside a
-       tumour mask only.
+       tumour mask only. Then every predicted slide needs a ``mask_path``,
+       because a slide without one stops the run instead of being segmented.
 
 .. _whole-slide-plan:
 
@@ -337,7 +338,7 @@ Several bundles
 ``predict.bundles`` may name several bundles, such as the folds of one run. They
 must all be of one task family, and agree on the tile size, the read spacing and
 the read tolerance. The bundles that share an encoder recipe share one encoder
-pass per tile, so each extra bundle costs mostly its decoder.
+pass per tile, so each extra bundle costs mostly its decoder's time.
 
 All the bundles predict the same slides: the ``cohort.subset`` split of fold
 ``cohort.fold``. So predict a split that every bundle held out, such as a test
@@ -593,7 +594,9 @@ One slide of 92,819 × 45,702 px, with 10,117 kept tiles:
   tile reads overlap with the model.
 - **Memory.** Peak memory grows with the slide's size in pixels, not with its
   tissue: hs2p's TIFF writer holds the coarser levels of the map in memory,
-  about a third of the raw map. The largest slide (136,064 × 147,072 px, 2,052
+  about a third of the raw map. This memory is per map, and without
+  ``ensemble: true`` every bundle's map is written at the same time, so it adds
+  up over the bundles. The largest slide (136,064 × 147,072 px, 2,052
   kept tiles) peaked at 7.2 GiB, 6.0 GiB above the level after the model
   loaded. Writing took 23% of its 6.0 min, because the writer processes the
   whole map, also where nothing was predicted.
