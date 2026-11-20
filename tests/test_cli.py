@@ -747,6 +747,24 @@ def test_evaluate_refuses_a_threshold_for_predictions_without_points(tmp_path: P
     assert "--threshold only applies to detection points" in capsys.readouterr().err
 
 
+def test_evaluate_reads_the_current_bundle_directory_as_points(tmp_path: Path, monkeypatch, capsys):
+    """``soma evaluate .`` from inside a bundle directory finds the output's points index
+    in the parent directory: the points are read, so ``--backend`` is refused for them."""
+    from soma.cli import main
+
+    pd.DataFrame({"sample_id": ["s1"], "bundle": ["run"], "num_points": [3]}).to_parquet(
+        tmp_path / "index.parquet", index=False
+    )
+    (tmp_path / "run").mkdir()
+    monkeypatch.chdir(tmp_path / "run")
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["evaluate", ".", "--cohort", "cohort.csv", "--backend", "tifffile"])
+
+    assert exit_info.value.code == 2
+    assert "the points in . are scored without their slides" in capsys.readouterr().err
+
+
 # --- Help / no-args ---
 
 

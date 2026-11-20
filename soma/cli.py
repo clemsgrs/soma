@@ -1055,6 +1055,7 @@ def _predicts_points(location: Path) -> bool:
     bundle directories: its ``index.parquet`` counts each slide's points."""
     import pyarrow.parquet as pq
 
+    location = location.resolve()  # the parent of a relative ``.`` is ``.`` itself
     for index in (location / "index.parquet", location.parent / "index.parquet"):
         if index.is_file():
             return "num_points" in pq.read_schema(index).names
