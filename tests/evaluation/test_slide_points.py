@@ -259,6 +259,16 @@ def test_the_per_slide_counts_use_the_matching_the_metrics_name(tmp_path, marker
     (row,) = mixed.per_sample
     assert [row[f"{kind}_class_0"] for kind in ("tp", "fp", "fn")] == [2, 0, 0]
 
+    # An omitted distance is the recorded one, so these two metrics name one matching.
+    recorded = SlidePoints(output).match_distance_um
+    explicit = {"name": "f1_per_class", "params": {"matching": "greedy", "match_distance": recorded}}
+    same = soma.evaluate(
+        SlidePoints(output), targets(tmp_path, points=annotated), metrics=[greedy, explicit]
+    )
+    assert same.metrics["f1_class_0"] == pytest.approx(2 / 4)
+    (row,) = same.per_sample
+    assert [row[f"{kind}_class_0"] for kind in ("tp", "fp", "fn")] == [1, 1, 1]
+
 
 def test_sweep_threshold_picks_the_threshold_of_an_ensemble_s_points(tmp_path, marker):
     """Per class: mitosis peaks the second mitosis only when its 0.73 peak is kept, F1

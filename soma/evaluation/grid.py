@@ -565,9 +565,11 @@ def _resolve_grid_metrics(metrics, family: str) -> list[tuple[str, Callable, dic
 _MATCH_PARAMS = ("matching", "match_distance")
 
 
-def _match_key(params: Mapping[str, Any]) -> tuple[str, Any]:
-    """A metric's ``(matching, match_distance)``, the defaults filled in."""
-    return (params.get("matching", "hungarian"), params.get("match_distance"))
+def _match_key(params: Mapping[str, Any], default_distance: float) -> tuple[str, float]:
+    """A metric's ``(matching, match_distance)``, the defaults filled in: an omitted
+    distance is ``default_distance``, so it equals that distance given explicitly."""
+    distance = params.get("match_distance")
+    return (params.get("matching", "hungarian"), float(default_distance if distance is None else distance))
 
 
 def _reduce(resolved, counts_for: Callable[[dict[str, Any]], torch.Tensor], num_classes: int) -> dict[str, float]:
@@ -609,7 +611,7 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
         cache: dict[tuple, torch.Tensor] = {}
 
         def counts_for(match: dict[str, Any]) -> torch.Tensor:
-            key = _match_key(match)
+            key = _match_key(match, predictions.match_distance_px)
             if key not in cache:
                 cache[key] = point_counts(
                     predictions, targets, matching=key[0], match_distance=key[1], _loaded=loaded
@@ -618,7 +620,7 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
 
         if slide_rows is not None:
             # The rows use the matching every metric names; the default when they differ.
-            named = {_match_key(params) for _, _, params in resolved}
+            named = {_match_key(params, predictions.match_distance_px) for _, _, params in resolved}
             match = dict(zip(_MATCH_PARAMS, named.pop())) if len(named) == 1 else {}
             per_sample = _with_counts(slide_rows, counts_for(match))
     elif isinstance(predictions, (LabelMapPredictions, SlideLabelMaps)):
