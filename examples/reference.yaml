@@ -21,6 +21,7 @@ cohort:
   collapse: null
   tune_is_test: false
   allow_missing_tune: false
+  train_subset: null
 features:
   kind: cached
   encoder:

@@ -40,7 +40,7 @@ import yaml
 from soma._internal.atomic_io import atomic_write_text
 from soma._internal.main_module import launch_name
 from soma.config import ExperimentConfig
-from soma.plan import Plan, comparable, component_leaves
+from soma.plan import Plan, comparable, component_leaves, load_train_subset
 
 logger = logging.getLogger(__name__)
 
@@ -344,11 +344,12 @@ IDENTITY_VERSION = 9
 
 #: Plan fields left out of the experiment identity, by section: where and how a launch
 #: runs (the whole ``run`` section, so the seed too: one experiment, several seeded
-#: runs), the cohort files (their train/tune content is hashed instead), loader
-#: throughput, the device, and what is saved rather than measured. What a resume may
-#: change (:meth:`Plan.comparable`) is left out too, so a resume finds its run dir.
+#: runs), the cohort files (their train/tune content and the ids a train subset lists
+#: are hashed instead), loader throughput, the device, and what is saved rather than
+#: measured. What a resume may change (:meth:`Plan.comparable`) is left out too, so a
+#: resume finds its run dir.
 _IDENTITY_EXCLUDED: dict[str, tuple[str, ...]] = {
-    "cohort": ("records", "splits"),
+    "cohort": ("records", "splits", "train_subset"),
     "loaders": ("num_workers", "pin_memory", "persistent_workers"),
     "trainer": ("device",),
     "evaluation": ("overwrite_test", "save_overlays", "save_probabilities", "save_heatmaps"),
@@ -363,6 +364,13 @@ def _plan_identity(plan: Plan) -> dict[str, Any]:
     for section, names in _IDENTITY_EXCLUDED.items():
         for name in names:
             payload[section].pop(name, None)
+    subset = load_train_subset(plan)
+    if subset is not None:
+        # The listed ids, not the file's path, repeats kept: a list that repeats an id is
+        # invalid and must not land on the run of the list without the repeat. Unset adds
+        # nothing to the identity.
+        digest = hashlib.sha256(_stable_json({"sample_ids": sorted(subset)}).encode("utf-8")).hexdigest()
+        payload["cohort"]["train_subset"] = {"checksum": digest}
     return payload
 
 

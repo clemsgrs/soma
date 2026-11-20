@@ -27,7 +27,7 @@ from soma._internal.logging import ensure_default_logging
 from soma._internal.atomic_io import atomic_write_json
 from soma.extract.cache import resolve_cache_root
 from soma.config import ExperimentConfig
-from soma.data import AnnotationManifest, Cohort, GridSource, ImageManifest, TileImageSource
+from soma.data import AnnotationManifest, Cohort, FoldSplit, GridSource, ImageManifest, TileImageSource
 from soma.extract import RoiSet
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_summary
 from soma.pipeline.build import (
@@ -55,7 +55,7 @@ from soma.pipeline.layout import (
 )
 from soma.pipeline.parallel import DeviceJob, free_device_memory, resolve_devices, run_on_devices
 from soma.pipeline.representation import run_representation
-from soma.plan import Plan, check, component_leaves, resolve, revalidated
+from soma.plan import Plan, check, component_leaves, load_train_subset, resolve, revalidated
 from soma.pipeline.extraction import resolve_pipeline_dense, resolve_pipeline_preprocessing
 
 __all__ = ["FoldContext", "Pipeline", "PipelineResult"]
@@ -166,7 +166,15 @@ class Pipeline:
         #: False in a fold's worker process: the launch that started it summarizes the run.
         self._summarizes = True
         self._cohort, self._image_manifest, self._annotation_manifest = load_pipeline_data(config)
-        self._plan = resolve(config, self._cohort)
+        self._train_subset = load_train_subset(config)
+        trained = self._cohort
+        if self._train_subset is not None and not annotation_sampled(config):
+            # A list that does not fit the folds fails here, before anything is extracted,
+            # and the head's fit check in resolve sees the folds the run trains. The plan
+            # does not move: what resolve infers reads the records, which narrowing keeps.
+            # ROI ids exist only once the slides are sampled: _trained_folds checks those.
+            trained = self._cohort.with_train_subset(self._train_subset)
+        self._plan = resolve(config, trained)
 
     @property
     def config(self) -> ExperimentConfig:
@@ -217,7 +225,7 @@ class Pipeline:
                 inputs = replace(inputs, encoder_stage=None)
                 self._train_on_devices(layout, devices)
             results = []
-            for fold, fold_split in enumerate(inputs.cohort.folds):
+            for fold, fold_split in enumerate(inputs.folds):
                 directory = fold_dir(layout.run_dir, fold, num_folds)
                 if self._skips(fold, directory):
                     if mirror is not None and fold_is_complete(directory):
@@ -406,6 +414,7 @@ class Pipeline:
             evaluation=self._guard_test_clobber(layout),
             source=context.source,
             cohort=context.cohort,
+            folds=self._trained_folds(context.cohort),
             images=self._image_manifest,
             annotations=self._annotation_manifest,
             run_id=layout.run_id,
@@ -494,6 +503,14 @@ class Pipeline:
         if rois is None:
             return RunFeatures(source=source, cohort=self._cohort)
         return RunFeatures(source=source, cohort=self._cohort.derived(rois.children), rois=rois)
+
+    def _trained_folds(self, cohort: Cohort) -> tuple[FoldSplit, ...]:
+        """The folds the run trains: ``cohort``'s, each train split narrowed to the ids
+        ``cohort.train_subset`` lists. ``cohort`` keeps every sample, so what is keyed by
+        it (the ROI population) is the same with and without a subset."""
+        if self._train_subset is None:
+            return cohort.folds
+        return cohort.with_train_subset(self._train_subset).folds
 
     def _observers(self, inputs: RunInputs, setup: FoldSetup, directory: Path) -> tuple[Any, ...]:
         """The fold's runtime observers, built before ``run_fold`` seeds the fold, so

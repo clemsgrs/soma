@@ -85,6 +85,26 @@ cache enabled, the crops live in the ROI sampling cache, at
 only when all of its crops are present. Editing an annotation mask in place
 changes its size or modification time, so soma samples that slide again.
 
+.. _segmentation-train-subset:
+
+Training on a subset of the ROIs
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``cohort.train_subset`` (see :ref:`train-subset`) trains each fold on a listed
+subset of its training ROIs. Tune and test keep every ROI of their slides. The
+file lists ROI ids, one per line, as the ``sample_id`` column of
+``segmentation_rois/dataset.csv`` spells them (for example
+``slide0__x512_y1024``). These ids exist only once soma has sampled the ROIs,
+so run the extraction once without a subset, then pick the ids from that
+table. Every listed ROI must come from a training slide of every fold.
+
+Runs over different subsets of the same slides share the cached ROIs, their
+grids and the per-ROI class counts (see :doc:`caching`): only the first run
+extracts. Each subset is its own experiment. With a ``loaders.sampler``, the sampler draws
+from the listed ROIs only. With ``uniform``, a ``draws_per_epoch`` above the
+number of listed ROIs repeats them: each listed ROI is drawn equally often,
+give or take one draw.
+
 Classes
 -------
 

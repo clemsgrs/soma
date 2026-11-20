@@ -191,8 +191,10 @@ class RunInputs:
     """What every fold of a run shares: the plan, the source, the cohort it serves.
 
     ``cohort`` is the one the source is keyed by: an annotation-sampled run's ROI cohort
-    (:meth:`~soma.data.Cohort.derived`), whose ``rois`` the source carries. ``images`` and
-    ``annotations`` are the cohort CSV's manifests, read by the target sources.
+    (:meth:`~soma.data.Cohort.derived`), whose ``rois`` the source carries. ``folds`` are
+    the folds the run trains: the cohort's, with each train split narrowed to
+    ``cohort.train_subset`` when the config lists one. ``images`` and ``annotations`` are
+    the cohort CSV's manifests, read by the target sources.
     """
 
     plan: Plan
@@ -200,6 +202,7 @@ class RunInputs:
     evaluation: EvaluationConfig
     source: Any
     cohort: Cohort
+    folds: tuple[FoldSplit, ...]
     images: ImageManifest
     annotations: AnnotationManifest | None
     run_id: str

@@ -130,13 +130,16 @@ class RunConfig(Editable):
 class CohortConfig(Editable):
     """``cohort``: :meth:`~soma.data.Cohort.from_csv`'s files. ``collapse: patient_id``
     makes one sample per patient; ``tune_is_test`` uses one held-out split for selection
-    and test; ``allow_missing_tune`` lets a fold without tune select on train."""
+    and test; ``allow_missing_tune`` lets a fold without tune select on train.
+    ``train_subset`` is a text file of sample ids, one per line: each fold trains on the
+    listed ids of its train split only (:meth:`~soma.data.Cohort.with_train_subset`)."""
 
     records: str | Path
     splits: str | Path
     collapse: str | None = None
     tune_is_test: bool = False
     allow_missing_tune: bool = False
+    train_subset: str | Path | None = None
 
     def __post_init__(self) -> None:
         if self.collapse is not None:

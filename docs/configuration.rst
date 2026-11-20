@@ -20,7 +20,7 @@ cannot appear in YAML.
    * - ``cohort``
      - :class:`~soma.data.Cohort`
      - ``records`` and ``splits`` (the two CSV files), ``collapse``,
-       ``tune_is_test``, ``allow_missing_tune``
+       ``tune_is_test``, ``allow_missing_tune``, ``train_subset``
    * - ``features``
      - the feature source
      - the ``encoder`` leaf, slide2vec's ``extraction``, ``execution`` and
@@ -74,6 +74,38 @@ vector per sample) and ``dense`` the grid shape (a feature grid per sample,
 segmentation and detection). The head decides the task family. A set run's
 sample is a patient with ``cohort.collapse: patient_id``, a tile when a tile
 encoder runs without an aggregator, and otherwise a slide.
+
+.. _train-subset:
+
+Training on a subset
+--------------------
+
+``cohort.train_subset`` names a text file with one sample id per line. Each
+line is read literally, like the ids in the CSV files: a space is part of the
+id. Empty lines are skipped. Each fold then trains on the listed ids of its
+train split only, in the split's order. Tune and test do not change. Use it
+to train the same experiment on less data, for example to measure how a model
+scales with the number of annotated samples.
+
+.. code-block:: yaml
+
+   cohort:
+     records: slides.csv
+     splits: splits.csv
+     train_subset: subsets/rung_0128.txt
+
+- One file serves every fold of the run. Every listed id must be in the train
+  split of every fold. The run refuses an empty file, an id listed twice, an id
+  the cohort does not have, and an id that a fold puts in tune or test. The
+  error names the fold and the id.
+- The ids are the run's samples. When the run samples ROIs from whole slides,
+  they are ROI ids, not slide ids (see :ref:`segmentation-train-subset`). A
+  patient run (``cohort.collapse: patient_id``) refuses ``cohort.train_subset``.
+- What the run fits on the train split sees the subset only: the feature
+  normalization, the ROI batch sampler and the survival bins.
+- The listed ids are part of the :doc:`experiment identity <outputs>`: two
+  subsets are two experiments. The feature caches do not depend on the subset,
+  so runs over several subsets share them.
 
 Editing a config
 ----------------

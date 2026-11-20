@@ -320,6 +320,59 @@ def test_derived_refuses_a_child_of_an_unknown_sample() -> None:
         cohort.derived({"nope__x0_y0": "nope"})
 
 
+def test_a_train_subset_narrows_each_train_split_and_leaves_tune_and_test() -> None:
+    cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
+    rois = cohort.derived({"s0__a": "s0", "s0__b": "s0", "s1__a": "s1", "s2__a": "s2", "s4__a": "s4"})
+
+    narrowed = rois.with_train_subset(["s1__a", "s0__a"])
+
+    # The train split's own order, not the list's.
+    assert narrowed.folds[0] == FoldSplit(train=("s0__a", "s1__a"), tune=("s2__a",), tests={"test": ("s4__a",)})
+    assert narrowed.sample_ids == rois.sample_ids
+    assert narrowed.unit == rois.unit
+
+
+def test_a_train_subset_refuses_an_id_the_cohort_does_not_have() -> None:
+    cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
+    with pytest.raises(ValueError, match="'ghost'"):
+        cohort.with_train_subset(["s0", "ghost"])
+
+
+def test_a_train_subset_refuses_an_id_outside_the_train_split() -> None:
+    cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
+    with pytest.raises(ValueError, match=r"'s2'.*fold 0.*tune"):
+        cohort.with_train_subset(["s0", "s2"])
+
+
+def test_a_train_subset_names_the_fold_whose_train_split_lacks_a_listed_id() -> None:
+    """One list serves every fold, so every listed id must train in every fold."""
+    splits = pd.DataFrame(
+        {
+            "sample_id": [f"s{i}" for i in range(6)] * 2,
+            "split": ["train", "train", "tune", "tune", "test", "test"]
+            + ["train", "tune", "train", "tune", "test", "test"],
+            "fold": [0] * 6 + [1] * 6,
+        }
+    )
+    cohort = Cohort.from_frames(_records_df().drop(columns="patient_id"), splits, targets=["label"])
+
+    assert cohort.with_train_subset(["s0"]).folds[1].train == ("s0",)
+    with pytest.raises(ValueError, match=r"'s1'.*fold 1.*tune"):
+        cohort.with_train_subset(["s0", "s1"])
+
+
+def test_a_train_subset_refuses_an_empty_list() -> None:
+    cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
+    with pytest.raises(ValueError, match="no sample"):
+        cohort.with_train_subset([])
+
+
+def test_a_train_subset_refuses_an_id_listed_twice() -> None:
+    cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
+    with pytest.raises(ValueError, match="'s1'.*twice"):
+        cohort.with_train_subset(["s0", "s1", "s1"])
+
+
 def test_from_csv_reads_identifiers_as_their_literal_strings(tmp_path) -> None:
     # Inference would read the all-numeric splits.csv as floats (001 -> 1.0) while the
     # mixed records column keeps '001', so the split would name an unknown sample.
