@@ -50,7 +50,6 @@ Write a config with three sections:
    extraction:
      tiling:
        overlap: 0.0
-       mask_backend: openslide
      segmentation:
        method: hsv
      masks:
@@ -77,7 +76,7 @@ key, and leaves the others at their defaults:
        splits="splits.csv",
        subset="test",
        num_workers=8,
-       extraction={"tiling": {"overlap": 0.0, "mask_backend": "openslide"}},
+       extraction={"tiling": {"overlap": 0.0}},
    )
 
 It returns the index of the files it wrote (see
@@ -119,8 +118,10 @@ working directory. The keys:
    * - ``cohort.fold``
      - The fold of that split (default 0). It needs ``cohort.splits``.
    * - ``extraction``
-     - How the slides are tiled and read: the ``features.extraction`` schema
-       of :doc:`preprocessing`, with the rules below. Optional.
+     - How the slides are tiled and read: the ``tiling``, ``segmentation``,
+       ``filter`` and ``masks`` keys of the ``features.extraction`` schema of
+       :doc:`preprocessing`, with the rules below. Prediction ignores its other
+       keys. Optional.
    * - ``extraction.tiling.requested_tile_size_px``,
        ``extraction.tiling.requested_spacing_um``
      - Taken from the bundles. Leave them out: another value is refused.
@@ -136,8 +137,10 @@ working directory. The keys:
      - The hs2p reader of the slides (default: the one the bundles were
        trained with). See :ref:`whole-slide-tiling`.
    * - ``extraction.tiling.mask_backend``
-     - The hs2p reader of the tissue masks (default ``auto``). ``soma
-       evaluate`` reads the annotation rasters and ignore masks with it too.
+     - The hs2p reader of the tissue masks (default ``auto``). Name another
+       reader, such as ``openslide``, only when the one ``auto`` picks fails on
+       your masks. ``soma evaluate`` reads the annotation rasters and ignore
+       masks with it too.
    * - ``extraction.segmentation.method``
      - The tissue segmentation of slides without a ``mask_path`` (default
        ``hsv``). The other ``segmentation`` keys are those of
@@ -259,11 +262,13 @@ Label TIFF (segmentation)
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
 ``<output_dir>/<bundle>/<sample_id>.tif`` is a pyramidal, tiled TIFF of uint8
-values, stored lossless (LZW). Its pixels lie on the grid of the tiles at the
-read spacing, so its spacing is the read spacing, up to hs2p's rounding of the
-grid step. The index gives the ``width``, ``height`` and ``spacing_um`` of each
-map. Each coarser level keeps every other pixel of the level below, so it holds
-stored values only, never an average.
+values, stored lossless (LZW). Its spacing is that of the pixels read, up to
+hs2p's rounding of the grid step. When a pyramid level is within the tolerance,
+the tiles are read at that level's own spacing, which can differ a little from
+the read spacing. The index gives the ``width``, ``height`` and ``spacing_um``
+of each map: use ``spacing_um``, not ``read_spacing_um``, for distances and
+areas. Each coarser level keeps every other pixel of the level below, so it
+holds stored values only, never an average.
 
 The values are shifted by one:
 
@@ -334,6 +339,13 @@ must all be of one task family, and agree on the tile size, the read spacing and
 the read tolerance. The bundles that share an encoder recipe share one encoder
 pass per tile, so each extra bundle costs mostly its decoder.
 
+All the bundles predict the same slides: the ``cohort.subset`` split of fold
+``cohort.fold``. So predict a split that every bundle held out, such as a test
+split that all folds share. When each fold has its own test split, predict
+each fold's bundle on its own fold, into its own ``predict.output_dir``:
+``predict.bundles: runs/beetle/fold_<k>/bundle`` with ``cohort.fold: <k>``.
+Score it with ``--fold <k>``.
+
 By default, each bundle gets its own prediction, in its own directory. The
 directory is named by the shortest end of the bundle's path that tells the
 bundles apart, without a last ``bundle``: ``runs/beetle/fold_0/bundle`` writes
@@ -363,8 +375,13 @@ Score
 output directory when it holds one bundle, or else the bundle's directory. Pass
 the split you predicted: ``--splits splits.csv`` selects the ``test`` split of
 fold 0 unless ``--split`` and ``--fold`` say otherwise. Without ``--splits``,
-every annotated row of the cohort is a target. Every target needs a prediction,
-and every prediction a target.
+every row of the cohort is a target. Every target needs a prediction, and every
+prediction a target.
+
+Every row of the cohort CSV must name its annotation (``label_mask_path`` or
+``points_path``), also the rows outside the split. To score part of a mixed
+cohort, predict and score with a CSV of the annotated slides only: every
+prediction still needs a target.
 
 .. _whole-slide-scoring:
 
@@ -428,7 +445,8 @@ Each slide gives one row of counts to the same reducers as
 the rows: ``annotated_px``, ``not_predicted_px``, ``not_predicted_fraction``
 (the annotated pixels not predicted, over all annotated pixels) and
 ``tp_class_<c>``, ``fp_class_<c>``, ``fn_class_<c>`` per class. ``soma
-evaluate`` prints them in a second table.
+evaluate`` prints each slide's ``annotated_px`` and ``not_predicted_fraction``
+in a second table, and ``--out`` writes the full rows.
 
 .. _whole-slide-points-scoring:
 

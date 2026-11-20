@@ -323,7 +323,8 @@ Each bundle's directory is named by the end of its path
 - ``path``: the file, relative to the output directory;
 - ``width``, ``height`` and ``spacing_um``: the file's frame. That is the map's
   pixels for a label TIFF, and the slide's level 0 for points;
-- ``read_spacing_um``: the spacing the tiles were read at;
+- ``read_spacing_um``: the requested read spacing the bundles set (the map's
+  own spacing is ``spacing_um``);
 - ``num_tiles``: the kept tiles;
 - ``not_predicted_fraction`` (segmentation): the share of the map's pixels that
   no kept tile contributed;

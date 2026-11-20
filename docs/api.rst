@@ -315,9 +315,9 @@ Two tools apply a run's bundles to images larger than one tile:
 
 - :func:`soma.predict_slides` (``soma predict``) predicts over whole slides,
   for segmentation or detection. It streams each slide tile by tile and writes
-  one file per slide and bundle, so a slide of any size fits in memory. Use it
-  for slides, and to score them with ``soma evaluate``. See
-  :doc:`whole-slide-inference`.
+  one file per slide and bundle (for its memory use, see
+  :ref:`whole-slide-cost`). Use it for slides, and to score them with ``soma
+  evaluate``. See :doc:`whole-slide-inference`.
 - ``SlidingWindowSegmentationPredictor.from_bundles(bundles)``
   (``soma.evaluation.sliding_window``) predicts segmentation over one image held
   in memory, and returns its label map. It slides the fold ensemble over the
