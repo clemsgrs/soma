@@ -296,9 +296,9 @@ different threshold or matching rule can be applied later without rerunning
 inference (see :ref:`grid-predictions`). Point overlays and raw heatmaps are
 optional; see :doc:`outputs`.
 
-To predict points over whole slides with a trained bundle, use ``soma predict``
-(see :ref:`whole-slide-points`), and score them with ``soma evaluate`` (see
-:ref:`whole-slide-points-scoring`).
+To predict points over whole slides with the trained bundles, use ``soma
+predict``, and score them with ``soma evaluate``. See
+:doc:`whole-slide-inference`.
 
 Task head
 ---------

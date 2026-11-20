@@ -540,6 +540,7 @@ def test_sidebar_uses_clickable_parent_pages_with_collapsible_children() -> None
         "tasks",
         "training",
         "evaluation",
+        "whole-slide-inference",
         "extending",
         "benchmarking",
         "reference",
@@ -820,6 +821,69 @@ def test_every_python_snippet_in_the_docs_compiles_and_names_public_soma_objects
 
     assert snippets > 20
     assert offences == []
+
+
+def _captioned_block(text: str, caption: str) -> str:
+    """The dedented body of the code block whose ``:caption:`` option is ``caption``."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        match = _SNIPPET_DIRECTIVE.match(line)
+        if not match:
+            continue
+        options = index + 1
+        while options < len(lines) and lines[options].strip().startswith(":"):
+            if lines[options].strip() == f":caption: {caption}":
+                return _block_after(lines, index + 1, len(match.group(1)))[1]
+            options += 1
+    raise AssertionError(f"no code block is captioned {caption}")
+
+
+def test_the_whole_slide_inference_example_config_resolves_and_the_page_names_every_key(
+    monkeypatch, tmp_path
+) -> None:
+    """``whole-slide-inference.rst`` prints a ``soma predict`` config that sets every key
+    of the predict and cohort sections and resolves to a plan as written. The page names
+    every key of the schema, as ``predict.<key>``, ``cohort.<key>`` and ``extraction``,
+    each extraction key the example sets, and the tiling keys the bundles fix."""
+    import inspect
+
+    from soma import predict_slides
+    from soma.pipeline.slide_prediction import (
+        BUNDLE_TILING_KEYS,
+        COHORT_KEYS,
+        PREDICT_KEYS,
+        resolve_slide_prediction,
+        slide_prediction_kwargs,
+    )
+    from tests.whole_slides import SPACING_UM, TILE, save_bundle
+
+    page = (Path(__file__).resolve().parents[2] / "docs" / "whole-slide-inference.rst").read_text(encoding="utf-8")
+    config = yaml.safe_load(_captioned_block(page, "predict.yaml"))
+
+    # The schema: one predict_slides keyword per key of the predict and cohort sections,
+    # and one for the extraction section. The example sets every key of the two sections.
+    sections = {"predict": PREDICT_KEYS, "cohort": COHORT_KEYS}
+    assert sorted(inspect.signature(predict_slides).parameters) == sorted([*PREDICT_KEYS, *COHORT_KEYS, "extraction"])
+    assert sorted(config) == ["cohort", "extraction", "predict"]
+    assert {name: sorted(config[name]) for name in sections} == {name: sorted(keys) for name, keys in sections.items()}
+
+    named = [f"{name}.{key}" for name, keys in sections.items() for key in keys]
+    named += ["extraction", *(f"extraction.tiling.{key}" for key in BUNDLE_TILING_KEYS)]
+    named += [f"extraction.{part}.{key}" for part, body in config["extraction"].items() for key in body]
+    assert [name for name in named if f"``{name}``" not in page] == []
+
+    # The example resolves as written: its run directory stands for its fold bundles, and
+    # every extraction value it sets reaches the plan.
+    monkeypatch.chdir(tmp_path)
+    run = tmp_path / config["predict"]["bundles"]
+    bundles = [save_bundle(run / f"fold_{fold}" / "bundle", seed=fold) for fold in (0, 1)]
+    plan = resolve_slide_prediction(**slide_prediction_kwargs(config))
+
+    assert plan["predict"]["bundles"] == [str(Path(bundle).resolve()) for bundle in bundles]
+    for part, body in config["extraction"].items():
+        assert {key: plan["extraction"][part][key] for key in body} == body, part
+    tiling = plan["extraction"]["tiling"]
+    assert (tiling["requested_tile_size_px"], tiling["requested_spacing_um"], tiling["grid"]) == (TILE, SPACING_UM, "slide")
 
 
 def test_the_custom_aggregator_example_runs_as_written(monkeypatch) -> None:

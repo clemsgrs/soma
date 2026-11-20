@@ -311,14 +311,27 @@ complete run; these are the parts:
 
 Every target source has ``subset(sample_ids)`` to restrict it to one split.
 
-For whole-image segmentation after a run, load each fold's bundle with
-:func:`soma.load` and pass the list to
-``SlidingWindowSegmentationPredictor.from_bundles(bundles)``, which slides the
-fold ensemble over an image. A bundle trained live carries its frozen encoder
-stage. A bundle trained on cached grids records the encoder that extracted them,
-and ``from_bundles`` builds that stage
-(``soma.pipeline.build.bundle_encoder_stage``). Pass ``encoder=`` to use another
-stage with the same frame.
+Two tools apply a run's bundles to images larger than one tile:
+
+- :func:`soma.predict_slides` (``soma predict``) predicts over whole slides,
+  for segmentation or detection. It streams each slide tile by tile and writes
+  one file per slide and bundle, so a slide of any size fits in memory. Use it
+  for slides, and to score them with ``soma evaluate``. See
+  :doc:`whole-slide-inference`.
+- ``SlidingWindowSegmentationPredictor.from_bundles(bundles)``
+  (``soma.evaluation.sliding_window``) predicts segmentation over one image held
+  in memory, and returns its label map. It slides the fold ensemble over the
+  image and blends the softmaxes of overlapping tiles. Use it for a bounded
+  image, such as an ROI or a region read from a slide, in a notebook. Load each
+  fold's bundle with :func:`soma.load` and pass the list.
+
+Both build each bundle's frozen encoder stage with
+:func:`soma.pipeline.build.bundle_encoder_stage`. A bundle trained live carries
+its stage. A bundle trained on cached grids records the encoder that extracted
+them, and the helper builds that stage. ``from_bundles`` takes ``encoder=`` to
+use another stage with the same frame.
+
+.. autofunction:: soma.pipeline.build.bundle_encoder_stage
 
 Task-free representation evaluation
 -----------------------------------

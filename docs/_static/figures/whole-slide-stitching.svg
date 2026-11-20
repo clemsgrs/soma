@@ -1,0 +1,59 @@
+<svg viewBox="0 0 680 330" xmlns="http://www.w3.org/2000/svg" role="img" font-family="-apple-system, 'Helvetica Neue', Inter, Arial, sans-serif">
+<title>How overlapping tiles are combined into one label map</title>
+<desc>Left: one tile with overlap 0.5. A margin of a quarter of the tile's side runs around its edge; the middle square, one stride wide, is the region the tile contributes. Right: three tiles of one row of the slide grid, each shifted by one stride. Tile 0 lies on the slide's first column, so it contributes from pixel 0, its outer margin included. Tiles 1 and 2 contribute their middle stride. Below, the map row takes each pixel from exactly one tile.</desc>
+<style>
+.h{font-weight:500;font-size:13px;fill:#3d3d3a}
+.t{font-weight:400;font-size:12px;fill:#3d3d3a}
+.s{font-weight:400;font-size:11px;fill:#73726c}
+.dim{stroke:#888780;stroke-width:1;fill:none}
+.guide{stroke:#B4B2A9;stroke-width:1;stroke-dasharray:3 3;fill:none}
+</style>
+
+<text class="h" x="150" y="28" text-anchor="middle">One tile, overlap 0.5</text>
+
+<rect x="50" y="50" width="200" height="200" rx="2" fill="#F1EFE8" stroke="#B4B2A9"/>
+<rect x="100" y="100" width="100" height="100" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="s" x="150" y="80" text-anchor="middle">margin</text>
+<text class="t" x="150" y="146" text-anchor="middle">contributed</text>
+<text class="t" x="150" y="162" text-anchor="middle">region</text>
+
+<path class="dim" d="M50 262 V272 M100 262 V272 M200 262 V272 M250 262 V272 M50 267 H250"/>
+<text class="s" x="75" y="285" text-anchor="middle">margin</text>
+<text class="s" x="150" y="285" text-anchor="middle">stride</text>
+<text class="s" x="225" y="285" text-anchor="middle">margin</text>
+<text class="s" x="150" y="306" text-anchor="middle">margin = tile × overlap / 2</text>
+<text class="s" x="150" y="321" text-anchor="middle">stride = tile − 2 × margin</text>
+
+<text class="h" x="490" y="28" text-anchor="middle">One row of the slide grid</text>
+
+<line x1="360" y1="48" x2="360" y2="218" stroke="#888780" stroke-width="1.5"/>
+<text class="s" x="360" y="232" text-anchor="middle">slide edge</text>
+
+<rect x="360" y="60" width="120" height="24" fill="#F1EFE8" stroke="#B4B2A9"/>
+<rect x="360" y="60" width="90" height="24" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="s" x="612" y="76">tile 0</text>
+
+<rect x="420" y="96" width="120" height="24" fill="#F1EFE8" stroke="#B4B2A9"/>
+<rect x="450" y="96" width="60" height="24" fill="#FAECE7" stroke="#F0997B"/>
+<text class="s" x="612" y="112">tile 1</text>
+
+<rect x="480" y="132" width="120" height="24" fill="#F1EFE8" stroke="#B4B2A9"/>
+<rect x="510" y="132" width="60" height="24" fill="#EEEDFE" stroke="#7F77DD"/>
+<text class="s" x="612" y="148">tile 2</text>
+
+<path class="guide" d="M450 84 V188 M510 120 V188 M570 156 V188"/>
+
+<rect x="360" y="188" width="90" height="24" fill="#E6F1FB" stroke="#185FA5"/>
+<rect x="450" y="188" width="60" height="24" fill="#FAECE7" stroke="#F0997B"/>
+<rect x="510" y="188" width="60" height="24" fill="#EEEDFE" stroke="#7F77DD"/>
+<text class="s" x="585" y="204" text-anchor="middle">…</text>
+<text class="t" x="612" y="204">map</text>
+
+<text class="s" x="490" y="262" text-anchor="middle">Tile 0 is on the first column, so it keeps its outer margin.</text>
+<text class="s" x="490" y="278" text-anchor="middle">Each map pixel comes from exactly one tile.</text>
+
+<rect x="400" y="298" width="14" height="14" rx="3" fill="#F1EFE8" stroke="#B4B2A9"/>
+<text class="s" x="420" y="309">margin, given up</text>
+<rect x="525" y="298" width="14" height="14" rx="3" fill="#E6F1FB" stroke="#185FA5"/>
+<text class="s" x="545" y="309">contributed region</text>
+</svg>
