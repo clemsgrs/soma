@@ -423,14 +423,20 @@ def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
     soma_main(["evaluate", "predictions", "--cohort", "annotations.csv", "--metrics", "mean_f1", "f1_per_class", "--out", "points.json"])
 
     # By hand: the points at or above the bundle's threshold and the cells left of the
-    # ignored columns, matched by class within 3 um (6 px).
+    # ignored columns. The cells sit on a 32 px lattice, at most 6 px off their node, so
+    # no point is within 3 um (6 px) of two cells. Per class, a cell is found when a point
+    # of its class is that close to it, and every other point is a false positive.
     def by_hand(threshold_of_row) -> np.ndarray:
         kept = points[(points.score >= threshold_of_row) & (np.rint(points.x) < IGNORED_FROM_PX)]
         seen = cells[np.rint(cells[:, 0]) < IGNORED_FROM_PX]
-        return match_points(
-            kept[["x", "y"]].to_numpy(), kept["class"].to_numpy(), kept.score.to_numpy(),
-            seen[:, :2], seen[:, 2].astype(np.int64), num_classes=2, delta=MATCH_DISTANCE_UM / SPACING_UM,
-        )
+        counts = []
+        for c in range(2):
+            xy = kept.loc[kept["class"] == c, ["x", "y"]].to_numpy()
+            nodes = seen[seen[:, 2] == c, :2]
+            distances = np.sqrt(((nodes[:, None] - xy[None]) ** 2).sum(-1))
+            found = int((distances <= MATCH_DISTANCE_UM / SPACING_UM).any(axis=1).sum())
+            counts.append((found, len(xy) - found, len(nodes) - found))
+        return np.asarray(counts)
 
     def check_scored(prefix: str, scored: dict, counts: np.ndarray) -> None:
         f1 = [2 * tp / (2 * tp + fp + fn) for tp, fp, fn in counts.tolist()]

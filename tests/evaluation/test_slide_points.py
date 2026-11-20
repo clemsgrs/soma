@@ -170,6 +170,32 @@ def test_points_on_the_not_annotated_region_of_a_low_resolution_ignore_mask_coun
     assert row["annotated_area_mm2"] == pytest.approx(16 * 24 * 4.0 / 1e6)
 
 
+def test_an_ignore_mask_is_read_to_its_last_row_and_column_on_each_axis_s_own_scale(tmp_path, marker):
+    """The ignore mask is 32 x 25 px: 4 level-0 px per mask column, 3.84 per mask row, so
+    hs2p aligns it by rounding the height. Its last row (level-0 y >= 93) and last column
+    (x >= 124) are not annotated (255). The annotations added there drop out, so the
+    counts are those of the slide without a mask, and an undeclared id there is not
+    refused. A point within half a pixel of the far edge (x = 127.8) is on the slide."""
+    output = predict(tmp_path, marker)
+    mask = np.zeros((25, 32), dtype=np.uint8)
+    mask[24, :] = 255
+    mask[:, 31] = 255
+    ignore = write_mask(tmp_path / "s1_ignore.tif", mask, spacing_um=2.0)
+    on_ignored = [(50, 94, 1), (90, 95, 2), (127.8, 40, 2), (126, 10, 5)]
+
+    evaluation = soma.evaluate(
+        SlidePoints(output),
+        targets(tmp_path, points=[*ANNOTATED, *on_ignored], ignore_mask=ignore),
+        metrics=["f1_per_class"],
+    )
+
+    (row,) = evaluation.per_sample
+    assert [row[f"{kind}_class_0"] for kind in ("tp", "fp", "fn")] == [1, 1, 1]
+    assert [row[f"{kind}_class_1"] for kind in ("tp", "fp", "fn")] == [2, 1, 1]
+    # 32 x 25 - 56 = 744 annotated mask pixels, each 128 x 96 / (32 x 25) level-0 px.
+    assert row["annotated_area_mm2"] == pytest.approx(744 * (128 * 96 * 0.25 / (32 * 25)) / 1e6)
+
+
 def test_an_ignore_mask_with_another_value_is_refused_naming_the_file(tmp_path, marker):
     output = predict(tmp_path, marker)
     mask = np.zeros((24, 32), dtype=np.uint8)
@@ -204,6 +230,34 @@ def test_points_written_without_a_class_scheme_are_refused(tmp_path, marker):
 
     with pytest.raises(ValueError, match="records no class scheme .*older soma predict. Predict the slides again"):
         SlidePoints(output)
+
+
+def test_the_per_slide_counts_use_the_matching_the_metrics_name(tmp_path, marker):
+    """Two mitosis peaks, at x = 40 (the higher score) and 48, and two mitoses, at x = 43
+    and 35. Hungarian matching pairs both peaks. Greedy matching pairs the first peak
+    with its nearest mitosis, at 43, and the second peak reaches no other: 1 true
+    positive, 1 false positive, 1 missed, F1 = 2 / 4. A mimic peak by a mimic is a true
+    positive either way. The per-slide counts are those of the metrics' matching, and
+    the default when the metrics name different ones."""
+    markers = [(40, 40, 200, 0), (48, 40, 120, 0), (100, 70, 150, 1)]
+    output = predict(tmp_path, marker, markers=markers)
+    annotated = [(43, 40, 1), (35, 40, 1), (101, 71, 2)]
+    greedy = {"name": "mean_f1", "params": {"matching": "greedy"}}
+
+    evaluation = soma.evaluate(SlidePoints(output), targets(tmp_path, points=annotated), metrics=[greedy])
+
+    assert evaluation.metrics["mean_f1"] == pytest.approx((2 / 4 + 1) / 2)
+    (row,) = evaluation.per_sample
+    assert [row[f"{kind}_class_0"] for kind in ("tp", "fp", "fn")] == [1, 1, 1]
+    assert [row[f"{kind}_class_1"] for kind in ("tp", "fp", "fn")] == [1, 0, 0]
+
+    mixed = soma.evaluate(
+        SlidePoints(output), targets(tmp_path, points=annotated), metrics=[greedy, "f1_per_class"]
+    )
+    assert mixed.metrics["mean_f1"] == pytest.approx((2 / 4 + 1) / 2)
+    assert mixed.metrics["f1_class_0"] == 1.0
+    (row,) = mixed.per_sample
+    assert [row[f"{kind}_class_0"] for kind in ("tp", "fp", "fn")] == [2, 0, 0]
 
 
 def test_sweep_threshold_picks_the_threshold_of_an_ensemble_s_points(tmp_path, marker):

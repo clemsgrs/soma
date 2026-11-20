@@ -260,16 +260,16 @@ def _slide(points: SlidePoints, sample_id: str, entry) -> dict[str, Any]:
     predicted = pd.read_parquet(points._points_path(sample_id), columns=["x", "y", "class", "score"])
     pred_xy = predicted[["x", "y"]].to_numpy(dtype=np.float64).reshape(-1, 2)
     gt_xy, ids = read_points(entry.points_path)
-    gt_xy, gt_class = _classes_of(gt_xy, ids, points.class_scheme, entry.points_path)
-    if entry.ignore_mask_path is None:
-        area_mm2 = size[0] * size[1] * spacing**2 / 1e6
-    else:
-        ignored, mask_spacing = _ignore_mask(entry.ignore_mask_path, points.mask_backend, spacing, size)
-        area_mm2 = int((~ignored).sum()) * mask_spacing**2 / 1e6
-        keep = ~_on_ignored(pred_xy, ignored, spacing / mask_spacing, size)
+    area_mm2 = size[0] * size[1] * spacing**2 / 1e6
+    if entry.ignore_mask_path is not None:
+        ignored = _ignore_mask(entry.ignore_mask_path, points.mask_backend, spacing, size)
+        area_mm2 *= int((~ignored).sum()) / ignored.size
+        keep = ~_on_ignored(pred_xy, ignored, size)
         predicted, pred_xy = predicted[keep], pred_xy[keep]
-        keep = ~_on_ignored(gt_xy, ignored, spacing / mask_spacing, size)
-        gt_xy, gt_class = gt_xy[keep], gt_class[keep]
+        # Ignored annotations carry no supervision, so their ids are never checked.
+        keep = ~_on_ignored(gt_xy, ignored, size)
+        gt_xy, ids = gt_xy[keep], ids[keep]
+    gt_xy, gt_class = _classes_of(gt_xy, ids, points.class_scheme, entry.points_path)
     frame = pd.DataFrame(
         {
             "sample_id": sample_id,
@@ -297,26 +297,27 @@ def _classes_of(xy: np.ndarray, ids: np.ndarray, scheme: Mapping[str, Any], path
     return xy[kept].reshape(-1, 2), classes
 
 
-def _ignore_mask(path, backend: str, spacing: float, size: tuple[int, int]) -> tuple[np.ndarray, float]:
-    """The ignore mask over the whole slide as a boolean raster (True: not annotated), and
-    the spacing of its pixels in µm.
+def _ignore_mask(path, backend: str, spacing: float, size: tuple[int, int]) -> np.ndarray:
+    """The ignore mask over the whole slide as a boolean raster (True: not annotated).
 
-    The mask is read at its own finest resolution, or the slide's when it is finer; a
-    coarser level is read when that one passes hs2p's read cap.
+    hs2p aligns the mask to the slide, and one mask level is read whole, every native
+    pixel: the finest level within hs2p's read cap.
     """
     from hs2p import AnnotationLabels, Mask
     from hs2p.mask import MAX_MASK_READ_PX
+    from hs2p.wsi.reader import open_slide
 
     try:
         with Mask(path=Path(path), labels=AnnotationLabels(pixel_mapping=dict(_MASK_VALUES)), backend=backend) as mask:
             aligned = mask.align_to(reference_spacing_um=spacing, reference_dimensions=size)
-            for level_spacing in aligned.level_spacings_um:
-                target = max(float(level_spacing), spacing)
-                region = {"location": (0, 0), "target_spacing_um": target}
-                dims = aligned.dimensions_within_canvas(**region, target_dimensions=size)
-                if dims[0] * dims[1] <= MAX_MASK_READ_PX:
-                    break
-            labels = aligned.read_region(**region, target_dimensions=dims).labels
+            with open_slide(Path(path), mask.backend, require_spacing=False) as reader:
+                dimensions = [(int(w), int(h)) for w, h in reader.level_dimensions]
+            level = next(
+                (k for k, (w, h) in enumerate(dimensions) if w * h <= MAX_MASK_READ_PX), len(dimensions) - 1
+            )
+            labels = aligned.read_full(
+                target_spacing_um=aligned.level_spacings_um[level], target_dimensions=dimensions[level]
+            ).labels
     except ValueError as error:
         if "undeclared label IDs" in str(error):
             raise ValueError(
@@ -324,22 +325,21 @@ def _ignore_mask(path, backend: str, spacing: float, size: tuple[int, int]) -> t
                 f"annotated): {error}"
             ) from None
         raise ValueError(f"its ignore mask {path} could not be read: {error}") from None
-    return np.asarray(labels) == _IGNORED, target
+    return np.asarray(labels) == _IGNORED
 
 
-def _on_ignored(xy: np.ndarray, ignored: np.ndarray, scale: float, size: tuple[int, int]) -> np.ndarray:
-    """Which level-0 points lie on an ignored mask pixel. A point takes its nearest level-0
-    pixel (as on a tile's ignore mask), then the mask pixel holding it; ``scale`` is the
-    mask pixels per level-0 pixel. A point off the slide is on no mask pixel."""
-    if xy.shape[0] == 0:
-        return np.zeros(0, dtype=bool)
-    px = np.rint(xy).astype(np.int64)
-    inside = (px[:, 0] >= 0) & (px[:, 0] < size[0]) & (px[:, 1] >= 0) & (px[:, 1] < size[1])
-    height, width = ignored.shape
-    mx = np.minimum(np.floor(px[:, 0] * scale + 1e-9).astype(np.int64), width - 1)
-    my = np.minimum(np.floor(px[:, 1] * scale + 1e-9).astype(np.int64), height - 1)
+def _on_ignored(xy: np.ndarray, ignored: np.ndarray, size: tuple[int, int]) -> np.ndarray:
+    """Which level-0 points lie on an ignored mask pixel. A point on the slide takes its
+    nearest level-0 pixel, clamped to the slide (as on a tile's ignore mask), then on each
+    axis the mask pixel holding it, by hs2p's rule ``pixel * mask_size // slide_size``. A
+    point off the slide is on no mask pixel."""
+    width, height = size
+    inside = (xy[:, 0] >= 0) & (xy[:, 0] < width) & (xy[:, 1] >= 0) & (xy[:, 1] < height)
+    px = np.clip(np.rint(xy[inside, 0]).astype(np.int64), 0, width - 1)
+    py = np.clip(np.rint(xy[inside, 1]).astype(np.int64), 0, height - 1)
+    mask_height, mask_width = ignored.shape
     on = np.zeros(xy.shape[0], dtype=bool)
-    on[inside] = ignored[my[inside], mx[inside]]
+    on[inside] = ignored[py * mask_height // height, px * mask_width // width]
     return on
 
 

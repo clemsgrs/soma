@@ -565,6 +565,11 @@ def _resolve_grid_metrics(metrics, family: str) -> list[tuple[str, Callable, dic
 _MATCH_PARAMS = ("matching", "match_distance")
 
 
+def _match_key(params: Mapping[str, Any]) -> tuple[str, Any]:
+    """A metric's ``(matching, match_distance)``, the defaults filled in."""
+    return (params.get("matching", "hungarian"), params.get("match_distance"))
+
+
 def _reduce(resolved, counts_for: Callable[[dict[str, Any]], torch.Tensor], num_classes: int) -> dict[str, float]:
     values: dict[str, float] = {}
     for name, fn, params in resolved:
@@ -604,7 +609,7 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
         cache: dict[tuple, torch.Tensor] = {}
 
         def counts_for(match: dict[str, Any]) -> torch.Tensor:
-            key = (match.get("matching", "hungarian"), match.get("match_distance"))
+            key = _match_key(match)
             if key not in cache:
                 cache[key] = point_counts(
                     predictions, targets, matching=key[0], match_distance=key[1], _loaded=loaded
@@ -612,7 +617,10 @@ def evaluate_grid(predictions, targets, metrics="default", subgroups: Sequence[s
             return cache[key]
 
         if slide_rows is not None:
-            per_sample = _with_counts(slide_rows, counts_for({}))
+            # The rows use the matching every metric names; the default when they differ.
+            named = {_match_key(params) for _, _, params in resolved}
+            match = dict(zip(_MATCH_PARAMS, named.pop())) if len(named) == 1 else {}
+            per_sample = _with_counts(slide_rows, counts_for(match))
     elif isinstance(predictions, (LabelMapPredictions, SlideLabelMaps)):
         if any(params for _, _, params in resolved if any(k in params for k in _MATCH_PARAMS)):
             raise ValueError("matching / match_distance apply to point predictions only")

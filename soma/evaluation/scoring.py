@@ -233,7 +233,9 @@ def evaluate(
       :func:`soma.predict_slides`) against a :class:`~soma.data.PointSource` of the
       slides' annotated points: the class scheme and the threshold the points record,
       matching within the bundle's distance in µm (a ``match_distance`` param is in µm
-      too), one row of counts per slide in ``Evaluation.per_sample``.
+      too), one row of counts per slide in ``Evaluation.per_sample``. The rows use the
+      ``matching`` and ``match_distance`` every metric names; the default (Hungarian, at
+      the bundle's distance) when the metrics name none, or name different ones.
 
     Both sides must cover the same ids: an unknown prediction id, a target without a
     prediction, or a duplicate id is refused. Fill samples the model could not score with

@@ -364,7 +364,9 @@ Each slide gives one row of counts to the same reducers as
 :class:`~soma.evaluation.PointPredictions`. ``Evaluation.per_sample`` holds the
 rows: ``annotated_area_mm2`` (the annotated mask pixels times their area, or the
 whole slide without a mask) and ``tp_class_<c>``, ``fp_class_<c>``,
-``fn_class_<c>`` per class.
+``fn_class_<c>`` per class. The counts use the matching that all the metrics
+name. If the metrics name none, or name different ones, the counts use the
+default matching.
 
 Matching lists only the pairs of points within the matching distance, so a
 slide with many points takes little memory: 100,000 predictions against 20,000
