@@ -25,6 +25,12 @@ prediction needs: the decoder and head, the class scheme, the tile size, the
 read spacing and the recipe of the frozen encoder. Prediction reads the pixels
 and runs the encoder again. It reads no feature cache.
 
+A bundle trained on cached features before soma 2.4.0 records no encoder
+recipe. Keep it in the run directory that trained it (``<run>/bundle`` or
+``<run>/fold_<k>/bundle``): ``soma predict`` reads the recipe from that run's
+``plan.yaml``, and refuses a copy of the bundle on its own before it predicts
+any slide.
+
 .. _whole-slide-predict:
 
 Predict
