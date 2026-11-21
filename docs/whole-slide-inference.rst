@@ -212,9 +212,11 @@ only then measures coverage. The tissue of such a region counts towards no
 tile's coverage. Its pixels are not predicted, unless a tile kept for nearby
 tissue contributes them (see :ref:`whole-slide-stitching`). The annotated
 pixels that stay unpredicted count as misses when the slide is scored (see
-:ref:`whole-slide-scoring`). To keep every region, set
-``extraction.filter.a_t: 0``. A ``pixel_mapping`` with other classes already
-keeps regions of any size.
+:ref:`whole-slide-scoring`). Set ``extraction.filter.a_t: 0`` to drop only the
+regions of zero area. hs2p measures area on the coarse grid it reads the tissue
+on, where a single pixel or a line one pixel wide has zero area. With the
+default ``extraction.filter``, a ``pixel_mapping`` with other classes already
+uses ``a_t: 0``.
 
 Each kept tile is read at the bundles' read spacing: from a pyramid level within
 the tolerance, or resampled from a finer level. soma never upsamples a slide. A
