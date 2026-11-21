@@ -47,6 +47,7 @@ foundation-model encoding uses `slide2vec <https://github.com/clemsgrs/slide2vec
    tasks
    training
    evaluation
+   whole-slide-inference
    extending
    benchmarking
    reference

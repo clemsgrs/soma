@@ -123,7 +123,8 @@ Available commands
    metric names or dotted import paths (default: the task family's
    defaults); ``--subgroups`` names metadata columns to break the
    metrics down by. The metrics table is printed; ``--out`` also writes
-   the evaluation as JSON. See :doc:`evaluation`.
+   the evaluation as JSON. See :doc:`evaluation`, and
+   :doc:`whole-slide-inference` for ``soma predict`` outputs.
 
 ``soma predict CONFIG``
    Predict over whole slides with trained segmentation or detection
@@ -152,7 +153,7 @@ Available commands
    distance. ``index.parquet`` lists the files. The resolved plan is written to
    ``<output_dir>/plan.yaml`` first; ``soma predict <output_dir>/plan.yaml``
    replays it and predicts only the slides not done yet. The same in
-   Python: :func:`soma.predict_slides`.
+   Python: :func:`soma.predict_slides`. See :doc:`whole-slide-inference`.
 
 ``soma compact-index OUTPUT_ROOT``
    Compact ``indexes/runs.csv`` to the latest row per run. Readers

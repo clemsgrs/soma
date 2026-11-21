@@ -394,9 +394,10 @@ def _check_margin(infos, *, tile_px: int, overlap: float, margin_px: int, spacin
         nms_um = info["nms_distance_um"]
         if margin_um >= nms_um * (1 - 1e-9):
             continue
+        # A whole margin, printed in full so the value proposed passes stitch_margin_px.
         needed = 2 * math.ceil(nms_um / spacing_um - 1e-9) / tile_px
         hint = (
-            f"Use an overlap of at least {needed:g}, or 0."
+            f"Use an overlap of at least {needed!r}, or 0."
             if needed < 1
             else "No overlap below 1 leaves a margin that wide: use an overlap of 0."
         )

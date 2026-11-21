@@ -78,11 +78,13 @@ def stitch_margin_px(tile_px: int, overlap: float) -> int:
         raise ValueError(f"extraction.tiling.overlap must be in [0, 1), got {overlap}")
     margin = tile_px * overlap / 2
     if abs(margin - round(margin)) > 1e-6:
-        nearest = 2 * round(margin) / tile_px
+        # The nearest whole margin below half a tile (overlap 1), printed in full so the
+        # value proposed passes this check.
+        nearest = 2 * min(round(margin), (tile_px - 1) // 2) / tile_px
         raise ValueError(
             f"extraction.tiling.overlap {overlap} gives {tile_px} px tiles a margin of "
             f"{margin:g} px (tile x overlap / 2), not a whole number of pixels. Pick an "
-            f"overlap whose margin is whole, such as {nearest:g}."
+            f"overlap whose margin is whole, such as {nearest!r}."
         )
     return int(round(margin))
 

@@ -290,6 +290,51 @@ artifacts follow ``evaluation`` settings:
 Per-sample confusion matrices are not written; recompute them from the saved
 label maps with :func:`soma.evaluation.confusion_records`.
 
+.. _whole-slide-prediction-outputs:
+
+Whole-slide prediction outputs
+------------------------------
+
+``soma predict`` (see :doc:`whole-slide-inference`) writes a prediction
+directory, not a run directory:
+
+.. code-block:: text
+
+   <output_dir>/
+   ├── plan.yaml          the resolved config; soma predict replays it
+   ├── provenance.json    the soma, hs2p, slide2vec and torch versions, and
+   │                      each bundle's name, path and SHA-256
+   ├── index.parquet      one row per slide and bundle
+   ├── fold_0/            one directory per bundle, or ensemble/
+   │   ├── <sample_id>.tif       segmentation: the label TIFF
+   │   ├── <sample_id>.parquet   detection: the points
+   │   └── <sample_id>.json      the slide's record
+   ├── fold_1/
+   └── logs/              with predict.devices: worker_<k>.log per process
+
+Each bundle's directory is named by the end of its path
+(``runs/beetle/fold_0/bundle`` writes to ``fold_0/``). With
+``predict.ensemble: true`` there is one directory, ``ensemble/``.
+
+``index.parquet`` has one row per slide and bundle, with the columns:
+
+- ``bundle``: the directory of the file;
+- ``sample_id``;
+- ``path``: the file, relative to the output directory;
+- ``width``, ``height`` and ``spacing_um``: the file's frame. That is the map's
+  pixels for a label TIFF, and the slide's level 0 for points;
+- ``read_spacing_um``: the requested read spacing the bundles set (the map's
+  own spacing is ``spacing_um``);
+- ``num_tiles``: the kept tiles;
+- ``not_predicted_fraction`` (segmentation): the share of the map's pixels that
+  no kept tile contributed;
+- ``num_points`` (detection): the points in the file.
+
+Each ``<sample_id>.json`` record holds the same values and the file's name. A
+slide is done when its record parses and its file exists: a relaunch predicts
+only the other slides. The index is rebuilt from the records at the end of each
+launch.
+
 Run index
 ---------
 

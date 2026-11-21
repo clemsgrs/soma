@@ -8,6 +8,7 @@ recipe, and everything runs on the CPU. A map is read back through hs2p; its val
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from dataclasses import dataclass
 
@@ -346,6 +347,26 @@ def test_the_tile_is_the_bundles_and_its_margin_whole(tmp_path, cohort, tiling, 
     with pytest.raises(ValueError, match=match):
         predict(tmp_path, cohort, bundle, extraction={"tiling": {**TIFFFILE, **tiling}})
     assert not (tmp_path / "predictions").exists()
+
+
+@pytest.mark.parametrize("tile_px", [224, 384, 448, 512])
+@pytest.mark.parametrize("overlap", [0.3, 0.2, 0.1, 0.999])
+def test_the_overlap_a_fractional_margin_refusal_proposes_is_accepted(tmp_path, cohort, tile_px, overlap):
+    """The refusal of an overlap whose margin is not whole proposes one that is: fed back
+    in as printed, it is accepted, also when the nearest whole margin would need overlap 1."""
+    from soma.pipeline.slide_prediction import resolve_slide_prediction
+
+    bundle = save_bundle(tmp_path / "run" / "bundle", tile_size=[tile_px, tile_px])
+    where = {"output_dir": tmp_path / "predictions", "bundles": bundle, "records": cohort}
+
+    with pytest.raises(ValueError, match="not a whole number of pixels") as refusal:
+        resolve_slide_prediction(**where, extraction={"tiling": {**TIFFFILE, "overlap": overlap}})
+    proposed = float(re.search(r"such as (\S+)\.$", str(refusal.value)).group(1))
+
+    plan = resolve_slide_prediction(**where, extraction={"tiling": {**TIFFFILE, "overlap": proposed}})
+
+    assert plan["extraction"]["tiling"]["overlap"] == proposed
+    assert abs(tile_px * proposed / 2 - tile_px * overlap / 2) < 1
 
 
 def test_a_plan_s_own_tile_size_and_spacing_are_accepted(tmp_path, cohort):

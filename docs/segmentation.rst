@@ -325,6 +325,10 @@ rerunning inference (see :ref:`grid-predictions`). Overlays and per-pixel
 probabilities are optional; see :doc:`outputs` for the artifact layout and
 :doc:`evaluation` for evaluation settings.
 
+To predict label maps over whole slides with the trained bundles, use ``soma
+predict``, and score them with ``soma evaluate``. See
+:doc:`whole-slide-inference`.
+
 Task head
 ---------
 
