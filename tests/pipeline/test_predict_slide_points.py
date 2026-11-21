@@ -8,6 +8,7 @@ slide's peaks in level-0 pixels: ``x``, ``y``, ``class`` and ``score``.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import numpy as np
@@ -342,6 +343,32 @@ def test_a_margin_as_wide_as_the_nms_distance_is_accepted(tmp_path, cohort, deco
     )
 
     assert list(index.sample_id) == ["s1"]
+
+
+@pytest.mark.parametrize(
+    ("tile_px", "overlap", "nms_distance"),
+    [(224, 0.0625, 4.0), (224, 0.25, 20.0), (384, 0.25, 25.0), (448, 0.25, 30.0), (512, 0.25, 33.0)],
+)
+def test_the_overlap_a_narrow_margin_refusal_proposes_is_accepted(
+    tmp_path, cohort, decoders, tile_px, overlap, nms_distance
+):
+    """The refusal of a margin narrower than the NMS distance proposes an overlap that,
+    fed back in as printed, gives a whole margin at least that wide. 224 px tiles at
+    overlap 0.0625 leave a 7 px (3.5 um) margin; a 4 um NMS distance needs 8 px."""
+    from soma.pipeline.slide_prediction import resolve_slide_prediction
+
+    bundle = save_detection_bundle(
+        tmp_path / "run" / "bundle", decoder=decoders["marker"], nms_distance=nms_distance, tile_size=[tile_px, tile_px]
+    )
+    where = {"output_dir": tmp_path / "predictions", "bundles": bundle, "records": cohort}
+
+    with pytest.raises(ValueError, match="less than the NMS distance") as refusal:
+        resolve_slide_prediction(**where, extraction={"tiling": {"overlap": overlap, **TIFFFILE}})
+    proposed = float(re.search(r"at least (\S+), or 0\.", str(refusal.value)).group(1))
+
+    plan = resolve_slide_prediction(**where, extraction={"tiling": {"overlap": proposed, **TIFFFILE}})
+
+    assert plan["extraction"]["tiling"]["overlap"] == proposed
 
 
 def test_a_bundle_without_a_recorded_class_scheme_is_refused_before_anything_is_written(tmp_path, cohort, decoders):
