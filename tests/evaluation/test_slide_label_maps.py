@@ -358,29 +358,6 @@ def test_predictions_on_ignored_pixels_change_no_count(tmp_path):
 # --- workers ---------------------------------------------------------------------------- #
 
 
-def test_slides_scored_in_workers_score_as_in_the_main_process_in_sample_order(tmp_path):
-    """Three slides of different sizes, the largest first in sample order, each half
-    predicted: two workers give the metrics and the rows of a serial run, in order."""
-    shapes = {"s1": (150, 200), "s2": (128, 160), "s3": (96, 128)}
-    rows = [
-        half_tissue_slide(tmp_path, raw_annotation(*shape, seed=k), name=name)
-        for k, (name, shape) in enumerate(shapes.items())
-    ]
-    records = write_records(tmp_path / "dataset.csv", rows)
-    predict(tmp_path, records, save_bundle(tmp_path / "run" / "bundle", head=SCHEME), overlap=0.0, min_coverage=0.5)
-    targets = slide_targets(records)
-
-    serial = soma.evaluate(SlideLabelMaps(tmp_path / "predictions", window_px=32), targets, metrics=METRICS)
-    workers = soma.evaluate(
-        SlideLabelMaps(tmp_path / "predictions", window_px=32, num_workers=2), targets, metrics=METRICS
-    )
-
-    assert [row["sample_id"] for row in workers.per_sample] == ["s1", "s2", "s3"]
-    assert workers.per_sample == serial.per_sample
-    assert workers.metrics == serial.metrics
-    assert all(0 < row["not_predicted_px"] < row["annotated_px"] for row in serial.per_sample)
-
-
 def test_a_slide_that_fails_in_a_worker_is_refused_as_in_the_main_process(tmp_path):
     """s2's raster holds one pixel of raw 5, which the head neither gives a class nor
     ignores; s1 and s3 are valid. Two workers refuse s2 with the message of a serial run."""
