@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import random
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -124,10 +126,11 @@ class Trainer:
         train samples (never ``train_loader``, whose shuffle or event-balanced batches are
         the training's), and logs ``train/<key>``, with ``train_groups`` as ``tune_groups``
         for the tune split. These values gauge the train-vs-tune gap: no callback monitors
-        them, and the pass runs under a forked torch RNG, with the loader's own ``generator``
-        (if any, even one shared with ``train_loader``) restored afterwards, so it changes
-        neither the training trajectory nor ``train_loss``. The loader comes with the knob,
-        or the fit is refused.
+        them, and the pass runs under a forked torch RNG, with Python's and NumPy's global
+        RNG and the loader's own ``generator`` (if any, even one shared with ``train_loader``)
+        restored afterwards, so it changes neither the training trajectory nor
+        ``train_loss``. The loader comes with the knob, or the fit is refused, and so is
+        ``train_loader`` itself as ``train_eval_loader``.
         """
         _check_groups(learner, tune_groups or {}, where="tune_groups", split="tune")
         _check_groups(learner, train_groups or {}, where="train_groups", split="train")
@@ -139,6 +142,12 @@ class Trainer:
         if not self.eval_train and (train_eval_loader is not None or train_groups):
             given = "train_eval_loader" if train_eval_loader is not None else "train_groups"
             raise ValueError(f"{given} is evaluated only with eval_train=True; set it, or drop {given}.")
+        if train_eval_loader is not None and train_eval_loader is train_loader:
+            raise ValueError(
+                "train_eval_loader is the training loader: a second pass over it advances its shuffle "
+                "or batch sampler and changes the training; pass a separate unshuffled loader over "
+                "the train samples."
+            )
         if tune_loader is not None and len(tune_loader) == 0:
             logger.warning("the tune loader is empty; training without validation.")
             tune_loader = None
@@ -203,9 +212,10 @@ class Trainer:
                 self.summary = self._validate(learner, tune_loader, "tune", self._tune_groups)
                 if self._train_eval_loader is not None:
                     # Iterating a loader draws its base seed from the global torch RNG, or
-                    # from its own generator when it has one; the training shuffle and
-                    # dropout read the same: fork both, so the diagnostic pass leaves the
-                    # training trajectory as it was.
+                    # from its own generator when it has one, and a custom dataset or
+                    # collate may draw from Python's or NumPy's; the training shuffle,
+                    # dropout and data read the same: fork them all, so the diagnostic pass
+                    # leaves the training trajectory as it was.
                     with self._forked_rng():
                         train = self._validate(learner, self._train_eval_loader, "train", self._train_groups)
                     self.summary.update(train)
@@ -223,17 +233,21 @@ class Trainer:
 
     @contextlib.contextmanager
     def _forked_rng(self):
-        """The global CPU RNG, this device's when it is a GPU, and the train-eval loader's
-        own ``generator`` (which a caller may share with the training loader), restored on exit."""
+        """The global torch CPU RNG, this device's when it is a GPU, Python's and NumPy's
+        global RNG, and the train-eval loader's own ``generator`` (which a caller may share
+        with the training loader), restored on exit."""
         devices = []
         if self.device.type == "cuda":
             devices = [self.device.index if self.device.index is not None else torch.cuda.current_device()]
         generator = getattr(self._train_eval_loader, "generator", None)
         state = generator.get_state() if generator is not None else None
+        python_state, numpy_state = random.getstate(), np.random.get_state()
         try:
             with torch.random.fork_rng(devices=devices):
                 yield
         finally:
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
             if generator is not None:
                 generator.set_state(state)
 

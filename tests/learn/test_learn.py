@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import functools
 import math
+import random
 import re
 from pathlib import Path
 
@@ -816,20 +817,39 @@ class TestEvalTrain:
         # The running optimizer objective is still logged every epoch, under its own name.
         assert on.history["train_loss"].notna().all()
 
-    @pytest.mark.parametrize("shared_generator", [False, True], ids=["global RNG", "shared generator"])
-    def test_the_train_pass_changes_neither_the_tune_values_nor_the_selected_epoch(self, shared_generator):
+    @pytest.mark.parametrize(
+        "source", ["global", "generator", "python and numpy"],
+        ids=["global RNG", "shared generator", "python and numpy RNG"],
+    )
+    def test_the_train_pass_changes_neither_the_tune_values_nor_the_selected_epoch(self, source):
         # The training loader shuffles and ABMIL drops out, both from the global torch RNG:
         # a pass that drew from it (a DataLoader draws a base seed per iteration) would
         # move every later epoch. A loader built with generator= draws that seed from its
         # generator instead, and a soma.fit caller can hand one seeded generator to both
-        # loaders: the training order then reads the generator the pass draws from.
+        # loaders: the training order then reads the generator the pass draws from. A
+        # custom dataset may also draw from Python's random or NumPy's global RNG, which
+        # seed_everything seeds too: with num_workers=0 the pass draws in this process.
+        class Noisy(torch.utils.data.Dataset):
+            def __init__(self) -> None:
+                self.items = _bags()
+
+            def __len__(self) -> int:
+                return len(self.items)
+
+            def __getitem__(self, i):
+                features, target, sample_id = self.items[i]
+                return features + float(np.random.normal()) + random.gauss(0.0, 1.0), target, sample_id
+
         def fit(eval_train: bool) -> FitResult:
             torch.manual_seed(0)
-            generator = {"generator": torch.Generator().manual_seed(0)} if shared_generator else {}
+            np.random.seed(0)
+            random.seed(0)
+            generator = {"generator": torch.Generator().manual_seed(0)} if source == "generator" else {}
+            data = Noisy if source == "python and numpy" else _bags
             learner = _learner(ABMIL(input_dim=D, dropout=0.5))
             collate = functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
-            shuffled = DataLoader(_bags(), batch_size=2, shuffle=True, collate_fn=collate, **generator)
-            train_eval = DataLoader(_bags(), batch_size=2, shuffle=False, collate_fn=collate, **generator)
+            shuffled = DataLoader(data(), batch_size=2, shuffle=True, collate_fn=collate, **generator)
+            train_eval = DataLoader(data(), batch_size=2, shuffle=False, collate_fn=collate, **generator)
             trainer = Trainer(
                 max_epochs=4, eval_train=eval_train, callbacks=[Checkpoint(monitor="tune/loss")], device="cpu"
             )
@@ -890,6 +910,16 @@ class TestEvalTrain:
         trainer = Trainer(max_epochs=1, eval_train=eval_train, callbacks=[counter], device="cpu")
         with pytest.raises(ValueError, match=match):
             trainer.fit(_learner(), _bag_loader(), _bag_loader(), **fit_kwargs)
+        assert counter.batches == 0
+
+    def test_the_training_loader_itself_as_the_train_eval_loader_is_refused_before_training(self):
+        # A second pass over the training loader would advance its shuffle, or a Cox
+        # event-balanced sampler's own RNG, and change the next epoch's batches.
+        counter = _BatchCounter()
+        loader = _bag_loader()
+        trainer = Trainer(max_epochs=1, eval_train=True, callbacks=[counter], device="cpu")
+        with pytest.raises(ValueError, match=r"train_eval_loader is the training loader.*separate unshuffled loader"):
+            trainer.fit(_learner(), loader, _bag_loader(), train_eval_loader=loader)
         assert counter.batches == 0
 
     def test_without_a_tune_split_the_train_pass_never_runs_and_says_so(self, caplog):
@@ -1144,6 +1174,10 @@ class TestCallbacks:
             EarlyStopping(monitor="train/loss")
         with pytest.raises(ValueError, match=diagnostic):
             Checkpoint(monitor="train/loss")
+        # One group is refused under tune too: the hint names the mean over its column.
+        single_group = r"'train/centre=A/auroc' is a train value.*use 'tune/mean_over_centre/auroc'\.$"
+        with pytest.raises(ValueError, match=single_group):
+            Checkpoint(monitor="train/centre=A/auroc")
         with pytest.raises(ValueError, match="'test/loss' is not a tune value.*'tune/loss'"):
             Checkpoint(monitor="test/loss")
 

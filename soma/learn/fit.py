@@ -58,8 +58,9 @@ def fit(
     would build, so a run states its whole selection policy (``selection="last"``,
     ``hold_until_moves``, a progress label) with plain constructors. ``tune_groups`` goes
     to :meth:`Trainer.fit`, so ``monitor`` can name a ``tune/mean_over_<column>/<key>``.
-    ``train_eval`` and ``train_groups`` go to :meth:`Trainer.fit` as ``train_eval_loader``
-    and ``train_groups``: with ``eval_train=True``, the eval-mode pass over the train split.
+    ``train_eval`` (a separate unshuffled loader over the train samples, never ``train``)
+    and ``train_groups`` go to :meth:`Trainer.fit` as ``train_eval_loader`` and
+    ``train_groups``: with ``eval_train=True``, the eval-mode pass over the train split.
     """
     if isinstance(learner_or_model, Learner):
         if loss is not None or optimizer is not None or schedulers:

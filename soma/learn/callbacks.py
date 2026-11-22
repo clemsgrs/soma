@@ -111,22 +111,23 @@ def _check_monitor(owner: str, monitor: str) -> str:
     split, slash, name = monitor.partition("/")
     if not slash:
         raise ValueError(f"{owner} monitor {monitor!r} names no split; use 'tune/{monitor}'.")
+    head, _, metric = name.partition("/")
+    single_group = is_subgroup_key(name) and "=" in head
+    suggestion = f"tune/mean_over_{head.partition('=')[0]}/{metric}" if single_group else f"tune/{name}"
     if split == "train":
         raise ValueError(
             f"{owner} monitor {monitor!r} is a train value: train values are diagnostics of the "
-            f"train-vs-tune gap (trainer.eval_train), never a monitor; use 'tune/{name}'."
+            f"train-vs-tune gap (trainer.eval_train), never a monitor; use '{suggestion}'."
         )
     if split != "tune":
         raise ValueError(
             f"{owner} monitor {monitor!r} is not a tune value; a monitor names the tune split: "
             "'tune/loss' or 'tune/<metric>'."
         )
-    head, _, metric = name.partition("/")
-    if is_subgroup_key(name) and "=" in head:
-        column = head.partition("=")[0]
+    if single_group:
         raise ValueError(
             f"{owner} monitor {monitor!r} names one group, which a fold's tune split can lack; "
-            f"monitor the mean over the column's groups: 'tune/mean_over_{column}/{metric}'."
+            f"monitor the mean over the column's groups: '{suggestion}'."
         )
     return monitor
 
