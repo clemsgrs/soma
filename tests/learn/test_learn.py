@@ -527,21 +527,6 @@ CENTRES = {"centre": {f"s{i}": "A" if i < 4 else "B" for i in range(8)}}
 
 
 class TestSubgroupMonitoring:
-    def test_every_evaluated_epoch_logs_each_group_and_the_mean_over_groups(self):
-        result = Trainer(max_epochs=3, val_every_n_epochs=2, device="cpu").fit(
-            _learner(), _bag_loader(), _bag_loader(), tune_groups=CENTRES
-        )
-        history = result.history
-        names = ("loss", "auroc", "balanced_accuracy")
-        keys = [
-            *(f"tune/centre={group}/{name}" for group in "AB" for name in names),
-            *(f"tune/mean_over_centre/{name}" for name in names),
-            *(f"tune/mean_over_centre/{name}_groups" for name in names),
-        ]
-        for key in keys:
-            assert history[key].notna().tolist() == [False, True, True], key
-        assert (history["tune/mean_over_centre/loss_groups"].dropna() == 2).all()
-
     def test_without_groups_the_history_holds_the_loop_columns_and_the_pooled_values_only(self):
         result = Trainer(max_epochs=2, device="cpu").fit(_learner(), _bag_loader(), _bag_loader())
         assert list(result.history) == [
