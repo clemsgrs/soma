@@ -42,6 +42,9 @@ Several runs and several encoders can share one root. A tiling entry depends onl
 on the preprocessing settings, so every encoder with the same preprocessing
 reuses it.
 
+A cache root and a run's output directory must be different directories, because
+both hold a ``tiling/`` directory. soma refuses a run that would mix them.
+
 Cache reuse rules
 -----------------
 

@@ -16,7 +16,7 @@ import slide2vec.progress as slide2vec_progress
 from slide2vec.artifacts import TileEmbeddingArtifact
 
 from soma._internal.atomic_io import atomic_write_json
-from soma.extract.cache._types import CACHE_METADATA_NAME, MANIFEST_NAME
+from soma.extract.cache._types import CACHE_METADATA_NAME, MANIFEST_NAME, PROCESS_LIST_NAME
 from soma.extract.cache.options import CacheOptions
 
 
@@ -46,8 +46,15 @@ def resolve_tiling_cache_root(
 ) -> Path:
     """Return ``<cache root>/tiling``, the directory that holds the tiling cache entries.
 
-    Raises ``ValueError`` when that directory is ``tiling_dir`` or inside it: a cache hit
-    clears ``tiling_dir`` to hold its stub, which would delete the cached tiling.
+    The tiling cache and a run's live ``tiling_dir`` share the name ``tiling``, so one
+    directory can be both, and a cache hit clears ``tiling_dir`` to hold its stub, which
+    would delete the cached tiling. Raises ``ValueError`` before any tiling when:
+
+    - the tiling cache is ``tiling_dir`` or inside it;
+    - ``tiling_dir`` already holds a tiling cache entry (``<key>/cache_metadata.json``):
+      it is the tiling cache of another cache root;
+    - the tiling cache holds a ``process_list.csv`` at its top level: it is the live
+      tiling dir of another run.
     """
     tiling_dir = Path(tiling_dir)
     tiling_cache_root = (
@@ -64,6 +71,21 @@ def resolve_tiling_cache_root(
             f"directory '{tiling_dir}'. soma clears that directory on a cache hit, so the "
             f"cached tiling would be deleted. Choose another features.cache.root_dir, for example "
             f"'{tiling_dir.parent / 'cache'}'."
+        )
+    if any(tiling_dir.glob(f"*/{CACHE_METADATA_NAME}")):
+        raise ValueError(
+            f"The run's tiling directory '{tiling_dir}' holds tiling cache entries, so "
+            f"'{tiling_dir.parent}' is a cache root. soma clears that directory, so the cached "
+            f"tiling would be deleted. A cache root cannot be a run's output directory: choose "
+            f"another output directory, or another features.cache.root_dir for the runs that "
+            f"cache there."
+        )
+    if (tiling_cache_root / PROCESS_LIST_NAME).is_file():
+        raise ValueError(
+            f"The tiling cache '{tiling_cache_root}' holds a {PROCESS_LIST_NAME}, so it is the "
+            f"tiling directory of a run. That run clears it, so the cached tiling would be "
+            f"deleted. A run's output directory cannot be a cache root: choose another "
+            f"features.cache.root_dir, for example '{tiling_dir.parent / 'cache'}'."
         )
     return tiling_cache_root
 

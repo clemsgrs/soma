@@ -852,10 +852,11 @@ def _drop_tile_grid(root: Path) -> int:
 
 
 def _cached_fake_tiling_extract(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cache_root: Path
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cache_root: Path | None
 ) -> tuple[ImageManifest, dict]:
     """A two-slide synthetic cohort and the ``soma.extract`` keywords that tile it with
-    soma.testing's weight-free ``fake`` encoder on CPU, caching under ``cache_root``."""
+    soma.testing's weight-free ``fake`` encoder on CPU, caching under ``cache_root`` (the
+    default root when it is ``None``)."""
     from hs2p import FilterConfig
 
     from soma.config import CacheOptions
@@ -920,21 +921,39 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
         assert torch.equal(second.load(sample_id), first.load(sample_id))
 
 
-def test_a_cache_root_that_puts_the_tiling_cache_in_the_live_tiling_dir_is_refused(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("root_dir", "planted"),
+    [
+        pytest.param("out", "0123456789abcdef/cache_metadata.json", id="root-is-the-output-dir"),
+        pytest.param(None, "0123456789abcdef/cache_metadata.json", id="output-dir-is-a-cache-root"),
+        pytest.param("exp1", "process_list.csv", id="root-is-another-runs-output-dir"),
+    ],
+)
+def test_a_tiling_dir_shared_by_a_cache_root_and_a_run_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_dir: str | None, planted: str
 ) -> None:
-    """With ``cache.root_dir`` equal to ``output_dir``, the tiling cache ``<root>/tiling``
-    is the run's own tiling dir, which soma clears to hold the stub of a cache hit. That
-    would delete every tiling entry in the shared cache, so the verb refuses the root
-    before it tiles, and the entries already there stay."""
+    """The tiling cache ``<root>/tiling`` and a run's live tiling dir
+    ``<output_dir>/tiling`` share a name, so one directory can be both. soma clears the
+    live tiling dir to hold the stub of a cache hit, which would delete the tiling
+    entries of the cache, and finished runs that point at them would break. The verb
+    refuses before it tiles, and the shared ``tiling/`` keeps what was there:
+
+    - ``cache.root_dir`` is the run's own ``output_dir``;
+    - ``output_dir`` is an existing cache root (it holds ``tiling/<key>/``) and the
+      cache root is unset;
+    - ``cache.root_dir`` is another run's output dir (it holds ``tiling/process_list.csv``).
+    """
     output_dir = tmp_path / "out"
-    images, kwargs = _cached_fake_tiling_extract(tmp_path, monkeypatch, cache_root=output_dir)
-    other_entry = output_dir / "tiling" / "0123456789abcdef"
-    other_entry.mkdir(parents=True)
-    (other_entry / "cache_metadata.json").write_text("{}", encoding="utf-8")
+    images, kwargs = _cached_fake_tiling_extract(
+        tmp_path, monkeypatch, cache_root=None if root_dir is None else tmp_path / root_dir
+    )
+    shared_tiling = tmp_path / (root_dir or "out") / "tiling"
+    (shared_tiling / planted).parent.mkdir(parents=True, exist_ok=True)
+    (shared_tiling / planted).write_text("{}", encoding="utf-8")
+    before = sorted(path.relative_to(shared_tiling) for path in shared_tiling.rglob("*"))
 
     with pytest.raises(ValueError, match=r"features\.cache\.root_dir"):
         soma.extract(images, output_dir=output_dir, **kwargs)
 
-    assert sorted(path.name for path in (output_dir / "tiling").iterdir()) == [other_entry.name]
-    assert (other_entry / "cache_metadata.json").read_text(encoding="utf-8") == "{}"
+    assert sorted(path.relative_to(shared_tiling) for path in shared_tiling.rglob("*")) == before
+    assert (shared_tiling / planted).read_text(encoding="utf-8") == "{}"
