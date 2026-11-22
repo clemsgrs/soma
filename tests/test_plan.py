@@ -17,6 +17,7 @@ from hs2p import TilingConfig
 
 from soma import ExperimentConfig, Plan, presets, resolve
 from soma.config import Component, CRoMaOptions, EncoderLeaf, FeaturesConfig
+from soma.learn import learner_registry
 from soma.plan import check, load_cohort, load_train_subset
 from tests.experiment_configs import experiment
 from tests.extraction_configs import annotation_masks, extraction
@@ -239,6 +240,7 @@ def user_package(tmp_path: Path, monkeypatch):
         )
     )
     monkeypatch.syspath_prepend(str(package.parent))
+    monkeypatch.setattr(learner_registry, "_warned", set())
     yield "mylab.learners.ScaledMIL"
     for name in [m for m in sys.modules if m == "mylab" or m.startswith("mylab.")]:
         del sys.modules[name]
