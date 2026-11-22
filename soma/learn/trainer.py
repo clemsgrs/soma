@@ -129,8 +129,11 @@ class Trainer:
         them, and the pass runs under a forked torch RNG, with Python's and NumPy's global
         RNG and the loader's own ``generator`` (if any, even one shared with ``train_loader``)
         restored afterwards, so it changes neither the training trajectory nor
-        ``train_loss``. The loader comes with the knob, or the fit is refused, and so is
-        ``train_loader`` itself as ``train_eval_loader``.
+        ``train_loss``. State that a dataset, sampler or collate keeps for itself (its own
+        RNG, an epoch counter) and shares with ``train_loader`` is not restored: a
+        stochastic dataset needs its own instance for ``train_eval_loader``. The loader
+        comes with the knob, or the fit is refused, and so is ``train_loader`` itself as
+        ``train_eval_loader``.
         """
         _check_groups(learner, tune_groups or {}, where="tune_groups", split="tune")
         _check_groups(learner, train_groups or {}, where="train_groups", split="train")

@@ -881,17 +881,19 @@ class TestEvalTrain:
     def test_train_groups_log_each_group_and_the_mean_over_groups_under_train(self):
         import soma
 
+        # ABMIL drops out, so a train pass left in train mode would not match tune.
         result = soma.fit(
-            _learner(), _bag_loader(), _bag_loader(), tune_groups=CENTRES,
+            _learner(ABMIL(input_dim=D, dropout=0.5)), _bag_loader(), _bag_loader(), tune_groups=CENTRES,
             train_eval=_bag_loader(), train_groups=CENTRES, eval_train=True,
             max_epochs=1, device="cpu", progress=False,
         )
         row = result.history.iloc[-1]
+        # The same samples and weights as tune here: in eval mode the two passes agree.
+        assert row["train/loss"] == row["tune/loss"]
         for name in ("loss", "auroc"):
             groups = (row[f"train/centre=A/{name}"], row[f"train/centre=B/{name}"])
             assert row[f"train/mean_over_centre/{name}"] == pytest.approx(sum(groups) / 2)
             assert row[f"train/mean_over_centre/{name}_groups"] == 2
-            # The same samples and weights as tune here: the two passes agree.
             assert row[f"train/centre=A/{name}"] == row[f"tune/centre=A/{name}"]
 
     @pytest.mark.parametrize(
