@@ -1017,7 +1017,7 @@ def _reproduce_one(
     # root and extraction runs once. --cache-root relocates it (e.g. to fast local storage);
     # by default it sits beside the run outputs, shared across seeds. Without a shared root
     # each seed's per-seed output_root would get its own empty cache and re-extract.
-    cache_root = Path(args.cache_root) if args.cache_root else output_root / "feature_cache"
+    cache_root = Path(args.cache_root) if args.cache_root else output_root / "cache"
     overrides = {"cache": {"enabled": True, "root_dir": str(cache_root)}}
     print(f"Feature cache (shared across seeds): {cache_root}", flush=True)
 
@@ -1180,7 +1180,7 @@ def run_benchmark_spec(
 
     Runs every seed (``seeds``, by default ``spec.canonical_seeds``) under
     ``<output_root>/seed_<n>``, with one feature cache shared by all seeds (``cache_root``,
-    by default ``<output_root>/feature_cache``), and scores each seed with ``spec.score``.
+    by default ``<output_root>/cache``), and scores each seed with ``spec.score``.
 
     A seed runs through ``spec.run(config)`` when the spec sets a runner, and through
     ``Pipeline(config).run()`` otherwise. Both return the dataset, splits and test
@@ -1212,7 +1212,7 @@ def run_benchmark_spec(
         devices = resolve_devices(devices)
     output_root = Path(output_root)
     shared_cache_root = (
-        Path(cache_root) if cache_root is not None else output_root / "feature_cache"
+        Path(cache_root) if cache_root is not None else output_root / "cache"
     )
     overrides = {"cache": {"enabled": True, "root_dir": str(shared_cache_root)}}
     reported_metrics = get_reported_metrics(spec)

@@ -242,7 +242,7 @@ def test_run_benchmark_spec_runs_canonical_seeds_with_shared_cache_and_aggregate
     assert {config["splits_csv"] for config in built} == {splits_csv}
     assert {config["encoder"] for config in built} == {"fmtf-encoder"}
     assert {config["overrides"]["cache"]["root_dir"] for config in built} == {
-        str(output_root / "feature_cache")
+        str(output_root / "cache")
     }
 
 

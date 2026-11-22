@@ -12,7 +12,7 @@ if the correct pixels, features and labels reach it.
 
 | Scenario | Covers |
 | --- | --- |
-| `slide_mil_binary_classification` | WSI tiling → extraction → cache → ABMIL → evaluation; a second run is a full cache hit (zero images encoded) with byte-identical predictions |
+| `slide_mil_binary_classification` | WSI tiling → extraction → cache → ABMIL → evaluation; the tiling and feature caches are written under the cache root, at `<root>/tiling/<key>` and `<root>/tile/<key>`, and nothing beside it; a second run is a full cache hit (no slide read, so no tiling, and zero images encoded) with byte-identical predictions |
 | `slide_mil_{multiclass_classification,ordinal_classification,regression,survival_nll,survival_cox}` | every slide task head on one cohort; the feature cache is shared across tasks |
 | `slide_mil_survival_nll_train_quantiles` | `discrete_survival` with `binning: train_quantiles` on a cohort without a `bin` column: the bundle's `model.json` and the head `soma.load` rebuilds carry the quartiles of the training split's uncensored times, and `plan.yaml` holds `binning` and `num_bins`, with `bin_edges: null` |
 | `slide_mil_survival_nll_fixed` | `discrete_survival` with `binning: fixed` and `bin_edges: [6, 11, 16]` on a cohort without a `bin` column: `plan.yaml` holds the edges as floats and `num_bins: 4`, the bundle's `model.json` and the head `soma.load` rebuilds carry the same edges, and the log counts the training cases and events in each bin, at plan time and again when the fold trains |

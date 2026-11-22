@@ -26,11 +26,16 @@ def resolve_cache_root(
     feature_dir: Path | str,
     output_root: Path | str | None = None,
 ) -> Path:
+    """Return the cache root: every cache kind lives under it as ``<root>/<kind>/<key>``.
+
+    ``cache_config.root_dir`` when set, else ``<output_root>/cache``, else
+    ``<feature_dir parent>/cache``.
+    """
     if cache_config.root_dir is not None:
         return Path(cache_config.root_dir)
     if output_root is not None:
-        return Path(output_root) / "feature_cache"
-    return Path(feature_dir).parent / "feature_cache"
+        return Path(output_root) / "cache"
+    return Path(feature_dir).parent / "cache"
 
 
 def resolve_tiling_cache_root(
@@ -39,12 +44,13 @@ def resolve_tiling_cache_root(
     tiling_dir: Path | str,
     output_root: Path | str | None = None,
 ) -> Path:
-    feature_root = resolve_cache_root(
+    """Return ``<cache root>/tiling``, the directory that holds the tiling cache entries."""
+    cache_root = resolve_cache_root(
         cache_config,
         feature_dir=Path(tiling_dir).parent / "features",
         output_root=output_root,
     )
-    return feature_root.parent / "tiling_cache"
+    return cache_root / "tiling"
 
 
 def resolve_feature_payload_dir(path: Path | str) -> Path:

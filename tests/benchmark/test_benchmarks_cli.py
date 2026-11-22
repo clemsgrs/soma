@@ -1000,7 +1000,7 @@ def test_reproduce_plural_runs_ordered_panel_with_shared_inputs_and_leaderboard(
     ]
     assert len({event[2] for event in run_events}) == 1
     assert len({event[3] for event in run_events}) == 1
-    assert {event[4] for event in run_events} == {str(output_root / "feature_cache")}
+    assert {event[4] for event in run_events} == {str(output_root / "cache")}
     assert f"[MEASURED] {benchmark.name} test/accuracy = 0.6100" in captured.out
     assert "[REFERENCE SKIPPED]" in captured.out
     assert f"[REFERENCE OK] {benchmark.name} test/accuracy = 0.7200" in captured.out
@@ -1077,7 +1077,7 @@ def test_reproduce_plural_preserves_successful_runs_and_writes_partial_leaderboa
         ("virchow2", 1),
     ]
     assert {attempt[2] for attempt in attempts} == {
-        str(output_root / "feature_cache")
+        str(output_root / "cache")
     }
     assert [attempt[3] for attempt in attempts] == [
         str(output_root / "seed_0"),

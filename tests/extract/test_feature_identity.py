@@ -579,7 +579,7 @@ def slide_manifests(tmp_path_factory) -> dict[int, Path]:
 
 
 def _extract_slides(dataset_csv: Path, root: Path, kind: str, *, encoder: str | None = None, **cache_settings):
-    """Extract into ``<root>/cache``; slides are tiled into ``<root>/tiling_cache``.
+    """Extract into ``<root>/cache``; slides are tiled into ``<root>/cache/tiling``.
 
     ``encoder`` replaces the stub encoder of ``kind``."""
     return soma.extract(
@@ -606,11 +606,11 @@ def _extract_slides(dataset_csv: Path, root: Path, kind: str, *, encoder: str | 
 def test_patient_level_extraction_tiles_the_slides_into_an_empty_tiling_cache(
     tmp_path, encoder, slide_manifests
 ):
-    assert not (tmp_path / "tiling_cache").exists()
+    assert not (tmp_path / "cache").exists()
 
     extracted = _extract_slides(slide_manifests[4], tmp_path, "patient")
 
-    assert (tmp_path / "tiling_cache").is_dir()
+    assert len(list((tmp_path / "cache" / "tiling").glob("*/process_list.csv"))) == 1
     _assert_same_features(_features(extracted), _expected_slide_features("patient", changed=False))
 
 

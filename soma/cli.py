@@ -506,7 +506,7 @@ def _preflight_reproduce_panel(benchmark, encoders: list[str]) -> list[str]:
             encoding="utf-8",
         )
         overrides = {
-            "cache": {"enabled": True, "root_dir": str(root / "feature_cache")}
+            "cache": {"enabled": True, "root_dir": str(root / "cache")}
         }
         for encoder in encoders:
             try:
@@ -936,7 +936,7 @@ def _build_reproduce_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out-dir", type=Path, default=None, help="Curated manifest dir (default <raw-root>/curated).")
     parser.add_argument("--output-root", type=Path, default=None, help="Where runs are written.")
-    parser.add_argument("--cache-root", type=Path, default=None, help="Shared feature-cache root (reused across seeds).")
+    parser.add_argument("--cache-root", type=Path, default=None, help="Shared cache root (reused across seeds).")
     parser.add_argument(
         "--devices",
         type=_device_list,

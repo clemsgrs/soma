@@ -53,7 +53,7 @@ def fold_runs(tmp_path_factory, tile_cv):
 
     def run(name, devices):
         output_root = root / name
-        recorder = FoldRecorder(cache_root=output_root / "feature_cache")
+        recorder = FoldRecorder(cache_root=output_root / "cache")
         config = tile_cv_config(dataset_csv, cv_csv, output_root)
         return Pipeline(config, callback_factory=recorder, devices=devices).run()
 
@@ -122,7 +122,7 @@ def _extracted(snapshot: dict[str, list[int]]) -> dict[str, list[int]]:
 
 def test_the_workers_read_the_features_the_launch_extracted(fold_runs):
     _in_turn, parallel = fold_runs
-    cache_root = parallel.run_dir.parents[3] / "feature_cache"
+    cache_root = parallel.run_dir.parents[3] / "cache"
 
     # As each fold starts, every extracted file is the one the launch wrote: same inode,
     # size and modification time as at the end, so no worker extracted again.

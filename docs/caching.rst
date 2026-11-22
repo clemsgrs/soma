@@ -8,6 +8,38 @@ The cache configuration is ``features.cache``, a :class:`soma.config.CacheOption
 
 .. autoclass:: soma.config.CacheOptions
 
+Cache layout
+------------
+
+Every cache lives under one root directory. Each kind of cache has its own
+subdirectory, and each entry is a directory named by its cache key:
+``<root>/<kind>/<key>``. For example:
+
+.. code-block:: text
+
+   <root>/
+   ├── tiling/<key>/         tissue masks, tile coordinates and previews
+   ├── tile/<key>/           tile features of whole slides
+   ├── image/<key>/          features of pre-cropped images
+   ├── slide/<key>/          slide embeddings
+   ├── patient/<key>/        patient embeddings
+   ├── hierarchical/<key>/   region embeddings
+   ├── dense_image/<key>/    dense grids of pre-cropped images
+   ├── dense/<key>/          dense grids of slide ROIs
+   └── roi_sampling/<key>/   ROIs sampled from annotation masks
+
+Set ``features.cache.root_dir`` to choose the root. When it is unset, the root is
+``<output_root>/cache``: ``<run.output_dir>/cache`` for a pipeline run, and
+``<output_dir>/cache`` for :func:`soma.extract`.
+
+soma writes no cache outside the root, so you can move, copy or delete a cache
+as one directory. After a move, soma reuses the features. It tiles the slides
+again once, because a tiling entry records the absolute paths of its files.
+
+Several runs and several encoders can share one root. A tiling entry depends only
+on the preprocessing settings, so every encoder with the same preprocessing
+reuses it.
+
 Cache reuse rules
 -----------------
 

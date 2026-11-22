@@ -258,12 +258,12 @@ def test_build_tiling_cache_key_changes_with_preprocessing(tmp_path: Path):
     assert key_a != key_b
 
 
-def test_resolve_tiling_cache_root_is_sibling_of_feature_cache(tmp_path: Path):
+def test_resolve_tiling_cache_root_is_inside_the_cache_root(tmp_path: Path):
     root = resolve_tiling_cache_root(
-        CacheOptions(root_dir=tmp_path / "shared" / "feature_cache"),
+        CacheOptions(root_dir=tmp_path / "shared" / "uni2"),
         tiling_dir=tmp_path / "run" / "tiling",
     )
-    assert root == tmp_path / "shared" / "tiling_cache"
+    assert root == tmp_path / "shared" / "uni2" / "tiling"
 
 
 def test_resolve_cache_root_uses_output_root_when_provided(tmp_path: Path):
@@ -272,7 +272,12 @@ def test_resolve_cache_root_uses_output_root_when_provided(tmp_path: Path):
         feature_dir=tmp_path / "run" / "features",
         output_root=tmp_path / "outputs",
     )
-    assert root == tmp_path / "outputs" / "feature_cache"
+    assert root == tmp_path / "outputs" / "cache"
+
+
+def test_resolve_cache_root_defaults_beside_the_feature_dir(tmp_path: Path):
+    root = resolve_cache_root(CacheOptions(), feature_dir=tmp_path / "run" / "features")
+    assert root == tmp_path / "run" / "cache"
 
 
 def test_resolve_tiling_cache_root_uses_output_root_when_provided(tmp_path: Path):
@@ -281,7 +286,7 @@ def test_resolve_tiling_cache_root_uses_output_root_when_provided(tmp_path: Path
         tiling_dir=tmp_path / "run" / "tiling",
         output_root=tmp_path / "outputs",
     )
-    assert root == tmp_path / "outputs" / "tiling_cache"
+    assert root == tmp_path / "outputs" / "cache" / "tiling"
 
 
 def test_probe_resolved_backends_uses_explicit_backend_without_probe(tmp_path: Path):

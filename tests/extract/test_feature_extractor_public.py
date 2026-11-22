@@ -894,8 +894,9 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
     monkeypatch.setattr(fake, "encode_tiles", lambda self, batch: encoded.append(len(batch)) or original(self, batch))
     first = soma.extract(images, output_dir=tmp_path / "first", **kwargs)
     assert sum(encoded) > 0
-    cache_dirs = sorted(path.relative_to(tmp_path) for path in tmp_path.glob("*cache/*/*"))
-    assert _drop_tile_grid(tmp_path / "cache") + _drop_tile_grid(tmp_path / "tiling_cache") > 0
+    cache_dirs = sorted(path.relative_to(cache_root) for path in cache_root.glob("*/*"))
+    assert _drop_tile_grid(cache_root / "tiling") > 0
+    assert _drop_tile_grid(cache_root / "tile") > 0
 
     encoded.clear()
     caplog.set_level(logging.WARNING)
@@ -905,6 +906,6 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
 
     assert encoded == []
     assert [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING] == []
-    assert sorted(path.relative_to(tmp_path) for path in tmp_path.glob("*cache/*/*")) == cache_dirs
+    assert sorted(path.relative_to(cache_root) for path in cache_root.glob("*/*")) == cache_dirs
     for sample_id in images.sample_ids:
         assert torch.equal(second.load(sample_id), first.load(sample_id))

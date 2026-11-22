@@ -146,7 +146,7 @@ class _DenseImageExtractor:
         ``cache_root / "dense_image" / key`` layout mirrors ``_resolve_cache`` — so an offline
         re-scorer can address the *exact* grids this run trained on rather than guessing
         among sibling cache-key dirs. ``feature_dir`` is consulted only when
-        ``cache.root_dir`` is unset (then the root is its parent ``feature_cache/``).
+        ``cache.root_dir`` is unset (then the root is ``cache/`` beside it).
         """
         if not self._cache.enabled:
             return None

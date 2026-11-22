@@ -176,9 +176,9 @@ def test_run_benchmark_runs_canonical_seed_loop_by_default(
     assert code == 0
     assert ledger_benchmark.curate_calls == 1
     assert [kw["seed"] for kw in ledger_benchmark.built] == [0, 1, 2]
-    # Every seed shares ONE feature-cache root (extraction runs once per encoder).
+    # Every seed shares ONE cache root (extraction runs once per encoder).
     roots = {kw["overrides"]["cache"]["root_dir"] for kw in ledger_benchmark.built}
-    assert roots == {str(tmp_path / "out" / "feature_cache")}
+    assert roots == {str(tmp_path / "out" / "cache")}
 
 
 def test_run_benchmark_frees_each_seeds_pipeline_before_the_next_seed_starts(
