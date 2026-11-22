@@ -198,6 +198,20 @@ def test_the_primary_metric_is_pooled_when_subgroup_keys_come_first():
     assert run_primary_metric(summary, "test") == "accuracy"
 
 
+def test_a_split_name_with_a_slash_keeps_its_primary_metric(tmp_path: Path):
+    # The split ``test/external`` ranks on ``test`` and reads ``external/mean_dice``:
+    # ``external`` holds no ``=`` and does not start ``mean_over_``, so it is no subgroup.
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    summary = {"test/external/mean_dice_mean": 0.8, "test/external/mean_dice_std": 0.1}
+    run = make_run_dir(_cfg(root, ds, sp, encoder="uni2"), summary)
+
+    assert run_primary_metric(summary, "test") == "external/mean_dice"
+    table = project_leaderboard([run], LeaderboardFacet(vary=("encoder",)))
+    assert table.metric == "external/mean_dice"
+    assert [row.mean for row in table.rows] == [pytest.approx(0.8)]
+
+
 def test_metric_override_beats_run(tmp_path: Path):
     root = tmp_path / "out"
     ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)

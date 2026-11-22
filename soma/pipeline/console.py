@@ -8,6 +8,8 @@ from rich.table import Table
 
 from slide2vec import PreprocessingConfig
 
+from soma.evaluation.subgroups import is_subgroup_key
+
 __all__ = ["build_completed_run_panel", "build_run_summary_panel"]
 
 
@@ -85,7 +87,7 @@ def build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
                 metric_name = key[len(prefix):-5]
             else:
                 metric_name = key[len(prefix):]
-            if "/" in metric_name or metric_name.endswith("_std"):
+            if is_subgroup_key(metric_name) or metric_name.endswith("_std"):
                 continue  # a subgroup key or a spread: the primary metric stays pooled
             if metric_name in {
                 "coverage",

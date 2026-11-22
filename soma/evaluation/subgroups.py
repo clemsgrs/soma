@@ -12,7 +12,7 @@ from collections.abc import Callable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-__all__ = ["subgroup_breakdown", "subgroup_metrics", "subgroup_stats"]
+__all__ = ["is_subgroup_key", "subgroup_breakdown", "subgroup_metrics", "subgroup_stats"]
 
 logger = logging.getLogger(__name__)
 
@@ -144,3 +144,15 @@ def subgroup_breakdown(
         "mean_over": _mean_over(per_group, list(metrics)),
         "stats": subgroup_stats(predictions, targets, metrics, columns),
     }
+
+
+def is_subgroup_key(name: str) -> bool:
+    """Whether a split-relative metric key (the part after ``<split>/``) is a subgroup key:
+    ``<column>=<group>/<metric>`` or ``mean_over_<column>/<metric>``.
+
+    A ``/`` alone does not make one, since a split name may hold a ``/`` (the split
+    ``test/external`` gives ``external/mean_dice`` under ``test``). Plan time refuses
+    ``/`` and ``=`` in subgroup columns and values, so the first segment decides.
+    """
+    head, slash, _ = name.partition("/")
+    return bool(slash) and ("=" in head or head.startswith("mean_over_"))

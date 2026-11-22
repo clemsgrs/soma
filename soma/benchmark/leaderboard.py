@@ -34,6 +34,7 @@ import numpy as np
 import yaml
 
 from soma.evaluation.metrics import metric_registry
+from soma.evaluation.subgroups import is_subgroup_key
 from soma.evaluation.summary import sample_std
 from soma.pipeline.layout import fingerprint_conflicts
 
@@ -224,14 +225,15 @@ def run_primary_metric(summary: dict[str, float], split: str) -> str | None:
 
     Mirrors the run-summary panel in ``soma/pipeline/console.py``: the first metric key under the
     split prefix that is not a ``_std`` companion, a provenance bookkeeping field, nor a
-    subgroup key (``centre=A/auroc``, ``mean_over_centre/auroc``), so it stays pooled.
+    subgroup key (``centre=A/auroc``, ``mean_over_centre/auroc``), so it stays pooled. A
+    split named ``test/external`` still ranks on ``test`` with ``external/mean_dice``.
     """
     prefix = f"{split}/"
     for key in summary:
         if not key.startswith(prefix):
             continue
         name = key[len(prefix):]
-        if "/" in name or name.endswith("_std"):
+        if is_subgroup_key(name) or name.endswith("_std"):
             continue
         if name.endswith("_mean"):
             name = name[: -len("_mean")]
