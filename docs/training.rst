@@ -101,7 +101,8 @@ The plan refuses any other name before the run starts:
   the head does not report.
 
 A monitor that is NaN at an evaluated epoch stops the run with an error, in
-``checkpoint`` and in ``early_stopping``, because it can never improve. AUROC,
+``early_stopping`` and in a ``checkpoint`` with ``selection: best``, because it
+can never improve. Under ``selection: last``, the monitor is only logged. AUROC,
 AUPRC and the C-index are NaN on a tune split with one class or no comparable
 pairs, a Cox loss is NaN on a tune split without an event, and a mean over groups
 is NaN when no group has a value.
@@ -146,10 +147,9 @@ column's groups, names it after the split:
      - The same values over the train split, with ``trainer.eval_train: true``
        (see :ref:`train-pass`).
 
-:ref:`subgroup-metrics` explains the group values and their mean. The panel and
-the log lines show the pooled values and the monitors, and ``train/loss`` when
-the train pass is on. The values of each group go to ``training_history.json``
-only.
+:ref:`subgroup-metrics` explains the group values and their mean. The panel
+shows the pooled values and the monitors, and ``train/loss`` when the train pass
+is on. The values of each group go to ``training_history.json`` only.
 
 With the ``mil`` learner, ``tune/loss`` is the head's loss computed once over the
 whole tune split, not a mean of per-batch losses. Each sample weighs the same,
@@ -183,7 +183,7 @@ model's values at the end of the epoch, computed as the tune values are, so
 training batches, computed in train mode (dropout on) while the weights change
 through the epoch, and it includes any auxiliary loss of the aggregator. For a
 Cox head, it is computed over the event-balanced training batches, while
-``train/loss`` is the partial likelihood over the whole train split.
+``train/loss`` is the partial-likelihood loss over the whole train split.
 
 The pass changes nothing in the training: ``train_loss``, every ``tune/`` value
 and the selected epoch are the same with it or without it. A ``train/`` value is
@@ -196,9 +196,12 @@ encoder runs. With live encoding, the same pass would encode every train tile
 again. The grid shape refuses ``eval_train``. To run the pass less often, raise
 ``trainer.val_every_n_epochs``.
 
-Without a tune split, nothing is evaluated, so the pass does not run and the
-trainer logs a warning. ``eval_train`` is not part of the experiment identity,
-but a resume refuses a change to it, as it does for ``trainer.device``.
+Without a tune loader, or with an empty one (``soma.fit`` without ``tune``, or a
+tune split where no sample has features), nothing is evaluated, so the pass does
+not run and the trainer logs a warning. When ``cohort.allow_missing_tune``
+reuses train as tune, the pass runs. ``eval_train`` is not part of the
+experiment identity, but a resume refuses a change to it, as it does for
+``trainer.device``.
 
 The tune split
 --------------

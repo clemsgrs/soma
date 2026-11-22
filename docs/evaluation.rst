@@ -91,8 +91,8 @@ over its groups. A significance test then compares each group with the
 rest of the split by permuting group membership 1,000 times; it needs at least
 10 samples in the group and two in the remainder. Patient-level runs read each
 patient's metadata from its first slide. Each fold writes the results to
-``subgroup_metrics_<split>.json``, for tune and for each test split, with or
-without ``holdout_test``:
+``subgroup_metrics_<split>.json`` for tune, with or without ``holdout_test``,
+and for each test split the run scores:
 
 .. code-block:: json
 
@@ -129,8 +129,8 @@ group, and their unweighted mean over the column's groups:
 The rules are the same as after the fit: a group needs two samples, and a NaN
 group is left out of the mean. These values go to ``training_history.json``
 (see :ref:`logged-values`); the progress panel shows only the pooled values and
-the monitors. They cover the samples with features; a sample without features
-is scored after the fit only, by the baseline.
+the monitors. They cover the samples with features; a tune or test sample
+without features is scored after the fit only, by the baseline.
 
 A tune mean over groups can be the monitor (see :ref:`monitors`), but the value
 of one group cannot: a fold's tune split can lack the group.
@@ -147,10 +147,10 @@ of one group cannot: a fold's tune split can lack the group.
 A group's loss is the head's loss over the samples of the group alone, as
 ``tune/loss`` is the loss over the whole split. For a loss that is a mean over
 samples, it is the mean of the group's per-sample losses. For a Cox head, it is
-the partial likelihood over the group's own risk sets: each group is a stratum.
-The groups' losses then do not average to ``tune/loss``, whose risk sets span the
-whole split. A group without an event has no partial likelihood, so its loss is
-NaN, and the mean over groups leaves it out.
+the partial-likelihood loss over the group's own risk sets: each group is a
+stratum. The groups' losses then do not average to ``tune/loss``, whose risk
+sets span the whole split. The loss of a group without an event is NaN, and the
+mean over groups leaves it out.
 
 A learner needs the ``subgroup_summary`` hook to run with subgroups. The ``mil``
 learner has it; a custom learner may need to add it (see :ref:`custom-learner`).
