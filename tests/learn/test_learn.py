@@ -293,6 +293,21 @@ class TestCoxWindow:
         grads = [p.grad for p in learner.model.aggregator.parameters() if p.grad is not None]
         assert grads and any(g.abs().sum() > 0 for g in grads)
 
+    @pytest.mark.parametrize("cox_window", [1, 3], ids=["padded batch", "accumulation window"])
+    def test_an_event_free_training_batch_still_gives_a_graph_connected_zero(self, cox_window):
+        # Only the evaluation loss of an event-free split is NaN: training keeps the
+        # fallback so an event-free batch never crashes a fit.
+        learner = self._learner(cox_window=cox_window)
+        bags = self._bags_of([5, 8, 3])
+        if cox_window == 1:
+            collate = functools.partial(bag_collate_fn, target_dtypes={"time": torch.float, "event": torch.float})
+            batch = collate([(bag, {"time": 3.0 - i, "event": 0.0}, f"s{i}") for i, bag in enumerate(bags)])
+        else:
+            targets = {"time": torch.tensor([3.0, 2.0, 1.0]), "event": torch.zeros(3)}
+            batch = CoxWindowBatch(bags=bags, targets=targets, sample_ids=("a", "b", "c"))
+        loss = learner.training_step(batch)
+        assert loss.detach().item() == 0.0 and loss.grad_fn is not None
+
     def test_transfer_batch_keeps_the_window_bags_on_the_host(self):
         # A window of large bags must not sit on the accelerator in full: each bag is
         # moved right before its own forward, the targets up front.
@@ -527,6 +542,26 @@ class TestTrainerBudget:
 #: ``_bags``' samples by centre: s0..s3 in A, s4..s7 in B, both classes in each.
 CENTRES = {"centre": {f"s{i}": "A" if i < 4 else "B" for i in range(8)}}
 
+COX_TIME = [8.0, 3.0, 6.0, 1.0, 7.0, 2.0, 5.0, 4.0]
+
+
+def _cox_fit(event: list[float], *, callbacks=()) -> tuple[FitResult, list[Tensor]]:
+    """One epoch of a Cox MIL learner on 8 bags ``s0``..``s7`` with ``COX_TIME`` and
+    ``event``, tuned on the same bags in batches of 3 with ``CENTRES``."""
+    torch.manual_seed(0)
+    learner = MILLearner(MILModel(aggregator=MeanPool(input_dim=D), task_head=CoxSurvivalHead(input_dim=D)))
+    g = torch.Generator().manual_seed(0)
+    bags = [torch.randn(4 + i, D, generator=g) for i in range(8)]
+    items = [(bag, {"time": COX_TIME[i], "event": event[i]}, f"s{i}") for i, bag in enumerate(bags)]
+    collate = functools.partial(bag_collate_fn, target_dtypes={"time": torch.float, "event": torch.float})
+    result = Trainer(max_epochs=1, callbacks=list(callbacks), device="cpu").fit(
+        learner,
+        DataLoader(items, batch_size=8, collate_fn=collate),
+        DataLoader(items, batch_size=3, collate_fn=collate),
+        tune_groups=CENTRES,
+    )
+    return result, bags
+
 
 class TestSubgroupMonitoring:
     def test_without_groups_the_history_holds_the_loop_columns_and_the_pooled_values_only(self):
@@ -601,21 +636,8 @@ class TestSubgroupMonitoring:
             ]
             return sum(terms) / len(terms)
 
-        torch.manual_seed(0)
-        aggregator = MeanPool(input_dim=D)
-        learner = MILLearner(MILModel(aggregator=aggregator, task_head=CoxSurvivalHead(input_dim=D)))
-        g = torch.Generator().manual_seed(0)
-        bags = [torch.randn(4 + i, D, generator=g) for i in range(8)]
-        time = [8.0, 3.0, 6.0, 1.0, 7.0, 2.0, 5.0, 4.0]
-        event = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
-        items = [(bag, {"time": time[i], "event": event[i]}, f"s{i}") for i, bag in enumerate(bags)]
-        collate = functools.partial(bag_collate_fn, target_dtypes={"time": torch.float, "event": torch.float})
-        result = Trainer(max_epochs=1, device="cpu").fit(
-            learner,
-            DataLoader(items, batch_size=8, collate_fn=collate),
-            DataLoader(items, batch_size=3, collate_fn=collate),
-            tune_groups=CENTRES,
-        )
+        time, event = COX_TIME, [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+        result, bags = _cox_fit(event)
         learner = result.learner.eval()
         with torch.no_grad():
             risk = [float(learner.model(bag.unsqueeze(0)).logits) for bag in bags]
@@ -629,6 +651,23 @@ class TestSubgroupMonitoring:
         assert row["tune/loss"] == pytest.approx(partial_likelihood(risk, time, event), rel=1e-5)
         # Each group's own risk sets: a stratified loss, not a slice of the pooled one.
         assert row["tune/mean_over_centre/loss"] != pytest.approx(row["tune/loss"], rel=1e-3)
+
+    def test_an_event_free_cox_group_has_a_nan_loss_left_out_of_the_mean(self):
+        # Centre B holds four patients and no event: its partial likelihood is undefined,
+        # like its c-index, so it logs NaN rather than the training fallback 0.0.
+        result, _ = _cox_fit([1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+        row = result.history.iloc[-1]
+        assert math.isnan(row["tune/centre=B/loss"]) and math.isnan(row["tune/centre=B/c_index"])
+        assert math.isfinite(row["tune/centre=A/loss"])
+        assert row["tune/mean_over_centre/loss"] == row["tune/centre=A/loss"]
+        assert row["tune/mean_over_centre/loss_groups"] == 1
+        assert math.isfinite(row["tune/loss"])
+
+    def test_an_event_free_cox_tune_split_fails_fast_on_a_loss_monitor(self):
+        # The pooled loss is undefined too, like the pooled c-index: the checkpoint must not
+        # select on a constant.
+        with pytest.raises(RuntimeError, match=r"Checkpoint monitor 'tune/loss' is nan at epoch 1.*no event"):
+            _cox_fit([0.0] * 8, callbacks=[Checkpoint(monitor="tune/loss")])
 
     def test_the_mean_over_groups_skips_a_nan_group_and_counts_the_groups_it_averages(self):
         # Centre A holds two class-0 samples only, so its AUROC is undefined.

@@ -144,9 +144,9 @@ def _require_finite(owner: str, monitor: str, value: float, epoch: int) -> None:
         raise RuntimeError(
             f"{owner} monitor '{monitor}' is {value} at epoch {epoch + 1}, so it can never "
             "improve. Threshold-free metrics (AUROC, AUPRC, C-index, ...) are undefined when "
-            "the tune split holds a single class or no comparable pairs, and a mean over "
-            "groups is NaN when no group has a value; check the split or monitor "
-            "'tune/loss' / a threshold-based metric instead."
+            "the tune split holds a single class or no comparable pairs, a Cox loss when it "
+            "holds no event, and a mean over groups is NaN when no group has a value; check "
+            "the split or monitor 'tune/loss' / a threshold-based metric instead."
         )
 
 

@@ -297,7 +297,8 @@ def cox_breslow_loss(
 
     Returns:
         Scalar mean loss. Returns a graph-connected zero when the batch has no
-        events (degenerate risk set, no gradient signal).
+        events (degenerate risk set, no gradient signal), a training fallback: the
+        MIL learner's evaluation reports such a split's loss as NaN instead.
     """
     risk = risk.float().view(-1)
     time = time.view(-1)

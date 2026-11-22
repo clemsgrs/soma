@@ -144,16 +144,24 @@ class MILLearner(Learner):
         values: a loss that couples samples (the Cox partial likelihood) exists only over
         the whole split, and a mean-reduced one would otherwise weigh a smaller last
         batch's samples more.
+
+        For a ``full_cohort_eval_loss`` head (Cox), rows without an event have no
+        partial likelihood, as they have no c-index: the loss is NaN, not the 0.0 that
+        training falls back on for an event-free batch.
         """
         if not outputs:
             return {"loss": float("nan")}
         logits, targets = _joined(outputs)
-        # The steps keep their outputs on the host for the metrics; the loss runs on the
-        # learner's device, where a ``loss=`` module's buffers (class weights) sit.
-        device = next(self.model.parameters()).device
-        loss = self.task_loss(logits.to(device), {k: v.to(device) for k, v in targets.items()})
+        if getattr(self.head, "full_cohort_eval_loss", False) and not bool(targets["event"].any()):
+            loss = float("nan")
+        else:
+            # The steps keep their outputs on the host for the metrics; the loss runs on
+            # the learner's device, where a ``loss=`` module's buffers (class weights) sit.
+            device = next(self.model.parameters()).device
+            targets_on_device = {k: v.to(device) for k, v in targets.items()}
+            loss = float(self.task_loss(logits.to(device), targets_on_device).item())
         metrics = self.head.compute_metrics(logits, targets)
-        return {"loss": float(loss.item()), **{k: float(v) for k, v in metrics.items()}}
+        return {"loss": loss, **{k: float(v) for k, v in metrics.items()}}
 
     def subgroup_summary(self, outputs: list[StepOutput], sample_ids: Sequence[str]) -> dict[str, float]:
         """:meth:`validation_summary` over the rows of ``sample_ids``, selected into one
@@ -162,7 +170,9 @@ class MILLearner(Learner):
         For a mean-reduced loss, a group's loss is the mean of its samples' losses. For a
         ``full_cohort_eval_loss`` head (Cox), it is the partial likelihood over the
         group's own risk sets: a stratified quantity, not a slice of the pooled loss, so
-        the mean of the groups' losses does not equal the split's ``loss``.
+        the mean of the groups' losses does not equal the split's ``loss``. A group
+        without an event has no partial likelihood: its loss is NaN, and the mean over
+        groups leaves it out.
         """
         logits, targets = _joined(outputs)
         wanted = set(sample_ids)
