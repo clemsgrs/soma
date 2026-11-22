@@ -18,7 +18,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import importlib
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -728,6 +728,8 @@ def expand(config: ExperimentConfig) -> ExperimentConfig:
 def _spelled_out(config: ExperimentConfig, cohort: Any, *, infer: bool) -> ExperimentConfig:
     config = revalidated(config)
     _check(config)
+    if cohort is not None:
+        _check_subgroup_names(config.evaluation.subgroups, cohort.records)
     registries = _registries()
     learner = config.learner
     if learner is not None:
@@ -752,6 +754,28 @@ def _spelled_out(config: ExperimentConfig, cohort: Any, *, infer: bool) -> Exper
         ),
     )
     return ExperimentConfig.from_dict(plain(resolved))
+
+
+def _check_subgroup_names(columns: Sequence[str], records: Sequence[Any]) -> None:
+    """Refuse a subgroup column, or a group value read with ``str()``, that holds ``/`` or
+    ``=``: the summary spells a group's metric ``<split>/<column>=<group>/<metric>``."""
+    for column in columns:
+        if "/" in column or "=" in column:
+            raise ValueError(
+                f"evaluation.subgroups column {column!r} contains '/' or '=', which the subgroup "
+                "keys (<split>/<column>=<group>/<metric>) cannot hold: rename the column."
+            )
+        for record in records:
+            if column not in record.metadata:
+                continue
+            value = str(record.metadata[column])
+            if "/" in value or "=" in value:
+                raise ValueError(
+                    f"evaluation.subgroups column {column!r} has the value {value!r} (sample "
+                    f"{record.sample_id!r}), which contains '/' or '=': the subgroup keys "
+                    "(<split>/<column>=<group>/<metric>) cannot hold either. Rename the value in "
+                    "cohort.records."
+                )
 
 
 def _expand(registry: Any, leaf: Any) -> Any:
