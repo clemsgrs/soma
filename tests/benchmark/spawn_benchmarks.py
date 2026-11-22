@@ -127,10 +127,10 @@ def score_tile_run(run_dir: str | Path) -> dict[str, float]:
 def score_and_snapshot_cache(run_dir: str | Path) -> dict[str, float]:
     """Score a seed, and record the shared feature cache as it is at that moment.
 
-    The default cache root is ``<output_root>/feature_cache``, beside the seed roots.
+    The default cache root is ``<output_root>/cache``, beside the seed roots.
     """
     seed_root = Path(run_dir)
-    snapshot = cache_snapshot(seed_root.parent / "feature_cache")
+    snapshot = cache_snapshot(seed_root.parent / "cache")
     (seed_root / CACHE_SNAPSHOT).write_text(json.dumps(snapshot, sort_keys=True))
     return score_tile_run(seed_root)
 

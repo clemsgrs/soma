@@ -35,7 +35,7 @@ from tests.e2e.synthetic import (
 TILE_PX = 32
 #: The tiling and pooled feature cache keys of the flagship scenario (pinned in slice 6c;
 #: moved once in slice 8, when the scenarios took soma.testing's ``fake`` encoder).
-PINNED_SLIDE_CACHE_KEYS = ["tile/58101741dabf2c06"]
+PINNED_SLIDE_CACHE_KEYS = ["tile/58101741dabf2c06", "tiling/68b10c82db2f4623"]
 
 
 @pytest.fixture(scope="module")
@@ -93,13 +93,14 @@ def _config(
 
 
 def test_slide_classification_is_learned_cached_and_repeatable(
-    cohort, tmp_path, encoder_name, encoded_images, new_artifact
+    cohort, tmp_path, encoder_name, encoded_images, opened_files, new_artifact
 ):
     """The flagship journey, run twice from the same config.
 
-    The first run extracts every slide; the second must be served entirely from the
-    feature cache (zero images encoded) and reproduce the first run's predictions
-    byte for byte.
+    The first run tiles and extracts every slide into the cache root, tiling included,
+    and writes nothing beside it. The second must be served entirely from the cache (no
+    slide read, so no tiling, and zero images encoded) and reproduce the first run's
+    predictions byte for byte.
     """
     artifact = new_artifact("slide_mil_binary_classification")
     config = _config(
@@ -111,10 +112,14 @@ def test_slide_classification_is_learned_cached_and_repeatable(
         cache_root=tmp_path / "cache",
     )
 
+    slides = {(cohort.root / "slides" / f"{sample_id}.tif").resolve() for sample_id in cohort.sample_ids}
     cold = run_soma(config, tmp_path / "config.yaml")
     tiles_encoded_cold = sum(encoded_images)
+    slides_read_cold = {path for path, _reader in opened_files if path in slides}
     encoded_images.clear()
+    opened_files.clear()
     warm = run_soma(config, tmp_path / "config.yaml")
+    slides_read_warm = {path for path, _reader in opened_files if path in slides}
 
     artifact.record_run("cold", cold)
     artifact.check_training_reduced_loss("cold", cold)
@@ -123,13 +128,19 @@ def test_slide_classification_is_learned_cached_and_repeatable(
     # Cache keys derive from the features config alone; a config-layout change must not move them.
     cache_keys = sorted(p.relative_to(tmp_path / "cache").as_posix() for p in (tmp_path / "cache").glob("*/*"))
     artifact.check_equal("cold/cache_keys", cache_keys, PINNED_SLIDE_CACHE_KEYS)
+    artifact.check_equal(
+        "cold/beside_cache_root", sorted(p.name for p in tmp_path.iterdir()), ["cache", "config.yaml", "runs"]
+    )
     artifact.check_at_least("cold/test/auroc", cold.summary["test/auroc"], 0.95)
     artifact.check_at_least(
         "cold/test/balanced_accuracy", cold.summary["test/balanced_accuracy"], 0.8
     )
     artifact.check_equal("cold/test/num_samples", cold.summary["test/num_samples"], 8.0)
     artifact.check_at_least("cold/tiles_encoded", tiles_encoded_cold, 1)
+    artifact.check_equal("cold/slides_read", len(slides_read_cold), len(slides))
     artifact.check_equal("warm/tiles_encoded", sum(encoded_images), 0)
+    # Tiling a slide reads it: a warm run that reads none took its tiling from the cache.
+    artifact.check_equal("warm/slides_read", len(slides_read_warm), 0)
     artifact.check_equal(
         "warm/predictions_identical",
         artifact.runs["cold"]["predictions_sha256"],
@@ -425,7 +436,7 @@ def test_flat_png_slides_render_their_previews(cohort, tmp_path, encoder_name, n
     artifact.check_training_reduced_loss("run", run)
     artifact.check_at_least("test/auroc", run.summary["test/auroc"], 0.95)
     for kind in ("mask", "tiling"):
-        previews = list(tmp_path.glob(f"tiling_cache/*/previews/{kind}/*.jpg"))
+        previews = list(tmp_path.glob(f"cache/tiling/*/previews/{kind}/*.jpg"))
         artifact.check_equal(f"previews/{kind}", len(previews), len(cohort.sample_ids))
     artifact.assert_passed()
 

@@ -97,7 +97,7 @@ def resolve_dense_cache_dir(cfg: ExperimentConfig, images: ImageManifest) -> Pat
     features = cfg.features
     cache = features.cache
     if cache.root_dir is None:
-        cache = replace(cache, root_dir=Path(cfg.run.output_dir) / "feature_cache")
+        cache = replace(cache, root_dir=Path(cfg.run.output_dir) / "cache")
     source = extract(
         images,
         encoder=features.encoder,

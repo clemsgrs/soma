@@ -36,7 +36,7 @@ def tile_cv_config(
     dataset_csv: str | Path, splits_csv: str | Path, output_root: str | Path, **run: Any
 ) -> ExperimentConfig:
     """The tile protocol on ``splits_csv``, seed 0, with ``run`` keywords (``run_id``,
-    ``folds``, ``resume``) set. The feature cache is ``<output_root>/feature_cache``."""
+    ``folds``, ``resume``) set. The feature cache is under ``<output_root>/cache``."""
     config = build_tile_config(
         dataset_csv=dataset_csv,
         splits_csv=splits_csv,

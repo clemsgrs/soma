@@ -42,7 +42,7 @@ def _assert_ordinary_name_identity(output_root: Path) -> None:
     )
 
     metadata_paths = list(
-        (output_root / "feature_cache").glob("**/cache_metadata.json")
+        (output_root / "cache").glob("**/cache_metadata.json")
     )
     cache_metadata = [json.loads(path.read_text()) for path in metadata_paths]
     assert {item["encoder_name"] for item in cache_metadata} == names

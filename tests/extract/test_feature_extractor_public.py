@@ -851,18 +851,13 @@ def _drop_tile_grid(root: Path) -> int:
     return changed
 
 
-def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """hs2p 6.1.1 added ``tiling.grid``; its default, the contour grid, is the only grid
-    hs2p 6.1.0 had. A tiling and feature cache whose records hold no grid, as hs2p 6.1.0
-    wrote them, keeps its keys and is reused whole: nothing is encoded again, and no
-    identity check fails or warns."""
-    import logging
-    import warnings
-
+def _cached_fake_tiling_extract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cache_root: Path | None
+) -> tuple[ImageManifest, dict]:
+    """A two-slide synthetic cohort and the ``soma.extract`` keywords that tile it with
+    soma.testing's weight-free ``fake`` encoder on CPU, caching under ``cache_root`` (the
+    default root when it is ``None``)."""
     from hs2p import FilterConfig
-    from slide2vec.encoders.registry import encoder_registry
 
     from soma.config import CacheOptions
     from soma.testing import synthetic_cohort
@@ -870,10 +865,8 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
     records, _ = synthetic_cohort(tmp_path / "cohort", n=2)
-    images = ImageManifest.from_csv(records)
-    cache_root = tmp_path / "cache"
     kwargs = dict(
-        encoder="fake",  # soma.testing's weight-free encoder
+        encoder="fake",
         extraction=extraction(
             0.5,
             32,
@@ -888,14 +881,32 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
         ),
         cache=CacheOptions(enabled=True, root_dir=cache_root),
     )
+    return ImageManifest.from_csv(records), kwargs
+
+
+def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """hs2p 6.1.1 added ``tiling.grid``; its default, the contour grid, is the only grid
+    hs2p 6.1.0 had. A tiling and feature cache whose records hold no grid, as hs2p 6.1.0
+    wrote them, keeps its keys and is reused whole: nothing is encoded again, and no
+    identity check fails or warns."""
+    import logging
+    import warnings
+
+    from slide2vec.encoders.registry import encoder_registry
+
+    cache_root = tmp_path / "cache"
+    images, kwargs = _cached_fake_tiling_extract(tmp_path, monkeypatch, cache_root=cache_root)
     encoded: list[int] = []
     fake = encoder_registry.require("fake")
     original = fake.encode_tiles
     monkeypatch.setattr(fake, "encode_tiles", lambda self, batch: encoded.append(len(batch)) or original(self, batch))
     first = soma.extract(images, output_dir=tmp_path / "first", **kwargs)
     assert sum(encoded) > 0
-    cache_dirs = sorted(path.relative_to(tmp_path) for path in tmp_path.glob("*cache/*/*"))
-    assert _drop_tile_grid(tmp_path / "cache") + _drop_tile_grid(tmp_path / "tiling_cache") > 0
+    cache_dirs = sorted(path.relative_to(cache_root) for path in cache_root.glob("*/*"))
+    assert _drop_tile_grid(cache_root / "tiling") > 0
+    assert _drop_tile_grid(cache_root / "tile") > 0
 
     encoded.clear()
     caplog.set_level(logging.WARNING)
@@ -905,6 +916,47 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
 
     assert encoded == []
     assert [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING] == []
-    assert sorted(path.relative_to(tmp_path) for path in tmp_path.glob("*cache/*/*")) == cache_dirs
+    assert sorted(path.relative_to(cache_root) for path in cache_root.glob("*/*")) == cache_dirs
     for sample_id in images.sample_ids:
         assert torch.equal(second.load(sample_id), first.load(sample_id))
+
+
+@pytest.mark.parametrize(
+    ("root_dir", "planted"),
+    [
+        pytest.param("out", None, id="root-is-the-output-dir"),
+        pytest.param(None, "0123456789abcdef/cache_metadata.json", id="output-dir-is-a-cache-root"),
+        pytest.param("exp1", "process_list.csv", id="root-is-another-runs-output-dir"),
+    ],
+)
+def test_a_tiling_dir_shared_by_a_cache_root_and_a_run_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root_dir: str | None, planted: str | None
+) -> None:
+    """The tiling cache ``<root>/tiling`` and a run's live tiling dir
+    ``<output_dir>/tiling`` share a name, so one directory can be both. soma clears the
+    live tiling dir to hold the stub of a cache hit, which would delete the tiling
+    entries of the cache, and finished runs that point at them would break. The verb
+    refuses before it tiles, and the shared ``tiling/`` keeps what was there:
+
+    - ``cache.root_dir`` is the run's own ``output_dir``, which starts empty, so the
+      refusal comes from the paths alone;
+    - ``output_dir`` is an existing cache root (it holds ``tiling/<key>/``) and the
+      cache root is unset;
+    - ``cache.root_dir`` is another run's output dir (it holds ``tiling/process_list.csv``).
+    """
+    output_dir = tmp_path / "out"
+    images, kwargs = _cached_fake_tiling_extract(
+        tmp_path, monkeypatch, cache_root=None if root_dir is None else tmp_path / root_dir
+    )
+    shared_tiling = tmp_path / (root_dir or "out") / "tiling"
+    if planted is not None:
+        (shared_tiling / planted).parent.mkdir(parents=True, exist_ok=True)
+        (shared_tiling / planted).write_text("{}", encoding="utf-8")
+    before = sorted(path.relative_to(shared_tiling) for path in shared_tiling.rglob("*"))
+
+    with pytest.raises(ValueError, match=r"features\.cache\.root_dir"):
+        soma.extract(images, output_dir=output_dir, **kwargs)
+
+    assert sorted(path.relative_to(shared_tiling) for path in shared_tiling.rglob("*")) == before
+    if planted is not None:
+        assert (shared_tiling / planted).read_text(encoding="utf-8") == "{}"

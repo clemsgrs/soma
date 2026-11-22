@@ -46,7 +46,7 @@ requirements.
    # The cohort holds identity, targets and folds; the image manifest holds the paths.
    cohort = Cohort.from_csv("dataset.csv", "splits.csv", targets=["label"])
    images = ImageManifest.from_csv("dataset.csv")
-   cache = CacheOptions(enabled=True, root_dir="shared/feature_cache")
+   cache = CacheOptions(enabled=True, root_dir="shared/cache")
 
    # Features enter through soma.extract: it reads the image manifest and returns the source.
    features = soma.extract(images, encoder="uni2", cache=cache, output_dir="output")
@@ -184,7 +184,7 @@ padding, window, feature kind); batch size and precision are slide2vec's
        unit="tile",
        dense=DenseOptions(spacing_um=0.5, target_size=224),
        execution=ExecutionOptions(batch_size=64),
-       cache=CacheOptions(enabled=True, root_dir="shared/feature_cache"),
+       cache=CacheOptions(enabled=True, root_dir="shared/cache"),
        output_dir="output/dense",
    )
 
@@ -226,7 +226,7 @@ derives the ROI cohort (each ROI inherits its slide's splits):
                output_mode="merged",
            ),
        ),
-       cache=CacheOptions(enabled=True, root_dir="shared/feature_cache"),
+       cache=CacheOptions(enabled=True, root_dir="shared/cache"),
        output_dir="output/annotation-rois",
    )
 
@@ -405,7 +405,7 @@ package, which ``import soma`` does not import: importing it (here through
            output_root=seed_root,
            seed=seed,
            # share one feature cache across seeds (extraction is seed-independent)
-           overrides={"cache": {"enabled": True, "root_dir": "runs/eva-bach/feature_cache"}},
+           overrides={"cache": {"enabled": True, "root_dir": "runs/eva-bach/cache"}},
        )
        result = Pipeline(config).run()
        metrics = benchmark.score(result.run_dir)

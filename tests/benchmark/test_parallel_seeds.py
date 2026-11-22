@@ -95,7 +95,7 @@ def _feature_files(cache_root: Path) -> dict[str, object]:
 
 def test_a_parallel_run_extracts_once_and_no_worker_touches_the_cache(tile_spec_runs):
     _sequential, sequential_root, _parallel, output_root = tile_spec_runs
-    cache_root = output_root / "feature_cache"
+    cache_root = output_root / "cache"
 
     # Each seed's score recorded the cache as it then was; seed 0 runs before any worker.
     snapshots = [
@@ -107,7 +107,7 @@ def test_a_parallel_run_extracts_once_and_no_worker_touches_the_cache(tile_spec_
     assert spawn_benchmarks.cache_snapshot(cache_root) == snapshots[0]
     assert list(cache_root.rglob("*.tmp")) == []
 
-    sequential_files = _feature_files(sequential_root / "feature_cache")
+    sequential_files = _feature_files(sequential_root / "cache")
     parallel_files = _feature_files(cache_root)
     assert sorted(parallel_files) == sorted(sequential_files)
     for name, content in parallel_files.items():

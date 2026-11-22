@@ -147,7 +147,7 @@ print(f"reported:        {spec.reported_metrics}")
 
 # --- 2. Execute it ---------------------------------------------------------------
 # run_benchmark_spec runs every canonical seed under <output_root>/seed_<n> and
-# points every seed at one shared feature cache (<output_root>/feature_cache by
+# points every seed at one shared cache root (<output_root>/cache by
 # default), so tile features are extracted once and reused.
 
 output_root = WORK / "benchmark"
@@ -165,7 +165,7 @@ print(f"status: {result.status} ({'success' if result.status == 0 else 'failure'
 print("per-seed evidence roots:")
 for seed, seed_root in zip(spec.canonical_seeds, result.seed_roots):
     print(f"  seed {seed}: {seed_root}")
-cache_root = output_root / "feature_cache"
+cache_root = output_root / "cache"
 cached_bags = [p for p in cache_root.rglob("*.pt") if p.stem in set(sample_ids)]
 print(f"shared feature cache root: {cache_root}")
 print(f"  cached feature bags: {len(cached_bags)} (extracted once, reused by every seed)")
