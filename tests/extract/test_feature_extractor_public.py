@@ -851,18 +851,12 @@ def _drop_tile_grid(root: Path) -> int:
     return changed
 
 
-def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """hs2p 6.1.1 added ``tiling.grid``; its default, the contour grid, is the only grid
-    hs2p 6.1.0 had. A tiling and feature cache whose records hold no grid, as hs2p 6.1.0
-    wrote them, keeps its keys and is reused whole: nothing is encoded again, and no
-    identity check fails or warns."""
-    import logging
-    import warnings
-
+def _cached_fake_tiling_extract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, cache_root: Path
+) -> tuple[ImageManifest, dict]:
+    """A two-slide synthetic cohort and the ``soma.extract`` keywords that tile it with
+    soma.testing's weight-free ``fake`` encoder on CPU, caching under ``cache_root``."""
     from hs2p import FilterConfig
-    from slide2vec.encoders.registry import encoder_registry
 
     from soma.config import CacheOptions
     from soma.testing import synthetic_cohort
@@ -870,10 +864,8 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
     records, _ = synthetic_cohort(tmp_path / "cohort", n=2)
-    images = ImageManifest.from_csv(records)
-    cache_root = tmp_path / "cache"
     kwargs = dict(
-        encoder="fake",  # soma.testing's weight-free encoder
+        encoder="fake",
         extraction=extraction(
             0.5,
             32,
@@ -888,6 +880,23 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
         ),
         cache=CacheOptions(enabled=True, root_dir=cache_root),
     )
+    return ImageManifest.from_csv(records), kwargs
+
+
+def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """hs2p 6.1.1 added ``tiling.grid``; its default, the contour grid, is the only grid
+    hs2p 6.1.0 had. A tiling and feature cache whose records hold no grid, as hs2p 6.1.0
+    wrote them, keeps its keys and is reused whole: nothing is encoded again, and no
+    identity check fails or warns."""
+    import logging
+    import warnings
+
+    from slide2vec.encoders.registry import encoder_registry
+
+    cache_root = tmp_path / "cache"
+    images, kwargs = _cached_fake_tiling_extract(tmp_path, monkeypatch, cache_root=cache_root)
     encoded: list[int] = []
     fake = encoder_registry.require("fake")
     original = fake.encode_tiles
@@ -909,3 +918,23 @@ def test_a_cache_recorded_before_hs2p_had_a_tile_grid_is_a_full_hit(
     assert sorted(path.relative_to(cache_root) for path in cache_root.glob("*/*")) == cache_dirs
     for sample_id in images.sample_ids:
         assert torch.equal(second.load(sample_id), first.load(sample_id))
+
+
+def test_a_cache_root_that_puts_the_tiling_cache_in_the_live_tiling_dir_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With ``cache.root_dir`` equal to ``output_dir``, the tiling cache ``<root>/tiling``
+    is the run's own tiling dir, which soma clears to hold the stub of a cache hit. That
+    would delete every tiling entry in the shared cache, so the verb refuses the root
+    before it tiles, and the entries already there stay."""
+    output_dir = tmp_path / "out"
+    images, kwargs = _cached_fake_tiling_extract(tmp_path, monkeypatch, cache_root=output_dir)
+    other_entry = output_dir / "tiling" / "0123456789abcdef"
+    other_entry.mkdir(parents=True)
+    (other_entry / "cache_metadata.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"features\.cache\.root_dir"):
+        soma.extract(images, output_dir=output_dir, **kwargs)
+
+    assert sorted(path.name for path in (output_dir / "tiling").iterdir()) == [other_entry.name]
+    assert (other_entry / "cache_metadata.json").read_text(encoding="utf-8") == "{}"

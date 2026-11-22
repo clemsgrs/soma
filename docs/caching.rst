@@ -35,6 +35,8 @@ Set ``features.cache.root_dir`` to choose the root. When it is unset, the root i
 soma writes no cache outside the root, so you can move, copy or delete a cache
 as one directory. After a move, soma reuses the features. It tiles the slides
 again once, because a tiling entry records the absolute paths of its files.
+New runs reuse a moved cache, but finished runs still point at the old path,
+so keep the old path (for example as a symlink) while you need those runs.
 
 Several runs and several encoders can share one root. A tiling entry depends only
 on the preprocessing settings, so every encoder with the same preprocessing

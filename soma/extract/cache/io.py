@@ -44,13 +44,28 @@ def resolve_tiling_cache_root(
     tiling_dir: Path | str,
     output_root: Path | str | None = None,
 ) -> Path:
-    """Return ``<cache root>/tiling``, the directory that holds the tiling cache entries."""
-    cache_root = resolve_cache_root(
-        cache_config,
-        feature_dir=Path(tiling_dir).parent / "features",
-        output_root=output_root,
+    """Return ``<cache root>/tiling``, the directory that holds the tiling cache entries.
+
+    Raises ``ValueError`` when that directory is ``tiling_dir`` or inside it: a cache hit
+    clears ``tiling_dir`` to hold its stub, which would delete the cached tiling.
+    """
+    tiling_dir = Path(tiling_dir)
+    tiling_cache_root = (
+        resolve_cache_root(
+            cache_config,
+            feature_dir=tiling_dir.parent / "features",
+            output_root=output_root,
+        )
+        / "tiling"
     )
-    return cache_root / "tiling"
+    if tiling_cache_root.resolve().is_relative_to(tiling_dir.resolve()):
+        raise ValueError(
+            f"The tiling cache '{tiling_cache_root}' is, or is inside, the run's tiling "
+            f"directory '{tiling_dir}'. soma clears that directory on a cache hit, so the "
+            f"cached tiling would be deleted. Choose another features.cache.root_dir, for example "
+            f"'{tiling_dir.parent / 'cache'}'."
+        )
+    return tiling_cache_root
 
 
 def resolve_feature_payload_dir(path: Path | str) -> Path:
