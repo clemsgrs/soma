@@ -979,6 +979,18 @@ class TestFitSugar:
         assert result.selection_monitor[0] == "tune/auroc"
         assert result.history["tune/auroc"].max() == pytest.approx(result.selection_monitor[1])
 
+    def test_tune_groups_reach_the_trainer_so_a_mean_over_monitor_selects(self):
+        import soma
+
+        result = soma.fit(
+            _learner(), _bag_loader(), _bag_loader(), tune_groups=CENTRES,
+            monitor="tune/mean_over_centre/loss", max_epochs=1, device="cpu", progress=False,
+        )
+        row = result.history.iloc[-1]
+        assert {"tune/centre=A/loss", "tune/centre=B/loss", "tune/mean_over_centre/loss"} <= set(row.index)
+        assert row["tune/mean_over_centre/loss_groups"] == 2
+        assert result.selection_monitor == ("tune/mean_over_centre/loss", row["tune/mean_over_centre/loss"])
+
     def test_a_bare_monitor_is_refused_without_a_tune_loader(self):
         # Without a tune loader nothing is evaluated, so the monitor is never looked up;
         # a bare name must still not reach the bundle's selection_monitor.
