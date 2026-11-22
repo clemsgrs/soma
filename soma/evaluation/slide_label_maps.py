@@ -4,11 +4,14 @@
 handle on one bundle's directory of them, and :func:`soma.evaluate` scores it against a
 :class:`~soma.data.LabelMapSource` of the slides' annotation rasters.
 
-Each slide is read one window at a time on the map's pixel grid: the map through hs2p's
-``tifffile`` reader, and the annotation raster through hs2p's aligned mask reader at the
-map's spacing, so a raster at another resolution lands on the map's pixels. Neither raster
-is held whole. Each window adds to the slide's confusion counts, and one row of counts per
-slide goes to the grid reducers, as for :class:`~soma.evaluation.LabelMapPredictions`.
+Each slide is read one window at a time on the map's pixel grid: the annotation raster
+through hs2p's aligned mask reader at the map's spacing, so a raster at another resolution
+lands on the map's pixels, and the map through hs2p's ``tifffile`` reader. Neither raster
+is held whole. A window without an annotated pixel (every raw value in ``ignore``, or the
+window wholly off the slide) adds nothing to the counts, so its map window is not read.
+Each other window adds to the slide's confusion counts, and one row of counts per slide
+goes to the grid reducers, as for :class:`~soma.evaluation.LabelMapPredictions`. The
+slides may be scored in worker processes; the counts do not change.
 
 The class scheme is the one each map records, which is its head's: ``values`` names each
 stored value, ``classes`` lists the raw annotation values of each class, ``ignore`` the
@@ -18,7 +21,9 @@ against. The rules:
 - a target pixel whose raw value is in ``ignore`` is not scored;
 - a target pixel of class ``c`` that the map did not predict (value 0) is a false negative
   for ``c`` and a false positive for no class;
-- a map pixel that lies partly off the slide has no target pixel and is not scored.
+- a map pixel that lies partly off the slide has no target pixel and is not scored;
+- a map value that the ``values`` mapping does not name is refused in a window with an
+  annotated pixel; the other windows of the map are not read.
 """
 
 from __future__ import annotations
@@ -49,16 +54,29 @@ class SlideLabelMaps:
     :class:`~soma.data.ImageManifest`). Only the source's rasters, slides and backends are
     used: the class scheme comes from the maps. ``window_px`` is the side of the window
     both rasters are read in, rounded down to a whole number of tile strides; it bounds
-    the memory a slide takes, not the scores.
+    the memory a slide takes, not the scores. A window with no annotated pixel is not read
+    from the map.
+
+    ``num_workers`` is the number of worker processes that score the slides, one slide at
+    a time each; 0 scores them in the main process. Like ``window_px``, it changes the
+    resources scoring takes, not the scores: the counts and the rows keep the order of
+    ``sample_ids``. The workers start with the ``spawn`` method and open their own
+    readers, with the source's backends. A slide that fails stops the other workers, and
+    its error is raised as in the main process.
     """
 
     task_family = "segmentation"
 
-    def __init__(self, directory: str | Path, *, window_px: int = DEFAULT_WINDOW_PX) -> None:
+    def __init__(
+        self, directory: str | Path, *, window_px: int = DEFAULT_WINDOW_PX, num_workers: int = 0
+    ) -> None:
         if isinstance(window_px, bool) or not isinstance(window_px, int) or window_px < 1:
             raise ValueError(f"window_px must be a positive integer, got {window_px!r}")
+        if isinstance(num_workers, bool) or not isinstance(num_workers, int) or num_workers < 0:
+            raise ValueError(f"num_workers must be a non-negative integer, got {num_workers!r}")
         self._output_dir, self._directory = _map_directory(Path(directory))
         self._window_px = window_px
+        self._num_workers = num_workers
         self._records = _records(self._directory)
         self._backend, self._mask_backend = _plan_backends(self._output_dir)
         self._scheme = (
@@ -114,17 +132,16 @@ def slide_label_map_counts(maps: SlideLabelMaps, targets) -> tuple[np.ndarray, l
             "whole-slide label maps are scored against a LabelMapSource of the slides' "
             f"annotation rasters, got {type(targets).__name__}"
         )
-    counts, rows = [], []
     entries = targets.entries
-    for sample_id in maps.sample_ids:
-        try:
-            slide = _slide_counts(maps, sample_id, entries[sample_id], targets)
-        except ValueError as error:
-            raise ValueError(f"slide '{sample_id}': {error}") from error
-        counts.append(slide.counts)
-        rows.append(slide.row())
+    jobs = [(sample_id, entries[sample_id]) for sample_id in maps.sample_ids]
+    readers = _Readers(mask=targets.backend, image=targets.image_backend)
+    if maps._num_workers == 0 or not jobs:
+        slides = [_scored_slide(maps, sample_id, entry, readers) for sample_id, entry in jobs]
+    else:
+        slides = _score_in_workers(maps, jobs, readers)
+    counts = [slide.counts for slide in slides]
     stacked = np.stack(counts) if counts else np.zeros((0, maps.num_classes, 3), dtype=np.int64)
-    return stacked, rows
+    return stacked, [slide.row() for slide in slides]
 
 
 # --- the directory ------------------------------------------------------------------ #
@@ -291,7 +308,25 @@ class _SlideCounts:
         return row
 
 
-def _slide_counts(maps: SlideLabelMaps, sample_id: str, entry, targets) -> _SlideCounts:
+@dataclass(frozen=True)
+class _Readers:
+    """The hs2p backends of the annotation rasters (``mask``) and of the slides."""
+
+    mask: str
+    image: str
+
+
+def _scored_slide(maps: SlideLabelMaps, sample_id: str, entry, readers: _Readers, stop=None) -> _SlideCounts:
+    """The slide's counts; a ``ValueError`` names the slide."""
+    try:
+        return _slide_counts(maps, sample_id, entry, readers, stop)
+    except ValueError as error:
+        raise ValueError(f"slide '{sample_id}': {error}") from error
+
+
+def _slide_counts(maps: SlideLabelMaps, sample_id: str, entry, readers: _Readers, stop=None) -> _SlideCounts:
+    """The slide's confusion counts. ``stop``, an event, ends the scoring between two
+    windows once it is set."""
     from hs2p.wsi.backends.tifffile import TifffileReader
 
     from soma.extract.dense.reader import _aligned_mask, _reference_geometry
@@ -312,7 +347,7 @@ def _slide_counts(maps: SlideLabelMaps, sample_id: str, entry, targets) -> _Slid
     record = maps._records[sample_id]
     level0_spacing, slide_size = _reference_geometry(
         str(entry.reference_path),
-        targets.image_backend,
+        readers.image,
         None if entry.spacing_at_level_0 is None else float(entry.spacing_at_level_0),
     )
     frame = _frame(scheme, record, level0_spacing, slide_size)
@@ -322,10 +357,10 @@ def _slide_counts(maps: SlideLabelMaps, sample_id: str, entry, targets) -> _Slid
     with TifffileReader(path, require_spacing=False) as reader, _aligned_mask(
         entry.label_mask_path,
         reference_path=entry.reference_path,
-        reference_backend=targets.image_backend,
+        reference_backend=readers.image,
         spacing_at_level_0=entry.spacing_at_level_0,
         pixel_mapping=scheme.pixel_mapping,
-        backend=targets.backend,
+        backend=readers.mask,
     ) as raster:
         if tuple(reader.level_dimensions[0]) != (frame.width, frame.height):
             raise ValueError(
@@ -334,9 +369,14 @@ def _slide_counts(maps: SlideLabelMaps, sample_id: str, entry, targets) -> _Slid
             )
         for top in range(0, frame.height, side):
             for left in range(0, frame.width, side):
+                if stop is not None and stop.is_set():
+                    raise _Stopped(sample_id)
                 size = (min(side, frame.width - left), min(side, frame.height - top))
+                raw = _annotation_window(raster, frame, (left, top), size)
+                if raw is None or not _any_annotated(raw, scheme.ignore):
+                    continue  # no annotated pixel: the window adds nothing to the counts
                 codes = _map_codes(reader, scheme, (left, top), size)
-                classes = _target_classes(raster, scheme, frame, (left, top), size, sample_id)
+                classes = _target_classes(raw, scheme, size, sample_id)
                 confusion += np.bincount(
                     (classes * (num_classes + 1) + codes).ravel(), minlength=(num_classes + 1) ** 2
                 ).reshape(num_classes + 1, num_classes + 1)
@@ -378,18 +418,86 @@ def _map_codes(reader, scheme: _Scheme, origin: tuple[int, int], size: tuple[int
     return codes
 
 
-def _target_classes(raster, scheme: _Scheme, frame, origin, size, sample_id: str) -> np.ndarray:
-    """A window of the annotation raster on the map's grid as class indices; ``C`` marks
-    an ignored pixel and a pixel partly off the slide."""
-    from soma.data.targets import apply_label_remap
-
+def _annotation_window(raster, frame, origin, size) -> np.ndarray | None:
+    """The raw annotation values of a map window's part on the slide, read on the map's
+    grid; ``None`` for a window wholly off the slide."""
     left, top = origin
     location = (left // frame.stride_px * frame.step_lv0, top // frame.stride_px * frame.step_lv0)
-    width, height = size
-    classes = np.full((height, width), len(scheme.classes), dtype=np.int64)
     region = {"location": location, "target_spacing_um": frame.spacing_um}
     inside_width, inside_height = raster.dimensions_within_canvas(**region, target_dimensions=size)
-    if inside_width > 0 and inside_height > 0:
-        raw = raster.read_region(**region, target_dimensions=(inside_width, inside_height)).labels
-        classes[:inside_height, :inside_width] = apply_label_remap(raw, scheme.target_lut, sample_id=sample_id)
+    if inside_width <= 0 or inside_height <= 0:
+        return None
+    return raster.read_region(**region, target_dimensions=(inside_width, inside_height)).labels
+
+
+def _any_annotated(raw: np.ndarray, ignore: tuple[int, ...]) -> bool:
+    """Whether a raw annotation value of ``raw`` is not in ``ignore``."""
+    if not ignore:
+        return raw.size > 0
+    annotated = raw != ignore[0]
+    for value in ignore[1:]:
+        annotated &= raw != value
+    return bool(annotated.any())
+
+
+def _target_classes(raw: np.ndarray, scheme: _Scheme, size, sample_id: str) -> np.ndarray:
+    """A window of the annotation raster on the map's grid as class indices, from the raw
+    values of its part on the slide; ``C`` marks an ignored pixel and a pixel partly off
+    the slide."""
+    from soma.data.targets import apply_label_remap
+
+    width, height = size
+    classes = np.full((height, width), len(scheme.classes), dtype=np.int64)
+    inside_height, inside_width = raw.shape
+    classes[:inside_height, :inside_width] = apply_label_remap(raw, scheme.target_lut, sample_id=sample_id)
     return classes
+
+
+# --- workers -------------------------------------------------------------------------- #
+
+
+class _Stopped(Exception):
+    """A slide a worker left unscored, because another slide failed."""
+
+
+#: The event a worker process checks between two windows: set once a slide has failed.
+_worker_stop = None
+
+
+def _start_worker(stop) -> None:
+    global _worker_stop
+    _worker_stop = stop
+
+
+def _score_in_worker(maps: SlideLabelMaps, sample_id: str, entry, readers: _Readers) -> _SlideCounts:
+    return _scored_slide(maps, sample_id, entry, readers, _worker_stop)
+
+
+def _score_in_workers(maps: SlideLabelMaps, jobs, readers: _Readers) -> list[_SlideCounts]:
+    """Each ``(sample_id, entry)`` job's counts, in job order, scored one slide at a time
+    in each of ``maps``' worker processes. The first slide to fail stops the others
+    between two windows, and its error is raised once they have stopped."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    context = multiprocessing.get_context("spawn")  # the slide readers are not safe to fork
+    stop = context.Event()
+    slides: dict[str, _SlideCounts] = {}
+    with ProcessPoolExecutor(
+        max_workers=min(maps._num_workers, len(jobs)),
+        mp_context=context,
+        initializer=_start_worker,
+        initargs=(stop,),
+    ) as pool:
+        futures = {
+            pool.submit(_score_in_worker, maps, sample_id, entry, readers): sample_id for sample_id, entry in jobs
+        }
+        try:
+            for future in as_completed(futures):
+                slides[futures[future]] = future.result()
+        except BaseException:
+            stop.set()
+            for future in futures:
+                future.cancel()
+            raise
+    return [slides[sample_id] for sample_id, _ in jobs]

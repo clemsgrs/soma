@@ -228,6 +228,92 @@ def test_annotated_pixels_outside_the_kept_tiles_are_false_negatives(tmp_path):
     assert counts[:, 0].sum() + counts[:, 2].sum() == 80 * 128  # every annotated pixel is TP or FN
 
 
+# --- windows with no annotated pixel --------------------------------------------------- #
+
+
+@pytest.fixture
+def window_reads(monkeypatch) -> dict:
+    """The origin of every window hs2p's ``tifffile`` reader reads, by the resolved path
+    of the file it reads."""
+    from collections import defaultdict
+    from pathlib import Path
+
+    from hs2p.wsi.backends import TifffileReader
+
+    paths, reads = {}, defaultdict(list)
+    init, read_region = TifffileReader.__init__, TifffileReader.read_region
+
+    def recording_init(self, path, *args, **kwargs):
+        paths[id(self)] = Path(path).resolve()
+        init(self, path, *args, **kwargs)
+
+    def recording_read(self, location, level, size):
+        reads[paths[id(self)]].append(tuple(int(v) for v in location))
+        return read_region(self, location, level, size)
+
+    monkeypatch.setattr(TifffileReader, "__init__", recording_init)
+    monkeypatch.setattr(TifffileReader, "read_region", recording_read)
+    return reads
+
+
+def annotated_in_one_window(tmp_path, rows: slice, cols: slice):
+    """A 96 x 128 px slide predicted in its left half, its annotation ignored (raw 0)
+    except in ``rows`` and ``cols``: stroma in their top half, necrosis in their bottom
+    half. Returns the label map's path and array, the annotation's classes, and the
+    records."""
+    annotation = np.zeros((96, 128), dtype=np.uint8)
+    annotation[rows, cols] = 1
+    annotation[(rows.start + rows.stop) // 2 : rows.stop, cols] = 4
+    records = write_records(tmp_path / "dataset.csv", [half_tissue_slide(tmp_path, annotation)])
+    bundle = save_bundle(tmp_path / "run" / "bundle", head=SCHEME)
+    (map_row,) = predict(tmp_path, records, bundle, overlap=0.0, min_coverage=0.5).itertuples()
+    path = (tmp_path / "predictions" / map_row.path).resolve()
+    return path, read_map(path), CLASS_OF_VALUE[annotation], records
+
+
+def test_the_label_map_is_read_only_in_the_windows_with_an_annotated_pixel(tmp_path, window_reads):
+    """32 px windows cut the slide into 3 x 4 windows; only the window at (32, 32) holds
+    annotated pixels, and the map is read there only."""
+    path, label_map, target, records = annotated_in_one_window(tmp_path, slice(32, 64), slice(32, 64))
+    window_reads.clear()
+
+    evaluation = soma.evaluate(SlideLabelMaps(tmp_path / "predictions", window_px=32), slide_targets(records))
+
+    assert window_reads[path] == [(32, 32)]
+    (scored,) = evaluation.per_sample
+    assert scored["annotated_px"] == 32 * 32
+    np.testing.assert_array_equal(counts_of(scored), hand_counts(label_map, target))
+
+
+def test_a_window_annotated_only_where_nothing_was_predicted_counts_false_negatives(tmp_path):
+    """The one annotated window, at (96, 32), lies in the unpredicted right half: each of
+    its pixels is not predicted, and a false negative of its class."""
+    _, label_map, _, records = annotated_in_one_window(tmp_path, slice(32, 64), slice(96, 128))
+    assert (label_map[32:64, 96:128] == 0).all()
+
+    evaluation = soma.evaluate(SlideLabelMaps(tmp_path / "predictions", window_px=32), slide_targets(records))
+
+    (scored,) = evaluation.per_sample
+    assert (scored["annotated_px"], scored["not_predicted_px"], scored["not_predicted_fraction"]) == (1024, 1024, 1.0)
+    np.testing.assert_array_equal(counts_of(scored), [[0, 0, 512], [0, 0, 0], [0, 0, 512]])
+
+
+#: A head that reads raw 5 (an artefact) from the rasters but gives it no class and does
+#: not ignore it.
+ARTEFACT_SCHEME = {**SCHEME, "pixel_mapping": {**SCHEME["pixel_mapping"], "artefact": 5}}
+
+
+def test_a_raw_value_neither_a_class_nor_ignored_is_refused_naming_the_slide(tmp_path):
+    """One pixel of raw 5, in an otherwise ignored window, is refused."""
+    annotation = np.zeros((96, 128), dtype=np.uint8)
+    annotation[40, 100] = 5
+    records = write_records(tmp_path / "dataset.csv", [half_tissue_slide(tmp_path, annotation)])
+    predict(tmp_path, records, save_bundle(tmp_path / "run" / "bundle", head=ARTEFACT_SCHEME))
+
+    with pytest.raises(ValueError, match=r"^slide 's1': .*raw value\(s\) \[5\] declared in neither"):
+        soma.evaluate(SlideLabelMaps(tmp_path / "predictions", window_px=32), slide_targets(records))
+
+
 # --- ignore ---------------------------------------------------------------------------- #
 
 
@@ -267,6 +353,56 @@ def test_predictions_on_ignored_pixels_change_no_count(tmp_path):
 
     assert after.per_sample == before.per_sample
     assert after.metrics == before.metrics
+
+
+# --- workers ---------------------------------------------------------------------------- #
+
+
+def test_slides_scored_in_workers_score_as_in_the_main_process_in_sample_order(tmp_path):
+    """Three slides of different sizes, the largest first in sample order, each half
+    predicted: two workers give the metrics and the rows of a serial run, in order."""
+    shapes = {"s1": (150, 200), "s2": (128, 160), "s3": (96, 128)}
+    rows = [
+        half_tissue_slide(tmp_path, raw_annotation(*shape, seed=k), name=name)
+        for k, (name, shape) in enumerate(shapes.items())
+    ]
+    records = write_records(tmp_path / "dataset.csv", rows)
+    predict(tmp_path, records, save_bundle(tmp_path / "run" / "bundle", head=SCHEME), overlap=0.0, min_coverage=0.5)
+    targets = slide_targets(records)
+
+    serial = soma.evaluate(SlideLabelMaps(tmp_path / "predictions", window_px=32), targets, metrics=METRICS)
+    workers = soma.evaluate(
+        SlideLabelMaps(tmp_path / "predictions", window_px=32, num_workers=2), targets, metrics=METRICS
+    )
+
+    assert [row["sample_id"] for row in workers.per_sample] == ["s1", "s2", "s3"]
+    assert workers.per_sample == serial.per_sample
+    assert workers.metrics == serial.metrics
+    assert all(0 < row["not_predicted_px"] < row["annotated_px"] for row in serial.per_sample)
+
+
+def test_a_slide_that_fails_in_a_worker_is_refused_as_in_the_main_process(tmp_path):
+    """s2's raster holds one pixel of raw 5, which the head neither gives a class nor
+    ignores; s1 and s3 are valid. Two workers refuse s2 with the message of a serial run."""
+    annotations = {name: raw_annotation(96, 128, seed=k) for k, name in enumerate(("s1", "s2", "s3"))}
+    annotations["s2"][40, 100] = 5
+    rows = [half_tissue_slide(tmp_path, annotation, name=name) for name, annotation in annotations.items()]
+    records = write_records(tmp_path / "dataset.csv", rows)
+    predict(tmp_path, records, save_bundle(tmp_path / "run" / "bundle", head=ARTEFACT_SCHEME))
+    targets = slide_targets(records)
+
+    with pytest.raises(ValueError, match=r"^slide 's2': .*raw value\(s\) \[5\] declared in neither") as serial:
+        soma.evaluate(SlideLabelMaps(tmp_path / "predictions", window_px=32), targets)
+    with pytest.raises(ValueError) as workers:
+        soma.evaluate(SlideLabelMaps(tmp_path / "predictions", window_px=32, num_workers=2), targets)
+
+    assert str(workers.value) == str(serial.value)
+
+
+@pytest.mark.parametrize("num_workers", [-1, True, 1.5, "2"], ids=["negative", "bool", "float", "str"])
+def test_a_num_workers_that_is_not_a_non_negative_integer_is_refused(tmp_path, num_workers):
+    with pytest.raises(ValueError, match="num_workers must be a non-negative integer"):
+        SlideLabelMaps(tmp_path / "predictions", num_workers=num_workers)
 
 
 # --- ids -------------------------------------------------------------------------------- #
@@ -328,26 +464,40 @@ def test_a_map_without_a_recorded_class_scheme_is_refused(tmp_path):
 
 #: The child process of the memory test: it scores a small slide first (imports, the
 #: readers), resets the peak RSS, scores the large slide and prints the RSS before it, the
-#: peak during it and the slide's row.
+#: peak during it and the slide's row. Then it scores the small slide and the large one in
+#: a worker each, and prints the peak RSS of its largest worker after each (every worker
+#: has stopped by then) and the large slide's row.
 MEMORY_CHILD = MEMORY_PRELUDE + r"""
+import resource
+
 from soma.data import AnnotationManifest, ImageManifest, LabelMapSource
 from soma.evaluation import SlideLabelMaps
 
 tmp = Path(sys.argv[1])
 
-def score(name):
+def score(name, num_workers=0):
     records = str(tmp / f"{name}.csv")
     targets = LabelMapSource.from_manifests(
         AnnotationManifest.from_csv(records), ImageManifest.from_csv(records),
         size=(0, 0), backend="tifffile", image_backend="tifffile",
     )
-    return soma.evaluate(SlideLabelMaps(tmp / name), targets)
+    return soma.evaluate(SlideLabelMaps(tmp / name, num_workers=num_workers), targets)
+
+def worker_peak():
+    return resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss * 1024  # kB on Linux
 
 score("small")
 reset_peak()
 before = status("VmRSS")
 (row,) = score("large").per_sample
-print(json.dumps({"before": before, "peak": status("VmHWM"), "row": row}))
+peak = status("VmHWM")
+score("small", num_workers=1)
+small_worker = worker_peak()
+(worker_row,) = score("large", num_workers=1).per_sample
+print(json.dumps({
+    "before": before, "peak": peak, "row": row,
+    "small_worker": small_worker, "large_worker": worker_peak(), "worker_row": worker_row,
+}))
 """
 
 
@@ -355,7 +505,8 @@ def test_peak_memory_stays_far_below_the_raw_rasters(tmp_path):
     """A 32768 x 32768 px map (1 GiB as raw uint8, as is its annotation on the map's
     grid) with three predicted tissue patches, scored against a 16 um/px annotation
     raster. Both are read in 1024 px windows: the peak RSS while scoring stays below an
-    eighth of one raw raster (it is about 50 MiB here)."""
+    eighth of one raw raster (it is about 50 MiB here). So does a worker's: its peak
+    scoring the large slide is within that of its peak scoring a small one."""
     side, coarse = 32768, 32  # the masks are at 16 um/px: one mask pixel is 32 map pixels
     write_large_slide(tmp_path / "large.tif", side)
     tissue = np.zeros((side // coarse, side // coarse), dtype=np.uint8)
@@ -391,9 +542,11 @@ def test_peak_memory_stays_far_below_the_raw_rasters(tmp_path):
             batch_size=64,
         )
 
-    rss = peak_rss_of(MEMORY_CHILD, str(tmp_path))
+    rss = peak_rss_of(MEMORY_CHILD, str(tmp_path), timeout=600)
 
     pixel = coarse * coarse  # map pixels per annotation pixel
     assert rss["row"]["annotated_px"] == (16 + 16 + 4) * pixel
     assert rss["row"]["not_predicted_px"] == 4 * pixel  # the necrosis patch
     assert rss["peak"] - rss["before"] < side * side / 8
+    assert rss["worker_row"] == rss["row"]
+    assert rss["large_worker"] - rss["small_worker"] < side * side / 8

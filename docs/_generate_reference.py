@@ -166,7 +166,7 @@ def build_cli_rst() -> str:
            narrows the encoders to ``tile``, ``slide``, or ``patient``.
            :func:`soma.components` returns the same listing in Python.
 
-        ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME] [--threshold T]``
+        ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME] [--num-workers N] [--threshold T]``
            Score saved predictions against the targets in ``dataset.csv``,
            joined by ``sample_id``; no run directory is needed. ``PREDICTIONS``
            is a predictions parquet, a points parquet (detection), a
@@ -181,7 +181,11 @@ def build_cli_rst() -> str:
            pixels and the share of them not predicted. Its slides and
            annotation rasters are read with the hs2p readers its ``plan.yaml``
            records; ``--backend`` names another reader for the slides and
-           ``--mask-backend`` another one for the annotation rasters. A
+           ``--mask-backend`` another one for the annotation rasters. A map is
+           read only in the windows that hold an annotated pixel.
+           ``--num-workers N`` scores its slides in ``N`` worker processes, one
+           slide at a time each (default ``0``: in the main process); the scores
+           and the order of the rows do not change. A
            ``soma predict`` output with one bundle's points is scored against
            the annotated points in ``points_path`` and the ignore masks in
            ``ignore_mask_path``, with the class scheme and the tune threshold
@@ -191,7 +195,9 @@ def build_cli_rst() -> str:
            least that value: it replaces the recorded threshold, and an
            ensemble's points, which record none, need it. ``--backend`` and
            ``--mask-backend`` are refused for predictions that read no slide
-           or mask, and ``--threshold`` for predictions without points. ``--splits``
+           or mask, ``--num-workers`` for predictions other than the label maps
+           of a ``soma predict`` output, and ``--threshold`` for predictions
+           without points. ``--splits``
            selects one split (default ``test``) of one fold (default ``0``);
            without it every row of the cohort is a target. Every prediction
            needs a target and every target a prediction. ``--metrics`` takes

@@ -1031,10 +1031,10 @@ def _evaluation_targets(args: argparse.Namespace, predictions):
     return cohort.targets("test")
 
 
-def _read_predictions(path: str, *, mask_backend: str | None = None):
+def _read_predictions(path: str, *, mask_backend: str | None = None, num_workers: int | None = None):
     """A label-map directory, a ``soma predict`` output (whole-slide label maps or points),
     a points parquet, or a set-shape predictions parquet. ``mask_backend`` reads the
-    ignore masks of whole-slide points."""
+    ignore masks of whole-slide points; ``num_workers`` scores whole-slide label maps."""
     from soma.evaluation import LabelMapPredictions, PointPredictions, Predictions, SlideLabelMaps, SlidePoints
 
     location = Path(path)
@@ -1044,7 +1044,7 @@ def _read_predictions(path: str, *, mask_backend: str | None = None):
             return LabelMapPredictions.load(location)
         if _predicts_points(location):
             return SlidePoints(location, mask_backend=mask_backend)
-        return SlideLabelMaps(location)
+        return SlideLabelMaps(location, num_workers=0 if num_workers is None else num_workers)
     if _soma_kind(location) == "points":
         return PointPredictions.from_parquet(location)
     return Predictions.from_parquet(location)
@@ -1108,7 +1108,8 @@ def _evaluation_grid_targets(args: argparse.Namespace, predictions):
 
 def _check_slide_readers(args: argparse.Namespace, predictions) -> None:
     """Refuse ``--backend`` and ``--mask-backend`` for predictions that read no slide or no
-    mask, and ``--threshold`` for predictions without scores."""
+    mask, ``--num-workers`` for predictions other than whole-slide label maps, and
+    ``--threshold`` for predictions without scores."""
     from soma.evaluation import PointPredictions, SlideLabelMaps, SlidePoints
 
     given = [flag for flag, value in (("--backend", args.backend), ("--mask-backend", args.mask_backend)) if value]
@@ -1123,6 +1124,12 @@ def _check_slide_readers(args: argparse.Namespace, predictions) -> None:
             f"predict output, whose slides and annotation rasters are read; {args.predictions} "
             "is not one"
         )
+    if args.num_workers is not None and not isinstance(predictions, SlideLabelMaps):
+        held = f"the points in {args.predictions} are" if isinstance(predictions, SlidePoints) else f"{args.predictions} is"
+        raise ValueError(
+            "--num-workers only applies to the label maps of a soma predict output, whose "
+            f"slides are scored in parallel; {held} scored in the main process"
+        )
     if args.threshold is not None and not isinstance(predictions, (PointPredictions, SlidePoints)):
         raise ValueError(f"--threshold only applies to detection points; {args.predictions} holds none")
 
@@ -1134,7 +1141,9 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
     from soma.evaluation import LabelMapPredictions, PointPredictions, SlideLabelMaps, SlidePoints, evaluate
 
     try:
-        predictions = _read_predictions(args.predictions, mask_backend=args.mask_backend)
+        predictions = _read_predictions(
+            args.predictions, mask_backend=args.mask_backend, num_workers=args.num_workers
+        )
         _check_slide_readers(args, predictions)
         if args.threshold is not None:
             predictions = predictions.with_threshold(args.threshold)
@@ -1242,6 +1251,16 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
         help=(
             "hs2p reader of the annotation rasters or ignore masks, for a soma predict "
             "output (default: the one its plan.yaml records)."
+        ),
+    )
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=None,
+        help=(
+            "Worker processes that score the slides of a soma predict output of label maps, "
+            "one slide at a time each (default: 0, in the main process). It changes the "
+            "time scoring takes, not the scores."
         ),
     )
     parser.add_argument(

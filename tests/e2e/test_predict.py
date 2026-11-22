@@ -249,6 +249,16 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
     rescored = json.loads((tmp_path / "readers.json").read_text())
     artifact.check_equal("evaluate_readers/metrics", rescored["metrics"], scored["metrics"])
     artifact.check_equal("evaluate_readers/per_sample", rescored["per_sample"] == scored["per_sample"], True)
+
+    # --num-workers scores the slides in worker processes, with the same scores and rows,
+    # in the same order.
+    soma_main(
+        ["evaluate", "predictions", "--cohort", "slides.csv", "--metrics", "mean_dice",
+         "dataset_global_mean_dice", "--num-workers", "2", "--out", "workers.json"]
+    )
+    in_workers = json.loads((tmp_path / "workers.json").read_text())
+    artifact.check_equal("evaluate_workers/metrics", in_workers["metrics"], scored["metrics"])
+    artifact.check_equal("evaluate_workers/per_sample", in_workers["per_sample"] == scored["per_sample"], True)
     artifact.assert_passed()
 
 

@@ -227,8 +227,9 @@ def evaluate(
       IoU and the per-class scores.
     * :class:`~soma.evaluation.SlideLabelMaps` (the label TIFFs of
       :func:`soma.predict_slides`) against a :class:`~soma.data.LabelMapSource` of the
-      slides' annotation rasters: both read window by window, one row of counts per
-      slide in ``Evaluation.per_sample``, then the same reducers.
+      slides' annotation rasters: both read window by window (the map only where the
+      window holds an annotated pixel), one row of counts per slide in
+      ``Evaluation.per_sample``, then the same reducers.
     * :class:`~soma.evaluation.SlidePoints` (the points parquets of
       :func:`soma.predict_slides`) against a :class:`~soma.data.PointSource` of the
       slides' annotated points: the class scheme and the threshold the points record,

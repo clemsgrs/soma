@@ -747,6 +747,54 @@ def test_evaluate_refuses_a_threshold_for_predictions_without_points(tmp_path: P
     assert "--threshold only applies to detection points" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("kind", ["set", "points", "slide-points", "roi-label-maps"])
+def test_evaluate_refuses_workers_for_predictions_other_than_slide_label_maps(tmp_path: Path, capsys, kind):
+    """``--num-workers`` scores the slides of a ``soma predict`` output of label maps in
+    parallel; every other input is scored in the main process."""
+    import numpy as np
+
+    from soma.cli import main
+    from soma.evaluation import LabelMapPredictions, PointPredictions
+
+    dataset_csv, _ = _zero_padded_cohort(tmp_path / "cohort")
+    ids = ["001", "002", "003", "004"]
+    predictions = tmp_path / kind
+    if kind == "set":
+        predictions = predictions.with_suffix(".parquet")
+        pd.DataFrame({"sample_id": ids, "predicted_value": [0.0, 1.0, 2.0, 3.0]}).to_parquet(predictions, index=False)
+    elif kind == "points":
+        predictions = predictions.with_suffix(".parquet")
+        frame = pd.DataFrame([(sample_id, 2, 3, 0, 0.9) for sample_id in ids], columns=["sample_id", "x", "y", "class", "score"])
+        PointPredictions(frame, classes=["cell"], sample_ids=ids, match_distance_px=2.0).to_parquet(predictions)
+    elif kind == "slide-points":
+        (predictions / "run").mkdir(parents=True)
+        pd.DataFrame({"sample_id": ["001"], "bundle": ["run"], "num_points": [3]}).to_parquet(
+            predictions / "index.parquet", index=False
+        )
+    else:
+        maps = {sample_id: np.zeros((4, 4), dtype=np.uint8) for sample_id in ids}
+        LabelMapPredictions(maps, classes=["background", "tumour"]).save(predictions)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["evaluate", str(predictions), "--cohort", str(dataset_csv), "--num-workers", "2"])
+
+    assert exit_info.value.code == 2
+    assert "--num-workers only applies to the label maps of a soma predict output" in capsys.readouterr().err
+
+
+def test_evaluate_refuses_a_negative_number_of_workers(tmp_path: Path, capsys):
+    from soma.cli import main
+
+    dataset_csv, _ = _zero_padded_cohort(tmp_path / "cohort")
+    (tmp_path / "predictions").mkdir()
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["evaluate", str(tmp_path / "predictions"), "--cohort", str(dataset_csv), "--num-workers", "-1"])
+
+    assert exit_info.value.code == 2
+    assert "num_workers must be a non-negative integer, got -1" in capsys.readouterr().err
+
+
 def test_evaluate_reads_the_current_bundle_directory_as_points(tmp_path: Path, monkeypatch, capsys):
     """``soma evaluate .`` from inside a bundle directory finds the output's points index
     in the parent directory: the points are read, so ``--backend`` is refused for them."""
