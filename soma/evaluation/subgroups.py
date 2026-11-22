@@ -103,14 +103,44 @@ def _delta(fn: Metric, predictions: pd.DataFrame, targets: pd.DataFrame, mask: n
     return group - rest
 
 
+def _mean_over(
+    breakdown: Mapping[str, Mapping[str, Mapping[str, float | int]]],
+    metrics: Sequence[str],
+) -> dict[str, dict[str, float | int]]:
+    """``{column: {metric: mean, "<metric>_groups": count}}`` over a
+    :func:`subgroup_metrics` breakdown: the unweighted mean of each metric over the
+    column's groups.
+
+    A group whose value is NaN (a single class, no comparable pairs) is skipped, and
+    ``<metric>_groups`` counts the groups that contributed. With no finite group the
+    mean is NaN.
+    """
+    result: dict[str, dict[str, float | int]] = {}
+    for column, groups in breakdown.items():
+        means: dict[str, float | int] = {}
+        for name in metrics:
+            values = [float(group[name]) for group in groups.values() if name in group]
+            finite = [value for value in values if np.isfinite(value)]
+            means[name] = float(np.mean(finite)) if finite else float("nan")
+            means[f"{name}_groups"] = len(finite)
+        result[column] = means
+    return result
+
+
 def subgroup_breakdown(
     predictions: pd.DataFrame,
     targets: pd.DataFrame,
     metrics: Mapping[str, Metric],
     columns: Sequence[str],
 ) -> dict[str, dict]:
-    """``{"metrics": subgroup_metrics(...), "stats": subgroup_stats(...)}``."""
+    """``{"metrics": subgroup_metrics(...), "mean_over": ..., "stats": subgroup_stats(...)}``.
+
+    ``mean_over`` holds ``{column: {metric: mean, "<metric>_groups": count}}``: each
+    metric's unweighted mean over the column's groups, NaN groups skipped.
+    """
+    per_group = subgroup_metrics(predictions, targets, metrics, columns)
     return {
-        "metrics": subgroup_metrics(predictions, targets, metrics, columns),
+        "metrics": per_group,
+        "mean_over": _mean_over(per_group, list(metrics)),
         "stats": subgroup_stats(predictions, targets, metrics, columns),
     }

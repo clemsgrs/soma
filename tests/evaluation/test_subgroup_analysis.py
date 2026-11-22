@@ -3,6 +3,7 @@ target metadata column, plus a permutation p-value of each group against the res
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -45,11 +46,49 @@ def test_each_group_of_a_column_gets_the_metrics_and_its_size():
 
     breakdown = evaluate(predictions, targets, metrics=["auroc"], subgroups=["sex"]).subgroups
 
-    assert set(breakdown) == {"metrics", "stats"}
+    assert set(breakdown) == {"metrics", "mean_over", "stats"}
     assert breakdown["metrics"]["sex"] == {
         "F": {"auroc": 1.0, "n": 8},
         "M": {"auroc": 1.0, "n": 8},
     }
+
+
+def test_the_mean_over_groups_skips_nan_groups_and_counts_the_groups_it_averages():
+    ids = [f"s{i}" for i in range(10)]
+    labels = [0, 1, 0, 1, 0, 1, 0, 1, 1, 1]
+    scores = [0.3, 0.7, 0.3, 0.7, 0.7, 0.3, 0.3, 0.7, 0.6, 0.8]
+    predictions = Predictions(
+        pd.DataFrame(
+            {
+                "sample_id": ids,
+                "prob_0": [1 - s for s in scores],
+                "prob_1": scores,
+                "predicted_label": [int(s > 0.5) for s in scores],
+            }
+        ),
+        task_family="binary_classification",
+    )
+    targets = pd.DataFrame(
+        {
+            "label": labels,
+            "site": ["A"] * 4 + ["B"] * 4 + ["C"] * 2,
+            # Each grade holds one class, so no grade has an AUROC.
+            "grade": ["high" if label else "low" for label in labels],
+        },
+        index=pd.Index(ids, name="sample_id"),
+    )
+
+    breakdown = evaluate(predictions, targets, metrics=["auroc"], subgroups=["site", "grade"]).subgroups
+
+    # Site A ranks both positives above both negatives (1.0). Site B's positives score
+    # 0.3 and 0.7, as do its negatives: one pair won, one lost, two tied (0.5). Site C
+    # holds positives only, so its AUROC is NaN and the mean skips it.
+    site = breakdown["metrics"]["site"]
+    assert (site["A"]["auroc"], site["B"]["auroc"]) == (1.0, 0.5)
+    assert math.isnan(site["C"]["auroc"])
+    assert breakdown["mean_over"]["site"] == {"auroc": 0.75, "auroc_groups": 2}
+    grade = breakdown["mean_over"]["grade"]
+    assert math.isnan(grade["auroc"]) and grade["auroc_groups"] == 0
 
 
 def test_every_requested_column_is_broken_down():
