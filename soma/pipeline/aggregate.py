@@ -186,7 +186,7 @@ def aggregate_fold_metrics_from_disk(
             continue
         splits = json.loads(path.read_text())
         for split_name, metrics in splits.items():
-            breakdown = path.with_name(f"subgroup_metrics_{split_name}.json")
+            breakdown = path.parent / f"subgroup_metrics_{split_name}.json"
             if breakdown.is_file():
                 metrics.update(_subgroup_keys(json.loads(breakdown.read_text())))
         per_fold.append(splits)
