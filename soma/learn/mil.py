@@ -147,11 +147,17 @@ class MILLearner(Learner):
         """
         if not outputs:
             return {"loss": float("nan")}
-        return self._summary(*_joined(outputs))
+        logits, targets = _joined(outputs)
+        # The steps keep their outputs on the host for the metrics; the loss runs on the
+        # learner's device, where a ``loss=`` module's buffers (class weights) sit.
+        device = next(self.model.parameters()).device
+        loss = self.task_loss(logits.to(device), {k: v.to(device) for k, v in targets.items()})
+        metrics = self.head.compute_metrics(logits, targets)
+        return {"loss": float(loss.item()), **{k: float(v) for k, v in metrics.items()}}
 
     def subgroup_summary(self, outputs: list[StepOutput], sample_ids: Sequence[str]) -> dict[str, float]:
-        """:meth:`validation_summary` over the rows of ``sample_ids``: the head's loss over
-        the group's joined logits and targets, and its metrics.
+        """:meth:`validation_summary` over the rows of ``sample_ids``, selected into one
+        step output (``loss=None``): a subclass's override of it reduces each group too.
 
         For a mean-reduced loss, a group's loss is the mean of its samples' losses. For a
         ``full_cohort_eval_loss`` head (Cox), it is the partial likelihood over the
@@ -160,16 +166,16 @@ class MILLearner(Learner):
         """
         logits, targets = _joined(outputs)
         wanted = set(sample_ids)
-        keep = torch.tensor([sid in wanted for o in outputs for sid in o.sample_ids], dtype=torch.bool)
-        return self._summary(logits[keep], {key: value[keep] for key, value in targets.items()})
-
-    def _summary(self, logits: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
-        # The steps keep their outputs on the host for the metrics; the loss runs on the
-        # learner's device, where a ``loss=`` module's buffers (class weights) sit.
-        device = next(self.model.parameters()).device
-        loss = self.task_loss(logits.to(device), {k: v.to(device) for k, v in targets.items()})
-        metrics = self.head.compute_metrics(logits, targets)
-        return {"loss": float(loss.item()), **{k: float(v) for k, v in metrics.items()}}
+        ids = [sid for o in outputs for sid in o.sample_ids]
+        keep = torch.tensor([sid in wanted for sid in ids], dtype=torch.bool)
+        group = StepOutput(
+            loss=None,
+            outputs=logits[keep],
+            targets={key: value[keep] for key, value in targets.items()},
+            size=int(keep.sum()),
+            sample_ids=tuple(sid for sid in ids if sid in wanted),
+        )
+        return self.validation_summary([group])
 
 
 def _joined(outputs: list[StepOutput]) -> tuple[Tensor, dict[str, Tensor]]:

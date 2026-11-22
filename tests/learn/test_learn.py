@@ -590,6 +590,20 @@ class TestSubgroupMonitoring:
         assert math.isfinite(row["tune/loss"])
         assert math.isfinite(row["tune/centre=A/loss"]) and math.isfinite(row["tune/centre=B/loss"])
 
+    def test_an_overridden_validation_summary_also_reduces_each_group(self):
+        class Counted(MILLearner):
+            def validation_summary(self, outputs):
+                return {**super().validation_summary(outputs), "samples": float(sum(o.size for o in outputs))}
+
+        result = Trainer(max_epochs=1, device="cpu").fit(
+            Counted(_learner().model), _bag_loader(), _bag_loader(), tune_groups=CENTRES
+        )
+        row = result.history.iloc[-1]
+        assert row["tune/samples"] == 8
+        assert row["tune/centre=A/samples"] == 4 and row["tune/centre=B/samples"] == 4
+        assert row["tune/mean_over_centre/samples"] == 4
+        assert row["tune/mean_over_centre/samples_groups"] == 2
+
     def test_a_cox_group_loss_is_the_partial_likelihood_over_the_group_alone(self):
         def partial_likelihood(risk, time, event):
             # Breslow: the mean over events of -(r_i - log sum_{t_j >= t_i} exp(r_j)).
