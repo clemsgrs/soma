@@ -224,13 +224,6 @@ def _is_learner(cls: Any) -> bool:
     return isinstance(cls, type) and issubclass(cls, Learner)
 
 
-def _has_subgroup_summary(cls: type) -> bool:
-    """Whether a :class:`~soma.learn.Learner` class implements ``subgroup_summary``."""
-    from soma.learn import Learner
-
-    return cls.subgroup_summary is not Learner.subgroup_summary
-
-
 def learner_shape(config: ExperimentConfig) -> str:
     """``grid`` for a :class:`~soma.learn.DenseLearner` (or a subclass), else ``set``."""
     from soma.learn import DenseLearner
@@ -386,7 +379,9 @@ def _check(config: ExperimentConfig) -> None:
             f"evaluation.subgroups is supported for the set shape only, and learner "
             f"'{learner.name}' is a grid-shape learner. Drop evaluation.subgroups."
         )
-    if evaluation.subgroups and not _has_subgroup_summary(learner_cls):
+    from soma.learn.learner import has_subgroup_summary
+
+    if evaluation.subgroups and not has_subgroup_summary(learner_cls):
         raise ValueError(
             f"learner '{learner.name}' has no subgroup_summary, which reduces one group's "
             "outputs: every evaluated epoch logs each evaluation.subgroups group's tune values "
@@ -788,24 +783,16 @@ def _spelled_out(config: ExperimentConfig, cohort: Any, *, infer: bool) -> Exper
 
 
 def _check_subgroup_names(columns: Sequence[str], records: Sequence[Any]) -> None:
-    """Refuse a subgroup column, or a group value read with ``str()``, that holds ``/`` or
-    ``=``: the summary spells a group's metric ``<split>/<column>=<group>/<metric>``."""
+    """Refuse a subgroup column, or a group value read with ``str()``, that a subgroup key
+    cannot spell (:func:`~soma.evaluation.subgroups.check_subgroup_name`)."""
+    from soma.evaluation.subgroups import check_subgroup_name
+
     for column in columns:
-        if "/" in column or "=" in column:
-            raise ValueError(
-                f"evaluation.subgroups column {column!r} contains '/' or '=', which the subgroup "
-                "keys (<split>/<column>=<group>/<metric>) cannot hold: rename the column."
-            )
+        check_subgroup_name(column, where="evaluation.subgroups")
         for record in records:
-            if column not in record.metadata:
-                continue
-            value = str(record.metadata[column])
-            if "/" in value or "=" in value:
-                raise ValueError(
-                    f"evaluation.subgroups column {column!r} has the value {value!r} (sample "
-                    f"{record.sample_id!r}), which contains '/' or '=': the subgroup keys "
-                    "(<split>/<column>=<group>/<metric>) cannot hold either. Rename the value in "
-                    "cohort.records."
+            if column in record.metadata:
+                check_subgroup_name(
+                    column, str(record.metadata[column]), where="evaluation.subgroups", sample_id=record.sample_id
                 )
 
 

@@ -26,6 +26,7 @@ __all__ = [
     "PredictOutput",
     "SchedulerSpec",
     "StepOutput",
+    "has_subgroup_summary",
     "learner_registry",
     "optimizer_registry",
     "resolve_leaf",
@@ -259,6 +260,12 @@ class Learner(nn.Module):
 
     def load_trainable_state_dict(self, state: Mapping[str, Tensor]) -> None:
         self.model.load_state_dict(state)
+
+
+def has_subgroup_summary(cls: type[Learner]) -> bool:
+    """Whether the :class:`Learner` class ``cls`` implements
+    :meth:`~Learner.subgroup_summary`, without which it cannot run with subgroups."""
+    return cls.subgroup_summary is not Learner.subgroup_summary
 
 
 def uncovered_parameters(learner: Learner, optimizer: torch.optim.Optimizer) -> list[str]:

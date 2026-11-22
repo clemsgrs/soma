@@ -12,7 +12,15 @@ from collections.abc import Callable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-__all__ = ["MIN_GROUP_SIZE", "is_subgroup_key", "mean_over", "subgroup_breakdown", "subgroup_metrics", "subgroup_stats"]
+__all__ = [
+    "MIN_GROUP_SIZE",
+    "check_subgroup_name",
+    "is_subgroup_key",
+    "mean_over",
+    "subgroup_breakdown",
+    "subgroup_metrics",
+    "subgroup_stats",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -155,8 +163,34 @@ def is_subgroup_key(name: str) -> bool:
     ``<column>=<group>/<metric>`` or ``mean_over_<column>/<metric>``.
 
     A ``/`` alone does not make one, since a split name may hold a ``/`` (the split
-    ``test/external`` gives ``external/mean_dice`` under ``test``). Plan time refuses
-    ``/`` and ``=`` in subgroup columns and values, so the first segment decides.
+    ``test/external`` gives ``external/mean_dice`` under ``test``). Plan time and
+    ``Trainer.fit`` refuse ``/`` and ``=`` in subgroup columns and values
+    (:func:`check_subgroup_name`), so the first segment decides.
     """
     head, slash, _ = name.partition("/")
     return bool(slash) and ("=" in head or head.startswith("mean_over_"))
+
+
+def check_subgroup_name(
+    column: str, value: str | None = None, *, where: str = "subgroup", sample_id: str | None = None
+) -> None:
+    """Refuse a subgroup ``column``, or with ``value`` one of its group values (read with
+    ``str()``), that holds ``/`` or ``=``: a group's metric is spelled
+    ``<split>/<column>=<group>/<metric>``, which :func:`is_subgroup_key` splits on them.
+
+    ``where`` names the column's source in the message (``evaluation.subgroups``,
+    ``tune_groups``), and ``sample_id`` the sample that holds ``value``.
+    """
+    if value is None:
+        if "/" in column or "=" in column:
+            raise ValueError(
+                f"{where} column {column!r} contains '/' or '=', which the subgroup keys "
+                "(<split>/<column>=<group>/<metric>) cannot hold: rename the column."
+            )
+    elif "/" in value or "=" in value:
+        sample = "" if sample_id is None else f" (sample {sample_id!r})"
+        raise ValueError(
+            f"{where} column {column!r} has the value {value!r}{sample}, which contains '/' or "
+            "'=': the subgroup keys (<split>/<column>=<group>/<metric>) cannot hold either. "
+            "Rename the value."
+        )

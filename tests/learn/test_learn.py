@@ -24,9 +24,11 @@ from soma.models.aggregators.pooling import MeanPool
 from soma.learn import (
     Budget,
     Checkpoint,
+    DenseLearner,
     EarlyStopping,
     FitResult,
     History,
+    Learner,
     MILLearner,
     SchedulerSpec,
     StepOutput,
@@ -670,6 +672,60 @@ class TestSubgroupMonitoring:
         trainer = Trainer(max_epochs=3, callbacks=callbacks, device="cpu")
         with pytest.raises(RuntimeError, match=rf"{owner} monitor '{monitor}' is nan at epoch 1"):
             trainer.fit(_learner(), _bag_loader(), _bag_loader(), tune_groups=groups)
+
+    @pytest.mark.parametrize(
+        ("groups", "match"),
+        [
+            # tune/site=x=A/* is also what column site with group x=A writes.
+            ({"site=x": CENTRES["centre"]}, r"tune_groups column 'site=x' contains '/' or '='"),
+            # tune/a/b=A/* reads as a pooled key.
+            ({"a/b": CENTRES["centre"]}, r"tune_groups column 'a/b' contains '/' or '='"),
+            (
+                {"centre": {**CENTRES["centre"], "s0": "a/b"}},
+                r"tune_groups column 'centre' has the value 'a/b' \(sample 's0'\)",
+            ),
+            (
+                {"centre": {**CENTRES["centre"], "s7": "x=B"}},
+                r"tune_groups column 'centre' has the value 'x=B' \(sample 's7'\)",
+            ),
+        ],
+        ids=["column with '='", "column with '/'", "group with '/'", "group with '='"],
+    )
+    def test_a_column_or_group_with_a_key_separator_is_refused_before_training(self, groups, match):
+        # The keys spell <split>/<column>=<group>/<name>, as at plan time.
+        counter = _BatchCounter()
+        trainer = Trainer(max_epochs=1, callbacks=[counter], device="cpu")
+        with pytest.raises(ValueError, match=match):
+            trainer.fit(_learner(), _bag_loader(), _bag_loader(), tune_groups=groups)
+        assert counter.batches == 0
+
+    def test_a_learner_without_subgroup_summary_is_refused_before_training(self):
+        class Ungrouped(MILLearner):
+            # Its steps carry the sample ids, but it cannot reduce one group's rows.
+            subgroup_summary = Learner.subgroup_summary
+
+        counter = _BatchCounter()
+        trainer = Trainer(max_epochs=1, callbacks=[counter], device="cpu")
+        with pytest.raises(ValueError, match=r"learner 'Ungrouped' has no subgroup_summary"):
+            trainer.fit(Ungrouped(_learner().model), _bag_loader(), _bag_loader(), tune_groups=CENTRES)
+        assert counter.batches == 0
+
+    def test_the_dense_learner_with_tune_groups_is_refused_before_training(self):
+        # Its validation steps carry no sample ids: every mean would be NaN over 0 groups.
+        with pytest.raises(ValueError, match=r"learner 'DenseLearner' has no subgroup_summary"):
+            Trainer(max_epochs=1, device="cpu").fit(
+                DenseLearner(torch.nn.Linear(1, 1)), _bag_loader(), _bag_loader(), tune_groups=CENTRES
+            )
+
+
+class _BatchCounter:
+    """Counts the training batches a fit runs."""
+
+    def __init__(self) -> None:
+        self.batches = 0
+
+    def on_train_batch_end(self, trainer, learner, out) -> None:
+        self.batches += 1
 
 
 class TestCallbacks:

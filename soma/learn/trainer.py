@@ -13,9 +13,9 @@ from typing import Any
 import pandas as pd
 import torch
 
-from soma.evaluation.subgroups import MIN_GROUP_SIZE, mean_over
+from soma.evaluation.subgroups import MIN_GROUP_SIZE, check_subgroup_name, mean_over
 from soma.learn.callbacks import History
-from soma.learn.learner import Budget, Learner, SchedulerSpec, StepOutput
+from soma.learn.learner import Budget, Learner, SchedulerSpec, StepOutput, has_subgroup_summary
 
 __all__ = ["FitResult", "Trainer"]
 
@@ -110,8 +110,11 @@ class Trainer:
         ``tune/mean_over_<column>/<key>`` with ``<key>_groups`` counting the groups whose
         value is finite (a NaN group is skipped; with none the mean is NaN). A group under
         :data:`~soma.evaluation.subgroups.MIN_GROUP_SIZE` samples is skipped, as after the
-        fit, and a sample absent from the mapping is in no group.
+        fit, and a sample absent from the mapping is in no group. Before any training, as at
+        plan time, a column or group holding ``/`` or ``=`` is refused, and so is a learner
+        without ``subgroup_summary``.
         """
+        _check_tune_groups(learner, tune_groups or {})
         if tune_loader is not None and len(tune_loader) == 0:
             logger.warning("the tune loader is empty; training without validation.")
             tune_loader = None
@@ -227,6 +230,23 @@ class Trainer:
             **_split_keyed(split, summary),
             **_subgroup_keyed(split, learner, outputs, groups, names=list(summary)),
         }
+
+
+def _check_tune_groups(learner: Learner, tune_groups: Mapping[str, Mapping[str, str]]) -> None:
+    """Refuse ``tune_groups`` whose keys the subgroup keys cannot spell, or which
+    ``learner`` cannot reduce: the checks the plan runs on ``evaluation.subgroups``."""
+    if not tune_groups:
+        return
+    if not has_subgroup_summary(type(learner)):
+        raise ValueError(
+            f"learner {type(learner).__name__!r} has no subgroup_summary, which reduces one "
+            "group's outputs: every evaluation logs each tune_groups group's tune values through "
+            "it. Implement Learner.subgroup_summary, or drop tune_groups."
+        )
+    for column, membership in tune_groups.items():
+        check_subgroup_name(column, where="tune_groups")
+        for sample_id, group in membership.items():
+            check_subgroup_name(column, str(group), where="tune_groups", sample_id=sample_id)
 
 
 def _split_keyed(split: str, summary: dict[str, float]) -> dict[str, float]:
