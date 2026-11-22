@@ -380,10 +380,15 @@ def _check(config: ExperimentConfig) -> None:
         raise ValueError("learner.params spells the scheduler leaf (or list of leaves) as 'scheduler'.")
     own = {key: value for key, value in params.items() if key not in LEARNER_OWN_EXCLUDED}
     registries["learner"].validate(learner.name, own)
-    if evaluation.subgroups and not _has_subgroup_summary(learner_cls):
-        grid = " (the grid shape takes no subgroups)" if learner_shape(config) == "grid" else ""
+    if evaluation.subgroups and learner_shape(config) == "grid":
+        # The grid loaders form no groups, whatever hooks the learner implements.
         raise ValueError(
-            f"learner '{learner.name}' has no subgroup_summary{grid}, which reduces one group's "
+            f"evaluation.subgroups is supported for the set shape only, and learner "
+            f"'{learner.name}' is a grid-shape learner. Drop evaluation.subgroups."
+        )
+    if evaluation.subgroups and not _has_subgroup_summary(learner_cls):
+        raise ValueError(
+            f"learner '{learner.name}' has no subgroup_summary, which reduces one group's "
             "outputs: every evaluated epoch logs each evaluation.subgroups group's tune values "
             "through it. Implement Learner.subgroup_summary, or drop evaluation.subgroups."
         )

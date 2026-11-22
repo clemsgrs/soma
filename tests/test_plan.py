@@ -230,7 +230,7 @@ def user_package(tmp_path: Path, monkeypatch):
     (package / "learners.py").write_text(
         textwrap.dedent(
             """
-            from soma.learn import Learner, MILLearner
+            from soma.learn import DenseLearner, Learner, MILLearner
 
             class ScaledMIL(MILLearner):
                 def __init__(self, model, *, scale=1.0, **kwargs):
@@ -240,6 +240,11 @@ def user_package(tmp_path: Path, monkeypatch):
             class Ungrouped(Learner):
                 # A set-shape learner without the subgroup_summary hook.
                 pass
+
+            class GroupedDense(DenseLearner):
+                # A grid-shape learner with the subgroup_summary hook.
+                def subgroup_summary(self, outputs, sample_ids):
+                    return {}
             """
         )
     )
@@ -432,8 +437,14 @@ def test_subgroups_need_a_learner_with_the_subgroup_summary_hook(files, user_pac
     check(experiment(*files, aggregator="abmil", learner=ungrouped))
     with pytest.raises(ValueError, match=rf"learner '{ungrouped}' has no subgroup_summary"):
         check(experiment(*files, aggregator="abmil", learner=ungrouped, evaluation=subgroups))
-    with pytest.raises(ValueError, match="learner 'dense' has no subgroup_summary"):
-        check(_grid(files, evaluation=subgroups))
+
+
+def test_subgroups_are_refused_on_the_grid_shape_even_with_the_hook(files, user_package):
+    # The grid loaders form no groups: the breakdown would be silently empty.
+    subgroups = {"subgroups": ["centre"]}
+    for learner in ("dense", "mylab.learners.GroupedDense"):
+        with pytest.raises(ValueError, match="evaluation.subgroups is supported for the set shape only"):
+            check(_grid(files, learner=learner, evaluation=subgroups))
 
 
 def test_last_checkpoint_selection_never_early_stops(files):
