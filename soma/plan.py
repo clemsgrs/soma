@@ -373,6 +373,20 @@ def _check(config: ExperimentConfig) -> None:
         raise ValueError("learner.params spells the scheduler leaf (or list of leaves) as 'scheduler'.")
     own = {key: value for key, value in params.items() if key not in LEARNER_OWN_EXCLUDED}
     registries["learner"].validate(learner.name, own)
+    if evaluation.subgroups and learner_shape(config) == "grid":
+        # The grid loaders form no groups, whatever hooks the learner implements.
+        raise ValueError(
+            f"evaluation.subgroups is supported for the set shape only, and learner "
+            f"'{learner.name}' is a grid-shape learner. Drop evaluation.subgroups."
+        )
+    from soma.learn.learner import has_subgroup_summary
+
+    if evaluation.subgroups and not has_subgroup_summary(learner_cls):
+        raise ValueError(
+            f"learner '{learner.name}' has no subgroup_summary, which reduces one group's "
+            "outputs: every evaluated epoch logs each evaluation.subgroups group's tune values "
+            "through it. Implement Learner.subgroup_summary, or drop evaluation.subgroups."
+        )
     _validate_leaf(registries["optimizer"], params.get("optimizer") or DEFAULT_OPTIMIZER, "optimizer")
     for leaf in params.get("scheduler") or ():
         _validate_leaf(registries["scheduler"], leaf, "scheduler")
@@ -671,6 +685,7 @@ def _check_checkpoint_cox_window(head_cls: type, head_params: Mapping[str, Any])
 
 
 def _check_callbacks(config: ExperimentConfig, registries, *, metrics: list[str], custom_learner: bool) -> None:
+    from soma.evaluation.subgroups import is_subgroup_key
     from soma.learn.callbacks import _check_monitor
 
     callbacks = config.trainer.callbacks
@@ -695,12 +710,23 @@ def _check_callbacks(config: ExperimentConfig, registries, *, metrics: list[str]
             continue
         # The Trainer prefixes every validation_summary key with its split: tune/<key>.
         monitor = _check_monitor(key, leaf.params.get("monitor", "tune/loss"))
-        name = monitor.partition("/")[2]
+        name, prefix = monitor.partition("/")[2], "tune/"
+        if is_subgroup_key(name):
+            # tune/mean_over_<column>/<name>: _check_monitor refused a single group's key.
+            head, _, name = name.partition("/")
+            column = head.removeprefix("mean_over_")
+            if column not in config.evaluation.subgroups:
+                configured = ", ".join(config.evaluation.subgroups) or "none"
+                raise ValueError(
+                    f"{key} monitor {monitor!r} averages over the groups of {column!r}, but "
+                    f"{column!r} is not an evaluation.subgroups column (configured: {configured})."
+                )
+            prefix = f"tune/{head}/"
         # A custom learner's summary keys are its own; the Checkpoint checks them at fit time.
         if not custom_learner and name != "loss" and name not in metrics:
             raise ValueError(
                 f"{key} monitor {monitor!r} is not an effective metric of the head. Available "
-                f"monitors: {', '.join(f'tune/{metric}' for metric in ('loss', *metrics))}."
+                f"monitors: {', '.join(f'{prefix}{metric}' for metric in ('loss', *metrics))}."
             )
 
 
@@ -757,24 +783,16 @@ def _spelled_out(config: ExperimentConfig, cohort: Any, *, infer: bool) -> Exper
 
 
 def _check_subgroup_names(columns: Sequence[str], records: Sequence[Any]) -> None:
-    """Refuse a subgroup column, or a group value read with ``str()``, that holds ``/`` or
-    ``=``: the summary spells a group's metric ``<split>/<column>=<group>/<metric>``."""
+    """Refuse a subgroup column, or a group value read with ``str()``, that a subgroup key
+    cannot spell (:func:`~soma.evaluation.subgroups.check_subgroup_name`)."""
+    from soma.evaluation.subgroups import check_subgroup_name
+
     for column in columns:
-        if "/" in column or "=" in column:
-            raise ValueError(
-                f"evaluation.subgroups column {column!r} contains '/' or '=', which the subgroup "
-                "keys (<split>/<column>=<group>/<metric>) cannot hold: rename the column."
-            )
+        check_subgroup_name(column, where="evaluation.subgroups")
         for record in records:
-            if column not in record.metadata:
-                continue
-            value = str(record.metadata[column])
-            if "/" in value or "=" in value:
-                raise ValueError(
-                    f"evaluation.subgroups column {column!r} has the value {value!r} (sample "
-                    f"{record.sample_id!r}), which contains '/' or '=': the subgroup keys "
-                    "(<split>/<column>=<group>/<metric>) cannot hold either. Rename the value in "
-                    "cohort.records."
+            if column in record.metadata:
+                check_subgroup_name(
+                    column, str(record.metadata[column]), where="evaluation.subgroups", sample_id=record.sample_id
                 )
 
 

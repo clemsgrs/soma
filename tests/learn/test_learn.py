@@ -24,9 +24,11 @@ from soma.models.aggregators.pooling import MeanPool
 from soma.learn import (
     Budget,
     Checkpoint,
+    DenseLearner,
     EarlyStopping,
     FitResult,
     History,
+    Learner,
     MILLearner,
     SchedulerSpec,
     StepOutput,
@@ -41,6 +43,8 @@ from soma.models.model import EmbeddingModel, MILModel
 from soma.learn.sample_dataset import SampleBatch
 
 D = 16
+
+needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
 
 
 def _bags(n: int = 8, seed: int = 0) -> list[tuple[Tensor, dict[str, int], str]]:
@@ -215,10 +219,19 @@ class TestMILLearnerContract:
         batches = list(_bag_loader())
         summary = learner.validation_summary([learner.validation_step(b) for b in batches])
         assert summary["loss"] == pytest.approx(3.0)
-        # The full-cohort reduction (Cox-style heads) goes through the same callable.
-        learner.head.full_cohort_eval_loss = True
-        summary = learner.validation_summary([learner.validation_step(b) for b in batches])
-        assert summary["loss"] == pytest.approx(3.0)
+
+    def test_a_coupled_loss_flag_without_event_targets_keeps_the_head_loss(self):
+        # ``full_cohort_eval_loss`` marks any loss that couples samples (a ranking or AUC
+        # surrogate over ``label``), not only Cox: without ``event`` targets the flagged
+        # head's own loss is computed as for any head, never NaN or a KeyError.
+        batches = list(_bag_loader())
+        plain = _learner().eval()
+        expected = plain.validation_summary([plain.validation_step(b) for b in batches])["loss"]
+        flagged = _learner().eval()
+        flagged.head.full_cohort_eval_loss = True
+        summary = flagged.validation_summary([flagged.validation_step(b) for b in batches])
+        assert math.isfinite(summary["loss"])
+        assert summary["loss"] == pytest.approx(expected)
 
     def test_bf16_validation_hands_float_logits_to_the_head_metrics(self):
         result = Trainer(max_epochs=1, device="cpu", precision="bf16").fit(
@@ -292,6 +305,21 @@ class TestCoxWindow:
         loss.backward()
         grads = [p.grad for p in learner.model.aggregator.parameters() if p.grad is not None]
         assert grads and any(g.abs().sum() > 0 for g in grads)
+
+    @pytest.mark.parametrize("cox_window", [1, 3], ids=["padded batch", "accumulation window"])
+    def test_an_event_free_training_batch_still_gives_a_graph_connected_zero(self, cox_window):
+        # Only the evaluation loss of an event-free split is NaN: training keeps the
+        # fallback so an event-free batch never crashes a fit.
+        learner = self._learner(cox_window=cox_window)
+        bags = self._bags_of([5, 8, 3])
+        if cox_window == 1:
+            collate = functools.partial(bag_collate_fn, target_dtypes={"time": torch.float, "event": torch.float})
+            batch = collate([(bag, {"time": 3.0 - i, "event": 0.0}, f"s{i}") for i, bag in enumerate(bags)])
+        else:
+            targets = {"time": torch.tensor([3.0, 2.0, 1.0]), "event": torch.zeros(3)}
+            batch = CoxWindowBatch(bags=bags, targets=targets, sample_ids=("a", "b", "c"))
+        loss = learner.training_step(batch)
+        assert loss.detach().item() == 0.0 and loss.grad_fn is not None
 
     def test_transfer_batch_keeps_the_window_bags_on_the_host(self):
         # A window of large bags must not sit on the accelerator in full: each bag is
@@ -520,6 +548,259 @@ class TestTrainerBudget:
         assert train_loss.iloc[-1] < 0.5 * train_loss.iloc[0]
 
 
+# ---------------------------------------------------------------------------
+# Per-epoch subgroups
+# ---------------------------------------------------------------------------
+
+#: ``_bags``' samples by centre: s0..s3 in A, s4..s7 in B, both classes in each.
+CENTRES = {"centre": {f"s{i}": "A" if i < 4 else "B" for i in range(8)}}
+
+COX_TIME = [8.0, 3.0, 6.0, 1.0, 7.0, 2.0, 5.0, 4.0]
+
+
+def _cox_fit(event: list[float], *, callbacks=()) -> tuple[FitResult, list[Tensor]]:
+    """One epoch of a Cox MIL learner on 8 bags ``s0``..``s7`` with ``COX_TIME`` and
+    ``event``, tuned on the same bags in batches of 3 with ``CENTRES``."""
+    torch.manual_seed(0)
+    learner = MILLearner(MILModel(aggregator=MeanPool(input_dim=D), task_head=CoxSurvivalHead(input_dim=D)))
+    g = torch.Generator().manual_seed(0)
+    bags = [torch.randn(4 + i, D, generator=g) for i in range(8)]
+    items = [(bag, {"time": COX_TIME[i], "event": event[i]}, f"s{i}") for i, bag in enumerate(bags)]
+    collate = functools.partial(bag_collate_fn, target_dtypes={"time": torch.float, "event": torch.float})
+    result = Trainer(max_epochs=1, callbacks=list(callbacks), device="cpu").fit(
+        learner,
+        DataLoader(items, batch_size=8, collate_fn=collate),
+        DataLoader(items, batch_size=3, collate_fn=collate),
+        tune_groups=CENTRES,
+    )
+    return result, bags
+
+
+class TestSubgroupMonitoring:
+    def test_without_groups_the_history_holds_the_loop_columns_and_the_pooled_values_only(self):
+        result = Trainer(max_epochs=2, device="cpu").fit(_learner(), _bag_loader(), _bag_loader())
+        assert list(result.history) == [
+            "epoch", "train_loss", "lr", "elapsed_seconds",
+            "tune/loss", "tune/auroc", "tune/balanced_accuracy", "tune/auprc", "tune/f1",
+        ]
+
+    def test_a_mean_reduced_loss_is_the_mean_of_per_sample_losses_for_a_group_and_the_split(self):
+        # 7 tune bags in batches of 3, 3 and 1: a mean of per-batch means would weigh s6
+        # three times as much as any other sample.
+        tune = _bag_loader(n=7, batch_size=3)
+        result = Trainer(max_epochs=1, device="cpu").fit(
+            _learner(), _bag_loader(), tune, tune_groups=CENTRES
+        )
+        learner = result.learner.eval()
+        with torch.no_grad():
+            per_sample = torch.cat(
+                [
+                    torch.nn.functional.cross_entropy(
+                        learner.model(features.unsqueeze(0)).logits, torch.tensor([target["label"]])
+                    ).view(1)
+                    for features, target, _ in _bags(7)
+                ]
+            )
+        row = result.history.iloc[-1]
+        assert row["tune/centre=A/loss"] == pytest.approx(float(per_sample[:4].mean()), rel=1e-5)
+        assert row["tune/centre=B/loss"] == pytest.approx(float(per_sample[4:].mean()), rel=1e-5)
+        assert row["tune/loss"] == pytest.approx(float(per_sample.mean()), rel=1e-5)
+
+    @needs_cuda
+    def test_the_joined_loss_runs_on_the_device_of_a_loss_module_with_a_buffer(self):
+        # fit moves the learner, and the loss= module's class weights with it, to CUDA,
+        # while the validation steps keep their outputs on the host.
+        class Weighted(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("weight", torch.tensor([1.0, 3.0]))
+
+            def forward(self, logits, targets):
+                return torch.nn.functional.cross_entropy(logits, targets["label"], weight=self.weight)
+
+        result = Trainer(max_epochs=1, device="cuda").fit(
+            _learner(loss=Weighted()), _bag_loader(), _bag_loader(), tune_groups=CENTRES
+        )
+        row = result.history.iloc[-1]
+        assert math.isfinite(row["tune/loss"])
+        assert math.isfinite(row["tune/centre=A/loss"]) and math.isfinite(row["tune/centre=B/loss"])
+
+    def test_an_overridden_validation_summary_also_reduces_each_group(self):
+        class Counted(MILLearner):
+            def validation_summary(self, outputs):
+                return {**super().validation_summary(outputs), "samples": float(sum(o.size for o in outputs))}
+
+        result = Trainer(max_epochs=1, device="cpu").fit(
+            Counted(_learner().model), _bag_loader(), _bag_loader(), tune_groups=CENTRES
+        )
+        row = result.history.iloc[-1]
+        assert row["tune/samples"] == 8
+        assert row["tune/centre=A/samples"] == 4 and row["tune/centre=B/samples"] == 4
+        assert row["tune/mean_over_centre/samples"] == 4
+        assert row["tune/mean_over_centre/samples_groups"] == 2
+
+    def test_a_cox_group_loss_is_the_partial_likelihood_over_the_group_alone(self):
+        def partial_likelihood(risk, time, event):
+            # Breslow: the mean over events of -(r_i - log sum_{t_j >= t_i} exp(r_j)).
+            terms = [
+                -(risk[i] - math.log(sum(math.exp(risk[j]) for j in range(len(risk)) if time[j] >= time[i])))
+                for i in range(len(risk))
+                if event[i]
+            ]
+            return sum(terms) / len(terms)
+
+        time, event = COX_TIME, [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0]
+        result, bags = _cox_fit(event)
+        learner = result.learner.eval()
+        with torch.no_grad():
+            risk = [float(learner.model(bag.unsqueeze(0)).logits) for bag in bags]
+        row = result.history.iloc[-1]
+        expected = {
+            group: partial_likelihood(risk[rows], time[rows], event[rows])
+            for group, rows in (("A", slice(0, 4)), ("B", slice(4, 8)))
+        }
+        assert row["tune/centre=A/loss"] == pytest.approx(expected["A"], rel=1e-5)
+        assert row["tune/centre=B/loss"] == pytest.approx(expected["B"], rel=1e-5)
+        assert row["tune/loss"] == pytest.approx(partial_likelihood(risk, time, event), rel=1e-5)
+        # Each group's own risk sets: a stratified loss, not a slice of the pooled one.
+        assert row["tune/mean_over_centre/loss"] != pytest.approx(row["tune/loss"], rel=1e-3)
+
+    def test_an_event_free_cox_group_has_a_nan_loss_left_out_of_the_mean(self):
+        # Centre B holds four patients and no event: its partial likelihood is undefined,
+        # like its c-index, so it logs NaN rather than the training fallback 0.0.
+        result, _ = _cox_fit([1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0])
+        row = result.history.iloc[-1]
+        assert math.isnan(row["tune/centre=B/loss"]) and math.isnan(row["tune/centre=B/c_index"])
+        assert math.isfinite(row["tune/centre=A/loss"])
+        assert row["tune/mean_over_centre/loss"] == row["tune/centre=A/loss"]
+        assert row["tune/mean_over_centre/loss_groups"] == 1
+        assert math.isfinite(row["tune/loss"])
+
+    def test_an_event_free_cox_tune_split_fails_fast_on_a_loss_monitor(self):
+        # The pooled loss is undefined too, like the pooled c-index: the checkpoint must not
+        # select on a constant.
+        with pytest.raises(RuntimeError, match=r"Checkpoint monitor 'tune/loss' is nan at epoch 1.*no event"):
+            _cox_fit([0.0] * 8, callbacks=[Checkpoint(monitor="tune/loss")])
+
+    def test_a_loss_callable_on_a_cox_head_defines_its_own_event_free_loss(self):
+        # Only the head's own partial likelihood is undefined without an event: a ``loss=``
+        # replacement (a censored hinge, an AFT term) may well be defined there.
+        calls = []
+
+        def constant_loss(logits, targets):
+            calls.append(1)
+            return torch.tensor(3.0)
+
+        model = MILModel(aggregator=MeanPool(input_dim=D), task_head=CoxSurvivalHead(input_dim=D))
+        learner = MILLearner(model, loss=constant_loss)
+        censored = StepOutput(
+            loss=None,
+            outputs=torch.tensor([[0.1], [0.2], [0.3]]),
+            targets={"time": torch.tensor([1.0, 2.0, 3.0]), "event": torch.zeros(3)},
+            size=3,
+            sample_ids=("a", "b", "c"),
+        )
+        summary = learner.validation_summary([censored])
+        assert summary["loss"] == 3.0 and calls
+
+    def test_the_mean_over_groups_skips_a_nan_group_and_counts_the_groups_it_averages(self):
+        # Centre A holds two class-0 samples only, so its AUROC is undefined.
+        groups = {"centre": {f"s{i}": "A" if i in (0, 2) else "B" for i in range(8)}}
+        result = Trainer(max_epochs=1, device="cpu").fit(
+            _learner(), _bag_loader(), _bag_loader(), tune_groups=groups
+        )
+        row = result.history.iloc[-1]
+        assert math.isnan(row["tune/centre=A/auroc"])
+        assert row["tune/mean_over_centre/auroc"] == row["tune/centre=B/auroc"]
+        assert row["tune/mean_over_centre/auroc_groups"] == 1
+        assert row["tune/mean_over_centre/loss"] == pytest.approx(
+            (row["tune/centre=A/loss"] + row["tune/centre=B/loss"]) / 2
+        )
+        assert row["tune/mean_over_centre/loss_groups"] == 2
+
+    def test_a_group_under_two_samples_is_skipped_as_in_the_post_fit_breakdown(self):
+        groups = {"centre": {f"s{i}": "A" if i == 0 else "B" for i in range(8)}}
+        result = Trainer(max_epochs=1, device="cpu").fit(
+            _learner(), _bag_loader(), _bag_loader(), tune_groups=groups
+        )
+        assert not any(key.startswith("tune/centre=A/") for key in result.history)
+        row = result.history.iloc[-1]
+        assert row["tune/mean_over_centre/loss"] == row["tune/centre=B/loss"]
+        assert row["tune/mean_over_centre/loss_groups"] == 1
+
+    @pytest.mark.parametrize("owner", ["Checkpoint", "EarlyStopping"])
+    def test_a_nan_mean_over_groups_as_the_monitor_fails_fast(self, owner):
+        # Every centre holds one class only: no group has an AUROC, so the mean is NaN.
+        groups = {"centre": {f"s{i}": "even" if i % 2 == 0 else "odd" for i in range(8)}}
+        monitor = "tune/mean_over_centre/auroc"
+        callbacks = {
+            "Checkpoint": [Checkpoint(monitor=monitor, mode="max")],
+            # Selection on the pooled loss, which stays finite: only the early stopping
+            # watches the NaN mean, and it must not stop the fold silently.
+            "EarlyStopping": [
+                Checkpoint(monitor="tune/loss"),
+                EarlyStopping(monitor=monitor, mode="max", patience=1),
+            ],
+        }[owner]
+        trainer = Trainer(max_epochs=3, callbacks=callbacks, device="cpu")
+        with pytest.raises(RuntimeError, match=rf"{owner} monitor '{monitor}' is nan at epoch 1"):
+            trainer.fit(_learner(), _bag_loader(), _bag_loader(), tune_groups=groups)
+
+    @pytest.mark.parametrize(
+        ("groups", "match"),
+        [
+            # tune/site=x=A/* is also what column site with group x=A writes.
+            ({"site=x": CENTRES["centre"]}, r"tune_groups column 'site=x' contains '/' or '='"),
+            # tune/a/b=A/* reads as a pooled key.
+            ({"a/b": CENTRES["centre"]}, r"tune_groups column 'a/b' contains '/' or '='"),
+            (
+                {"centre": {**CENTRES["centre"], "s0": "a/b"}},
+                r"tune_groups column 'centre' has the value 'a/b' \(sample 's0'\)",
+            ),
+            (
+                {"centre": {**CENTRES["centre"], "s7": "x=B"}},
+                r"tune_groups column 'centre' has the value 'x=B' \(sample 's7'\)",
+            ),
+        ],
+        ids=["column with '='", "column with '/'", "group with '/'", "group with '='"],
+    )
+    def test_a_column_or_group_with_a_key_separator_is_refused_before_training(self, groups, match):
+        # The keys spell <split>/<column>=<group>/<name>, as at plan time.
+        counter = _BatchCounter()
+        trainer = Trainer(max_epochs=1, callbacks=[counter], device="cpu")
+        with pytest.raises(ValueError, match=match):
+            trainer.fit(_learner(), _bag_loader(), _bag_loader(), tune_groups=groups)
+        assert counter.batches == 0
+
+    def test_a_learner_without_subgroup_summary_is_refused_before_training(self):
+        class Ungrouped(MILLearner):
+            # Its steps carry the sample ids, but it cannot reduce one group's rows.
+            subgroup_summary = Learner.subgroup_summary
+
+        counter = _BatchCounter()
+        trainer = Trainer(max_epochs=1, callbacks=[counter], device="cpu")
+        with pytest.raises(ValueError, match=r"learner 'Ungrouped' has no subgroup_summary"):
+            trainer.fit(Ungrouped(_learner().model), _bag_loader(), _bag_loader(), tune_groups=CENTRES)
+        assert counter.batches == 0
+
+    def test_the_dense_learner_with_tune_groups_is_refused_before_training(self):
+        # Its validation steps carry no sample ids: every mean would be NaN over 0 groups.
+        with pytest.raises(ValueError, match=r"learner 'DenseLearner' has no subgroup_summary"):
+            Trainer(max_epochs=1, device="cpu").fit(
+                DenseLearner(torch.nn.Linear(1, 1)), _bag_loader(), _bag_loader(), tune_groups=CENTRES
+            )
+
+
+class _BatchCounter:
+    """Counts the training batches a fit runs."""
+
+    def __init__(self) -> None:
+        self.batches = 0
+
+    def on_train_batch_end(self, trainer, learner, out) -> None:
+        self.batches += 1
+
+
 class TestCallbacks:
     def test_hooks_fire_in_order_and_should_stop_ends_the_run(self):
         events: list[str] = []
@@ -699,15 +980,17 @@ class TestCallbacks:
                 device="cpu",
             ).fit(_learner(), _bag_loader(), _bag_loader())
 
-    def test_checkpoint_raises_on_a_non_finite_monitor_at_first_observation(self):
+    @pytest.mark.parametrize("owner", ["Checkpoint", "EarlyStopping"])
+    def test_a_non_finite_monitor_raises_at_first_observation(self, owner):
         class Nan:
             def on_validation_end(self, trainer, learner, summary):
                 summary["tune/score"] = float("nan")
 
-        with pytest.raises(RuntimeError, match="tune/score"):
-            Trainer(
-                max_epochs=3, callbacks=[Nan(), Checkpoint(monitor="tune/score")], device="cpu"
-            ).fit(_learner(), _bag_loader(), _bag_loader())
+        monitor = {"Checkpoint": Checkpoint, "EarlyStopping": EarlyStopping}[owner](monitor="tune/score")
+        with pytest.raises(RuntimeError, match=f"{owner} monitor 'tune/score' is nan at epoch 1"):
+            Trainer(max_epochs=3, callbacks=[Nan(), monitor], device="cpu").fit(
+                _learner(), _bag_loader(), _bag_loader()
+            )
 
     def test_checkpoint_last_tolerates_a_non_finite_diagnostic_monitor(self):
         class Nan:
@@ -824,6 +1107,18 @@ class TestFitSugar:
         assert isinstance(result.learner, MILLearner) and result.learner.model is model
         assert result.selection_monitor[0] == "tune/auroc"
         assert result.history["tune/auroc"].max() == pytest.approx(result.selection_monitor[1])
+
+    def test_tune_groups_reach_the_trainer_so_a_mean_over_monitor_selects(self):
+        import soma
+
+        result = soma.fit(
+            _learner(), _bag_loader(), _bag_loader(), tune_groups=CENTRES,
+            monitor="tune/mean_over_centre/loss", max_epochs=1, device="cpu", progress=False,
+        )
+        row = result.history.iloc[-1]
+        assert {"tune/centre=A/loss", "tune/centre=B/loss", "tune/mean_over_centre/loss"} <= set(row.index)
+        assert row["tune/mean_over_centre/loss_groups"] == 2
+        assert result.selection_monitor == ("tune/mean_over_centre/loss", row["tune/mean_over_centre/loss"])
 
     def test_a_bare_monitor_is_refused_without_a_tune_loader(self):
         # Without a tune loader nothing is evaluated, so the monitor is never looked up;
@@ -974,6 +1269,27 @@ class TestFitSugar:
         assert lines[1].startswith("fold 1/2 | epoch 01/02")
         assert "selected tune/loss=" in lines[1]
         assert lines[-1].startswith("training complete | fold 1/2 | ran 2/2 epochs")
+
+    @pytest.mark.parametrize("style", ["plain", "rich"])
+    def test_progress_shows_the_pooled_values_and_the_monitor_but_no_group(self, style):
+        import io
+
+        from rich.console import Console
+
+        from soma.learn import Progress
+
+        buffer = io.StringIO()
+        progress = Progress(style=style, console=Console(file=buffer, width=200, force_terminal=style == "rich"))
+        monitor = "tune/mean_over_centre/loss"
+        Trainer(
+            max_epochs=2,
+            callbacks=[Checkpoint(monitor=monitor), EarlyStopping(monitor=monitor, patience=5), progress],
+            device="cpu",
+        ).fit(_learner(), _bag_loader(), _bag_loader(), tune_groups=CENTRES)
+        output = buffer.getvalue()
+        assert monitor in output and "auroc" in output
+        assert "centre=" not in output and "_groups" not in output
+        assert "mean_over_centre/auroc" not in output
 
 
 class TestSegmentationAugment:

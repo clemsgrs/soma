@@ -18,6 +18,7 @@ import pandas as pd
 from soma._internal.atomic_io import atomic_write_json
 from soma.evaluation import Evaluation
 from soma.evaluation.metrics import metric_registry
+from soma.evaluation.subgroups import is_subgroup_key
 from soma.evaluation.summary import summarize_values
 from soma.pipeline.layout import reject_undeclared_fold_dirs
 
@@ -78,14 +79,21 @@ def peak_per_metric(history: pd.DataFrame) -> dict[str, dict[str, float | int]]:
     checkpoint selection, ``summary.json`` fold aggregates, or any results table. It is
     recorded in ``training_history.json`` purely to judge whether the configured
     ``monitor`` is a good selection proxy. Entries keep the history's split-prefixed
-    names (``tune/auroc``); direction follows
-    :meth:`soma.evaluation.metric_registry.higher_is_better` of the bare metric, and
-    ``tune/loss`` is excluded.
+    names (``tune/auroc``, ``tune/mean_over_centre/auroc``); direction follows
+    :meth:`soma.evaluation.metric_registry.higher_is_better` of the bare metric. Loss
+    keys, one group's keys (``tune/centre=A/auroc``) and the group counts of a mean over
+    groups (``tune/mean_over_centre/auroc_groups``) are excluded.
     """
     peaks: dict[str, dict[str, float | int]] = {}
+    columns = set(history.columns)
     for name in history.columns:
         if name in _HISTORY_LOOP_COLUMNS or name.rsplit("/", 1)[-1] == "loss":
             continue
+        within = name.partition("/")[2]
+        if is_subgroup_key(within):
+            one_group = "=" in within.partition("/")[0]
+            if one_group or (name.endswith("_groups") and name.removesuffix("_groups") in columns):
+                continue
         for epoch, raw in zip(history["epoch"], history[name]):
             value = float(raw)
             if not np.isfinite(value):

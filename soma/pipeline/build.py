@@ -146,13 +146,19 @@ class SplitPlan:
 
 @dataclass(frozen=True)
 class FoldLoaders:
-    """Step 4's output: the training loaders and the scored splits (tune first)."""
+    """Step 4's output: the training loaders and the scored splits (tune first).
+
+    ``tune_groups`` maps each ``evaluation.subgroups`` column to the group of every
+    sample the tune loader serves (``{column: {sample_id: group}}``): the Trainer logs
+    each group's values at every evaluation, so the learner never sees the metadata.
+    """
 
     train: DataLoader
     tune: DataLoader | None
     splits: tuple[SplitPlan, ...]
     #: Side files written once the fit returns (the ROI batch sampler's audit).
     after_fit: Callable[[Path], None] | None = None
+    tune_groups: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -1132,6 +1138,12 @@ def _set_loaders(
         return frame
 
     subgroups = tuple(inputs.evaluation.subgroups)
+    # The ids the tune batches carry: patient ids on the patient path.
+    tune_members = (
+        [(pid, records.records_by_id[pid]) for pid in records.tune]
+        if patient
+        else [(record.sample_id, record) for record in records.tune]
+    )
     splits = [
         SplitPlan(
             name="tune",
@@ -1152,7 +1164,28 @@ def _set_loaders(
                 subgroups=subgroups,
             )
         )
-    return FoldLoaders(train=train_loader, tune=tune_loader, splits=tuple(splits))
+    return FoldLoaders(
+        train=train_loader,
+        tune=tune_loader,
+        splits=tuple(splits),
+        tune_groups=_sample_groups(subgroups, tune_members),
+    )
+
+
+def _sample_groups(
+    columns: Sequence[str], members: Sequence[tuple[str, SampleRecord]]
+) -> dict[str, dict[str, str]]:
+    """``{column: {sample_id: group}}`` over a loader's ``(sample_id, record)`` members,
+    each group read with ``str()`` as the post-fit breakdown does. A sample without a
+    value is in no group, as that breakdown's ``groupby`` drops it."""
+    return {
+        column: {
+            str(sample_id): str(record.metadata[column])
+            for sample_id, record in members
+            if column in record.metadata and not pd.isna(record.metadata[column])
+        }
+        for column in columns
+    }
 
 
 # ---------------------------------------------------------------------------
