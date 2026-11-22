@@ -83,7 +83,8 @@ class TaskHead(ABC, nn.Module):
     # over that group's own risk sets, so the mean over groups is stratified and
     # differs from the split's loss. Over rows without an event (``targets["event"]``)
     # it is undefined, so the MIL learner's evaluation reports NaN there, while
-    # training keeps the loss's own fallback.
+    # training keeps the loss's own fallback. A ``loss=`` callable replacing the
+    # head's loss defines its own value over such rows.
     full_cohort_eval_loss: bool = False
     # When True, the pipeline builds the training loader with an event-balanced
     # BatchSampler so every batch contains at least one event (needed for Cox).

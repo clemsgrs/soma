@@ -669,6 +669,27 @@ class TestSubgroupMonitoring:
         with pytest.raises(RuntimeError, match=r"Checkpoint monitor 'tune/loss' is nan at epoch 1.*no event"):
             _cox_fit([0.0] * 8, callbacks=[Checkpoint(monitor="tune/loss")])
 
+    def test_a_loss_callable_on_a_cox_head_defines_its_own_event_free_loss(self):
+        # Only the head's own partial likelihood is undefined without an event: a ``loss=``
+        # replacement (a censored hinge, an AFT term) may well be defined there.
+        calls = []
+
+        def constant_loss(logits, targets):
+            calls.append(1)
+            return torch.tensor(3.0)
+
+        model = MILModel(aggregator=MeanPool(input_dim=D), task_head=CoxSurvivalHead(input_dim=D))
+        learner = MILLearner(model, loss=constant_loss)
+        censored = StepOutput(
+            loss=None,
+            outputs=torch.tensor([[0.1], [0.2], [0.3]]),
+            targets={"time": torch.tensor([1.0, 2.0, 3.0]), "event": torch.zeros(3)},
+            size=3,
+            sample_ids=("a", "b", "c"),
+        )
+        summary = learner.validation_summary([censored])
+        assert summary["loss"] == 3.0 and calls
+
     def test_the_mean_over_groups_skips_a_nan_group_and_counts_the_groups_it_averages(self):
         # Centre A holds two class-0 samples only, so its AUROC is undefined.
         groups = {"centre": {f"s{i}": "A" if i in (0, 2) else "B" for i in range(8)}}

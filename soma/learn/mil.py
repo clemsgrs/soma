@@ -147,12 +147,17 @@ class MILLearner(Learner):
 
         For a ``full_cohort_eval_loss`` head (Cox), rows without an event have no
         partial likelihood, as they have no c-index: the loss is NaN, not the 0.0 that
-        training falls back on for an event-free batch.
+        training falls back on for an event-free batch. A ``loss=`` callable replaces
+        the partial likelihood, so it defines its own value over such rows.
         """
         if not outputs:
             return {"loss": float("nan")}
         logits, targets = _joined(outputs)
-        if getattr(self.head, "full_cohort_eval_loss", False) and not bool(targets["event"].any()):
+        if (
+            self.loss_fn is None
+            and getattr(self.head, "full_cohort_eval_loss", False)
+            and not bool(targets["event"].any())
+        ):
             loss = float("nan")
         else:
             # The steps keep their outputs on the host for the metrics; the loss runs on
@@ -172,7 +177,8 @@ class MILLearner(Learner):
         group's own risk sets: a stratified quantity, not a slice of the pooled loss, so
         the mean of the groups' losses does not equal the split's ``loss``. A group
         without an event has no partial likelihood: its loss is NaN, and the mean over
-        groups leaves it out.
+        groups leaves it out. A ``loss=`` callable defines its own value over such a
+        group.
         """
         logits, targets = _joined(outputs)
         wanted = set(sample_ids)
