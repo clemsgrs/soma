@@ -78,13 +78,13 @@ class TaskHead(ABC, nn.Module):
     target_schema: dict[str, type] = {"label": object}
     supports_branch_representation: bool = False
     task_family: str = "generic"
-    # True for a partial-likelihood loss (CoxPH), which couples the samples it is
-    # computed over: it exists only over a whole split, and a subgroup's loss runs
-    # over that group's own risk sets, so the mean over groups is stratified and
-    # differs from the split's loss. Over rows without an event (``targets["event"]``)
-    # it is undefined, so the MIL learner's evaluation reports NaN there, while
-    # training keeps the loss's own fallback. A ``loss=`` callable replacing the
-    # head's loss defines its own value over such rows.
+    # True for a loss that couples the samples it is computed over (e.g. CoxPH partial
+    # likelihood), where a mean of per-batch losses is not the split's loss: the tune
+    # loss is computed once over the joined split's logits and targets, and a
+    # subgroup's loss couples only that group's samples, so the mean over groups is
+    # stratified and differs from the split's loss. When the targets carry ``event``
+    # and no row has one, the MIL learner reports the head's own loss as NaN; training
+    # keeps the loss's own fallback, and a ``loss=`` callable defines its own value.
     full_cohort_eval_loss: bool = False
     # When True, the pipeline builds the training loader with an event-balanced
     # BatchSampler so every batch contains at least one event (needed for Cox).

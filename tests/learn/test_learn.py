@@ -220,6 +220,19 @@ class TestMILLearnerContract:
         summary = learner.validation_summary([learner.validation_step(b) for b in batches])
         assert summary["loss"] == pytest.approx(3.0)
 
+    def test_a_coupled_loss_flag_without_event_targets_keeps_the_head_loss(self):
+        # ``full_cohort_eval_loss`` marks any loss that couples samples (a ranking or AUC
+        # surrogate over ``label``), not only Cox: without ``event`` targets the flagged
+        # head's own loss is computed as for any head, never NaN or a KeyError.
+        batches = list(_bag_loader())
+        plain = _learner().eval()
+        expected = plain.validation_summary([plain.validation_step(b) for b in batches])["loss"]
+        flagged = _learner().eval()
+        flagged.head.full_cohort_eval_loss = True
+        summary = flagged.validation_summary([flagged.validation_step(b) for b in batches])
+        assert math.isfinite(summary["loss"])
+        assert summary["loss"] == pytest.approx(expected)
+
     def test_bf16_validation_hands_float_logits_to_the_head_metrics(self):
         result = Trainer(max_epochs=1, device="cpu", precision="bf16").fit(
             _learner(), _bag_loader(), _bag_loader()
