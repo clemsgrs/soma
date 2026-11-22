@@ -97,6 +97,23 @@ def _check_mode(mode: str) -> str:
     return mode
 
 
+def _check_monitor(owner: str, monitor: str) -> str:
+    """``monitor`` when it names the tune split; plan validation calls it too.
+
+    The Trainer prefixes every ``validation_summary`` key with its split (``tune/<key>``),
+    so a bare or non-tune monitor can never match.
+    """
+    split, slash, _ = monitor.partition("/")
+    if not slash:
+        raise ValueError(f"{owner} monitor {monitor!r} names no split; use 'tune/{monitor}'.")
+    if split != "tune":
+        raise ValueError(
+            f"{owner} monitor {monitor!r} is not a tune value; a monitor names the tune split: "
+            "'tune/loss' or 'tune/<metric>'."
+        )
+    return monitor
+
+
 def _cpu_copy(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     return {k: v.detach().to("cpu", copy=True) for k, v in state.items()}
 
@@ -158,7 +175,8 @@ class Checkpoint:
     ) -> None:
         if selection not in {"best", "last"}:
             raise ValueError(f"selection must be 'best' or 'last', got {selection!r}")
-        self.monitor, self.mode, self.selection = monitor, _check_mode(mode), selection
+        self.monitor, self.mode = _check_monitor("Checkpoint", monitor), _check_mode(mode)
+        self.selection = selection
         self.dirpath = Path(dirpath) if dirpath is not None else None
         self.best_value = float("nan")
         self.best_epoch: int | None = None
@@ -245,7 +263,8 @@ class EarlyStopping:
     ) -> None:
         if patience < 1:
             raise ValueError("patience must be >= 1")
-        self.monitor, self.mode, self.patience = monitor, _check_mode(mode), int(patience)
+        self.monitor, self.mode = _check_monitor("EarlyStopping", monitor), _check_mode(mode)
+        self.patience = int(patience)
         self.hold_until_moves = hold_until_moves
         self.wait_count = 0
         self.best_value = float("nan")

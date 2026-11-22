@@ -671,6 +671,8 @@ def _check_checkpoint_cox_window(head_cls: type, head_params: Mapping[str, Any])
 
 
 def _check_callbacks(config: ExperimentConfig, registries, *, metrics: list[str], custom_learner: bool) -> None:
+    from soma.learn.callbacks import _check_monitor
+
     callbacks = config.trainer.callbacks
     names = []
     for leaf in callbacks:
@@ -692,15 +694,8 @@ def _check_callbacks(config: ExperimentConfig, registries, *, metrics: list[str]
         if key not in ("checkpoint", "early_stopping"):
             continue
         # The Trainer prefixes every validation_summary key with its split: tune/<key>.
-        monitor = leaf.params.get("monitor", "tune/loss")
-        split, slash, name = monitor.partition("/")
-        if not slash:
-            raise ValueError(f"{key} monitor {monitor!r} names no split; use 'tune/{monitor}'.")
-        if split != "tune":
-            raise ValueError(
-                f"{key} monitor {monitor!r} is not a tune value; a monitor names the tune split: "
-                "'tune/loss' or 'tune/<metric>'."
-            )
+        monitor = _check_monitor(key, leaf.params.get("monitor", "tune/loss"))
+        name = monitor.partition("/")[2]
         # A custom learner's summary keys are its own; the Checkpoint checks them at fit time.
         if not custom_learner and name != "loss" and name not in metrics:
             raise ValueError(

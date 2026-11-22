@@ -725,9 +725,21 @@ class TestCallbacks:
 
     def test_checkpoint_refuses_an_unknown_monitor(self):
         with pytest.raises(ValueError, match="nope"):
-            Trainer(max_epochs=1, callbacks=[Checkpoint(monitor="nope")], device="cpu").fit(
+            Trainer(max_epochs=1, callbacks=[Checkpoint(monitor="tune/nope")], device="cpu").fit(
                 _learner(), _bag_loader(), _bag_loader()
             )
+
+    def test_callbacks_refuse_a_monitor_outside_the_tune_split_when_built(self):
+        # Every summary key reaches the callbacks as tune/<key>, so a bare or non-tune
+        # monitor can never match: refused when the callback is built, not after an epoch.
+        with pytest.raises(ValueError, match="'loss' names no split; use 'tune/loss'"):
+            Checkpoint(monitor="loss")
+        with pytest.raises(ValueError, match="'loss' names no split; use 'tune/loss'"):
+            EarlyStopping(monitor="loss")
+        with pytest.raises(ValueError, match="'train/loss' is not a tune value.*'tune/loss'"):
+            EarlyStopping(monitor="train/loss")
+        with pytest.raises(ValueError, match="'train/loss' is not a tune value.*'tune/loss'"):
+            Checkpoint(monitor="train/loss")
 
     @staticmethod
     def _scripted(values):
@@ -812,6 +824,14 @@ class TestFitSugar:
         assert isinstance(result.learner, MILLearner) and result.learner.model is model
         assert result.selection_monitor[0] == "tune/auroc"
         assert result.history["tune/auroc"].max() == pytest.approx(result.selection_monitor[1])
+
+    def test_a_bare_monitor_is_refused_without_a_tune_loader(self):
+        # Without a tune loader nothing is evaluated, so the monitor is never looked up;
+        # a bare name must still not reach the bundle's selection_monitor.
+        import soma
+
+        with pytest.raises(ValueError, match="use 'tune/loss'"):
+            soma.fit(_learner(), _bag_loader(), None, monitor="loss", max_epochs=1, device="cpu", progress=False)
 
     def test_patience_none_installs_no_early_stopping(self):
         import soma
