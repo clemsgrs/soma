@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import functools
 import math
+import random
+import re
 from pathlib import Path
 
 import numpy as np
@@ -801,6 +803,156 @@ class _BatchCounter:
         self.batches += 1
 
 
+class TestEvalTrain:
+    def test_every_evaluated_epoch_logs_the_train_split_in_eval_mode_and_none_without_it(self):
+        off = Trainer(max_epochs=5, val_every_n_epochs=2, device="cpu").fit(
+            _learner(), _bag_loader(), _bag_loader()
+        )
+        assert not any(key.startswith("train/") for key in off.history)
+        on = Trainer(max_epochs=5, val_every_n_epochs=2, eval_train=True, device="cpu").fit(
+            _learner(), _bag_loader(), _bag_loader(), train_eval_loader=_bag_loader()
+        )
+        for name in ("loss", "auroc", "balanced_accuracy", "auprc", "f1"):
+            assert on.history[f"train/{name}"].notna().tolist() == [False, True, False, True, True]
+        # The running optimizer objective is still logged every epoch, under its own name.
+        assert on.history["train_loss"].notna().all()
+
+    @pytest.mark.parametrize(
+        "source", ["global", "generator", "python and numpy"],
+        ids=["global RNG", "shared generator", "python and numpy RNG"],
+    )
+    def test_the_train_pass_changes_neither_the_tune_values_nor_the_selected_epoch(self, source):
+        # The training loader shuffles and ABMIL drops out, both from the global torch RNG:
+        # a pass that drew from it (a DataLoader draws a base seed per iteration) would
+        # move every later epoch. A loader built with generator= draws that seed from its
+        # generator instead, and a soma.fit caller can hand one seeded generator to both
+        # loaders: the training order then reads the generator the pass draws from. A
+        # custom dataset may also draw from Python's random or NumPy's global RNG, which
+        # seed_everything seeds too: with num_workers=0 the pass draws in this process.
+        class Noisy(torch.utils.data.Dataset):
+            def __init__(self) -> None:
+                self.items = _bags()
+
+            def __len__(self) -> int:
+                return len(self.items)
+
+            def __getitem__(self, i):
+                features, target, sample_id = self.items[i]
+                return features + float(np.random.normal()) + random.gauss(0.0, 1.0), target, sample_id
+
+        def fit(eval_train: bool) -> FitResult:
+            torch.manual_seed(0)
+            np.random.seed(0)
+            random.seed(0)
+            generator = {"generator": torch.Generator().manual_seed(0)} if source == "generator" else {}
+            data = Noisy if source == "python and numpy" else _bags
+            learner = _learner(ABMIL(input_dim=D, dropout=0.5))
+            collate = functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
+            shuffled = DataLoader(data(), batch_size=2, shuffle=True, collate_fn=collate, **generator)
+            train_eval = DataLoader(data(), batch_size=2, shuffle=False, collate_fn=collate, **generator)
+            trainer = Trainer(
+                max_epochs=4, eval_train=eval_train, callbacks=[Checkpoint(monitor="tune/loss")], device="cpu"
+            )
+            return trainer.fit(
+                learner, shuffled, _bag_loader(), train_eval_loader=train_eval if eval_train else None
+            )
+
+        off, on = fit(False), fit(True)
+        tune = [key for key in off.history if key.startswith("tune/")]
+        pd.testing.assert_frame_equal(on.history[tune], off.history[tune])
+        assert on.history["train_loss"].tolist() == off.history["train_loss"].tolist()
+        assert on.selected_epoch == off.selected_epoch
+
+    def test_at_the_last_epoch_a_train_metric_is_the_evaluation_of_the_final_model_on_the_train_split(self):
+        import soma
+
+        result = soma.fit(
+            _learner(), _bag_loader(), _bag_loader(n=6, seed=1), train_eval=_bag_loader(batch_size=3),
+            eval_train=True, callbacks=[Checkpoint(selection="last")], patience=None,
+            max_epochs=3, device="cpu", progress=False,
+        )
+        targets = pd.DataFrame(
+            {"label": [target["label"] for _, target, _ in _bags()]},
+            index=pd.Index([sample_id for _, _, sample_id in _bags()], name="sample_id"),
+        )
+        final = soma.evaluate(soma.predict(result.learner, _bag_loader()), targets, metrics=["auroc"])
+        assert result.history.iloc[-1]["train/auroc"] == pytest.approx(final.metrics["auroc"], abs=1e-12)
+
+    def test_train_groups_log_each_group_and_the_mean_over_groups_under_train(self):
+        import soma
+
+        # ABMIL drops out, so a train pass left in train mode would not match tune.
+        result = soma.fit(
+            _learner(ABMIL(input_dim=D, dropout=0.5)), _bag_loader(), _bag_loader(), tune_groups=CENTRES,
+            train_eval=_bag_loader(), train_groups=CENTRES, eval_train=True,
+            max_epochs=1, device="cpu", progress=False,
+        )
+        row = result.history.iloc[-1]
+        # The same samples and weights as tune here: in eval mode the two passes agree.
+        assert row["train/loss"] == row["tune/loss"]
+        for name in ("loss", "auroc"):
+            groups = (row[f"train/centre=A/{name}"], row[f"train/centre=B/{name}"])
+            assert row[f"train/mean_over_centre/{name}"] == pytest.approx(sum(groups) / 2)
+            assert row[f"train/mean_over_centre/{name}_groups"] == 2
+            assert row[f"train/centre=A/{name}"] == row[f"tune/centre=A/{name}"]
+
+    @pytest.mark.parametrize(
+        ("eval_train", "fit_kwargs", "match"),
+        [
+            (True, {}, r"eval_train evaluates the train split over train_eval_loader"),
+            (False, {"train_eval_loader": _bag_loader()}, r"train_eval_loader is evaluated only with eval_train=True"),
+            (False, {"train_groups": CENTRES}, r"train_groups is evaluated only with eval_train=True"),
+        ],
+        ids=["knob without loader", "loader without knob", "groups without knob"],
+    )
+    def test_the_knob_and_its_loader_go_together_or_the_fit_is_refused_before_training(
+        self, eval_train, fit_kwargs, match
+    ):
+        counter = _BatchCounter()
+        trainer = Trainer(max_epochs=1, eval_train=eval_train, callbacks=[counter], device="cpu")
+        with pytest.raises(ValueError, match=match):
+            trainer.fit(_learner(), _bag_loader(), _bag_loader(), **fit_kwargs)
+        assert counter.batches == 0
+
+    def test_the_training_loader_itself_as_the_train_eval_loader_is_refused_before_training(self):
+        # A second pass over the training loader would advance its shuffle, or a Cox
+        # event-balanced sampler's own RNG, and change the next epoch's batches.
+        counter = _BatchCounter()
+        loader = _bag_loader()
+        trainer = Trainer(max_epochs=1, eval_train=True, callbacks=[counter], device="cpu")
+        with pytest.raises(ValueError, match=r"train_eval_loader is the training loader.*separate unshuffled loader"):
+            trainer.fit(_learner(), loader, _bag_loader(), train_eval_loader=loader)
+        assert counter.batches == 0
+
+    def test_without_a_tune_split_the_train_pass_never_runs_and_says_so(self, caplog):
+        # The pass rides the tune evaluations: with none, a warning instead of a silent no-op.
+        trainer = Trainer(max_epochs=2, eval_train=True, device="cpu")
+        with caplog.at_level("WARNING", logger="soma.learn.trainer"):
+            fit = trainer.fit(_learner(), _bag_loader(), None, train_eval_loader=_bag_loader())
+        assert "eval_train scores the train split at each tune evaluation" in caplog.text
+        assert "train_loss" in fit.history.columns
+        assert not any(column.startswith("train/") for column in fit.history.columns)
+
+    @pytest.mark.parametrize("style", ["plain", "rich"])
+    def test_progress_shows_the_pooled_train_loss_beside_the_tune_values_but_no_group(self, style):
+        import io
+
+        from rich.console import Console
+
+        from soma.learn import Progress
+
+        buffer = io.StringIO()
+        progress = Progress(style=style, console=Console(file=buffer, width=200, force_terminal=style == "rich"))
+        Trainer(max_epochs=2, eval_train=True, callbacks=[Checkpoint(), progress], device="cpu").fit(
+            _learner(), _bag_loader(), _bag_loader(),
+            tune_groups=CENTRES, train_eval_loader=_bag_loader(), train_groups=CENTRES,
+        )
+        output = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", buffer.getvalue())
+        # Right after the tune loss: the next part of the line, or the next row of the panel.
+        assert re.search(r"tune\s+\d\.\d{4}\s+(?:\||│\n│)\s+train/loss\s+\d\.\d{4}", output)
+        assert "centre=" not in output and "mean_over_centre" not in output
+
+
 class TestCallbacks:
     def test_hooks_fire_in_order_and_should_stop_ends_the_run(self):
         events: list[str] = []
@@ -1019,10 +1171,17 @@ class TestCallbacks:
             Checkpoint(monitor="loss")
         with pytest.raises(ValueError, match="'loss' names no split; use 'tune/loss'"):
             EarlyStopping(monitor="loss")
-        with pytest.raises(ValueError, match="'train/loss' is not a tune value.*'tune/loss'"):
+        diagnostic = "'train/loss' is a train value: train values are diagnostics.*'tune/loss'"
+        with pytest.raises(ValueError, match=diagnostic):
             EarlyStopping(monitor="train/loss")
-        with pytest.raises(ValueError, match="'train/loss' is not a tune value.*'tune/loss'"):
+        with pytest.raises(ValueError, match=diagnostic):
             Checkpoint(monitor="train/loss")
+        # One group is refused under tune too: the hint names the mean over its column.
+        single_group = r"'train/centre=A/auroc' is a train value.*use 'tune/mean_over_centre/auroc'\.$"
+        with pytest.raises(ValueError, match=single_group):
+            Checkpoint(monitor="train/centre=A/auroc")
+        with pytest.raises(ValueError, match="'test/loss' is not a tune value.*'tune/loss'"):
+            Checkpoint(monitor="test/loss")
 
     @staticmethod
     def _scripted(values):

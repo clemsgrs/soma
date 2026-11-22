@@ -82,12 +82,14 @@ def peak_per_metric(history: pd.DataFrame) -> dict[str, dict[str, float | int]]:
     names (``tune/auroc``, ``tune/mean_over_centre/auroc``); direction follows
     :meth:`soma.evaluation.metric_registry.higher_is_better` of the bare metric. Loss
     keys, one group's keys (``tune/centre=A/auroc``) and the group counts of a mean over
-    groups (``tune/mean_over_centre/auroc_groups``) are excluded.
+    groups (``tune/mean_over_centre/auroc_groups``) are excluded, and so is every value of
+    the eval-mode train pass (``train/*``, ``trainer.eval_train``): it gauges the
+    train-vs-tune gap, never selection.
     """
     peaks: dict[str, dict[str, float | int]] = {}
     columns = set(history.columns)
     for name in history.columns:
-        if name in _HISTORY_LOOP_COLUMNS or name.rsplit("/", 1)[-1] == "loss":
+        if name in _HISTORY_LOOP_COLUMNS or name.startswith("train/") or name.rsplit("/", 1)[-1] == "loss":
             continue
         within = name.partition("/")[2]
         if is_subgroup_key(within):

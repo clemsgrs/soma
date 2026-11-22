@@ -151,6 +151,9 @@ class FoldLoaders:
     ``tune_groups`` maps each ``evaluation.subgroups`` column to the group of every
     sample the tune loader serves (``{column: {sample_id: group}}``): the Trainer logs
     each group's values at every evaluation, so the learner never sees the metadata.
+    With ``trainer.eval_train``, ``train_eval`` is an ordinary unshuffled loader over the
+    train samples (not the training loader: no shuffle, no event-balanced Cox batches)
+    and ``train_groups`` the same mapping over them.
     """
 
     train: DataLoader
@@ -159,6 +162,8 @@ class FoldLoaders:
     #: Side files written once the fit returns (the ROI batch sampler's audit).
     after_fit: Callable[[Path], None] | None = None
     tune_groups: dict[str, dict[str, str]] = field(default_factory=dict)
+    train_eval: DataLoader | None = None
+    train_groups: dict[str, dict[str, str]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -466,6 +471,7 @@ def _trainer_kwargs(trainer: TrainerConfig) -> dict[str, Any]:
         "val_every_n_epochs": trainer.val_every_n_epochs,
         "device": trainer.device,
         "precision": trainer.precision,
+        "eval_train": trainer.eval_train,
     }
 
 
@@ -1113,6 +1119,8 @@ def _set_loaders(
 
     train_loader = loader(records.train, shuffle=True)
     tune_loader = loader(records.tune, shuffle=False)
+    # Built like the tune loader, before the Cox branch swaps the training loader.
+    train_eval_loader = loader(records.train, shuffle=False) if plan.trainer.eval_train else None
     test_loaders = {name: loader(items, shuffle=False) for name, items in records.tests.items()}
     if getattr(head, "needs_event_balanced_batches", False):
         # Cox: batches each hold an event. Tune/test keep the ordinary loaders.
@@ -1138,12 +1146,13 @@ def _set_loaders(
         return frame
 
     subgroups = tuple(inputs.evaluation.subgroups)
-    # The ids the tune batches carry: patient ids on the patient path.
-    tune_members = (
-        [(pid, records.records_by_id[pid]) for pid in records.tune]
-        if patient
-        else [(record.sample_id, record) for record in records.tune]
-    )
+
+    def members(items) -> list[tuple[str, SampleRecord]]:
+        # The ids a loader's batches carry: patient ids on the patient path.
+        if patient:
+            return [(pid, records.records_by_id[pid]) for pid in items]
+        return [(record.sample_id, record) for record in items]
+
     splits = [
         SplitPlan(
             name="tune",
@@ -1168,7 +1177,9 @@ def _set_loaders(
         train=train_loader,
         tune=tune_loader,
         splits=tuple(splits),
-        tune_groups=_sample_groups(subgroups, tune_members),
+        tune_groups=_sample_groups(subgroups, members(records.tune)),
+        train_eval=train_eval_loader,
+        train_groups=_sample_groups(subgroups, members(records.train)) if train_eval_loader is not None else {},
     )
 
 

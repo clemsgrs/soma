@@ -351,6 +351,15 @@ def test_loader_plumbing_is_not_part_of_identity(tmp_path: Path):
     assert payload["loaders"]["batch_size"] == 1
 
 
+def test_the_eval_mode_train_pass_is_not_part_of_identity(tmp_path: Path):
+    """trainer.eval_train adds train/* diagnostics and changes no tune value or selection."""
+    base = _make_pipeline_config(tmp_path)
+    diagnosed = _make_pipeline_config(tmp_path, trainer={"max_epochs": 10, "eval_train": True})
+
+    assert build_experiment_spec(base).experiment_id == build_experiment_spec(diagnosed).experiment_id
+    assert "eval_train" not in canonical_experiment_payload(diagnosed)["trainer"]
+
+
 def test_spacing_policy_is_always_part_of_identity(tmp_path: Path):
     payload = canonical_experiment_payload(_make_pipeline_config(tmp_path))
 

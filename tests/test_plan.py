@@ -388,6 +388,15 @@ def test_monitors_name_a_tune_metric_the_head_reports(files):
         check(monitored("train/loss"))
 
 
+def test_a_train_monitor_is_refused_as_a_diagnostic_even_with_the_train_pass_on(files):
+    # trainer.eval_train logs train/<metric>, but only to read the train-vs-tune gap.
+    callbacks = [{"name": "checkpoint", "params": {"monitor": "train/auroc", "mode": "max"}}]
+    config = experiment(*files, aggregator="abmil", trainer={"eval_train": True, "callbacks": callbacks})
+    message = r"checkpoint monitor 'train/auroc' is a train value: train values are diagnostics.*'tune/auroc'"
+    with pytest.raises(ValueError, match=message):
+        check(config)
+
+
 def test_a_custom_learners_monitor_still_names_the_tune_split(files, user_package):
     # Its summary keys are its own (checked at fit time), but every one reaches the
     # callbacks as tune/<key>, so a monitor without the prefix can never match.
@@ -445,6 +454,12 @@ def test_subgroups_are_refused_on_the_grid_shape_even_with_the_hook(files, user_
     for learner in ("dense", "mylab.learners.GroupedDense"):
         with pytest.raises(ValueError, match="evaluation.subgroups is supported for the set shape only"):
             check(_grid(files, learner=learner, evaluation=subgroups))
+
+
+def test_the_eval_mode_train_pass_is_refused_on_the_grid_shape(files):
+    check(experiment(*files, aggregator="abmil", trainer={"eval_train": True}))
+    with pytest.raises(ValueError, match="trainer.eval_train is supported for the set shape only"):
+        check(_grid(files, trainer={"eval_train": True}))
 
 
 def test_last_checkpoint_selection_never_early_stops(files):

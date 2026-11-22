@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import random
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import torch
 
@@ -46,7 +48,8 @@ class Trainer:
     is already closed (history row written, selection consulted). When the loop
     raises, ``on_exception(trainer, learner, exc)`` fires before the error propagates.
     A learner with no trainable parameter is returned as built: no optimizer, no
-    epoch, no callback, and an empty history.
+    epoch, no callback, and an empty history. ``eval_train=True`` also scores the train
+    split in eval mode at every tune evaluation (``train/<key>``, see :meth:`fit`).
     """
 
     def __init__(
@@ -58,6 +61,7 @@ class Trainer:
         val_every_n_epochs: int = 1,
         device: str | torch.device = "auto",
         precision: str = "fp32",
+        eval_train: bool = False,
         callbacks: Sequence[Any] = (),
     ) -> None:
         if max_steps is not None:
@@ -73,6 +77,7 @@ class Trainer:
         self.val_every_n_epochs = int(val_every_n_epochs)
         self.device = _resolve_device(device)
         self.precision = precision
+        self.eval_train = bool(eval_train)
         self.history = History()
         self.callbacks: list[Any] = [self.history, *callbacks]
         # Loop state callbacks read; selection is written by a Checkpoint callback.
@@ -101,6 +106,8 @@ class Trainer:
         tune_loader=None,
         *,
         tune_groups: Mapping[str, Mapping[str, str]] | None = None,
+        train_eval_loader=None,
+        train_groups: Mapping[str, Mapping[str, str]] | None = None,
     ) -> FitResult:
         """Train ``learner`` on ``train_loader``, evaluating on ``tune_loader``.
 
@@ -113,13 +120,49 @@ class Trainer:
         fit, and a sample absent from the mapping is in no group. Before any training, as at
         plan time, a column or group holding ``/`` or ``=`` is refused, and so is a learner
         without ``subgroup_summary``.
+
+        With ``eval_train``, every tune evaluation also runs ``validation_step`` /
+        ``validation_summary`` over ``train_eval_loader``, an unshuffled loader over the
+        train samples (never ``train_loader``, whose shuffle or event-balanced batches are
+        the training's), and logs ``train/<key>``, with ``train_groups`` as ``tune_groups``
+        for the tune split. These values gauge the train-vs-tune gap: no callback monitors
+        them, and the pass runs under a forked torch RNG, with Python's and NumPy's global
+        RNG and the loader's own ``generator`` (if any, even one shared with ``train_loader``)
+        restored afterwards, so it changes neither the training trajectory nor
+        ``train_loss``. State that a dataset, sampler or collate keeps for itself (its own
+        RNG, an epoch counter) and shares with ``train_loader`` is not restored: a
+        stochastic dataset needs its own instance for ``train_eval_loader``. The loader
+        comes with the knob, or the fit is refused, and so is ``train_loader`` itself as
+        ``train_eval_loader``.
         """
-        _check_tune_groups(learner, tune_groups or {})
+        _check_groups(learner, tune_groups or {}, where="tune_groups", split="tune")
+        _check_groups(learner, train_groups or {}, where="train_groups", split="train")
+        if self.eval_train and train_eval_loader is None:
+            raise ValueError(
+                "eval_train evaluates the train split over train_eval_loader, an unshuffled loader "
+                "over the train samples (not the training loader): pass it to fit."
+            )
+        if not self.eval_train and (train_eval_loader is not None or train_groups):
+            given = "train_eval_loader" if train_eval_loader is not None else "train_groups"
+            raise ValueError(f"{given} is evaluated only with eval_train=True; set it, or drop {given}.")
+        if train_eval_loader is not None and train_eval_loader is train_loader:
+            raise ValueError(
+                "train_eval_loader is the training loader: a second pass over it advances its shuffle "
+                "or batch sampler and changes the training; pass a separate unshuffled loader over "
+                "the train samples."
+            )
         if tune_loader is not None and len(tune_loader) == 0:
             logger.warning("the tune loader is empty; training without validation.")
             tune_loader = None
+        if self.eval_train and tune_loader is None:
+            logger.warning(
+                "eval_train scores the train split at each tune evaluation, and this fit has no "
+                "tune loader: no train/* value is logged."
+            )
         self._tune_loader = tune_loader
         self._tune_groups = dict(tune_groups or {})
+        self._train_eval_loader = train_eval_loader
+        self._train_groups = dict(train_groups or {})
         self.learner = learner.to(self.device)
         if not any(p.requires_grad for p in learner.parameters()):
             return FitResult(
@@ -170,6 +213,15 @@ class Trainer:
             last = self.epoch + 1 == self.total_epochs or self.should_stop
             if tune_loader is not None and ((self.epoch + 1) % self.val_every_n_epochs == 0 or last):
                 self.summary = self._validate(learner, tune_loader, "tune", self._tune_groups)
+                if self._train_eval_loader is not None:
+                    # Iterating a loader draws its base seed from the global torch RNG, or
+                    # from its own generator when it has one, and a custom dataset or
+                    # collate may draw from Python's or NumPy's; the training shuffle,
+                    # dropout and data read the same: fork them all, so the diagnostic pass
+                    # leaves the training trajectory as it was.
+                    with self._forked_rng():
+                        train = self._validate(learner, self._train_eval_loader, "train", self._train_groups)
+                    self.summary.update(train)
                 self._call("on_validation_end", learner, self.summary)
             self._call("on_epoch_end", learner)
             for spec in self.schedulers:
@@ -181,6 +233,26 @@ class Trainer:
     @property
     def lr(self) -> float:
         return float(self.optimizer.param_groups[0]["lr"])
+
+    @contextlib.contextmanager
+    def _forked_rng(self):
+        """The global torch CPU RNG, this device's when it is a GPU, Python's and NumPy's
+        global RNG, and the train-eval loader's own ``generator`` (which a caller may share
+        with the training loader), restored on exit."""
+        devices = []
+        if self.device.type == "cuda":
+            devices = [self.device.index if self.device.index is not None else torch.cuda.current_device()]
+        generator = getattr(self._train_eval_loader, "generator", None)
+        state = generator.get_state() if generator is not None else None
+        python_state, numpy_state = random.getstate(), np.random.get_state()
+        try:
+            with torch.random.fork_rng(devices=devices):
+                yield
+        finally:
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
+            if generator is not None:
+                generator.set_state(state)
 
     def _autocast(self):
         if self.precision == "bf16":
@@ -232,21 +304,24 @@ class Trainer:
         }
 
 
-def _check_tune_groups(learner: Learner, tune_groups: Mapping[str, Mapping[str, str]]) -> None:
-    """Refuse ``tune_groups`` whose keys the subgroup keys cannot spell, or which
-    ``learner`` cannot reduce: the checks the plan runs on ``evaluation.subgroups``."""
-    if not tune_groups:
+def _check_groups(
+    learner: Learner, groups: Mapping[str, Mapping[str, str]], *, where: str, split: str
+) -> None:
+    """Refuse ``groups`` (the ``where`` argument, for ``split``) whose keys the subgroup
+    keys cannot spell, or which ``learner`` cannot reduce: the checks the plan runs on
+    ``evaluation.subgroups``."""
+    if not groups:
         return
     if not has_subgroup_summary(type(learner)):
         raise ValueError(
             f"learner {type(learner).__name__!r} has no subgroup_summary, which reduces one "
-            "group's outputs: every evaluation logs each tune_groups group's tune values through "
-            "it. Implement Learner.subgroup_summary, or drop tune_groups."
+            f"group's outputs: every evaluation logs each {where} group's {split} values through "
+            f"it. Implement Learner.subgroup_summary, or drop {where}."
         )
-    for column, membership in tune_groups.items():
-        check_subgroup_name(column, where="tune_groups")
+    for column, membership in groups.items():
+        check_subgroup_name(column, where=where)
         for sample_id, group in membership.items():
-            check_subgroup_name(column, str(group), where="tune_groups", sample_id=sample_id)
+            check_subgroup_name(column, str(group), where=where, sample_id=sample_id)
 
 
 def _split_keyed(split: str, summary: dict[str, float]) -> dict[str, float]:

@@ -345,13 +345,14 @@ IDENTITY_VERSION = 9
 #: Plan fields left out of the experiment identity, by section: where and how a launch
 #: runs (the whole ``run`` section, so the seed too: one experiment, several seeded
 #: runs), the cohort files (their train/tune content and the ids a train subset lists
-#: are hashed instead), loader throughput, the device, and what is saved rather than
+#: are hashed instead), loader throughput, the device, the eval-mode train pass (its
+#: ``train/*`` diagnostics change no tune value), and what is saved rather than
 #: measured. What a resume may change (:meth:`Plan.comparable`) is left out too, so a
 #: resume finds its run dir.
 _IDENTITY_EXCLUDED: dict[str, tuple[str, ...]] = {
     "cohort": ("records", "splits", "train_subset"),
     "loaders": ("num_workers", "pin_memory", "persistent_workers"),
-    "trainer": ("device",),
+    "trainer": ("device", "eval_train"),
     "evaluation": ("overwrite_test", "save_overlays", "save_probabilities", "save_heatmaps"),
 }
 
