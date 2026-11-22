@@ -122,6 +122,10 @@ def summarize_fold_metric_dicts(
     ``evaluation.holdout_test`` runs, which have no test splits) additionally emits
     the tune metrics under a ``tune/`` prefix so a tune-only selection sweep produces
     a non-empty, rankable summary.
+
+    Every key any fold reports for a split is summarized, in first-seen order. A fold
+    that has the split but lacks the key (a subgroup with under 2 samples there) counts
+    as a NaN fold: it is left out of the mean and std and counted in ``_nan_folds``.
     """
     if not per_fold:
         return {}
@@ -139,11 +143,9 @@ def summarize_fold_metric_dicts(
     for split_name, split_metrics in metrics_by_split.items():
         if not split_metrics:
             continue
-        metric_keys = list(split_metrics[0].keys())
+        metric_keys = list(dict.fromkeys(key for metrics in split_metrics for key in metrics))
         for key in metric_keys:
-            values = [m[key] for m in split_metrics if key in m]
-            if not values:
-                continue
+            values = [metrics.get(key, math.nan) for metrics in split_metrics]
             if single_fold:
                 summary[f"{split_name}/{key}"] = float(values[0])
             else:
@@ -166,11 +168,43 @@ def aggregate_fold_metrics_from_disk(
     Reading from disk rather than in-memory results is what makes a resumed run's
     ``summary.json`` correct (issue #244): folds skipped this session (already complete
     on disk) re-enter the summary, so a resumed 5-fold summary equals the single-shot one.
+
+    A split's ``subgroup_metrics_<split>.json`` beside ``metrics.json`` adds its
+    breakdown to the split's metrics: ``<column>=<group>/<metric>`` per group and
+    ``mean_over_<column>/<metric>``, so the summary carries
+    ``<split>/<column>=<group>/<metric>`` (``_mean``, ``_std``, ``_nan_folds`` over
+    several folds). The counts (a group's ``n``, ``<metric>_groups``) stay in the file.
     """
     if single_fold:
         metrics_paths = [Path(run_dir) / "metrics.json"]
     else:
         reject_undeclared_fold_dirs(run_dir, num_folds)
         metrics_paths = [Path(run_dir) / f"fold_{i}" / "metrics.json" for i in range(num_folds)]
-    per_fold = [json.loads(path.read_text()) for path in metrics_paths if path.is_file()]
+    per_fold = []
+    for path in metrics_paths:
+        if not path.is_file():
+            continue
+        splits = json.loads(path.read_text())
+        for split_name, metrics in splits.items():
+            breakdown = path.parent / f"subgroup_metrics_{split_name}.json"
+            if breakdown.is_file():
+                metrics.update(_subgroup_keys(json.loads(breakdown.read_text())))
+        per_fold.append(splits)
     return summarize_fold_metric_dicts(per_fold, include_tune=include_tune)
+
+
+def _subgroup_keys(breakdown: dict) -> dict[str, float]:
+    """A subgroup breakdown's metrics as split-relative keys, column by column: each
+    group's ``<column>=<group>/<metric>``, then ``mean_over_<column>/<metric>``."""
+    keys: dict[str, float] = {}
+    mean_over = breakdown.get("mean_over", {})
+    for column, groups in breakdown.get("metrics", {}).items():
+        for group, values in groups.items():
+            for name, value in values.items():
+                if name != "n":
+                    keys[f"{column}={group}/{name}"] = value
+        means = mean_over.get(column, {})
+        for name, value in means.items():
+            if f"{name}_groups" in means:  # a metric, not its count
+                keys[f"mean_over_{column}/{name}"] = value
+    return keys

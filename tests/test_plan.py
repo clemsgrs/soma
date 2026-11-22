@@ -460,6 +460,24 @@ def test_patient_runs_take_no_aggregator(files):
         check(experiment(*files, aggregator="abmil", cohort={"collapse": "patient_id"}))
 
 
+@pytest.mark.parametrize("value", ["A/B", "site=A"])
+def test_a_subgroup_value_with_a_slash_or_an_equals_sign_is_refused(tmp_path: Path, value):
+    # The summary spells a group's metric <split>/<column>=<group>/<metric>.
+    files = _cohort_files(tmp_path / "data", centre=["A", value] * 4)
+    config = experiment(*files, evaluation={"subgroups": ["centre"]})
+
+    with pytest.raises(ValueError, match=rf"evaluation.subgroups column 'centre' has the value '{value}'"):
+        _resolve(config)
+
+
+def test_a_subgroup_column_with_a_slash_is_refused(tmp_path: Path):
+    files = _cohort_files(tmp_path / "data", **{"ER/PR": ["pos", "neg"] * 4})
+    config = experiment(*files, evaluation={"subgroups": ["ER/PR"]})
+
+    with pytest.raises(ValueError, match=r"evaluation.subgroups column 'ER/PR'"):
+        _resolve(config)
+
+
 def test_a_slide_encoder_takes_no_aggregator():
     # titan gives one vector per slide: there is no bag to pool, and check says so before
     # any slide is tiled or embedded.

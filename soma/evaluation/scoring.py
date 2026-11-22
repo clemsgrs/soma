@@ -42,8 +42,9 @@ class Evaluation:
 
     ``metrics`` maps each metric to its value (plus ``coverage`` and the sample counts
     when the predictions carry placeholders); ``subgroups`` holds the per-column,
-    per-group metrics and permutation p-values (``{"metrics": ..., "stats": ...}``, empty
-    without subgroup columns). ``per_sample`` holds one row of counts per slide for
+    per-group metrics, their mean over each column's groups and the permutation p-values
+    (``{"metrics": ..., "mean_over": ..., "stats": ...}``, empty without subgroup
+    columns). ``per_sample`` holds one row of counts per slide for
     :class:`~soma.evaluation.SlideLabelMaps` and :class:`~soma.evaluation.SlidePoints`,
     and is empty otherwise.
     """

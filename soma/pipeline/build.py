@@ -1138,6 +1138,7 @@ def _set_loaders(
             loader=tune_loader,
             targets=targets(records.tune_output_ids),
             placeholder_ids=tuple(records.tune_placeholders),
+            subgroups=subgroups,
             write=False,
         )
     ]
