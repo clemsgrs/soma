@@ -124,8 +124,10 @@ class Trainer:
         train samples (never ``train_loader``, whose shuffle or event-balanced batches are
         the training's), and logs ``train/<key>``, with ``train_groups`` as ``tune_groups``
         for the tune split. These values gauge the train-vs-tune gap: no callback monitors
-        them, and the pass runs under a forked torch RNG, so it changes neither the training
-        trajectory nor ``train_loss``. The loader comes with the knob, or the fit is refused.
+        them, and the pass runs under a forked torch RNG, with the loader's own ``generator``
+        (if any, even one shared with ``train_loader``) restored afterwards, so it changes
+        neither the training trajectory nor ``train_loss``. The loader comes with the knob,
+        or the fit is refused.
         """
         _check_groups(learner, tune_groups or {}, where="tune_groups", split="tune")
         _check_groups(learner, train_groups or {}, where="train_groups", split="train")
@@ -200,9 +202,10 @@ class Trainer:
             if tune_loader is not None and ((self.epoch + 1) % self.val_every_n_epochs == 0 or last):
                 self.summary = self._validate(learner, tune_loader, "tune", self._tune_groups)
                 if self._train_eval_loader is not None:
-                    # Iterating a loader draws from the global torch RNG (its base seed),
-                    # which the training shuffle and dropout read: fork it, so the
-                    # diagnostic pass leaves the training trajectory as it was.
+                    # Iterating a loader draws its base seed from the global torch RNG, or
+                    # from its own generator when it has one; the training shuffle and
+                    # dropout read the same: fork both, so the diagnostic pass leaves the
+                    # training trajectory as it was.
                     with self._forked_rng():
                         train = self._validate(learner, self._train_eval_loader, "train", self._train_groups)
                     self.summary.update(train)
@@ -218,12 +221,21 @@ class Trainer:
     def lr(self) -> float:
         return float(self.optimizer.param_groups[0]["lr"])
 
+    @contextlib.contextmanager
     def _forked_rng(self):
-        """The global CPU RNG, and this device's when it is a GPU, restored on exit."""
+        """The global CPU RNG, this device's when it is a GPU, and the train-eval loader's
+        own ``generator`` (which a caller may share with the training loader), restored on exit."""
         devices = []
         if self.device.type == "cuda":
             devices = [self.device.index if self.device.index is not None else torch.cuda.current_device()]
-        return torch.random.fork_rng(devices=devices)
+        generator = getattr(self._train_eval_loader, "generator", None)
+        state = generator.get_state() if generator is not None else None
+        try:
+            with torch.random.fork_rng(devices=devices):
+                yield
+        finally:
+            if generator is not None:
+                generator.set_state(state)
 
     def _autocast(self):
         if self.precision == "bf16":

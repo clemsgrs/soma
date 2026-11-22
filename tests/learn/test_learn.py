@@ -816,24 +816,25 @@ class TestEvalTrain:
         # The running optimizer objective is still logged every epoch, under its own name.
         assert on.history["train_loss"].notna().all()
 
-    def test_the_train_pass_changes_neither_the_tune_values_nor_the_selected_epoch(self):
+    @pytest.mark.parametrize("shared_generator", [False, True], ids=["global RNG", "shared generator"])
+    def test_the_train_pass_changes_neither_the_tune_values_nor_the_selected_epoch(self, shared_generator):
         # The training loader shuffles and ABMIL drops out, both from the global torch RNG:
         # a pass that drew from it (a DataLoader draws a base seed per iteration) would
-        # move every later epoch.
+        # move every later epoch. A loader built with generator= draws that seed from its
+        # generator instead, and a soma.fit caller can hand one seeded generator to both
+        # loaders: the training order then reads the generator the pass draws from.
         def fit(eval_train: bool) -> FitResult:
             torch.manual_seed(0)
+            generator = {"generator": torch.Generator().manual_seed(0)} if shared_generator else {}
             learner = _learner(ABMIL(input_dim=D, dropout=0.5))
-            shuffled = DataLoader(
-                _bags(),
-                batch_size=2,
-                shuffle=True,
-                collate_fn=functools.partial(bag_collate_fn, target_dtypes={"label": torch.long}),
-            )
+            collate = functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
+            shuffled = DataLoader(_bags(), batch_size=2, shuffle=True, collate_fn=collate, **generator)
+            train_eval = DataLoader(_bags(), batch_size=2, shuffle=False, collate_fn=collate, **generator)
             trainer = Trainer(
                 max_epochs=4, eval_train=eval_train, callbacks=[Checkpoint(monitor="tune/loss")], device="cpu"
             )
             return trainer.fit(
-                learner, shuffled, _bag_loader(), train_eval_loader=_bag_loader() if eval_train else None
+                learner, shuffled, _bag_loader(), train_eval_loader=train_eval if eval_train else None
             )
 
         off, on = fit(False), fit(True)
