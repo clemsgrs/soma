@@ -462,6 +462,40 @@ the target source are not used.
 - An annotated pixel of class ``c`` that was not predicted (value 0 in the map)
   is a false negative for ``c``, and a false positive for no class.
 - A map pixel that lies partly off the slide is not scored.
+- An annotation value that the scheme neither gives a class nor ignores is
+  refused, with the slide's name.
+
+A window with no annotated pixel adds nothing to the counts: every annotation
+value in it is ignored, or the window lies wholly off the slide. For such a
+window, only the annotation raster is read. The map is not read, and nothing is
+counted. This is often most of a slide: on one BEETLE slide, 4,083 of the 4,095
+windows held no annotated pixel. The scores are the same as when every window is
+read. Because the map is not read there, a map value that the map's value
+mapping does not name is refused only in a window with an annotated pixel.
+
+The slides are scored one after the other. To score several at a time, pass
+``num_workers``:
+
+.. code-block:: python
+
+   from soma.evaluation import SlideLabelMaps
+
+   maps = SlideLabelMaps("predictions/beetle-test/fold_0", num_workers=4)
+
+On the command line, pass ``--num-workers 4``. Each worker process scores one
+slide at a time and opens its own readers: the same ones as the main process,
+``--backend`` and ``--mask-backend`` included. With ``num_workers=0``, the
+default, the main process scores the slides. The scores, and the order of the
+rows, do not change. Each worker holds one window of the map and one of the
+annotation raster, as the main process does. A slide that fails stops the other
+workers, with the same message as in the main process; if several slides fail,
+the first one to fail is reported. ``--num-workers`` applies to the label maps
+of a ``soma predict`` output only; ``soma evaluate`` refuses it for other
+predictions.
+
+The workers start with the ``spawn`` method, so each one imports the main
+script again. In a Python script, call :func:`soma.evaluate` under
+``if __name__ == "__main__":``.
 
 Each slide gives one row of counts to the same reducers as
 :class:`~soma.evaluation.LabelMapPredictions`. ``Evaluation.per_sample`` holds
@@ -628,9 +662,10 @@ One slide of 92,819 × 45,702 px, with 10,117 kept tiles:
   622 MB of maps.
 - **Overlap.** An overlap of 0.5 gave four times the tiles and the time on one
   small slide, and the same score within 0.010.
-- **Scoring.** ``soma evaluate`` took 30 min for the 10 slides, in one process,
-  with a peak memory of 0.9 GiB. It reads every window of the map and of the
-  annotation raster, also the empty ones.
+- **Scoring.** ``soma evaluate`` reads every window of the annotation raster,
+  and reads the map only in the windows with an annotated pixel (12 of the
+  4,095 windows of the slide above). Most of the time goes to reading the
+  annotation raster. ``--num-workers`` scores several slides at a time.
 
 Detection, ensembles, several bundles and slides resampled from a finer level
 were not measured.
