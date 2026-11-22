@@ -164,9 +164,12 @@ class MILLearner(Learner):
         return self._summary(logits[keep], {key: value[keep] for key, value in targets.items()})
 
     def _summary(self, logits: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
-        loss = float(self.task_loss(logits, targets).item())
+        # The steps keep their outputs on the host for the metrics; the loss runs on the
+        # learner's device, where a ``loss=`` module's buffers (class weights) sit.
+        device = next(self.model.parameters()).device
+        loss = self.task_loss(logits.to(device), {k: v.to(device) for k, v in targets.items()})
         metrics = self.head.compute_metrics(logits, targets)
-        return {"loss": loss, **{k: float(v) for k, v in metrics.items()}}
+        return {"loss": float(loss.item()), **{k: float(v) for k, v in metrics.items()}}
 
 
 def _joined(outputs: list[StepOutput]) -> tuple[Tensor, dict[str, Tensor]]:

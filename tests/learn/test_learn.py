@@ -42,6 +42,8 @@ from soma.learn.sample_dataset import SampleBatch
 
 D = 16
 
+needs_cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+
 
 def _bags(n: int = 8, seed: int = 0) -> list[tuple[Tensor, dict[str, int], str]]:
     g = torch.Generator().manual_seed(seed)
@@ -568,6 +570,25 @@ class TestSubgroupMonitoring:
         assert row["tune/centre=A/loss"] == pytest.approx(float(per_sample[:4].mean()), rel=1e-5)
         assert row["tune/centre=B/loss"] == pytest.approx(float(per_sample[4:].mean()), rel=1e-5)
         assert row["tune/loss"] == pytest.approx(float(per_sample.mean()), rel=1e-5)
+
+    @needs_cuda
+    def test_the_joined_loss_runs_on_the_device_of_a_loss_module_with_a_buffer(self):
+        # fit moves the learner, and the loss= module's class weights with it, to CUDA,
+        # while the validation steps keep their outputs on the host.
+        class Weighted(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.register_buffer("weight", torch.tensor([1.0, 3.0]))
+
+            def forward(self, logits, targets):
+                return torch.nn.functional.cross_entropy(logits, targets["label"], weight=self.weight)
+
+        result = Trainer(max_epochs=1, device="cuda").fit(
+            _learner(loss=Weighted()), _bag_loader(), _bag_loader(), tune_groups=CENTRES
+        )
+        row = result.history.iloc[-1]
+        assert math.isfinite(row["tune/loss"])
+        assert math.isfinite(row["tune/centre=A/loss"]) and math.isfinite(row["tune/centre=B/loss"])
 
     def test_a_cox_group_loss_is_the_partial_likelihood_over_the_group_alone(self):
         def partial_likelihood(risk, time, event):
