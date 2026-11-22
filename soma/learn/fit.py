@@ -45,6 +45,8 @@ def fit(
     callbacks: Sequence[Any] = (),
     progress: bool = True,
     tune_groups: Mapping[str, Mapping[str, str]] | None = None,
+    train_eval=None,
+    train_groups: Mapping[str, Mapping[str, str]] | None = None,
     **trainer_kwargs: Any,
 ) -> FitResult:
     """Fit a learner (or a bare model wrapped in its shape's learner).
@@ -56,6 +58,8 @@ def fit(
     would build, so a run states its whole selection policy (``selection="last"``,
     ``hold_until_moves``, a progress label) with plain constructors. ``tune_groups`` goes
     to :meth:`Trainer.fit`, so ``monitor`` can name a ``tune/mean_over_<column>/<key>``.
+    ``train_eval`` and ``train_groups`` go to :meth:`Trainer.fit` as ``train_eval_loader``
+    and ``train_groups``: with ``eval_train=True``, the eval-mode pass over the train split.
     """
     if isinstance(learner_or_model, Learner):
         if loss is not None or optimizer is not None or schedulers:
@@ -80,4 +84,6 @@ def fit(
         given = [callback for callback in supplied if isinstance(callback, kind)]
         installed.extend(given or [callback for callback in (build(),) if callback is not None])
     installed.extend(c for c in supplied if not isinstance(c, (Checkpoint, EarlyStopping, Progress)))
-    return Trainer(callbacks=installed, **trainer_kwargs).fit(learner, train, tune, tune_groups=tune_groups)
+    return Trainer(callbacks=installed, **trainer_kwargs).fit(
+        learner, train, tune, tune_groups=tune_groups, train_eval_loader=train_eval, train_groups=train_groups
+    )

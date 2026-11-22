@@ -373,6 +373,11 @@ def _check(config: ExperimentConfig) -> None:
         raise ValueError("learner.params spells the scheduler leaf (or list of leaves) as 'scheduler'.")
     own = {key: value for key, value in params.items() if key not in LEARNER_OWN_EXCLUDED}
     registries["learner"].validate(learner.name, own)
+    if config.trainer.eval_train and learner_shape(config) == "grid":
+        raise ValueError(
+            f"trainer.eval_train is supported for the set shape only, and learner "
+            f"'{learner.name}' is a grid-shape learner. Drop trainer.eval_train."
+        )
     if evaluation.subgroups and learner_shape(config) == "grid":
         # The grid loaders form no groups, whatever hooks the learner implements.
         raise ValueError(

@@ -37,7 +37,8 @@ cannot appear in YAML.
    * - ``trainer``
      - :class:`~soma.learn.Trainer`
      - ``max_epochs`` or ``max_steps``, ``accumulate_grad_batches``,
-       ``val_every_n_epochs``, ``device``, ``precision``, ``callbacks``
+       ``val_every_n_epochs``, ``device``, ``precision``, ``eval_train``,
+       ``callbacks``
    * - ``evaluation``
      - :func:`soma.evaluate`
      - ``metrics``, ``subgroups``, ``holdout_test``, ``overwrite_test``, the

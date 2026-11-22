@@ -103,12 +103,19 @@ def _check_monitor(owner: str, monitor: str) -> str:
     calls it too.
 
     The Trainer prefixes every ``validation_summary`` key with its split (``tune/<key>``),
-    so a bare or non-tune monitor can never match. A group can be missing from a fold's
-    tune split, so a monitor names the mean over a column's groups, not one group.
+    so a bare or non-tune monitor can never match; the ``train/<key>`` values the
+    eval-mode train pass logs are diagnostics, never selection. A group can be missing
+    from a fold's tune split, so a monitor names the mean over a column's groups, not one
+    group.
     """
     split, slash, name = monitor.partition("/")
     if not slash:
         raise ValueError(f"{owner} monitor {monitor!r} names no split; use 'tune/{monitor}'.")
+    if split == "train":
+        raise ValueError(
+            f"{owner} monitor {monitor!r} is a train value: train values are diagnostics of the "
+            f"train-vs-tune gap (trainer.eval_train), never a monitor; use 'tune/{name}'."
+        )
     if split != "tune":
         raise ValueError(
             f"{owner} monitor {monitor!r} is not a tune value; a monitor names the tune split: "
@@ -338,7 +345,8 @@ class Progress:
     ``label`` names the run in every line (the pipeline passes ``"fold k/n"``). The
     selected epoch and patience come from the installed :class:`Checkpoint` and
     :class:`EarlyStopping`, when present. Only the pooled values and the monitors are
-    shown: the per-subgroup keys go to the history alone.
+    shown, with the pooled ``train/loss`` of the eval-mode train pass beside the tune
+    loss: the per-subgroup keys go to the history alone.
     """
 
     def __init__(self, style: str = "auto", label: str | None = None, console: Console | None = None) -> None:
@@ -458,8 +466,10 @@ class Progress:
             return
         tune_parts: tuple[str | None, ...] = ()
         if trainer.summary is not None:
+            train_eval = trainer.summary.get("train/loss")  # with eval_train only
             tune_parts = (
                 f"tune {trainer.summary['tune/loss']:.4f}",
+                None if train_eval is None else f"train/loss {train_eval:.4f}",
                 f"selected {self._selected_text(trainer)}",
                 f"patience {self._patience_text(trainer)}",
                 f"lr {trainer.lr:.2e}",
@@ -516,9 +526,11 @@ class Progress:
         table.add_row("train", Text(f"{trainer.train_loss:.4f}" if math.isfinite(trainer.train_loss) else "-"))
         if trainer.summary is not None:
             table.add_row("tune", Text(f"{trainer.summary['tune/loss']:.4f}"))
+            if "train/loss" in trainer.summary:
+                table.add_row("train/loss", Text(f"{trainer.summary['train/loss']:.4f}"))
             monitors = self._monitors(trainer)
             for key, value in trainer.summary.items():
-                if key == "tune/loss":
+                if key in ("tune/loss", "train/loss"):
                     continue
                 if _pooled(key):
                     table.add_row(key[: len("tune/") + 12], Text(f"{value:.4f}"))

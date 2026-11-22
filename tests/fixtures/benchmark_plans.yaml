@@ -127,6 +127,7 @@ croma/camelyon@uni2:
         monitor: tune/loss
         patience: 10
     device: auto
+    eval_train: false
     max_epochs: 50
     max_steps: null
     precision: fp32
@@ -260,6 +261,7 @@ croma/tcga-4x4@virchow2+knobs:
         monitor: tune/loss
         patience: 10
     device: auto
+    eval_train: false
     max_epochs: 50
     max_steps: null
     precision: fp32
@@ -428,6 +430,7 @@ eva/bach@uni2:
         monitor: tune/balanced_accuracy
         patience: 1250
     device: auto
+    eval_train: false
     max_epochs: null
     max_steps: 12500
     precision: fp32
@@ -596,6 +599,7 @@ eva/bach@virchow2+knobs:
         monitor: tune/balanced_accuracy
         patience: 5
     device: auto
+    eval_train: false
     max_epochs: null
     max_steps: 100
     precision: fp32
@@ -777,6 +781,7 @@ eva/camelyon16_small@uni2:
         monitor: tune/balanced_accuracy
         patience: 20
     device: auto
+    eval_train: false
     max_epochs: 100
     max_steps: null
     precision: fp32
@@ -976,6 +981,7 @@ eva/consep@uni2:
         monitor: tune/foreground_mean_dice
         patience: 200
     device: auto
+    eval_train: false
     max_epochs: null
     max_steps: 2000
     precision: fp32
@@ -1191,6 +1197,7 @@ eva/monusac@virchow2+knobs:
         monitor: tune/foreground_mean_dice
         patience: 4
     device: auto
+    eval_train: false
     max_epochs: null
     max_steps: 50
     precision: fp32
@@ -1372,6 +1379,7 @@ eva/panda_small@virchow2+knobs:
         monitor: tune/balanced_accuracy
         patience: 2
     device: auto
+    eval_train: false
     max_epochs: 3
     max_steps: null
     precision: fp32
@@ -1538,6 +1546,7 @@ eva/patch_camelyon@virchow2:
         monitor: tune/balanced_accuracy
         patience: 3
     device: auto
+    eval_train: false
     max_epochs: null
     max_steps: 12500
     precision: fp32
@@ -1680,6 +1689,7 @@ hest/IDC@uni2:
         monitor: tune/loss
         patience: 10
     device: auto
+    eval_train: false
     max_epochs: 50
     max_steps: null
     precision: fp32
@@ -1822,6 +1832,7 @@ hest/LUNG@virchow2+knobs:
         monitor: tune/loss
         patience: 10
     device: auto
+    eval_train: false
     max_epochs: 50
     max_steps: null
     precision: fp32

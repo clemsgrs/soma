@@ -1,6 +1,7 @@
 """Per-epoch subgroup monitoring: a cross-validated Cox run that holds its test split
 out, logs each centre's tune values at every evaluated epoch and selects its checkpoint
-on the mean C-index over centres."""
+on the mean C-index over centres. The same run with ``trainer.eval_train`` also logs the
+train split, pooled and per centre, scored in eval mode, and changes no tune value."""
 
 from __future__ import annotations
 
@@ -11,6 +12,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+import soma
+from soma.data import CachedSetSource, Cohort
+from soma.learn import loaders
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, run_soma
 
 FOLDS = 3
@@ -125,4 +129,61 @@ def test_a_held_out_cv_run_monitors_each_centre_and_selects_on_their_mean(tmp_pa
     # The progress lines name the monitor, but no single centre.
     artifact.check_equal("console/shows_the_monitor", f"selected {MONITOR}=" in console.out, True)
     artifact.check_equal("console/no_group_key", "centre=" in console.out + console.err, False)
+
+    # The same run with the eval-mode train pass.
+    eval_train = {
+        **config,
+        "run": {**config["run"], "output_dir": str(tmp_path / "runs_eval_train")},
+        "trainer": {**config["trainer"], "eval_train": True},
+    }
+    on = run_soma(eval_train, tmp_path / "config_eval_train.yaml", "--feature-dir", str(feature_dir))
+    console = capsys.readouterr()
+    artifact.record_run("cv_eval_train", on)
+    train_keys = ["train/loss", "train/c_index"] + [key.replace("tune/", "train/", 1) for key in group_keys]
+    cohort = Cohort.from_csv(dataset_csv, splits_csv, targets=["time", "event"])
+    source = CachedSetSource(feature_dir)
+    off_histories = run.histories()
+    for fold, epochs in sorted(on.histories().items()):
+        for key in train_keys:
+            logged = [row.get(key) is not None for row in epochs]
+            artifact.check_equal(f"eval_train/{fold}/{key}/logged_on_evaluated_epochs", logged, evaluated)
+        # The pass draws nothing from the training RNG: tune and the selection are unchanged.
+        tune_values = [{k: v for k, v in row.items() if k.startswith("tune/")} for row in epochs]
+        off_tune_values = [{k: v for k, v in row.items() if k.startswith("tune/")} for row in off_histories[fold]]
+        artifact.check_equal(f"eval_train/{fold}/tune_history_unchanged", tune_values == off_tune_values, True)
+        selected = json.loads((on.run_dir / fold / "bundle" / "provenance.json").read_text())["selected_epoch"]
+        off_selected = json.loads((run.run_dir / fold / "bundle" / "provenance.json").read_text())["selected_epoch"]
+        artifact.check_equal(f"eval_train/{fold}/selected_epoch_unchanged", selected, off_selected)
+        # The bundle holds the weights the pass scored at the selected epoch: rescoring every
+        # train sample with it gives the logged values. Cox: the loss is the partial
+        # likelihood over the whole train split, not over the event-balanced training batches.
+        index = int(fold.removeprefix("fold_"))
+        bundle = soma.load(on.run_dir / fold / "bundle")
+        rescored = soma.predict(bundle.model, loaders(source, cohort, head=bundle.model.task_head, fold=index).train)
+        targets = cohort.targets("train", fold=index)
+        c_index = soma.evaluate(rescored, targets, metrics=["c_index"]).metrics["c_index"]
+        row = epochs[selected]
+        artifact.check_equal(
+            f"eval_train/{fold}/train_c_index_is_the_rescored_train_split",
+            math.isclose(row["train/c_index"], c_index, abs_tol=1e-9),
+            True,
+        )
+        risk = rescored.frame.set_index("sample_id")["risk_score"].reindex(targets.index)
+        loss = _partial_likelihood(risk.to_numpy(), targets["time"].to_numpy(), targets["event"].to_numpy())
+        artifact.check_equal(
+            f"eval_train/{fold}/train_loss_is_the_partial_likelihood_over_the_train_split",
+            math.isclose(row["train/loss"], loss, rel_tol=1e-5),
+            True,
+        )
+    # The progress lines show the pooled train loss, but no single centre.
+    artifact.check_equal("eval_train/console/shows_the_train_loss", "| train/loss " in console.out, True)
+    artifact.check_equal("eval_train/console/no_group_key", "centre=" in console.out + console.err, False)
     artifact.assert_passed()
+
+
+def _partial_likelihood(risk: np.ndarray, time: np.ndarray, event: np.ndarray) -> float:
+    """Breslow's negative partial log-likelihood, averaged over the events."""
+    terms = [
+        -(risk[i] - math.log(np.exp(risk[time >= time[i]]).sum())) for i in range(len(risk)) if event[i]
+    ]
+    return float(np.mean(terms))

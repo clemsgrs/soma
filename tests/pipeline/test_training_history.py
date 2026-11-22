@@ -52,3 +52,24 @@ def test_peak_per_metric_keeps_the_mean_over_groups_and_skips_each_group_and_the
         "tune/c_index": {"epoch": 3, "value": 0.7},
         "tune/mean_over_centre/c_index": {"epoch": 1, "value": 0.7},
     }
+
+
+def test_peak_per_metric_skips_the_eval_mode_train_values():
+    # train/* keys (trainer.eval_train) gauge the train-vs-tune gap; they are not a
+    # selection proxy, so they get no peak.
+    nan = math.nan
+    history = pd.DataFrame(
+        {
+            "epoch": [0, 1, 2],
+            "train_loss": [0.9, 0.5, 0.4],
+            "lr": [1e-3, 1e-3, 1e-3],
+            "elapsed_seconds": [1.0, 2.0, 3.0],
+            "tune/loss": [0.8, nan, 0.6],
+            "tune/auroc": [0.6, nan, 0.7],
+            "train/loss": [0.7, nan, 0.3],
+            "train/auroc": [0.8, nan, 0.99],
+            "train/mean_over_centre/auroc": [0.8, nan, 0.98],
+            "train/mean_over_centre/auroc_groups": [2, nan, 2],
+        }
+    )
+    assert peak_per_metric(history) == {"tune/auroc": {"epoch": 3, "value": 0.7}}

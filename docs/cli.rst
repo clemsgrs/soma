@@ -330,6 +330,7 @@ in the rest and writes it to the run's ``plan.yaml``. Component params
      val_every_n_epochs: 1
      device: auto
      precision: fp32
+     eval_train: false
      callbacks:
      - name: checkpoint
        params: {}

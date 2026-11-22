@@ -212,7 +212,9 @@ def _default_callbacks() -> list[Component]:
 class TrainerConfig(Editable):
     """``trainer``: :class:`~soma.learn.Trainer`'s keywords. A step budget (``max_steps``)
     replaces the epoch budget; ``callbacks`` are the selection policy (``checkpoint``,
-    ``early_stopping``; leave the latter out to train the whole budget)."""
+    ``early_stopping``; leave the latter out to train the whole budget). ``eval_train``
+    also scores the train split in eval mode at every tune evaluation (``train/*``
+    diagnostics, never a monitor; set shape only)."""
 
     max_epochs: int | None = 50
     max_steps: int | None = None
@@ -220,6 +222,7 @@ class TrainerConfig(Editable):
     val_every_n_epochs: int = 1
     device: str = "auto"
     precision: str = "fp32"
+    eval_train: bool = False
     callbacks: list[Component] = field(default_factory=_default_callbacks)
 
     def __post_init__(self) -> None:
