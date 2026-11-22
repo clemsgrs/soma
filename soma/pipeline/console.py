@@ -85,8 +85,8 @@ def build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
                 metric_name = key[len(prefix):-5]
             else:
                 metric_name = key[len(prefix):]
-            if metric_name.endswith("_std"):
-                continue
+            if "/" in metric_name or metric_name.endswith("_std"):
+                continue  # a subgroup key or a spread: the primary metric stays pooled
             if metric_name in {
                 "coverage",
                 "num_samples",

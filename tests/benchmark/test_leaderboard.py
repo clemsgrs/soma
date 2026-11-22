@@ -188,6 +188,16 @@ def test_raw_primary_metric_resolves_from_run(tmp_path: Path):
     assert table.metric == "auroc"
 
 
+def test_the_primary_metric_is_pooled_when_subgroup_keys_come_first():
+    summary = {
+        "test/centre=A/auroc_mean": 0.9,
+        "test/mean_over_centre/auroc_mean": 0.8,
+        "test/accuracy_mean": 0.7,
+        "test/accuracy_std": 0.1,
+    }
+    assert run_primary_metric(summary, "test") == "accuracy"
+
+
 def test_metric_override_beats_run(tmp_path: Path):
     root = tmp_path / "out"
     ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)

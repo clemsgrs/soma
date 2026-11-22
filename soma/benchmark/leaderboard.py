@@ -223,14 +223,15 @@ def run_primary_metric(summary: dict[str, float], split: str) -> str | None:
     """The run's stamped primary metric on ``split`` (first non-bookkeeping metric).
 
     Mirrors the run-summary panel in ``soma/pipeline/console.py``: the first metric key under the
-    split prefix that is not a ``_std`` companion nor a provenance bookkeeping field.
+    split prefix that is not a ``_std`` companion, a provenance bookkeeping field, nor a
+    subgroup key (``centre=A/auroc``, ``mean_over_centre/auroc``), so it stays pooled.
     """
     prefix = f"{split}/"
     for key in summary:
         if not key.startswith(prefix):
             continue
         name = key[len(prefix):]
-        if name.endswith("_std"):
+        if "/" in name or name.endswith("_std"):
             continue
         if name.endswith("_mean"):
             name = name[: -len("_mean")]
