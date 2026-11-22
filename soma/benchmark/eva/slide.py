@@ -393,7 +393,7 @@ def _build_eva_slide_config(
     task_params: dict[str, Any] = {}
     if spec.task == MULTICLASS_HEAD_NAME:
         task_params["num_classes"] = spec.num_classes
-    monitor = {"monitor": "balanced_accuracy", "mode": "max"}
+    monitor = {"monitor": "tune/balanced_accuracy", "mode": "max"}
     cfg = presets.mil_classification(encoder, aggregator=AGGREGATOR_NAME)
     cfg.run = RunConfig(output_dir=Path(output_root), seed=seed)
     cfg.cohort = CohortConfig(records=str(dataset_csv), splits=str(splits_csv))

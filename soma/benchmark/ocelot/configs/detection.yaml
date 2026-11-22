@@ -68,9 +68,9 @@ trainer:
   accumulate_grad_batches: 8
   callbacks:
     - name: checkpoint
-      params: {monitor: mean_f1, mode: max}
+      params: {monitor: tune/mean_f1, mode: max}
     - name: early_stopping
-      params: {monitor: mean_f1, mode: max, patience: 10}
+      params: {monitor: tune/mean_f1, mode: max, patience: 10}
 
 evaluation:
   metrics: [mean_f1, f1_per_class, precision, recall, mean_f1_per_image]

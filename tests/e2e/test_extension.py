@@ -421,9 +421,15 @@ def test_custom_learner_by_dotted_path_trains_through_cli(
     artifact.check_training_reduced_loss("run", run)
     artifact.check_at_least("custom_training_steps", CALLS["entropy"], epochs)
     artifact.check_at_least("test/auroc", run.summary["test/auroc"], 0.95)
-    history = run.histories()[""]
-    artifact.check_equal("history/columns_without_tune_prefix", "tune_loss" in history[0], False)
-    artifact.check_equal("history/loss_present", "loss" in history[0], True)
+    # The custom learner returns bare keys; training_history.json names them by split,
+    # next to the unchanged loop columns.
+    row = run.histories()[""][0]
+    loop = ["elapsed_seconds", "epoch", "lr", "train_loss"]
+    artifact.check_equal("history/unprefixed_columns", sorted(k for k in row if "/" not in k), loop)
+    artifact.check_equal("history/tune_loss_present", "tune/loss" in row, True)
+    artifact.check_equal(
+        "history/prefixed_columns_are_tune", all(k.startswith("tune/") for k in row if k not in loop), True
+    )
 
     artifact.check_at_least("custom_head_loss_calls", CALLS["smoothing"], epochs)
     artifact.check_at_least("custom_predict_steps", CALLS["predict"], 1)

@@ -118,13 +118,13 @@ croma/camelyon@uni2:
       params:
         dirpath: null
         mode: min
-        monitor: loss
+        monitor: tune/loss
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: min
-        monitor: loss
+        monitor: tune/loss
         patience: 10
     device: auto
     max_epochs: 50
@@ -251,13 +251,13 @@ croma/tcga-4x4@virchow2+knobs:
       params:
         dirpath: null
         mode: min
-        monitor: loss
+        monitor: tune/loss
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: min
-        monitor: loss
+        monitor: tune/loss
         patience: 10
     device: auto
     max_epochs: 50
@@ -419,13 +419,13 @@ eva/bach@uni2:
       params:
         dirpath: null
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         patience: 1250
     device: auto
     max_epochs: null
@@ -587,13 +587,13 @@ eva/bach@virchow2+knobs:
       params:
         dirpath: null
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         patience: 5
     device: auto
     max_epochs: null
@@ -768,13 +768,13 @@ eva/camelyon16_small@uni2:
       params:
         dirpath: null
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: false
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         patience: 20
     device: auto
     max_epochs: 100
@@ -967,13 +967,13 @@ eva/consep@uni2:
       params:
         dirpath: null
         mode: max
-        monitor: foreground_mean_dice
+        monitor: tune/foreground_mean_dice
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: max
-        monitor: foreground_mean_dice
+        monitor: tune/foreground_mean_dice
         patience: 200
     device: auto
     max_epochs: null
@@ -1182,13 +1182,13 @@ eva/monusac@virchow2+knobs:
       params:
         dirpath: null
         mode: max
-        monitor: foreground_mean_dice
+        monitor: tune/foreground_mean_dice
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: max
-        monitor: foreground_mean_dice
+        monitor: tune/foreground_mean_dice
         patience: 4
     device: auto
     max_epochs: null
@@ -1363,13 +1363,13 @@ eva/panda_small@virchow2+knobs:
       params:
         dirpath: null
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: false
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         patience: 2
     device: auto
     max_epochs: 3
@@ -1529,13 +1529,13 @@ eva/patch_camelyon@virchow2:
       params:
         dirpath: null
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: max
-        monitor: balanced_accuracy
+        monitor: tune/balanced_accuracy
         patience: 3
     device: auto
     max_epochs: null
@@ -1671,13 +1671,13 @@ hest/IDC@uni2:
       params:
         dirpath: null
         mode: min
-        monitor: loss
+        monitor: tune/loss
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: min
-        monitor: loss
+        monitor: tune/loss
         patience: 10
     device: auto
     max_epochs: 50
@@ -1813,13 +1813,13 @@ hest/LUNG@virchow2+knobs:
       params:
         dirpath: null
         mode: min
-        monitor: loss
+        monitor: tune/loss
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: min
-        monitor: loss
+        monitor: tune/loss
         patience: 10
     device: auto
     max_epochs: 50

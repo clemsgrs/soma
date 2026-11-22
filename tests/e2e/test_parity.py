@@ -133,8 +133,8 @@ def _fit(learner, fold, *, epochs: int):
         fold.train,
         fold.tune,
         callbacks=[
-            Checkpoint(monitor="loss", mode="min", selection="best"),
-            EarlyStopping(monitor="loss", mode="min", patience=epochs, hold_until_moves=True),
+            Checkpoint(monitor="tune/loss", mode="min", selection="best"),
+            EarlyStopping(monitor="tune/loss", mode="min", patience=epochs, hold_until_moves=True),
         ],
         progress=False,
         max_epochs=epochs,

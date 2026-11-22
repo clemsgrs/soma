@@ -29,8 +29,8 @@ Budget, optimizer and schedulers
    trainer:
      max_epochs: 50
      callbacks:
-       - {name: checkpoint, params: {monitor: auroc, mode: max}}
-       - {name: early_stopping, params: {monitor: auroc, mode: max, patience: 10}}
+       - {name: checkpoint, params: {monitor: tune/auroc, mode: max}}
+       - {name: early_stopping, params: {monitor: tune/auroc, mode: max, patience: 10}}
 
 ``loaders`` holds ``batch_size``, ``num_workers``, ``pin_memory``,
 ``persistent_workers`` and the optional ``sampler`` and ``augment`` leaves.
@@ -64,10 +64,14 @@ Checkpoint selection and early stopping
 
 The ``checkpoint`` callback selects the weights: ``selection: best`` (the
 default) keeps the epoch that is best on ``monitor`` in direction ``mode``
-(default: minimize the tune ``loss``; a metric name selects that metric), and
+(default: minimize ``tune/loss``; ``tune/<metric>`` selects that tune metric), and
 ``selection: last`` keeps the final weights; it refuses an ``early_stopping``
 callback and needs ``trainer.val_every_n_epochs: 1``. ``early_stopping`` stops after ``patience`` tune evaluations without
 improvement; leave it out to train the full budget.
+
+A monitor names a tune value with its split: the trainer prefixes every value of
+the tune evaluation with ``tune/``. A bare name (``loss``, ``auroc``) or another
+split (``train/loss``) is refused when the plan is built.
 
 ``trainer.val_every_n_epochs: N`` evaluates the tune split after every N-th
 epoch and after the final epoch, for runs where tune evaluation dominates the
@@ -78,8 +82,8 @@ While a fold trains, a summary panel shows the epoch, loss, learning rate, tune
 metrics, patience, trainable parameter count, timing and, for cross-validation,
 the active fold. Each fold writes the same history to ``training_history.json``,
 one row per epoch: ``epoch``, ``train_loss``, ``lr``, ``elapsed_seconds``, then
-``loss`` and one column per tune metric, ``null`` on an epoch without a tune
-evaluation.
+``tune/loss`` and one ``tune/<metric>`` column per tune metric, ``null`` on an
+epoch without a tune evaluation.
 
 The tune split
 --------------
@@ -221,7 +225,7 @@ order.
 .. code-block:: python
 
    fold = soma.learn.loaders(source, cohort, head=model.task_head, fold=0, batch_size=1)
-   result = soma.fit(model, fold.train, fold.tune, max_epochs=50, monitor="auroc", mode="max")
+   result = soma.fit(model, fold.train, fold.tune, max_epochs=50, monitor="tune/auroc", mode="max")
    result.selected_epoch, result.history
 
 Section 3 of the getting-started notebook, :ref:`the same run from the verbs
@@ -295,7 +299,7 @@ the fold.
 
        def on_epoch_end(self, trainer, learner):
            row = trainer.history.rows[-1]
-           print(self.context.fold, trainer.epoch, row["train_loss"], row.get("loss"))
+           print(self.context.fold, trainer.epoch, row["train_loss"], row.get("tune/loss"))
 
 
    result = Pipeline(config, callback_factory=lambda context: [EpochPrinter(context)]).run()
@@ -345,7 +349,8 @@ fit-callback hooks (see :ref:`custom-callbacks`); there is no other event.
 
 **The observer contract.** An observer may read these Trainer attributes:
 ``epoch``, ``total_epochs``, ``train_loss``, ``lr``, ``optimizer_steps``,
-``summary`` (the tune values, or ``None`` on an epoch without a tune evaluation)
+``summary`` (the tune values, keyed ``tune/<name>``, or ``None`` on an epoch
+without a tune evaluation)
 and ``history.rows``. The train-side values are ``train_loss`` and ``lr``. An
 observer must not set ``trainer.should_stop``, change the learner or the
 optimizer, or draw from the global random state (Python ``random``, NumPy or

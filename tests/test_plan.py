@@ -62,8 +62,8 @@ def test_every_leaf_takes_its_registered_defaults(files):
     assert params["normalization"] == {"method": "none", "eps": 1e-6}
     assert params["projection"] == {"method": "none", "target_dim": None, "seed": 0}
     assert plan.trainer.callbacks == [
-        Component("checkpoint", {"monitor": "loss", "mode": "min", "selection": "best", "dirpath": None}),
-        Component("early_stopping", {"monitor": "loss", "mode": "min", "patience": 10, "hold_until_moves": True}),
+        Component("checkpoint", {"monitor": "tune/loss", "mode": "min", "selection": "best", "dirpath": None}),
+        Component("early_stopping", {"monitor": "tune/loss", "mode": "min", "patience": 10, "hold_until_moves": True}),
     ]
     assert plan.features.encoder is None
 
@@ -357,18 +357,36 @@ def test_the_roi_sampler_is_a_cached_segmentation_contract(files):
     check(_grid(files, loaders={"sampler": {"name": "class_conditioned", "params": {"class_request_ratios": [1, 3]}}}))
 
 
-def test_monitors_name_a_metric_the_head_reports(files):
-    monitor = {"monitor": "auroc", "mode": "max"}
-    config = experiment(
-        *files,
-        aggregator="abmil",
-        trainer={"callbacks": [{"name": "checkpoint", "params": monitor}, {"name": "early_stopping", "params": monitor}]},
-    )
-    check(config)
-    with pytest.raises(ValueError, match="checkpoint monitor 'mae' is not an effective metric"):
-        check(
-            experiment(*files, aggregator="abmil", trainer={"callbacks": [{"name": "checkpoint", "params": {"monitor": "mae"}}]})
-        )
+def test_monitors_name_a_tune_metric_the_head_reports(files):
+    def monitored(monitor: str) -> ExperimentConfig:
+        params = {"monitor": monitor, "mode": "max"}
+        callbacks = [{"name": "checkpoint", "params": params}, {"name": "early_stopping", "params": params}]
+        return experiment(*files, aggregator="abmil", trainer={"callbacks": callbacks})
+
+    check(monitored("tune/auroc"))
+    check(monitored("tune/loss"))
+    with pytest.raises(ValueError, match="checkpoint monitor 'tune/mae' is not an effective metric"):
+        check(monitored("tune/mae"))
+    # A bare name carries no split: refused, naming its tune/ form. No alias.
+    with pytest.raises(ValueError, match="checkpoint monitor 'loss' names no split; use 'tune/loss'"):
+        check(monitored("loss"))
+    with pytest.raises(ValueError, match="use 'tune/auroc'"):
+        check(monitored("auroc"))
+    # Only the tune split is monitored.
+    with pytest.raises(ValueError, match="checkpoint monitor 'train/loss'"):
+        check(monitored("train/loss"))
+
+
+def test_a_custom_learners_monitor_still_names_the_tune_split(files, user_package):
+    # Its summary keys are its own (checked at fit time), but every one reaches the
+    # callbacks as tune/<key>, so a monitor without the prefix can never match.
+    def monitored(monitor: str) -> ExperimentConfig:
+        callbacks = [{"name": "checkpoint", "params": {"monitor": monitor}}]
+        return experiment(*files, aggregator="abmil", learner=user_package, trainer={"callbacks": callbacks})
+
+    check(monitored("tune/its_own_score"))
+    with pytest.raises(ValueError, match="use 'tune/its_own_score'"):
+        check(monitored("its_own_score"))
 
 
 def test_last_checkpoint_selection_never_early_stops(files):

@@ -106,7 +106,7 @@ config = ExperimentConfig(
     # A step budget replaces the epoch budget: max_epochs is then derived from it.
     trainer=TrainerConfig(
         max_steps=MAX_STEPS,
-        callbacks=[{"name": "checkpoint", "params": {"monitor": "balanced_accuracy", "mode": "max"}}],
+        callbacks=[{"name": "checkpoint", "params": {"monitor": "tune/balanced_accuracy", "mode": "max"}}],
     ),
     evaluation=EvaluationConfig(metrics=["balanced_accuracy"]),
 )
@@ -124,8 +124,8 @@ for row in train_result.history.to_dict("records"):
     partial = " (partial epoch)" if updates_this_epoch < updates_per_epoch else ""
     print(
         f"  epoch {epoch + 1}: {updates_this_epoch} update(s){partial} | "
-        f"train_loss={row['train_loss']:.3f} loss={row['loss']:.3f} "
-        f"balanced_accuracy={row['balanced_accuracy']:.3f}"
+        f"train_loss={row['train_loss']:.3f} tune/loss={row['tune/loss']:.3f} "
+        f"tune/balanced_accuracy={row['tune/balanced_accuracy']:.3f}"
     )
 
 assert train_result.optimizer_steps == MAX_STEPS

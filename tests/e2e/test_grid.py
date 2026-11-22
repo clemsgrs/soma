@@ -143,7 +143,7 @@ def test_live_detection_through_the_verbs(tmp_path, new_artifact):
     greedy, greedy_tune = sweep_threshold(tune, points.subset(split.tune), per_class=True, matching="greedy")
     history = result.history
     selected = history[history["epoch"] == result.selected_epoch].iloc[0]
-    swept = ["mean_f1", "f1_class_0", "f1_class_1", "threshold_class_0", "threshold_class_1"]
+    swept = [f"tune/{key}" for key in ("mean_f1", "f1_class_0", "f1_class_1", "threshold_class_0", "threshold_class_1")]
     test = soma.predict(result.learner, fold.tests["test"])
     evaluation = soma.evaluate(test.with_threshold(threshold), points.subset(split.tests["test"]))
 
@@ -157,11 +157,11 @@ def test_live_detection_through_the_verbs(tmp_path, new_artifact):
     artifact.check_equal("history/swept_every_epoch", bool(history[swept].notna().all().all()), True)
     artifact.check_equal(
         "history/selected/thresholds",
-        [float(selected[f"threshold_class_{c}"]) for c in (0, 1)],
+        [float(selected[f"tune/threshold_class_{c}"]) for c in (0, 1)],
         [greedy[0], greedy[1]],
     )
     artifact.check_equal(
-        "history/selected/mean_f1", round(float(selected["mean_f1"]), 9), round(greedy_tune.metrics["mean_f1"], 9)
+        "history/selected/mean_f1", round(float(selected["tune/mean_f1"]), 9), round(greedy_tune.metrics["mean_f1"], 9)
     )
     artifact.check_equal(
         "predictions/match_distance_px", test.match_distance_px, 3.0 / SPACING_UM

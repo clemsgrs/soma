@@ -165,13 +165,13 @@ detection@uni2+lightweight_conv:
       params:
         dirpath: null
         mode: min
-        monitor: loss
+        monitor: tune/loss
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: min
-        monitor: loss
+        monitor: tune/loss
         patience: 10
     device: auto
     max_epochs: 50
@@ -348,13 +348,13 @@ segmentation@uni2+heavy_conv:
       params:
         dirpath: null
         mode: min
-        monitor: loss
+        monitor: tune/loss
         selection: best
     - name: early_stopping
       params:
         hold_until_moves: true
         mode: min
-        monitor: loss
+        monitor: tune/loss
         patience: 10
     device: auto
     max_epochs: 50

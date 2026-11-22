@@ -64,7 +64,7 @@ ANNOTATED_SEGMENTATION = {
             "scheduler": "cosine",
         },
     },
-    "trainer": {"max_epochs": 30, "callbacks": [{"name": "checkpoint", "params": {"monitor": "mean_dice", "mode": "max"}}]},
+    "trainer": {"max_epochs": 30, "callbacks": [{"name": "checkpoint", "params": {"monitor": "tune/mean_dice", "mode": "max"}}]},
     "evaluation": {"metrics": ["mean_dice"], "save_overlays": False},
 }
 
@@ -169,7 +169,7 @@ def test_yaml_hydrates_every_section_into_its_dataclass(tmp_path: Path):
     )
     assert learner.params["optimizer"] == Component("adamw", {"lr": 3.0e-4})
     assert learner.params["scheduler"] == [Component("cosine")]
-    assert config.trainer.callbacks == [Component("checkpoint", {"monitor": "mean_dice", "mode": "max"})]
+    assert config.trainer.callbacks == [Component("checkpoint", {"monitor": "tune/mean_dice", "mode": "max"})]
     assert config.evaluation == EvaluationConfig(metrics=["mean_dice"], save_overlays=False)
 
 

@@ -170,7 +170,7 @@ def test_an_observer_reads_each_epoch_while_the_fold_trains(tmp_path: Path):
         assert (seen["epoch"], seen["total_epochs"]) == (row["epoch"], 3)
         assert (seen["train_loss"], seen["lr"]) == (row["train_loss"], row["lr"])
         assert _as_written(seen["summary"]) == {key: row[key] for key in seen["summary"]}
-        assert "loss" in seen["summary"]
+        assert "tune/loss" in seen["summary"]
     # Six train bags in batches of two: three optimizer steps per epoch.
     assert [seen["optimizer_steps"] for seen in observers.epochs] == [3, 6, 9]
 
@@ -191,7 +191,7 @@ def test_an_epoch_without_tune_evaluation_has_no_summary_and_no_tune_values(tmp_
             assert all(row[key] is None for key in set(row) - train_side)
         else:
             assert _as_written(seen["row"]) == row
-            assert "loss" in seen["summary"]
+            assert "tune/loss" in seen["summary"]
 
 
 def test_a_resume_builds_observers_only_for_the_folds_it_trains(tmp_path: Path):

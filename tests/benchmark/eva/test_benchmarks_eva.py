@@ -117,7 +117,7 @@ def test_build_config_encodes_eva_protocol(tmp_path):
     assert optimizer.params == {"lr": eva.LEARNING_RATE, "weight_decay": eva.WEIGHT_DECAY}  # 0.01, not 0.0
     assert "scheduler" not in config.learner.params
     assert config.loaders.batch_size == eva.HEAD_BATCH_SIZE  # 256
-    monitor = {"monitor": "balanced_accuracy", "mode": "max"}
+    monitor = {"monitor": "tune/balanced_accuracy", "mode": "max"}
     assert callback(config, "checkpoint") == monitor
     assert callback(config, "early_stopping") == {**monitor, "patience": 1250}  # eva's per-dataset value
     assert config.run.seed == 3

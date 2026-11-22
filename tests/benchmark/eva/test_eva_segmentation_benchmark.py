@@ -103,7 +103,7 @@ def test_build_config_encodes_the_eva_segmentation_protocol(tmp_path: Path):
     assert optimizer.params["weight_decay"] == pytest.approx(0.01)
     assert config.loaders.batch_size == 64
     assert config.trainer.max_epochs is None and config.trainer.max_steps == 2000
-    monitor = {"monitor": "foreground_mean_dice", "mode": "max"}
+    monitor = {"monitor": "tune/foreground_mean_dice", "mode": "max"}
     assert callback(config, "checkpoint") == monitor
     assert callback(config, "early_stopping") == {**monitor, "patience": 200}
     assert config.cohort.tune_is_test is True

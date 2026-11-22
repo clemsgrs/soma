@@ -49,7 +49,7 @@ def save_summary(summary: dict[str, float], path: Path) -> None:
     atomic_write_json(path, summary)
 
 
-#: ``History`` columns that are not validation-summary keys.
+#: ``History`` columns that are not (split-prefixed) validation-summary keys.
 _HISTORY_LOOP_COLUMNS = ("epoch", "train_loss", "lr", "elapsed_seconds")
 
 
@@ -77,12 +77,14 @@ def peak_per_metric(history: pd.DataFrame) -> dict[str, dict[str, float | int]]:
     metric peaks at its own epoch), so it is positively biased and must never feed
     checkpoint selection, ``summary.json`` fold aggregates, or any results table. It is
     recorded in ``training_history.json`` purely to judge whether the configured
-    ``monitor`` is a good selection proxy. Direction follows
-    :meth:`soma.evaluation.metric_registry.higher_is_better`; ``loss`` is excluded.
+    ``monitor`` is a good selection proxy. Entries keep the history's split-prefixed
+    names (``tune/auroc``); direction follows
+    :meth:`soma.evaluation.metric_registry.higher_is_better` of the bare metric, and
+    ``tune/loss`` is excluded.
     """
     peaks: dict[str, dict[str, float | int]] = {}
     for name in history.columns:
-        if name in _HISTORY_LOOP_COLUMNS or name == "loss":
+        if name in _HISTORY_LOOP_COLUMNS or name.rsplit("/", 1)[-1] == "loss":
             continue
         for epoch, raw in zip(history["epoch"], history[name]):
             value = float(raw)

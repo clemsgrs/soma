@@ -84,7 +84,8 @@ def test_a_fit_round_trips_through_its_bundle(tmp_path: Path):
     assert bundle.preprocessing == {"classes": [0, 1], "metrics": ["auroc"]}
     assert bundle.provenance["fold"] == 0 and bundle.provenance["run_id"] == "r1"
     assert bundle.provenance["selected_epoch"] == result.selected_epoch
-    assert bundle.provenance["selection_monitor"] == [result.selection_monitor[0], result.selection_monitor[1]]
+    # soma.fit's default monitor, under its split.
+    assert bundle.provenance["selection_monitor"] == ["tune/loss", result.selection_monitor[1]]
     assert bundle.provenance["soma_version"] == soma.__version__
     # The fitted adaptor rides in the weights as buffers, so the loaded model scores the
     # same features the fitted one did.
