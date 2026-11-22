@@ -54,9 +54,9 @@ def test_each_group_of_a_column_gets_the_metrics_and_its_size():
 
 
 def test_the_mean_over_groups_skips_nan_groups_and_counts_the_groups_it_averages():
-    ids = [f"s{i}" for i in range(10)]
-    labels = [0, 1, 0, 1, 0, 1, 0, 1, 1, 1]
-    scores = [0.3, 0.7, 0.3, 0.7, 0.7, 0.3, 0.3, 0.7, 0.6, 0.8]
+    ids = [f"s{i}" for i in range(12)]
+    labels = [0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 1, 1]
+    scores = [0.3, 0.7, 0.3, 0.7, 0.3, 0.7, 0.7, 0.3, 0.3, 0.7, 0.6, 0.8]
     predictions = Predictions(
         pd.DataFrame(
             {
@@ -71,7 +71,7 @@ def test_the_mean_over_groups_skips_nan_groups_and_counts_the_groups_it_averages
     targets = pd.DataFrame(
         {
             "label": labels,
-            "site": ["A"] * 4 + ["B"] * 4 + ["C"] * 2,
+            "site": ["A"] * 6 + ["B"] * 4 + ["C"] * 2,
             # Each grade holds one class, so no grade has an AUROC.
             "grade": ["high" if label else "low" for label in labels],
         },
@@ -80,9 +80,11 @@ def test_the_mean_over_groups_skips_nan_groups_and_counts_the_groups_it_averages
 
     breakdown = evaluate(predictions, targets, metrics=["auroc"], subgroups=["site", "grade"]).subgroups
 
-    # Site A ranks both positives above both negatives (1.0). Site B's positives score
-    # 0.3 and 0.7, as do its negatives: one pair won, one lost, two tied (0.5). Site C
-    # holds positives only, so its AUROC is NaN and the mean skips it.
+    # Site A ranks its three positives above its three negatives (1.0). Site B's
+    # positives score 0.3 and 0.7, as do its negatives: one pair won, one lost, two tied
+    # (0.5). Site C holds positives only, so its AUROC is NaN and the mean skips it.
+    # A and B differ in size (6 and 4 samples), so the unweighted mean (1.0 + 0.5) / 2 =
+    # 0.75 differs from a sample-weighted one, (6 * 1.0 + 4 * 0.5) / 10 = 0.8.
     site = breakdown["metrics"]["site"]
     assert (site["A"]["auroc"], site["B"]["auroc"]) == (1.0, 0.5)
     assert math.isnan(site["C"]["auroc"])
