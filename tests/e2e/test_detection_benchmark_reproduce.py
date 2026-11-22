@@ -113,7 +113,7 @@ def midog_shaped_config(tmp_path: Path, tiled: Path, encoder_name: str) -> dict:
             learning_rate=3e-3,
             normalization={"method": "zscore"},
         ),
-        "trainer": trainer_section(30, monitor={"monitor": "mean_f1", "mode": "max"}),
+        "trainer": trainer_section(30, monitor={"monitor": "tune/mean_f1", "mode": "max"}),
         "evaluation": {"metrics": ["mean_f1", "f1_per_class"]},
     }
 

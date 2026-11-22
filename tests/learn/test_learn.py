@@ -225,7 +225,7 @@ class TestMILLearnerContract:
             _learner(), _bag_loader(), _bag_loader()
         )
         row = result.history.iloc[0]
-        assert math.isfinite(row["loss"]) and math.isfinite(row["auroc"])
+        assert math.isfinite(row["tune/loss"]) and math.isfinite(row["tune/auroc"])
 
     def test_embedding_model_is_the_set_shape_with_one_row(self):
         torch.manual_seed(0)
@@ -377,9 +377,11 @@ class TestTrainerBudget:
         assert result.learner is learner
         assert isinstance(result.history, pd.DataFrame)
         assert result.history["epoch"].tolist() == [0, 1, 2]
-        assert {"train_loss", "lr", "elapsed_seconds", "loss", "auroc"} <= set(result.history)
+        # Every validation_summary key carries its split; the loop columns do not.
+        assert {"train_loss", "lr", "elapsed_seconds", "tune/loss", "tune/auroc"} <= set(result.history)
+        assert not {"loss", "auroc"} & set(result.history)
         assert result.optimizer_steps == 12
-        assert result.selected_epoch == 2 and result.selection_monitor[0] == "loss"
+        assert result.selected_epoch == 2 and result.selection_monitor[0] == "tune/loss"
 
     def test_step_budget_counts_accumulation_windows_and_allows_a_partial_last_epoch(self):
         learner = _learner()
@@ -445,13 +447,13 @@ class TestTrainerBudget:
         result = Trainer(max_epochs=5, val_every_n_epochs=2, device="cpu").fit(
             learner, _bag_loader(), _bag_loader()
         )
-        evaluated = result.history["loss"].notna().tolist()
+        evaluated = result.history["tune/loss"].notna().tolist()
         assert evaluated == [False, True, False, True, True]
 
     def test_no_tune_loader_means_no_validation_and_last_epoch_selection(self):
         learner = _learner()
         result = Trainer(max_epochs=2, device="cpu").fit(learner, _bag_loader())
-        assert "loss" not in result.history.columns
+        assert "tune/loss" not in result.history.columns
         assert result.selected_epoch == 1
 
     def test_an_empty_tune_loader_is_no_validation_and_early_stopping_is_inert(self, tmp_path):
@@ -560,7 +562,7 @@ class TestCallbacks:
             values = iter([0.9, 0.2, 0.7])
 
             def on_validation_end(self, trainer, learner, summary):
-                summary["score"] = next(self.values)
+                summary["tune/score"] = next(self.values)
 
         learner = _learner()
         snapshots = {}
@@ -571,12 +573,12 @@ class TestCallbacks:
                     k: v.clone() for k, v in learner.trainable_state_dict().items()
                 }
 
-        checkpoint = Checkpoint(monitor="score", mode="min")
+        checkpoint = Checkpoint(monitor="tune/score", mode="min")
         result = Trainer(
             max_epochs=3, callbacks=[Monotone(), Snap(), checkpoint], device="cpu"
         ).fit(learner, _bag_loader(), _bag_loader())
         assert result.selected_epoch == 1
-        assert result.selection_monitor == ("score", 0.2)
+        assert result.selection_monitor == ("tune/score", 0.2)
         assert result.checkpoint_path is None
         for k, v in learner.trainable_state_dict().items():
             assert torch.equal(v, snapshots[1][k])
@@ -613,7 +615,7 @@ class TestCallbacks:
             values = iter([0.9, 0.2, 0.7])
 
             def on_validation_end(self, trainer, learner, summary):
-                summary["score"] = next(self.values)
+                summary["tune/score"] = next(self.values)
 
         snapshots = {}
 
@@ -623,7 +625,7 @@ class TestCallbacks:
 
         learner = WithAux(_learner().model)
         result = Trainer(
-            max_epochs=3, callbacks=[Monotone(), Snap(), Checkpoint(monitor="score")], device="cpu"
+            max_epochs=3, callbacks=[Monotone(), Snap(), Checkpoint(monitor="tune/score")], device="cpu"
         ).fit(learner, _bag_loader(), _bag_loader())
         assert result.selected_epoch == 1
         assert torch.equal(learner.aux.weight, snapshots[1])
@@ -668,10 +670,10 @@ class TestCallbacks:
         assert "optimizer_state_dict" not in state
         assert state["epoch"] == result.selected_epoch
         assert state["selection"] == {
-            "strategy": "best", "monitor": "loss", "mode": "min",
+            "strategy": "best", "monitor": "tune/loss", "mode": "min",
             "value": pytest.approx(result.selection_monitor[1]),
         }
-        assert state["metrics"]["loss"] == pytest.approx(result.selection_monitor[1])
+        assert state["metrics"]["tune/loss"] == pytest.approx(result.selection_monitor[1])
         assert not list(tmp_path.glob(".*tmp*"))
 
     def test_checkpoint_last_keeps_the_final_epoch(self):
@@ -679,15 +681,15 @@ class TestCallbacks:
             values = iter([0.1, 0.5, 0.9])
 
             def on_validation_end(self, trainer, learner, summary):
-                summary["score"] = next(self.values)
+                summary["tune/score"] = next(self.values)
 
         result = Trainer(
             max_epochs=3,
-            callbacks=[Worsening(), Checkpoint(monitor="score", selection="last")],
+            callbacks=[Worsening(), Checkpoint(monitor="tune/score", selection="last")],
             device="cpu",
         ).fit(_learner(), _bag_loader(), _bag_loader())
         assert result.selected_epoch == 2
-        assert result.selection_monitor == ("score", 0.9)
+        assert result.selection_monitor == ("tune/score", 0.9)
 
     def test_checkpoint_last_refuses_an_installed_early_stopping(self):
         with pytest.raises(ValueError, match="last"):
@@ -700,32 +702,44 @@ class TestCallbacks:
     def test_checkpoint_raises_on_a_non_finite_monitor_at_first_observation(self):
         class Nan:
             def on_validation_end(self, trainer, learner, summary):
-                summary["score"] = float("nan")
+                summary["tune/score"] = float("nan")
 
-        with pytest.raises(RuntimeError, match="score"):
+        with pytest.raises(RuntimeError, match="tune/score"):
             Trainer(
-                max_epochs=3, callbacks=[Nan(), Checkpoint(monitor="score")], device="cpu"
+                max_epochs=3, callbacks=[Nan(), Checkpoint(monitor="tune/score")], device="cpu"
             ).fit(_learner(), _bag_loader(), _bag_loader())
 
     def test_checkpoint_last_tolerates_a_non_finite_diagnostic_monitor(self):
         class Nan:
             def on_validation_end(self, trainer, learner, summary):
-                summary["score"] = float("nan")
+                summary["tune/score"] = float("nan")
 
         # Under ``last`` the monitor is a logged diagnostic, not a selection signal (#282):
         # an undefined AUROC on a one-class tune split must not abort the run.
         result = Trainer(
             max_epochs=2,
-            callbacks=[Nan(), Checkpoint(monitor="score", selection="last")],
+            callbacks=[Nan(), Checkpoint(monitor="tune/score", selection="last")],
             device="cpu",
         ).fit(_learner(), _bag_loader(), _bag_loader())
         assert result.selected_epoch == 1
 
     def test_checkpoint_refuses_an_unknown_monitor(self):
         with pytest.raises(ValueError, match="nope"):
-            Trainer(max_epochs=1, callbacks=[Checkpoint(monitor="nope")], device="cpu").fit(
+            Trainer(max_epochs=1, callbacks=[Checkpoint(monitor="tune/nope")], device="cpu").fit(
                 _learner(), _bag_loader(), _bag_loader()
             )
+
+    def test_callbacks_refuse_a_monitor_outside_the_tune_split_when_built(self):
+        # Every summary key reaches the callbacks as tune/<key>, so a bare or non-tune
+        # monitor can never match: refused when the callback is built, not after an epoch.
+        with pytest.raises(ValueError, match="'loss' names no split; use 'tune/loss'"):
+            Checkpoint(monitor="loss")
+        with pytest.raises(ValueError, match="'loss' names no split; use 'tune/loss'"):
+            EarlyStopping(monitor="loss")
+        with pytest.raises(ValueError, match="'train/loss' is not a tune value.*'tune/loss'"):
+            EarlyStopping(monitor="train/loss")
+        with pytest.raises(ValueError, match="'train/loss' is not a tune value.*'tune/loss'"):
+            Checkpoint(monitor="train/loss")
 
     @staticmethod
     def _scripted(values):
@@ -733,7 +747,7 @@ class TestCallbacks:
             it = iter(values)
 
             def on_validation_end(self, trainer, learner, summary):
-                summary["score"] = next(self.it)
+                summary["tune/score"] = next(self.it)
 
         return Scripted()
 
@@ -742,7 +756,7 @@ class TestCallbacks:
             max_epochs=10,
             callbacks=[
                 self._scripted([0.5, 0.4, 0.6, 0.7, 0.8, 0.9, 1.0, 1.0, 1.0, 1.0]),
-                EarlyStopping(monitor="score", mode="min", patience=2),
+                EarlyStopping(monitor="tune/score", mode="min", patience=2),
             ],
             device="cpu",
         ).fit(_learner(), _bag_loader(), _bag_loader())
@@ -752,7 +766,7 @@ class TestCallbacks:
         values = [0.0, 0.0, 0.0, 0.0, 0.3, 0.2, 0.1, 0.1, 0.1]
         result = Trainer(
             max_epochs=9,
-            callbacks=[self._scripted(values), EarlyStopping(monitor="score", mode="max", patience=2)],
+            callbacks=[self._scripted(values), EarlyStopping(monitor="tune/score", mode="max", patience=2)],
             device="cpu",
         ).fit(_learner(), _bag_loader(), _bag_loader())
         # Held through the floor at epochs 0-3; moves at epoch 4; stops 2 evaluations later.
@@ -764,7 +778,7 @@ class TestCallbacks:
             max_epochs=5,
             callbacks=[
                 self._scripted(values),
-                EarlyStopping(monitor="score", mode="max", patience=2, hold_until_moves=False),
+                EarlyStopping(monitor="tune/score", mode="max", patience=2, hold_until_moves=False),
             ],
             device="cpu",
         ).fit(_learner(), _bag_loader(), _bag_loader())
@@ -776,7 +790,7 @@ class TestCallbacks:
             val_every_n_epochs=2,
             callbacks=[
                 self._scripted([0.5, 0.6, 0.7, 0.8, 0.9]),
-                EarlyStopping(monitor="score", mode="min", patience=2),
+                EarlyStopping(monitor="tune/score", mode="min", patience=2),
             ],
             device="cpu",
         ).fit(_learner(), _bag_loader(), _bag_loader())
@@ -805,11 +819,19 @@ class TestFitSugar:
         result = soma.fit(
             model, _bag_loader(), _bag_loader(),
             optimizer={"name": "adam", "params": {"lr": 1e-2}},
-            monitor="auroc", mode="max", patience=3, max_epochs=4, device="cpu", progress=False,
+            monitor="tune/auroc", mode="max", patience=3, max_epochs=4, device="cpu", progress=False,
         )
         assert isinstance(result.learner, MILLearner) and result.learner.model is model
-        assert result.selection_monitor[0] == "auroc"
-        assert result.history["auroc"].max() == pytest.approx(result.selection_monitor[1])
+        assert result.selection_monitor[0] == "tune/auroc"
+        assert result.history["tune/auroc"].max() == pytest.approx(result.selection_monitor[1])
+
+    def test_a_bare_monitor_is_refused_without_a_tune_loader(self):
+        # Without a tune loader nothing is evaluated, so the monitor is never looked up;
+        # a bare name must still not reach the bundle's selection_monitor.
+        import soma
+
+        with pytest.raises(ValueError, match="use 'tune/loss'"):
+            soma.fit(_learner(), _bag_loader(), None, monitor="loss", max_epochs=1, device="cpu", progress=False)
 
     def test_patience_none_installs_no_early_stopping(self):
         import soma
@@ -818,7 +840,7 @@ class TestFitSugar:
             values = iter(range(100))
 
             def on_validation_end(self, trainer, learner, summary):
-                summary["loss"] = float(next(self.values))
+                summary["tune/loss"] = float(next(self.values))
 
         result = soma.fit(
             _learner(), _bag_loader(), _bag_loader(),
@@ -950,7 +972,7 @@ class TestFitSugar:
         lines = buffer.getvalue().splitlines()
         assert lines[0].startswith("training started | fold 1/2 | 2 epochs")
         assert lines[1].startswith("fold 1/2 | epoch 01/02")
-        assert "selected loss=" in lines[1]
+        assert "selected tune/loss=" in lines[1]
         assert lines[-1].startswith("training complete | fold 1/2 | ran 2/2 epochs")
 
 

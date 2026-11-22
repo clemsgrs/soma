@@ -52,7 +52,7 @@ callback_registry = Registry("callbacks")
 class CheckpointParams:
     """:class:`Checkpoint`'s params."""
 
-    monitor: str = "loss"
+    monitor: str = "tune/loss"
     mode: str = "min"
     selection: str = "best"
     dirpath: str | None = None
@@ -66,7 +66,7 @@ class CheckpointParams:
 class EarlyStoppingParams:
     """:class:`EarlyStopping`'s params."""
 
-    monitor: str = "loss"
+    monitor: str = "tune/loss"
     mode: str = "min"
     patience: int = 10
     hold_until_moves: bool = True
@@ -97,6 +97,23 @@ def _check_mode(mode: str) -> str:
     return mode
 
 
+def _check_monitor(owner: str, monitor: str) -> str:
+    """``monitor`` when it names the tune split; plan validation calls it too.
+
+    The Trainer prefixes every ``validation_summary`` key with its split (``tune/<key>``),
+    so a bare or non-tune monitor can never match.
+    """
+    split, slash, _ = monitor.partition("/")
+    if not slash:
+        raise ValueError(f"{owner} monitor {monitor!r} names no split; use 'tune/{monitor}'.")
+    if split != "tune":
+        raise ValueError(
+            f"{owner} monitor {monitor!r} is not a tune value; a monitor names the tune split: "
+            "'tune/loss' or 'tune/<metric>'."
+        )
+    return monitor
+
+
 def _cpu_copy(state: Mapping[str, torch.Tensor]) -> dict[str, torch.Tensor]:
     return {k: v.detach().to("cpu", copy=True) for k, v in state.items()}
 
@@ -112,7 +129,8 @@ def _monitor_value(summary: dict[str, float], monitor: str) -> float:
 
 class History:
     """One row per epoch: ``epoch``, ``train_loss``, ``lr``, ``elapsed_seconds`` and one
-    column per summary key (empty on epochs without an evaluation). Always installed."""
+    column per split-prefixed summary key (``tune/loss``, ``tune/auroc``; empty on epochs
+    without an evaluation). Always installed."""
 
     def __init__(self) -> None:
         self.rows: list[dict[str, float]] = []
@@ -150,14 +168,15 @@ class Checkpoint:
 
     def __init__(
         self,
-        monitor: str = "loss",
+        monitor: str = "tune/loss",
         mode: str = "min",
         selection: str = "best",
         dirpath: str | Path | None = None,
     ) -> None:
         if selection not in {"best", "last"}:
             raise ValueError(f"selection must be 'best' or 'last', got {selection!r}")
-        self.monitor, self.mode, self.selection = monitor, _check_mode(mode), selection
+        self.monitor, self.mode = _check_monitor("Checkpoint", monitor), _check_mode(mode)
+        self.selection = selection
         self.dirpath = Path(dirpath) if dirpath is not None else None
         self.best_value = float("nan")
         self.best_epoch: int | None = None
@@ -197,7 +216,7 @@ class Checkpoint:
                     f"monitor '{self.monitor}' is {value} at epoch {trainer.epoch + 1}, so no "
                     "checkpoint could ever be selected. Threshold-free metrics (AUROC, AUPRC, "
                     "C-index, ...) are undefined when the tune split holds a single class or "
-                    "no comparable pairs; check the split or monitor 'loss' / a "
+                    "no comparable pairs; check the split or monitor 'tune/loss' / a "
                     "threshold-based metric instead."
                 )
         if not (self._last or self.best_epoch is None or _is_improvement(value, self.best_value, self.mode)):
@@ -237,14 +256,15 @@ class EarlyStopping:
 
     def __init__(
         self,
-        monitor: str = "loss",
+        monitor: str = "tune/loss",
         mode: str = "min",
         patience: int = 10,
         hold_until_moves: bool = True,
     ) -> None:
         if patience < 1:
             raise ValueError("patience must be >= 1")
-        self.monitor, self.mode, self.patience = monitor, _check_mode(mode), int(patience)
+        self.monitor, self.mode = _check_monitor("EarlyStopping", monitor), _check_mode(mode)
+        self.patience = int(patience)
         self.hold_until_moves = hold_until_moves
         self.wait_count = 0
         self.best_value = float("nan")
@@ -416,7 +436,7 @@ class Progress:
         tune_parts: tuple[str | None, ...] = ()
         if trainer.summary is not None:
             tune_parts = (
-                f"tune {trainer.summary['loss']:.4f}",
+                f"tune {trainer.summary['tune/loss']:.4f}",
                 f"selected {self._selected_text(trainer)}",
                 f"patience {self._patience_text(trainer)}",
                 f"lr {trainer.lr:.2e}",
@@ -472,10 +492,10 @@ class Progress:
         table.add_row("epoch", Text(f"{trainer.epoch + 1 if started else 0:02d}/{trainer.total_epochs:02d}", style="bold cyan"))
         table.add_row("train", Text(f"{trainer.train_loss:.4f}" if math.isfinite(trainer.train_loss) else "-"))
         if trainer.summary is not None:
-            table.add_row("tune", Text(f"{trainer.summary['loss']:.4f}"))
+            table.add_row("tune", Text(f"{trainer.summary['tune/loss']:.4f}"))
             for key, value in trainer.summary.items():
-                if key != "loss":
-                    table.add_row(key[:12], Text(f"{value:.4f}"))
+                if key != "tune/loss":
+                    table.add_row(key[: len("tune/") + 12], Text(f"{value:.4f}"))
         table.add_row("lr", Text(f"{trainer.lr:.2e}" if started else "-"))
         table.add_row("# params", Text(f"{self._params:,}"))
         if self.label:
@@ -502,9 +522,9 @@ def _format_seconds(value: float | None) -> str:
 
 
 def _format_metrics(metrics: dict[str, float]) -> str:
-    preferred = ("accuracy", "balanced_accuracy", "f1_macro", "auc")
+    preferred = ("tune/accuracy", "tune/balanced_accuracy", "tune/f1_macro", "tune/auc")
     items = [f"{k}={metrics[k]:.4f}" for k in preferred if k in metrics]
-    items += [f"{k}={v:.4f}" for k, v in sorted(metrics.items()) if k not in preferred and k != "loss"]
+    items += [f"{k}={v:.4f}" for k, v in sorted(metrics.items()) if k not in preferred and k != "tune/loss"]
     return " | ".join(items)
 
 

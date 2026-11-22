@@ -119,7 +119,7 @@ experiment identity:
 
        def on_epoch_end(self, trainer, learner):
            if trainer.summary is not None:  # None on an epoch without a tune evaluation
-               print(self.fold, trainer.epoch, trainer.summary["loss"])
+               print(self.fold, trainer.epoch, trainer.summary["tune/loss"])
 
 
    result = Pipeline(abmil, source=features, callback_factory=lambda context: [TuneLoss(context)]).run()

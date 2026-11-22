@@ -49,7 +49,7 @@ trainer:
   max_epochs: 50
   callbacks:
     # Selects and early-stops on the full-cohort tune partial likelihood by default; to
-    # use C-index instead, set params {monitor: c_index, mode: max} on both callbacks.
+    # use C-index instead, set params {monitor: tune/c_index, mode: max} on both callbacks.
     - name: checkpoint
     - name: early_stopping
       params: {patience: 10}

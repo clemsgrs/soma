@@ -276,9 +276,10 @@ unmatched GT FN.
   each class, the best tune F1 over every threshold at or above ``min_score``
   (the same one-pass sweep, so with greedy matching). ``mean_f1`` is the mean of
   these per-class bests: the tune ``mean_f1`` the sweep above would reach for that
-  epoch, which ``checkpoint`` and ``early_stopping`` monitor. The per-class F1,
-  precision and recall in the training history are read at those thresholds, and
-  the history logs each class's threshold as ``threshold_class_<c>``.
+  epoch, which ``checkpoint`` and ``early_stopping`` monitor as ``tune/mean_f1``. The
+  per-class F1, precision and recall in the training history are read at those
+  thresholds, and the history logs each class's threshold as
+  ``tune/threshold_class_<c>``.
 * **Aggregation** — the headline ``mean_f1`` is **dataset-global** (counts pooled per
   class → one F1 per class → mean across classes, OCELOT-faithful). ``mean_f1_per_image``
   is available as a secondary (per-image macro). Per-class F1 / precision / recall are

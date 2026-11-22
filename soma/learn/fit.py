@@ -39,7 +39,7 @@ def fit(
     loss=None,
     optimizer=None,
     schedulers: Sequence[Any] = (),
-    monitor: str = "loss",
+    monitor: str = "tune/loss",
     mode: str = "min",
     patience: int | None = 10,
     callbacks: Sequence[Any] = (),

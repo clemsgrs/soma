@@ -174,8 +174,9 @@ is a directory of four files:
   scheme (``class_scheme``, see :ref:`detection-classes`).
 - ``provenance.json``: the soma, slide2vec and hs2p versions, the component
   record (see :ref:`component-record`), the selected epoch and its monitor
-  value, the fold, the run id and the identity of the feature source (the cache
-  key and feature identity, not a path).
+  (``selection_monitor``: the ``tune/`` name and its value), the fold, the run
+  id and the identity of the feature source (the cache key and feature identity,
+  not a path).
 
 :func:`soma.load` rebuilds the model in eval mode and returns a
 :class:`soma.ModelBundle` with ``model``, ``preprocessing``, ``provenance`` and

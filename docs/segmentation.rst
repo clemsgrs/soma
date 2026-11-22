@@ -266,8 +266,8 @@ monitor it in maximum mode:
      metrics: [mean_dice, dataset_global_mean_dice, mean_iou, dice_per_class]
    trainer:
      callbacks:
-       - {name: checkpoint, params: {monitor: dataset_global_mean_dice, mode: max}}
-       - {name: early_stopping, params: {monitor: dataset_global_mean_dice, mode: max}}
+       - {name: checkpoint, params: {monitor: tune/dataset_global_mean_dice, mode: max}}
+       - {name: early_stopping, params: {monitor: tune/dataset_global_mean_dice, mode: max}}
 
 Training-batch ROI sampling
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~

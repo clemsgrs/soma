@@ -167,7 +167,7 @@ def _build_eva_config(
     if patience is None:
         patience = spec.patience
 
-    monitor = {"monitor": "balanced_accuracy", "mode": "max"}
+    monitor = {"monitor": "tune/balanced_accuracy", "mode": "max"}
     cfg = presets.tile_classification(encoder)
     cfg.run = RunConfig(output_dir=Path(output_root), seed=seed)
     cfg.cohort = CohortConfig(records=str(dataset_csv), splits=str(splits_csv), tune_is_test=spec.tune_is_test)

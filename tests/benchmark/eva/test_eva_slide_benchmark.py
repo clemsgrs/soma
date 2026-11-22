@@ -112,7 +112,7 @@ def test_config_transcribes_the_eva_offline_protocol(dataset, target_mpp, head, 
     assert scheduler.name == "constant"
     assert scheduler.params["total_iters"] == 5
     assert scheduler.params["factor"] == pytest.approx(1 / 3)
-    monitor = {"monitor": "balanced_accuracy", "mode": "max"}
+    monitor = {"monitor": "tune/balanced_accuracy", "mode": "max"}
     assert callback(config, "checkpoint") == monitor  # best-checkpoint selection
     # EVA's Lightning EarlyStopping: plain patience, no hold on an initial plateau.
     assert callback(config, "early_stopping") == {**monitor, "patience": 20, "hold_until_moves": False}

@@ -222,8 +222,8 @@ differ:
   loss term is one override that calls ``forward_batch`` and ``compute_loss`` and
   adds the term.
 - ``validation_step(batch)`` and ``validation_summary(outputs)`` reduce a split. The
-  summary must contain ``loss``; its keys are what ``Checkpoint`` and
-  ``EarlyStopping`` can monitor.
+  summary has bare keys and must contain ``loss``. The trainer prefixes each key with
+  its split, so ``Checkpoint`` and ``EarlyStopping`` monitor ``tune/<key>``.
 - ``predict_step(batch)`` returns a :class:`soma.learn.PredictOutput`. A column it
   adds lands in ``predictions_<split>.parquet`` next to the head's columns.
 - ``configure_optimizers(budget)`` builds the optimizer and schedulers, for
@@ -518,7 +518,7 @@ It stops the run by setting ``trainer.should_stop = True``.
 
    class PrintTuneLoss:
        def on_validation_end(self, trainer, learner, summary):
-           print(trainer.epoch, summary["loss"])
+           print(trainer.epoch, summary["tune/loss"])
 
 
    result = soma.fit(learner, fold.train, fold.tune, callbacks=[PrintTuneLoss()])

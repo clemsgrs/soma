@@ -36,7 +36,9 @@ class Trainer:
 
     One step is one completed accumulation window; a step budget may end partway
     through an epoch. ``val_every_n_epochs`` evaluates after epochs N, 2N, ... and
-    always after the final epoch. ``precision="bf16"`` is autocast without a grad
+    always after the final epoch. Each key the learner's ``validation_summary`` returns
+    reaches callbacks and the history prefixed with its split (``loss`` -> ``tune/loss``),
+    so monitors name ``tune/<key>``. ``precision="bf16"`` is autocast without a grad
     scaler. Callbacks stop the run by setting ``trainer.should_stop``: a stop raised
     before ``on_epoch_end`` makes the current epoch the final one and it is evaluated;
     a stop raised in ``on_epoch_end`` only prevents the next epoch, since the epoch
@@ -102,7 +104,7 @@ class Trainer:
                 learner=learner,
                 history=self.history.frame(),
                 selected_epoch=0,
-                selection_monitor=("loss", float("nan")),
+                selection_monitor=("tune/loss", float("nan")),
                 checkpoint_path=None,
                 optimizer_steps=0,
             )
@@ -123,7 +125,7 @@ class Trainer:
             raise
         selected_epoch, monitor, path = self.selection or (
             self.epoch,
-            ("loss", float((self.summary or {}).get("loss", float("nan")))),
+            ("tune/loss", float((self.summary or {}).get("tune/loss", float("nan")))),
             None,
         )
         return FitResult(
@@ -200,7 +202,13 @@ class Trainer:
         summary = dict(learner.validation_summary(outputs))
         if "loss" not in summary:
             raise ValueError("validation_summary must contain a 'loss' entry")
-        return summary
+        return _split_keyed("tune", summary)
+
+
+def _split_keyed(split: str, summary: dict[str, float]) -> dict[str, float]:
+    """``summary`` with every key prefixed by its split (``loss`` -> ``tune/loss``): the
+    names callbacks, the history and the console see. Learners return bare keys."""
+    return {f"{split}/{key}": value for key, value in summary.items()}
 
 
 def _resolve_device(device: str | torch.device) -> torch.device:
