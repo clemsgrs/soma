@@ -12,11 +12,14 @@ from collections.abc import Callable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-__all__ = ["is_subgroup_key", "subgroup_breakdown", "subgroup_metrics", "subgroup_stats"]
+__all__ = ["MIN_GROUP_SIZE", "is_subgroup_key", "mean_over", "subgroup_breakdown", "subgroup_metrics", "subgroup_stats"]
 
 logger = logging.getLogger(__name__)
 
 Metric = Callable[[pd.DataFrame, pd.DataFrame], float]
+
+#: The fewest samples a group needs to be scored, after the fit and at every epoch.
+MIN_GROUP_SIZE = 2
 
 
 def subgroup_metrics(
@@ -25,13 +28,14 @@ def subgroup_metrics(
     metrics: Mapping[str, Metric],
     columns: Sequence[str],
 ) -> dict[str, dict[str, dict[str, float | int]]]:
-    """``{column: {group: {metric: value, "n": count}}}``; groups under 2 samples are
-    skipped, and so is a group whose metrics cannot be computed."""
+    """``{column: {group: {metric: value, "n": count}}}``; groups under
+    :data:`MIN_GROUP_SIZE` samples are skipped, and so is a group whose metrics cannot be
+    computed."""
     result: dict[str, dict[str, dict[str, float | int]]] = {}
     for column in columns:
         groups: dict[str, dict[str, float | int]] = {}
         for value, index in targets.groupby(column, sort=True).groups.items():
-            if len(index) < 2:
+            if len(index) < MIN_GROUP_SIZE:
                 continue
             try:
                 values: dict[str, float | int] = {
@@ -103,7 +107,7 @@ def _delta(fn: Metric, predictions: pd.DataFrame, targets: pd.DataFrame, mask: n
     return group - rest
 
 
-def _mean_over(
+def mean_over(
     breakdown: Mapping[str, Mapping[str, Mapping[str, float | int]]],
     metrics: Sequence[str],
 ) -> dict[str, dict[str, float | int]]:
@@ -141,7 +145,7 @@ def subgroup_breakdown(
     per_group = subgroup_metrics(predictions, targets, metrics, columns)
     return {
         "metrics": per_group,
-        "mean_over": _mean_over(per_group, list(metrics)),
+        "mean_over": mean_over(per_group, list(metrics)),
         "stats": subgroup_stats(predictions, targets, metrics, columns),
     }
 

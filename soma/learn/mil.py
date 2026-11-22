@@ -119,17 +119,15 @@ class MILLearner(Learner):
         return self.compute_loss(self.forward_batch(batch), batch)
 
     def validation_step(self, batch: Any) -> StepOutput:
-        output = self.forward_batch(batch)
-        logits = output.logits
-        loss = None
-        if not getattr(self.head, "full_cohort_eval_loss", False):
-            loss = self.task_loss(logits, batch.targets).detach().cpu()
+        logits = self.forward_batch(batch).logits
+        # No per-batch loss: the summary computes it once over the joined split.
         return StepOutput(
-            loss=loss,
+            loss=None,
             # ``.float()``: under bf16 autocast the heads' CPU metrics (numpy) need fp32.
             outputs=logits.detach().float().cpu(),
             targets={k: v.detach().cpu() for k, v in batch.targets.items()},
             size=int(logits.shape[0]),
+            sample_ids=tuple(getattr(batch, "sample_ids", ())),
         )
 
     def predict_step(self, batch: Any) -> PredictOutput:
@@ -140,20 +138,42 @@ class MILLearner(Learner):
         return PredictOutput(columns=columns, raw=output)
 
     def validation_summary(self, outputs: list[StepOutput]) -> dict[str, float]:
+        """The head's loss over the split's joined logits and targets, and its metrics.
+
+        The loss is one ``task_loss`` over the whole split, not a mean of per-batch
+        values: a loss that couples samples (the Cox partial likelihood) exists only over
+        the whole split, and a mean-reduced one would otherwise weigh a smaller last
+        batch's samples more.
+        """
         if not outputs:
             return {"loss": float("nan")}
-        logits = torch.cat([o.outputs for o in outputs], dim=0)
-        targets = {
-            key: torch.cat([o.targets[key] for o in outputs], dim=0) for key in outputs[0].targets
-        }
-        if getattr(self.head, "full_cohort_eval_loss", False):
-            # Losses that couple samples (Cox partial likelihood) exist only over the
-            # whole split; a mean of per-batch values would depend on the partition.
-            loss = float(self.task_loss(logits, targets).item())
-        else:
-            loss = float(torch.stack([o.loss for o in outputs]).mean().item())
+        return self._summary(*_joined(outputs))
+
+    def subgroup_summary(self, outputs: list[StepOutput], sample_ids: Sequence[str]) -> dict[str, float]:
+        """:meth:`validation_summary` over the rows of ``sample_ids``: the head's loss over
+        the group's joined logits and targets, and its metrics.
+
+        For a mean-reduced loss, a group's loss is the mean of its samples' losses. For a
+        ``full_cohort_eval_loss`` head (Cox), it is the partial likelihood over the
+        group's own risk sets: a stratified quantity, not a slice of the pooled loss, so
+        the mean of the groups' losses does not equal the split's ``loss``.
+        """
+        logits, targets = _joined(outputs)
+        wanted = set(sample_ids)
+        keep = torch.tensor([sid in wanted for o in outputs for sid in o.sample_ids], dtype=torch.bool)
+        return self._summary(logits[keep], {key: value[keep] for key, value in targets.items()})
+
+    def _summary(self, logits: Tensor, targets: dict[str, Tensor]) -> dict[str, float]:
+        loss = float(self.task_loss(logits, targets).item())
         metrics = self.head.compute_metrics(logits, targets)
         return {"loss": loss, **{k: float(v) for k, v in metrics.items()}}
+
+
+def _joined(outputs: list[StepOutput]) -> tuple[Tensor, dict[str, Tensor]]:
+    """A split's logits and targets, the batches joined in loader order."""
+    logits = torch.cat([o.outputs for o in outputs], dim=0)
+    targets = {key: torch.cat([o.targets[key] for o in outputs], dim=0) for key in outputs[0].targets}
+    return logits, targets
 
 
 learner_registry.register("mil", MILLearner, params=MILLearnerParams)

@@ -230,12 +230,16 @@ def user_package(tmp_path: Path, monkeypatch):
     (package / "learners.py").write_text(
         textwrap.dedent(
             """
-            from soma.learn import MILLearner
+            from soma.learn import Learner, MILLearner
 
             class ScaledMIL(MILLearner):
                 def __init__(self, model, *, scale=1.0, **kwargs):
                     super().__init__(model, **kwargs)
                     self.scale = scale
+
+            class Ungrouped(Learner):
+                # A set-shape learner without the subgroup_summary hook.
+                pass
             """
         )
     )
@@ -389,6 +393,47 @@ def test_a_custom_learners_monitor_still_names_the_tune_split(files, user_packag
     check(monitored("tune/its_own_score"))
     with pytest.raises(ValueError, match="use 'tune/its_own_score'"):
         check(monitored("its_own_score"))
+
+
+def _monitored_by_subgroup(files, monitor: str, subgroups=("centre",), **kwargs) -> ExperimentConfig:
+    params = {"monitor": monitor, "mode": "max"}
+    callbacks = [{"name": "checkpoint", "params": params}, {"name": "early_stopping", "params": params}]
+    return experiment(
+        *files,
+        aggregator="abmil",
+        trainer={"callbacks": callbacks},
+        evaluation={"subgroups": list(subgroups)},
+        **kwargs,
+    )
+
+
+def test_a_mean_over_groups_monitor_names_a_subgroup_column_and_an_effective_metric(files):
+    check(_monitored_by_subgroup(files, "tune/mean_over_centre/auroc"))
+    check(_monitored_by_subgroup(files, "tune/mean_over_centre/loss"))
+    with pytest.raises(ValueError, match="checkpoint monitor 'tune/mean_over_centre/mae' is not an effective metric"):
+        check(_monitored_by_subgroup(files, "tune/mean_over_centre/mae"))
+    with pytest.raises(ValueError, match="'site' is not an evaluation.subgroups column"):
+        check(_monitored_by_subgroup(files, "tune/mean_over_site/auroc"))
+    with pytest.raises(ValueError, match="'centre' is not an evaluation.subgroups column"):
+        check(_monitored_by_subgroup(files, "tune/mean_over_centre/auroc", subgroups=()))
+
+
+def test_a_single_group_monitor_is_refused(files):
+    # A group can be missing from a fold's tune split, so it cannot select a checkpoint.
+    with pytest.raises(ValueError, match="checkpoint monitor 'tune/centre=A/auroc' names one group"):
+        check(_monitored_by_subgroup(files, "tune/centre=A/auroc"))
+
+
+def test_subgroups_need_a_learner_with_the_subgroup_summary_hook(files, user_package):
+    # Every evaluated epoch reduces each group through the learner's hook.
+    subgroups = {"subgroups": ["centre"]}
+    check(experiment(*files, aggregator="abmil", learner=user_package, evaluation=subgroups))
+    ungrouped = "mylab.learners.Ungrouped"
+    check(experiment(*files, aggregator="abmil", learner=ungrouped))
+    with pytest.raises(ValueError, match=rf"learner '{ungrouped}' has no subgroup_summary"):
+        check(experiment(*files, aggregator="abmil", learner=ungrouped, evaluation=subgroups))
+    with pytest.raises(ValueError, match="learner 'dense' has no subgroup_summary"):
+        check(_grid(files, evaluation=subgroups))
 
 
 def test_last_checkpoint_selection_never_early_stops(files):

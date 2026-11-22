@@ -65,7 +65,7 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup, *, observers: Sequence[Any]
     # Progress, so a run without ``checkpoint`` keeps its final weights. The runtime
     # observers only read, after them.
     trainer = learn.Trainer(callbacks=[*setup.callbacks(), *observers], **setup.trainer)
-    fit = trainer.fit(learner, loaders.train, loaders.tune)  # 6
+    fit = trainer.fit(learner, loaders.train, loaders.tune, tune_groups=loaders.tune_groups)  # 6
     if loaders.after_fit is not None:
         loaders.after_fit(fold_dir)
     head = fit.learner.head

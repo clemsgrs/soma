@@ -224,6 +224,13 @@ def _is_learner(cls: Any) -> bool:
     return isinstance(cls, type) and issubclass(cls, Learner)
 
 
+def _has_subgroup_summary(cls: type) -> bool:
+    """Whether a :class:`~soma.learn.Learner` class implements ``subgroup_summary``."""
+    from soma.learn import Learner
+
+    return cls.subgroup_summary is not Learner.subgroup_summary
+
+
 def learner_shape(config: ExperimentConfig) -> str:
     """``grid`` for a :class:`~soma.learn.DenseLearner` (or a subclass), else ``set``."""
     from soma.learn import DenseLearner
@@ -373,6 +380,13 @@ def _check(config: ExperimentConfig) -> None:
         raise ValueError("learner.params spells the scheduler leaf (or list of leaves) as 'scheduler'.")
     own = {key: value for key, value in params.items() if key not in LEARNER_OWN_EXCLUDED}
     registries["learner"].validate(learner.name, own)
+    if evaluation.subgroups and not _has_subgroup_summary(learner_cls):
+        grid = " (the grid shape takes no subgroups)" if learner_shape(config) == "grid" else ""
+        raise ValueError(
+            f"learner '{learner.name}' has no subgroup_summary{grid}, which reduces one group's "
+            "outputs: every evaluated epoch logs each evaluation.subgroups group's tune values "
+            "through it. Implement Learner.subgroup_summary, or drop evaluation.subgroups."
+        )
     _validate_leaf(registries["optimizer"], params.get("optimizer") or DEFAULT_OPTIMIZER, "optimizer")
     for leaf in params.get("scheduler") or ():
         _validate_leaf(registries["scheduler"], leaf, "scheduler")
@@ -671,6 +685,7 @@ def _check_checkpoint_cox_window(head_cls: type, head_params: Mapping[str, Any])
 
 
 def _check_callbacks(config: ExperimentConfig, registries, *, metrics: list[str], custom_learner: bool) -> None:
+    from soma.evaluation.subgroups import is_subgroup_key
     from soma.learn.callbacks import _check_monitor
 
     callbacks = config.trainer.callbacks
@@ -695,12 +710,23 @@ def _check_callbacks(config: ExperimentConfig, registries, *, metrics: list[str]
             continue
         # The Trainer prefixes every validation_summary key with its split: tune/<key>.
         monitor = _check_monitor(key, leaf.params.get("monitor", "tune/loss"))
-        name = monitor.partition("/")[2]
+        name, prefix = monitor.partition("/")[2], "tune/"
+        if is_subgroup_key(name):
+            # tune/mean_over_<column>/<name>: _check_monitor refused a single group's key.
+            head, _, name = name.partition("/")
+            column = head.removeprefix("mean_over_")
+            if column not in config.evaluation.subgroups:
+                configured = ", ".join(config.evaluation.subgroups) or "none"
+                raise ValueError(
+                    f"{key} monitor {monitor!r} averages over the groups of {column!r}, but "
+                    f"{column!r} is not an evaluation.subgroups column (configured: {configured})."
+                )
+            prefix = f"tune/{head}/"
         # A custom learner's summary keys are its own; the Checkpoint checks them at fit time.
         if not custom_learner and name != "loss" and name not in metrics:
             raise ValueError(
                 f"{key} monitor {monitor!r} is not an effective metric of the head. Available "
-                f"monitors: {', '.join(f'tune/{metric}' for metric in ('loss', *metrics))}."
+                f"monitors: {', '.join(f'{prefix}{metric}' for metric in ('loss', *metrics))}."
             )
 
 

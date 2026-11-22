@@ -40,13 +40,15 @@ class StepOutput:
 
     ``outputs`` is whatever the learner reduces (logits, risks, compact stat rows); the
     Trainer never looks inside. ``loss`` is ``None`` when the loss only exists over the
-    whole split (a Cox partial likelihood).
+    whole split (a Cox partial likelihood). ``sample_ids`` are the batch's samples, in
+    the order of its rows: the Trainer groups them for the per-epoch subgroup keys.
     """
 
     loss: Tensor | None
     outputs: Tensor
     targets: dict[str, Tensor]
     size: int
+    sample_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -200,6 +202,17 @@ class Learner(nn.Module):
     def validation_summary(self, outputs: list[StepOutput]) -> dict[str, float]:
         """Reduce a split's outputs to scalars; must contain ``"loss"``."""
         raise NotImplementedError
+
+    def subgroup_summary(self, outputs: list[StepOutput], sample_ids: Sequence[str]) -> dict[str, float]:
+        """Reduce the rows of ``sample_ids`` alone to the scalars ``validation_summary``
+        gives for the whole split: one subgroup's per-epoch values.
+
+        The Trainer calls it once per group when it is handed the split's groups (a run
+        with ``evaluation.subgroups``); the learner owns the layout of its ``outputs``,
+        so it alone can select a group's rows. A learner without it cannot run with
+        subgroups.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement subgroup_summary")
 
     def predict_step(self, batch: Any) -> PredictOutput:
         """One batch to its prediction columns (see :func:`soma.predict`)."""

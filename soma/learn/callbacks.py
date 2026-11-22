@@ -27,6 +27,7 @@ from rich.table import Table
 from rich.text import Text
 
 from soma._internal.atomic_io import atomic_torch_save
+from soma.evaluation.subgroups import is_subgroup_key
 from soma.learn.learner import uncovered_parameters
 from soma._internal.params import check_choice, check_positive
 from soma.registry import Registry
@@ -98,18 +99,27 @@ def _check_mode(mode: str) -> str:
 
 
 def _check_monitor(owner: str, monitor: str) -> str:
-    """``monitor`` when it names the tune split; plan validation calls it too.
+    """``monitor`` when it names the tune split and no single subgroup; plan validation
+    calls it too.
 
     The Trainer prefixes every ``validation_summary`` key with its split (``tune/<key>``),
-    so a bare or non-tune monitor can never match.
+    so a bare or non-tune monitor can never match. A group can be missing from a fold's
+    tune split, so a monitor names the mean over a column's groups, not one group.
     """
-    split, slash, _ = monitor.partition("/")
+    split, slash, name = monitor.partition("/")
     if not slash:
         raise ValueError(f"{owner} monitor {monitor!r} names no split; use 'tune/{monitor}'.")
     if split != "tune":
         raise ValueError(
             f"{owner} monitor {monitor!r} is not a tune value; a monitor names the tune split: "
             "'tune/loss' or 'tune/<metric>'."
+        )
+    head, _, metric = name.partition("/")
+    if is_subgroup_key(name) and "=" in head:
+        column = head.partition("=")[0]
+        raise ValueError(
+            f"{owner} monitor {monitor!r} names one group, which a fold's tune split can lack; "
+            f"monitor the mean over the column's groups: 'tune/mean_over_{column}/{metric}'."
         )
     return monitor
 
@@ -318,7 +328,8 @@ class Progress:
 
     ``label`` names the run in every line (the pipeline passes ``"fold k/n"``). The
     selected epoch and patience come from the installed :class:`Checkpoint` and
-    :class:`EarlyStopping`, when present.
+    :class:`EarlyStopping`, when present. Only the pooled values and the monitors are
+    shown: the per-subgroup keys go to the history alone.
     """
 
     def __init__(self, style: str = "auto", label: str | None = None, console: Console | None = None) -> None:
@@ -377,6 +388,9 @@ class Progress:
         if math.isfinite(checkpoint.best_value):
             return f"{checkpoint.monitor}={checkpoint.best_value:.4f} @ {checkpoint.best_epoch + 1:02d}"
         return f"epoch {checkpoint.best_epoch + 1:02d}"
+
+    def _monitors(self, trainer) -> set[str]:
+        return {c.monitor for c in (self._checkpoint(trainer), self._early_stopping(trainer)) if c is not None}
 
     def _patience_text(self, trainer) -> str:
         stopping = self._early_stopping(trainer)
@@ -493,9 +507,14 @@ class Progress:
         table.add_row("train", Text(f"{trainer.train_loss:.4f}" if math.isfinite(trainer.train_loss) else "-"))
         if trainer.summary is not None:
             table.add_row("tune", Text(f"{trainer.summary['tune/loss']:.4f}"))
+            monitors = self._monitors(trainer)
             for key, value in trainer.summary.items():
-                if key != "tune/loss":
+                if key == "tune/loss":
+                    continue
+                if _pooled(key):
                     table.add_row(key[: len("tune/") + 12], Text(f"{value:.4f}"))
+                elif key in monitors:
+                    table.add_row(key, Text(f"{value:.4f}"))
         table.add_row("lr", Text(f"{trainer.lr:.2e}" if started else "-"))
         table.add_row("# params", Text(f"{self._params:,}"))
         if self.label:
@@ -521,7 +540,14 @@ def _format_seconds(value: float | None) -> str:
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 
+def _pooled(key: str) -> bool:
+    """Whether a split-prefixed summary key is a pooled value, not a subgroup key."""
+    return not is_subgroup_key(key.partition("/")[2])
+
+
 def _format_metrics(metrics: dict[str, float]) -> str:
+    """The pooled values of ``metrics``; the monitor is in the line's ``selected`` part."""
+    metrics = {k: v for k, v in metrics.items() if _pooled(k)}
     preferred = ("tune/accuracy", "tune/balanced_accuracy", "tune/f1_macro", "tune/auc")
     items = [f"{k}={metrics[k]:.4f}" for k in preferred if k in metrics]
     items += [f"{k}={v:.4f}" for k, v in sorted(metrics.items()) if k not in preferred and k != "tune/loss"]

@@ -78,10 +78,11 @@ class TaskHead(ABC, nn.Module):
     target_schema: dict[str, type] = {"label": object}
     supports_branch_representation: bool = False
     task_family: str = "generic"
-    # When True, the trainer computes the tune loss once over the whole tune
-    # cohort (concatenated logits/targets) instead of averaging per-batch losses.
-    # Required for losses that couple samples within a batch (e.g. CoxPH partial
-    # likelihood), where the mean of per-batch losses is not the full-cohort loss.
+    # True for a loss that couples the samples it is computed over (e.g. CoxPH
+    # partial likelihood): it exists only over a whole split, and a subgroup's loss
+    # runs over that group's own risk sets, so the mean over groups is stratified
+    # and differs from the split's loss. The MIL learner computes every tune loss
+    # once over the split's joined logits and targets, so it does not branch on it.
     full_cohort_eval_loss: bool = False
     # When True, the pipeline builds the training loader with an event-balanced
     # BatchSampler so every batch contains at least one event (needed for Cox).

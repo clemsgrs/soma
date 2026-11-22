@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,8 +13,9 @@ from typing import Any
 import pandas as pd
 import torch
 
+from soma.evaluation.subgroups import MIN_GROUP_SIZE, mean_over
 from soma.learn.callbacks import History
-from soma.learn.learner import Budget, Learner, SchedulerSpec
+from soma.learn.learner import Budget, Learner, SchedulerSpec, StepOutput
 
 __all__ = ["FitResult", "Trainer"]
 
@@ -93,11 +94,29 @@ class Trainer:
     def validates(self) -> bool:
         return self._tune_loader is not None
 
-    def fit(self, learner: Learner, train_loader, tune_loader=None) -> FitResult:
+    def fit(
+        self,
+        learner: Learner,
+        train_loader,
+        tune_loader=None,
+        *,
+        tune_groups: Mapping[str, Mapping[str, str]] | None = None,
+    ) -> FitResult:
+        """Train ``learner`` on ``train_loader``, evaluating on ``tune_loader``.
+
+        ``tune_groups`` (``{column: {sample_id: group}}``) adds to every evaluation each
+        group's values, ``tune/<column>=<group>/<key>`` through the learner's
+        ``subgroup_summary``, and per column their unweighted mean over the groups,
+        ``tune/mean_over_<column>/<key>`` with ``<key>_groups`` counting the groups whose
+        value is finite (a NaN group is skipped; with none the mean is NaN). A group under
+        :data:`~soma.evaluation.subgroups.MIN_GROUP_SIZE` samples is skipped, as after the
+        fit, and a sample absent from the mapping is in no group.
+        """
         if tune_loader is not None and len(tune_loader) == 0:
             logger.warning("the tune loader is empty; training without validation.")
             tune_loader = None
         self._tune_loader = tune_loader
+        self._tune_groups = dict(tune_groups or {})
         self.learner = learner.to(self.device)
         if not any(p.requires_grad for p in learner.parameters()):
             return FitResult(
@@ -147,7 +166,7 @@ class Trainer:
             self.train_loss = self._train_epoch(learner, train_loader)
             last = self.epoch + 1 == self.total_epochs or self.should_stop
             if tune_loader is not None and ((self.epoch + 1) % self.val_every_n_epochs == 0 or last):
-                self.summary = self._validate(learner, tune_loader)
+                self.summary = self._validate(learner, tune_loader, "tune", self._tune_groups)
                 self._call("on_validation_end", learner, self.summary)
             self._call("on_epoch_end", learner)
             for spec in self.schedulers:
@@ -192,7 +211,9 @@ class Trainer:
         return total / max(batches, 1)
 
     @torch.inference_mode()
-    def _validate(self, learner: Learner, loader) -> dict[str, float]:
+    def _validate(
+        self, learner: Learner, loader, split: str, groups: Mapping[str, Mapping[str, str]]
+    ) -> dict[str, float]:
         learner.eval()
         outputs = []
         for batch in loader:
@@ -202,13 +223,47 @@ class Trainer:
         summary = dict(learner.validation_summary(outputs))
         if "loss" not in summary:
             raise ValueError("validation_summary must contain a 'loss' entry")
-        return _split_keyed("tune", summary)
+        return {
+            **_split_keyed(split, summary),
+            **_subgroup_keyed(split, learner, outputs, groups, names=list(summary)),
+        }
 
 
 def _split_keyed(split: str, summary: dict[str, float]) -> dict[str, float]:
     """``summary`` with every key prefixed by its split (``loss`` -> ``tune/loss``): the
     names callbacks, the history and the console see. Learners return bare keys."""
     return {f"{split}/{key}": value for key, value in summary.items()}
+
+
+def _subgroup_keyed(
+    split: str,
+    learner: Learner,
+    outputs: list[StepOutput],
+    groups: Mapping[str, Mapping[str, str]],
+    *,
+    names: list[str],
+) -> dict[str, float]:
+    """The subgroup keys of one evaluation of ``split`` (any split name), as
+    :meth:`Trainer.fit` describes them for tune: over the samples the batches carry,
+    each column's groups through ``subgroup_summary``, then the mean over the groups
+    of each pooled ``name`` (:func:`soma.evaluation.subgroups.mean_over`)."""
+    seen = [sample_id for output in outputs for sample_id in output.sample_ids]
+    keyed: dict[str, float] = {}
+    for column, membership in groups.items():
+        members: dict[str, list[str]] = {}
+        for sample_id in seen:
+            if sample_id in membership:
+                members.setdefault(str(membership[sample_id]), []).append(sample_id)
+        per_group = {
+            group: dict(learner.subgroup_summary(outputs, ids))
+            for group, ids in sorted(members.items())
+            if len(ids) >= MIN_GROUP_SIZE
+        }
+        for group, summary in per_group.items():
+            keyed.update({f"{split}/{column}={group}/{name}": value for name, value in summary.items()})
+        for name, value in mean_over({column: per_group}, names)[column].items():
+            keyed[f"{split}/mean_over_{column}/{name}"] = value
+    return keyed
 
 
 def _resolve_device(device: str | torch.device) -> torch.device:
