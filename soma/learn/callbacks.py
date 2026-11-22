@@ -137,6 +137,19 @@ def _monitor_value(summary: dict[str, float], monitor: str) -> float:
     return float(summary[monitor])
 
 
+def _require_finite(owner: str, monitor: str, value: float, epoch: int) -> None:
+    """Raise on a non-finite monitor value. It never improves, so a checkpoint could never
+    be selected on it and early stopping would stop the run silently."""
+    if not math.isfinite(value):
+        raise RuntimeError(
+            f"{owner} monitor '{monitor}' is {value} at epoch {epoch + 1}, so it can never "
+            "improve. Threshold-free metrics (AUROC, AUPRC, C-index, ...) are undefined when "
+            "the tune split holds a single class or no comparable pairs, and a mean over "
+            "groups is NaN when no group has a value; check the split or monitor "
+            "'tune/loss' / a threshold-based metric instead."
+        )
+
+
 class History:
     """One row per epoch: ``epoch``, ``train_loss``, ``lr``, ``elapsed_seconds`` and one
     column per split-prefixed summary key (``tune/loss``, ``tune/auroc``; empty on epochs
@@ -221,14 +234,8 @@ class Checkpoint:
             value = _monitor_value(summary, self.monitor)
             # Under ``last`` the monitor is a logged diagnostic, not a selection signal, so
             # an undefined metric (AUROC on a one-class tune split) does not abort the run.
-            if not self._last and not math.isfinite(value):
-                raise RuntimeError(
-                    f"monitor '{self.monitor}' is {value} at epoch {trainer.epoch + 1}, so no "
-                    "checkpoint could ever be selected. Threshold-free metrics (AUROC, AUPRC, "
-                    "C-index, ...) are undefined when the tune split holds a single class or "
-                    "no comparable pairs; check the split or monitor 'tune/loss' / a "
-                    "threshold-based metric instead."
-                )
+            if not self._last:
+                _require_finite("Checkpoint", self.monitor, value, trainer.epoch)
         if not (self._last or self.best_epoch is None or _is_improvement(value, self.best_value, self.mode)):
             return
         self.best_value, self.best_epoch = value, trainer.epoch
@@ -262,7 +269,8 @@ class Checkpoint:
 class EarlyStopping:
     """Stop after ``patience`` evaluations without improvement. ``hold_until_moves`` holds
     the stop while the monitor still equals its first value (a thresholded metric at its
-    floor); patience keeps counting, so a run that moves late stops at the same epoch."""
+    floor); patience keeps counting, so a run that moves late stops at the same epoch.
+    A non-finite monitor raises at once, as it does for :class:`Checkpoint`."""
 
     def __init__(
         self,
@@ -291,6 +299,7 @@ class EarlyStopping:
 
     def on_validation_end(self, trainer, learner, summary) -> None:
         value = _monitor_value(summary, self.monitor)
+        _require_finite("EarlyStopping", self.monitor, value, trainer.epoch)
         self.evaluations += 1
         if self.first_value is None:
             self.first_value = value

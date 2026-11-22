@@ -653,15 +653,22 @@ class TestSubgroupMonitoring:
         assert row["tune/mean_over_centre/loss"] == row["tune/centre=B/loss"]
         assert row["tune/mean_over_centre/loss_groups"] == 1
 
-    def test_a_nan_mean_over_groups_as_the_monitor_fails_fast(self):
+    @pytest.mark.parametrize("owner", ["Checkpoint", "EarlyStopping"])
+    def test_a_nan_mean_over_groups_as_the_monitor_fails_fast(self, owner):
         # Every centre holds one class only: no group has an AUROC, so the mean is NaN.
         groups = {"centre": {f"s{i}": "even" if i % 2 == 0 else "odd" for i in range(8)}}
-        trainer = Trainer(
-            max_epochs=3,
-            callbacks=[Checkpoint(monitor="tune/mean_over_centre/auroc", mode="max")],
-            device="cpu",
-        )
-        with pytest.raises(RuntimeError, match=r"monitor 'tune/mean_over_centre/auroc' is nan at epoch 1"):
+        monitor = "tune/mean_over_centre/auroc"
+        callbacks = {
+            "Checkpoint": [Checkpoint(monitor=monitor, mode="max")],
+            # Selection on the pooled loss, which stays finite: only the early stopping
+            # watches the NaN mean, and it must not stop the fold silently.
+            "EarlyStopping": [
+                Checkpoint(monitor="tune/loss"),
+                EarlyStopping(monitor=monitor, mode="max", patience=1),
+            ],
+        }[owner]
+        trainer = Trainer(max_epochs=3, callbacks=callbacks, device="cpu")
+        with pytest.raises(RuntimeError, match=rf"{owner} monitor '{monitor}' is nan at epoch 1"):
             trainer.fit(_learner(), _bag_loader(), _bag_loader(), tune_groups=groups)
 
 
@@ -844,15 +851,17 @@ class TestCallbacks:
                 device="cpu",
             ).fit(_learner(), _bag_loader(), _bag_loader())
 
-    def test_checkpoint_raises_on_a_non_finite_monitor_at_first_observation(self):
+    @pytest.mark.parametrize("owner", ["Checkpoint", "EarlyStopping"])
+    def test_a_non_finite_monitor_raises_at_first_observation(self, owner):
         class Nan:
             def on_validation_end(self, trainer, learner, summary):
                 summary["tune/score"] = float("nan")
 
-        with pytest.raises(RuntimeError, match="tune/score"):
-            Trainer(
-                max_epochs=3, callbacks=[Nan(), Checkpoint(monitor="tune/score")], device="cpu"
-            ).fit(_learner(), _bag_loader(), _bag_loader())
+        monitor = {"Checkpoint": Checkpoint, "EarlyStopping": EarlyStopping}[owner](monitor="tune/score")
+        with pytest.raises(RuntimeError, match=f"{owner} monitor 'tune/score' is nan at epoch 1"):
+            Trainer(max_epochs=3, callbacks=[Nan(), monitor], device="cpu").fit(
+                _learner(), _bag_loader(), _bag_loader()
+            )
 
     def test_checkpoint_last_tolerates_a_non_finite_diagnostic_monitor(self):
         class Nan:
