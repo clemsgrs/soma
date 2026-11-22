@@ -69,21 +69,136 @@ default) keeps the epoch that is best on ``monitor`` in direction ``mode``
 callback and needs ``trainer.val_every_n_epochs: 1``. ``early_stopping`` stops after ``patience`` tune evaluations without
 improvement; leave it out to train the full budget.
 
-A monitor names a tune value with its split: the trainer prefixes every value of
-the tune evaluation with ``tune/``. A bare name (``loss``, ``auroc``) or another
-split (``train/loss``) is refused when the plan is built.
-
 ``trainer.val_every_n_epochs: N`` evaluates the tune split after every N-th
 epoch and after the final epoch, for runs where tune evaluation dominates the
 epoch cost; selection and patience then count tune evaluations, not epochs.
 Tune metrics are always recorded for diagnostics.
 
-While a fold trains, a summary panel shows the epoch, loss, learning rate, tune
-metrics, patience, trainable parameter count, timing and, for cross-validation,
-the active fold. Each fold writes the same history to ``training_history.json``,
-one row per epoch: ``epoch``, ``train_loss``, ``lr``, ``elapsed_seconds``, then
-``tune/loss`` and one ``tune/<metric>`` column per tune metric, ``null`` on an
-epoch without a tune evaluation.
+.. _monitors:
+
+Monitors
+~~~~~~~~
+
+A monitor names a value of the tune evaluation by its full name, with the
+``tune/`` prefix (see :ref:`logged-values`). These are valid monitors:
+
+- ``tune/loss``, the default, and ``tune/<metric>`` for a metric the head
+  reports: values over the whole tune split.
+- ``tune/mean_over_<column>/loss`` and ``tune/mean_over_<column>/<metric>``:
+  the mean over the groups of a column that ``evaluation.subgroups`` names (see
+  :ref:`subgroup-metrics`).
+
+The plan refuses any other name before the run starts:
+
+- A bare name, such as ``loss`` or ``auroc``. The error names the ``tune/`` form.
+- A ``train/`` value of the train pass (see :ref:`train-pass`). These values
+  show the gap between train and tune; selecting on them would select on the
+  training data.
+- The value of one group, such as ``tune/center=A/auroc``. A fold's tune split
+  can lack the group, and the monitor then does not exist. The error names the
+  mean over the column's groups instead.
+- A mean over a column that ``evaluation.subgroups`` does not name, or a metric
+  the head does not report.
+
+A monitor that is NaN at an evaluated epoch stops the run with an error, in
+``checkpoint`` and in ``early_stopping``, because it can never improve. AUROC,
+AUPRC and the C-index are NaN on a tune split with one class or no comparable
+pairs, a Cox loss is NaN on a tune split without an event, and a mean over groups
+is NaN when no group has a value.
+
+**Monitor names from soma 2.4.0 and earlier.** Monitor names now carry the
+``tune/`` prefix. Replace ``monitor: loss`` with ``monitor: tune/loss``, and
+``monitor: auroc`` with ``monitor: tune/auroc``. A bare name is refused, not
+mapped. A run made before the rename cannot be resumed.
+
+.. _logged-values:
+
+Logged values
+-------------
+
+While a fold trains, a summary panel shows the epoch, the training loss, the
+learning rate, the pooled tune values, the monitors, patience, the trainable
+parameter count, timing and, for cross-validation, the active fold. Each fold
+writes every logged value to ``training_history.json``, one row per epoch:
+``epoch``, ``train_loss``, ``lr``, ``elapsed_seconds``, then one column per value
+of the evaluation, ``null`` on an epoch without an evaluation.
+
+Each name starts with the split. A value of one group, or the mean over a
+column's groups, names it after the split:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 54
+
+   * - Name
+     - Value
+   * - ``tune/loss``, ``tune/<metric>``
+     - The loss and each metric of the head, pooled over the whole tune split.
+   * - ``tune/<column>=<group>/loss``, ``tune/<column>=<group>/<metric>``
+     - The same over the samples of one group of an ``evaluation.subgroups``
+       column, for example ``tune/center=A/auroc``.
+   * - ``tune/mean_over_<column>/loss``, ``tune/mean_over_<column>/<metric>``
+     - The unweighted mean of the column's group values.
+   * - ``tune/mean_over_<column>/<name>_groups``
+     - The number of groups in that mean.
+   * - ``train/loss``, ``train/<metric>``, ``train/<column>=<group>/...``,
+       ``train/mean_over_<column>/...``
+     - The same values over the train split, with ``trainer.eval_train: true``
+       (see :ref:`train-pass`).
+
+:ref:`subgroup-metrics` explains the group values and their mean. The panel and
+the log lines show the pooled values and the monitors, and ``train/loss`` when
+the train pass is on. The values of each group go to ``training_history.json``
+only.
+
+With the ``mil`` learner, ``tune/loss`` is the head's loss computed once over the
+whole tune split, not a mean of per-batch losses. Each sample weighs the same,
+whatever the batch size. With the ``dense`` learner, it is the mean of the batch
+losses.
+
+``train_loss`` is not an evaluation of the train split: see :ref:`train-pass`
+for how it differs from ``train/loss``.
+
+.. _train-pass:
+
+The train pass
+--------------
+
+``trainer.eval_train: true`` also scores the train split at each tune
+evaluation, to show the gap between train and tune:
+
+.. code-block:: yaml
+
+   trainer:
+     eval_train: true
+
+At each epoch that evaluates tune, the trainer runs the model in eval mode over
+every train sample, in split order and in batches like tune. It logs
+``train/loss`` and ``train/<metric>`` and, with ``evaluation.subgroups``,
+``train/<column>=<group>/...`` and ``train/mean_over_<column>/...``. These are the
+model's values at the end of the epoch, computed as the tune values are, so
+``train/auroc`` and ``tune/auroc`` compare directly.
+
+``train_loss`` is not comparable. It is the mean of the losses of the epoch's
+training batches, computed in train mode (dropout on) while the weights change
+through the epoch, and it includes any auxiliary loss of the aggregator. For a
+Cox head, it is computed over the event-balanced training batches, while
+``train/loss`` is the partial likelihood over the whole train split.
+
+The pass changes nothing in the training: ``train_loss``, every ``tune/`` value
+and the selected epoch are the same with it or without it. A ``train/`` value is
+never a monitor (see :ref:`monitors`).
+
+The pass costs one more forward pass over the train split at each evaluated
+epoch, about the time of a tune evaluation scaled to the size of the train split.
+It is for the set shape, which reads cached features, so this is cheap: no
+encoder runs. With live encoding, the same pass would encode every train tile
+again. The grid shape refuses ``eval_train``. To run the pass less often, raise
+``trainer.val_every_n_epochs``.
+
+Without a tune split, nothing is evaluated, so the pass does not run and the
+trainer logs a warning. ``eval_train`` is not part of the experiment identity,
+but a resume refuses a change to it, as it does for ``trainer.device``.
 
 The tune split
 --------------
@@ -228,6 +343,32 @@ order.
    result = soma.fit(model, fold.train, fold.tune, max_epochs=50, monitor="tune/auroc", mode="max")
    result.selected_epoch, result.history
 
+``tune_groups`` adds the subgroup values to each evaluation. It maps each column
+to the group of every tune sample: ``{column: {sample_id: group}}``. With
+``eval_train=True``, pass ``train_eval``, a second loader over the train samples
+that does not shuffle, and ``train_groups`` for its groups:
+
+.. code-block:: python
+
+   from torch.utils.data import DataLoader
+
+
+   def groups(split):
+       return {"center": cohort.targets(split)["center"].dropna().astype(str).to_dict()}
+
+
+   train_eval = DataLoader(fold.train.dataset, batch_size=1, collate_fn=fold.train.collate_fn)
+   result = soma.fit(
+       model, fold.train, fold.tune, max_epochs=50,
+       monitor="tune/mean_over_center/auroc", mode="max", tune_groups=groups("tune"),
+       eval_train=True, train_eval=train_eval, train_groups=groups("train"),
+   )
+
+``fit`` refuses the training loader itself as ``train_eval``: a second pass over
+it would change the training's shuffle. The pass keeps the training's random
+state, but not the state that a dataset keeps for itself, so a dataset that draws
+random numbers needs its own instance for ``train_eval``.
+
 Section 3 of the getting-started notebook, :ref:`the same run from the verbs
 </getting-started.ipynb#3.-The-same-run-from-the-verbs>`, runs a whole fold this
 way; :doc:`evaluation` covers what follows ``fit``.
@@ -344,14 +485,14 @@ progress panel. ``History`` is always the first callback, so in ``on_epoch_end``
 ``trainer.history.rows[-1]`` is the current epoch's row: the same row that
 ``training_history.json`` writes at the end of the fold. An epoch without a tune
 evaluation has only ``epoch``, ``train_loss``, ``lr`` and ``elapsed_seconds`` in
-its row, where the file writes ``null`` for the tune values. Observers use the
+its row, where the file writes ``null`` for the evaluation values. Observers use the
 fit-callback hooks (see :ref:`custom-callbacks`); there is no other event.
 
 **The observer contract.** An observer may read these Trainer attributes:
 ``epoch``, ``total_epochs``, ``train_loss``, ``lr``, ``optimizer_steps``,
-``summary`` (the tune values, keyed ``tune/<name>``, or ``None`` on an epoch
-without a tune evaluation)
-and ``history.rows``. The train-side values are ``train_loss`` and ``lr``. An
+``summary`` (the epoch's evaluation values under the names of
+:ref:`logged-values`, or ``None`` on an epoch without a tune evaluation)
+and ``history.rows``. The running training values are ``train_loss`` and ``lr``. An
 observer must not set ``trainer.should_stop``, change the learner or the
 optimizer, or draw from the global random state (Python ``random``, NumPy or
 torch). An observer that follows these rules changes nothing in the run: its

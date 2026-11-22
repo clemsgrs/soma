@@ -25,9 +25,9 @@ representation settings.
 
 The ``run`` section (output directory, seed, run id, resume, mirror root, fold
 selection), the cohort file paths (the train subset's too), the loader worker settings,
-``trainer.device``, the grid-output save toggles and
-``evaluation.overwrite_test`` do not change experiment identity. Enabled
-attention-heatmap settings do, because they change generated artifacts.
+``trainer.device``, the train pass (``trainer.eval_train``), the grid-output save
+toggles and ``evaluation.overwrite_test`` do not change experiment identity.
+Enabled attention-heatmap settings do, because they change generated artifacts.
 
 Adding or changing ``test*`` rows leaves the training experiment identity
 unchanged. A separate test digest identifies the test assignments and their
@@ -52,14 +52,15 @@ per-fold artifacts are written directly inside it; with several folds, each
 ``fold_N/`` subdirectory holds its own set:
 
 - ``bundle/``, the trained model (see :ref:`model-bundle`), ``metrics.json`` and
-  ``training_history.json``
+  ``training_history.json`` (see :ref:`logged-values`)
 - ``feature_adapter.json`` when ``normalization`` or ``projection`` is active:
   the methods, ``eps`` floor and floored-channel count, dimensions, projection
   seed, PCA explained variance, and the number of samples and feature rows used
   to fit each stage
 - ``predictions_<split>.parquet`` for each test split of a slide, patient or
-  tile run, and ``subgroup_metrics_<split>.json`` when subgroup columns are
-  configured
+  tile run
+- ``subgroup_metrics_<split>.json`` for tune and for each test split when
+  ``evaluation.subgroups`` is set (see :ref:`subgroup-metrics`)
 - ``attention/<split>/<sample_id>.npz`` and ``heatmaps/<sample_id>.png`` when
   ``evaluation.attention_heatmaps`` is set
 - for segmentation and detection, the predictions of tune and every test split
@@ -234,6 +235,8 @@ probability column. Read the file with
 :meth:`soma.evaluation.Predictions.from_parquet` and score it again with
 ``soma evaluate`` (see :doc:`cli`).
 
+.. _summary-keys:
+
 Metric keys in ``summary.json`` are prefixed by split name:
 
 - **Single fold**: ``test/auroc``, ``test_external/auroc``
@@ -243,6 +246,20 @@ Metric keys in ``summary.json`` are prefixed by split name:
 metrics (AUROC, AUPRC, C-index, ...) are ``nan`` on a fold whose split holds a single
 class or no comparable pairs; such folds are excluded from ``*_mean`` / ``*_std`` and
 counted in ``test/<metric>_nan_folds``, which is only written when the count is non-zero.
+
+With ``evaluation.subgroups``, the summary also holds the subgroup metrics of
+each split from its ``subgroup_metrics_<split>.json`` (see
+:ref:`subgroup-metrics`): ``test/center=A/auroc`` for one group and
+``test/mean_over_center/auroc`` for the mean over the column's groups, with the
+same ``_mean``, ``_std`` and ``_nan_folds`` over several folds. A fold whose
+split has fewer than two samples of a group has no value for it; that fold counts
+in the group's ``_nan_folds``, as a NaN value does.
+
+The summary covers the test splits. With ``evaluation.holdout_test: true``,
+which scores no test split, it covers tune instead: ``tune/auroc``,
+``tune/center=A/auroc``. The run-summary panel shows the summary's first pooled
+metric, and ``soma leaderboard`` ranks on it unless a benchmark names its own
+metric; neither picks a subgroup key.
 
 .. _grid-outputs:
 

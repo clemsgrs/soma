@@ -1,5 +1,7 @@
 # Training is a subclass-first `Learner` driven by a generic `Trainer` with callbacks
 
+> Superseded in part by [ADR 0027](0027-logged-values-name-their-split-and-subgroup.md): the Trainer prefixes every `validation_summary` key with its split, so monitor names are `tune/<key>` (`tune/loss`, `tune/auroc`) or a tune mean over groups, and the default monitor is `tune/loss`. The history adds `train/` and subgroup columns. The learner and trainer split below is unchanged.
+
 soma's training loop is split in two. A `Learner` (`soma.learn.Learner`, an `nn.Module`) owns the model and the step logic: `training_step`, `validation_step`, `validation_summary`, `configure_optimizers`, `transfer_batch`, `trainable_state_dict`. The `Trainer` (`soma.learn.Trainer`) is a generic epoch/step-budgeted loop with gradient accumulation and callbacks; it knows nothing about tasks, heads, shapes or folds. `MILLearner` (set shape, `(N, D)`) and `DenseLearner` (grid shape, `(H, W, D)`) are soma's two learners; `soma.fit` is sugar over both. This replaces `soma.training.trainer.Trainer`, which switched on head flags inside one 1300-line class.
 
 ## Why
