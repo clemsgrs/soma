@@ -6,9 +6,91 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pandas as pd
 import pytest
+import torch
 
+from soma.data import CachedSetSource
+from soma.pipeline import Pipeline
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk
+from tests.experiment_configs import experiment
+
+FOLDS = 3
+BLOCK = 8
+
+
+def _three_fold_cohort(root: Path) -> tuple[Path, Path, Path]:
+    """24 samples in three blocks of 8 with pooled feature bags. Fold ``f`` tunes on
+    block ``f``, tests on block ``f + 1`` and trains on the third. Every block holds
+    two samples of each class in each of the centres A and B."""
+    ids = [f"s{i:02d}" for i in range(FOLDS * BLOCK)]
+    pd.DataFrame(
+        {
+            "sample_id": ids,
+            "image_path": [f"/slides/{sid}.svs" for sid in ids],
+            "label": ["tumor" if i % 2 else "normal" for i in range(len(ids))],
+            "centre": ["A" if (i % BLOCK) // 2 % 2 == 0 else "B" for i in range(len(ids))],
+        }
+    ).to_csv(root / "dataset.csv", index=False)
+    roles = ("tune", "test", "train")
+    rows = [
+        {"fold": fold, "sample_id": sid, "split": roles[(i // BLOCK - fold) % FOLDS]}
+        for fold in range(FOLDS)
+        for i, sid in enumerate(ids)
+    ]
+    pd.DataFrame(rows).to_csv(root / "splits.csv", index=False)
+    features = root / "features"
+    features.mkdir()
+    torch.manual_seed(0)
+    for i, sid in enumerate(ids):
+        torch.save(torch.randn(5 + i % 4, 16), features / f"{sid}.pt")
+    return root / "dataset.csv", root / "splits.csv", features
+
+
+def _run(tmp_path: Path, *, holdout_test: bool):
+    dataset_csv, splits_csv, features = _three_fold_cohort(tmp_path)
+    config = experiment(
+        dataset_csv,
+        splits_csv,
+        output_dir=tmp_path / "outputs",
+        aggregator="mean_pool",
+        loaders={"batch_size": 2},
+        trainer={"max_epochs": 2},
+        evaluation={"metrics": ["auroc"], "subgroups": ["centre"], "holdout_test": holdout_test},
+    )
+    return Pipeline(config, source=CachedSetSource(features)).run()
+
+
+@pytest.mark.parametrize("holdout_test", [True, False], ids=["holdout_test", "with_test"])
+def test_every_fold_breaks_tune_down_by_subgroup_and_the_summary_aggregates_it(tmp_path: Path, holdout_test):
+    result = _run(tmp_path, holdout_test=holdout_test)
+    summary = json.loads((result.run_dir / "summary.json").read_text())
+    scored = ["tune"] if holdout_test else ["tune", "test"]
+    breakdowns = {
+        split: [
+            json.loads((result.run_dir / f"fold_{fold}" / f"subgroup_metrics_{split}.json").read_text())
+            for fold in range(FOLDS)
+        ]
+        for split in scored
+    }
+
+    for split, folds in breakdowns.items():
+        for breakdown in folds:
+            assert set(breakdown["metrics"]["centre"]) == {"A", "B"}
+            assert breakdown["mean_over"]["centre"]["auroc_groups"] == 2
+    # The summary holds the splits it always held: tune only when the test is held out.
+    summarized = "tune" if holdout_test else "test"
+    folds = breakdowns[summarized]
+    for group in ("A", "B"):
+        values = [breakdown["metrics"]["centre"][group]["auroc"] for breakdown in folds]
+        assert summary[f"{summarized}/centre={group}/auroc_mean"] == pytest.approx(sum(values) / FOLDS)
+        assert f"{summarized}/centre={group}/auroc_std" in summary
+    means = [breakdown["mean_over"]["centre"]["auroc"] for breakdown in folds]
+    assert summary[f"{summarized}/mean_over_centre/auroc_mean"] == pytest.approx(sum(means) / FOLDS)
+    if not holdout_test:
+        assert not any(key.startswith("tune/") for key in summary)
+    # Tune predictions are still not written.
+    assert not list(result.run_dir.glob("fold_*/predictions_tune*"))
 
 
 def _write_fold(fold_dir: Path, *, pooled: float, groups: dict[str, float]) -> None:
