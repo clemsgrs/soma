@@ -112,7 +112,12 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup, *, observers: Sequence[Any]
         fit,
         fold_dir / BUNDLE_DIRNAME,
         preprocessing=setup.preprocessing(head, threshold),
-        provenance={**setup.provenance, "fold": setup.fold, "num_folds": setup.num_folds},
+        provenance={
+            **setup.provenance,
+            "fold": setup.fold,
+            "num_folds": setup.num_folds,
+            "fold_assignments": setup.fold_assignments,
+        },
     )
     # The result keeps the learner alive: free the accelerator for the next fold.
     fit.learner.cpu()

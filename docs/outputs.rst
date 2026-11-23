@@ -175,9 +175,12 @@ is a directory of four files:
   scheme (``class_scheme``, see :ref:`detection-classes`).
 - ``provenance.json``: the soma, slide2vec and hs2p versions, the component
   record (see :ref:`component-record`), the selected epoch and its monitor
-  (``selection_monitor``: the ``tune/`` name and its value), the fold, the run
-  id and the identity of the feature source (the cache key and feature identity,
-  not a path).
+  (``selection_monitor``: the ``tune/`` name and its value), the fold
+  (``fold``, ``num_folds``), the run id and the identity of the feature source
+  (the cache key and feature identity, not a path). ``fold_assignments`` is the
+  SHA-256 of the split of each sample in the fold, as the splits table assigns
+  them (:meth:`soma.data.FoldSplit.assignments_digest`). ``soma predict`` with
+  ``cohort.fold: bundle`` checks it (see :ref:`whole-slide-own-fold`).
 
 :func:`soma.load` rebuilds the model in eval mode and returns a
 :class:`soma.ModelBundle` with ``model``, ``preprocessing``, ``provenance`` and
@@ -321,7 +324,9 @@ directory, not a run directory:
    <output_dir>/
    ├── plan.yaml          the resolved config; soma predict replays it
    ├── provenance.json    the soma, hs2p, slide2vec and torch versions, and
-   │                      each bundle's name, path and SHA-256
+   │                      each bundle's name, path and SHA-256 (with
+   │                      cohort.fold: bundle, also its fold and
+   │                      fold_assignments)
    ├── index.parquet      one row per slide and bundle
    ├── fold_0/            one directory per bundle, or ensemble/
    │   ├── <sample_id>.tif       segmentation: the label TIFF
@@ -332,9 +337,12 @@ directory, not a run directory:
 
 Each bundle's directory is named by the end of its path
 (``runs/beetle/fold_0/bundle`` writes to ``fold_0/``). With
-``predict.ensemble: true`` there is one directory, ``ensemble/``.
+``predict.ensemble: true`` there is one directory, ``ensemble/``. With
+``cohort.fold: bundle``, each bundle's directory holds the slides of its own
+fold only.
 
-``index.parquet`` has one row per slide and bundle, with the columns:
+``index.parquet`` has one row per slide and bundle that predicts it, with the
+columns:
 
 - ``bundle``: the directory of the file;
 - ``sample_id``;

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from collections import Counter
@@ -93,6 +94,17 @@ class FoldSplit:
     @property
     def all_sample_ids(self) -> tuple[str, ...]:
         return (*self.train, *self.tune, *(sid for ids in self.tests.values() for sid in ids))
+
+    def assignments_digest(self) -> str:
+        """The SHA-256 of the fold's split assignments, as hex: over its sorted
+        ``[split, sample_id]`` rows, in compact JSON, for ``train``, ``tune`` and every
+        test split. A test split that :meth:`Cohort.with_test_from_tune` mirrors from tune
+        is not a split of the table, so it adds no row. A fold bundle records this digest
+        as ``fold_assignments``."""
+        tests = {} if self.test_from_tune else self.tests
+        named = {"train": self.train, "tune": self.tune, **tests}
+        rows = sorted([str(name), str(sid)] for name, ids in named.items() for sid in ids)
+        return hashlib.sha256(json.dumps(rows, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _frozen(fold: FoldSplit) -> FoldSplit:

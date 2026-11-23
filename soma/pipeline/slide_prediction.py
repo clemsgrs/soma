@@ -15,7 +15,7 @@ A prediction config has three sections::
       records: dataset.csv
       splits: splits.csv          # optional
       subset: test                # which split's slides; requires splits
-      fold: 0
+      fold: 0                     # or bundle: each bundle's own fold
     extraction:                   # the features.extraction schema
       tiling: {overlap: 0.5}      # tile size, spacing and slide reader come from the bundle
       segmentation: {method: hsv}
@@ -30,11 +30,17 @@ the slide reader (``tiling.backend``) taken from the bundles. ``soma predict
 
 The output directory holds ``plan.yaml``, ``provenance.json`` (versions and bundle
 identities), one directory per bundle (``ensemble`` with ``ensemble: true``) with one
-prediction file and one record (``<sample_id>.json``) per slide, and ``index.parquet``,
-assembled from the records at the end. A segmentation bundle writes a label TIFF per slide
-(:mod:`soma.evaluation.whole_slide`), a detection bundle a points parquet
+prediction file and one record (``<sample_id>.json``) per slide it predicts, and
+``index.parquet``, assembled from the records at the end. A segmentation bundle writes a
+label TIFF per slide (:mod:`soma.evaluation.whole_slide`), a detection bundle a points parquet
 (:mod:`soma.evaluation.whole_slide_points`). A slide is done when each of its records
 exists and parses; a relaunch predicts the others only.
+
+With ``cohort.fold: bundle`` each bundle predicts the ``subset`` split of its own fold, the
+fold its ``provenance.json`` records, after a check that the fold's assignments in
+``cohort.splits`` are the ones it was trained on (``fold_assignments``). The work list is
+the union of the bundles' slides, in ``records`` order; each slide runs through its own
+bundles only.
 """
 
 from __future__ import annotations
@@ -65,6 +71,8 @@ INDEX_FILENAME = "index.parquet"
 ENSEMBLE_NAME = "ensemble"
 PREDICT_KEYS = ("output_dir", "bundles", "ensemble", "stitch", "batch_size", "num_workers", "devices")
 COHORT_KEYS = ("records", "splits", "subset", "fold")
+#: The ``cohort.fold`` that gives each bundle the slides of its own fold.
+BUNDLE_FOLD = "bundle"
 #: Plan keys that only place the work: a relaunch may change them.
 PLACEMENT_KEYS = ("devices", "num_workers")
 #: The tile fields the bundles decide.
@@ -86,7 +94,7 @@ def predict_slides(
     records: str | Path,
     splits: str | Path | None = None,
     subset: str | None = None,
-    fold: int | None = None,
+    fold: int | str | None = None,
     ensemble: bool = False,
     stitch: str = "pick_one",
     batch_size: int = 8,
@@ -135,7 +143,12 @@ def predict_slides(
     always names its reader. The masks are read with ``extraction.tiling.mask_backend``.
 
     Without ``splits`` every row of ``records`` is predicted; with it, the ``subset``
-    split (default ``test``) of fold ``fold`` (default 0). ``ensemble`` writes one file per
+    split (default ``test``) of fold ``fold`` (default 0). ``fold="bundle"`` gives each
+    bundle the ``subset`` split of its own fold, the ``fold`` its ``provenance.json``
+    records. The bundle must also record that fold's ``fold_assignments``
+    (:meth:`soma.data.FoldSplit.assignments_digest`), and ``splits`` must assign the fold
+    the same way; ``ensemble`` and ``subset="train"`` are refused with it, and so is a
+    bundle whose fold has no slides in ``subset``. ``ensemble`` writes one file per
     slide instead of one per bundle: the argmax of the bundles' mean softmax (to average,
     each tile's softmax is that mean), or the peaks of their mean heatmap, with no
     threshold recorded.
@@ -218,6 +231,13 @@ def resolve_slide_prediction(
         raise ValueError(f"predict.ensemble must be true or false, got {ensemble!r}")
     if stitch not in STITCHES:
         raise ValueError(f"predict.stitch must be {' or '.join(map(repr, STITCHES))}, got {stitch!r}")
+    if ensemble and fold == BUNDLE_FOLD:
+        raise ValueError(
+            "predict.ensemble averages the bundles over each slide, but cohort.fold: bundle "
+            "gives each bundle the slides of its own fold, so the bundles do not predict the "
+            "same slides. Predict a split they all held out with an explicit cohort.fold, or "
+            "set predict.ensemble: false."
+        )
     for name, value, minimum in (("batch_size", batch_size, 1), ("num_workers", num_workers, 0)):
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"predict.{name} must be an integer >= {minimum}, got {value!r}")
@@ -533,12 +553,19 @@ def _cohort(records, splits, subset, fold) -> dict[str, Any]:
         if given:
             raise ValueError(f"cohort.{' and cohort.'.join(given)} select from cohort.splits; set cohort.splits")
         return {"records": str(_absolute(records)), "splits": None, "subset": None, "fold": None}
-    if fold is not None and (isinstance(fold, bool) or not isinstance(fold, int) or fold < 0):
-        raise ValueError(f"cohort.fold must be an integer >= 0, got {fold!r}")
+    if fold is not None and fold != BUNDLE_FOLD and (isinstance(fold, bool) or not isinstance(fold, int) or fold < 0):
+        raise ValueError(f"cohort.fold must be an integer >= 0 or {BUNDLE_FOLD!r}, got {fold!r}")
+    subset = "test" if subset is None else str(subset)
+    if fold == BUNDLE_FOLD and subset == "train":
+        raise ValueError(
+            "cohort.fold: bundle predicts only the slides each bundle held out, but "
+            "cohort.subset: train is the split each bundle was trained on. To predict "
+            "training slides, set an explicit cohort.fold."
+        )
     return {
         "records": str(_absolute(records)),
         "splits": str(_absolute(splits)),
-        "subset": "test" if subset is None else str(subset),
+        "subset": subset,
         "fold": 0 if fold is None else fold,
     }
 
@@ -630,22 +657,73 @@ def _read_record(path: Path) -> dict[str, Any] | None:
     return record
 
 
-def _slides(cohort: Mapping[str, Any]) -> list:
-    """The cohort's slides to predict, in ``records`` order."""
+def _work(plan: Mapping[str, Any]) -> tuple[list[tuple[Any, tuple[int, ...]]], list[dict[str, Any]] | None]:
+    """The slides to predict, in ``records`` order, each with the indices of the bundles
+    that predict it; and, with ``cohort.fold: bundle``, each bundle's checked ``fold`` and
+    ``fold_assignments`` (``None`` otherwise)."""
     from soma.data import Cohort, ImageManifest
 
+    cohort, bundles = plan["cohort"], plan["predict"]["bundles"]
     manifest = ImageManifest.from_csv(cohort["records"])
+    every = tuple(range(len(bundles)))
     if cohort["splits"] is None:
-        return [manifest[sid] for sid in manifest.sample_ids]
+        return [(manifest[sid], every) for sid in manifest.sample_ids], None
     folds = Cohort.from_csv(cohort["records"], cohort["splits"], targets=[], allow_missing_test=True).folds
-    if cohort["fold"] >= len(folds):
-        raise ValueError(f"cohort.fold is {cohort['fold']}, but {cohort['splits']} has {len(folds)} fold(s)")
-    split = folds[cohort["fold"]]
-    subsets = {"train": split.train, "tune": split.tune, **split.tests}
-    if cohort["subset"] not in subsets:
-        raise ValueError(f"cohort.subset {cohort['subset']!r} is not a split of fold {cohort['fold']}; its splits are {sorted(subsets)}")
-    wanted = set(subsets[cohort["subset"]])
-    return [manifest[sid] for sid in manifest.sample_ids if sid in wanted]
+    if cohort["fold"] != BUNDLE_FOLD:
+        if cohort["fold"] >= len(folds):
+            raise ValueError(f"cohort.fold is {cohort['fold']}, but {cohort['splits']} has {len(folds)} fold(s)")
+        wanted = set(_subset(folds[cohort["fold"]], cohort["subset"], where=f"fold {cohort['fold']}"))
+        return [(manifest[sid], every) for sid in manifest.sample_ids if sid in wanted], None
+    recorded = [_bundle_fold(Path(path), folds, cohort["splits"]) for path in bundles]
+    carriers: dict[str, list[int]] = {}
+    for index, (path, entry) in enumerate(zip(bundles, recorded)):
+        where = f"fold {entry['fold']} of bundle {path}"
+        wanted = _subset(folds[entry["fold"]], cohort["subset"], where=where)
+        if not wanted:
+            # A fold with no tune rows still has a tune split, an empty one.
+            raise ValueError(
+                f"cohort.subset {cohort['subset']!r} of {where} has no slides in it, so the "
+                "bundle would predict nothing. Predict another subset, or leave the bundle "
+                "out of predict.bundles."
+            )
+        for sid in wanted:
+            carriers.setdefault(sid, []).append(index)
+    return [(manifest[sid], tuple(carriers[sid])) for sid in manifest.sample_ids if sid in carriers], recorded
+
+
+def _subset(fold, subset: str, *, where: str) -> tuple[str, ...]:
+    """The sample ids of split ``subset`` of ``fold`` (``where`` names it in the error)."""
+    subsets = {"train": fold.train, "tune": fold.tune, **fold.tests}
+    if subset not in subsets:
+        raise ValueError(f"cohort.subset {subset!r} is not a split of {where}; its splits are {sorted(subsets)}")
+    return tuple(subsets[subset])
+
+
+def _bundle_fold(path: Path, folds, splits: str) -> dict[str, Any]:
+    """The fold a bundle records, once its ``fold_assignments`` match that fold of
+    ``splits``: what it held out is what it predicts."""
+    from soma.learn.bundle import PROVENANCE
+
+    provenance = json.loads((path / PROVENANCE).read_text(encoding="utf-8"))
+    fold, digest = provenance.get("fold"), provenance.get("fold_assignments")
+    if isinstance(fold, bool) or not isinstance(fold, int) or not isinstance(digest, str):
+        raise ValueError(
+            f"bundle {path} records no fold_assignments in its {PROVENANCE}: it was saved "
+            "before soma recorded them, or by soma.save with no fold, so cohort.fold: bundle "
+            "cannot check that it predicts the slides it held out. Predict it with one config "
+            "per fold, each with an explicit cohort.fold."
+        )
+    current = folds[fold].assignments_digest() if 0 <= fold < len(folds) else None
+    if current != digest:
+        found = f"{splits} has {len(folds)} fold(s)" if current is None else (
+            f"fold {fold} of {splits} has fold_assignments {current[:12]}"
+        )
+        raise ValueError(
+            f"bundle {path} records fold {fold} with fold_assignments {digest[:12]}, but "
+            f"{found}: these splits differ from the ones the bundle was trained on. Predict "
+            "with the splits it was trained on."
+        )
+    return {"fold": fold, "fold_assignments": digest}
 
 
 def _bundle_digest(path: Path) -> str:
@@ -671,21 +749,33 @@ def _identities(plan: Mapping[str, Any]) -> list[dict[str, str]]:
     ]
 
 
-def _guard_bundles(output_dir: Path, identities: Sequence[Mapping[str, str]]) -> None:
+def _guard_bundles(output_dir: Path, identities: Sequence[Mapping[str, Any]]) -> None:
     """Refuse a launch whose bundles changed since ``output_dir``'s maps were written: the
-    plan names a bundle by its path, ``provenance.json`` by its digest."""
+    plan names a bundle by its path, ``provenance.json`` by its digest and, with
+    ``cohort.fold: bundle``, by the fold and ``fold_assignments`` it records."""
     try:
         saved = json.loads((output_dir / PROVENANCE_FILENAME).read_text(encoding="utf-8"))["bundles"]
     except (OSError, ValueError, KeyError, TypeError):
         return
-    digests = {entry.get("path"): entry.get("sha256") for entry in saved if isinstance(entry, Mapping)}
+    entries = {entry.get("path"): entry for entry in saved if isinstance(entry, Mapping)}
     for identity in identities:
-        before = digests.get(identity["path"])
-        if before is not None and before != identity["sha256"]:
+        before = entries.get(identity["path"])
+        if before is None:
+            continue
+        if before.get("sha256") is not None and before["sha256"] != identity["sha256"]:
             raise ValueError(
                 f"Refusing to predict into {output_dir}: bundle {identity['path']} changed since "
-                f"its maps were predicted into it (sha256 {before[:12]} then, "
+                f"its maps were predicted into it (sha256 {before['sha256'][:12]} then, "
                 f"{identity['sha256'][:12]} now). Use another predict.output_dir."
+            )
+        fold_keys = ("fold", "fold_assignments")
+        if any(key in before for key in fold_keys) and any(before.get(k) != identity.get(k) for k in fold_keys):
+            raise ValueError(
+                f"Refusing to predict into {output_dir}: bundle {identity['path']} records "
+                "another fold than when its predictions were written into it (fold "
+                f"{before.get('fold')}, fold_assignments {str(before.get('fold_assignments'))[:12]} "
+                f"then; fold {identity.get('fold')}, fold_assignments "
+                f"{str(identity.get('fold_assignments'))[:12]} now). Use another predict.output_dir."
             )
 
 
@@ -709,9 +799,11 @@ def _write_provenance(output_dir: Path, plan: Mapping[str, Any], identities) -> 
 
 def _run(plan: dict[str, Any]) -> pd.DataFrame:
     output_dir = Path(plan["predict"]["output_dir"])
-    slides = _slides(plan["cohort"])
+    work, folds = _work(plan)
     _guard_plan(output_dir, plan)
     identities = _identities(plan)
+    if folds is not None:
+        identities = [{**identity, **fold} for identity, fold in zip(identities, folds)]
     _guard_bundles(output_dir, identities)
     output_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_text(output_dir / PLAN_FILENAME, yaml.safe_dump(plan, sort_keys=False))
@@ -719,20 +811,28 @@ def _run(plan: dict[str, Any]) -> pd.DataFrame:
     names = _output_names(plan)
     pending = [
         entry
-        for entry in slides
-        if any(_read_record(_record_path(output_dir, name, entry.sample_id)) is None for name in names)
+        for entry, carriers in work
+        if any(
+            _read_record(_record_path(output_dir, name, entry.sample_id)) is None
+            for name in _names_of(plan, names, carriers)
+        )
     ]
     _check_spacings(pending, plan["extraction"]["tiling"])
     ids = [entry.sample_id for entry in pending]
-    logger.info("Predicting %d of %d slide(s) into %s", len(ids), len(slides), output_dir)
+    logger.info("Predicting %d of %d slide(s) into %s", len(ids), len(work), output_dir)
     devices = plan["predict"]["devices"]
     if ids and devices is None:
         predict_shard(plan, ids)
     elif ids:
         _predict_on_devices(plan, ids, devices)
-    index = _index(output_dir, names, slides, _RECORD_FIELDS[_plan_family(plan)])
+    index = _index(output_dir, plan, names, work, _RECORD_FIELDS[_plan_family(plan)])
     atomic_write_bytes(output_dir / INDEX_FILENAME, _parquet_bytes(index))
     return index
+
+
+def _names_of(plan: Mapping[str, Any], names: Sequence[str], carriers: Sequence[int]) -> list[str]:
+    """The output directories of a slide the bundles ``carriers`` predict."""
+    return list(names) if plan["predict"]["ensemble"] else [names[index] for index in carriers]
 
 
 def _plan_family(plan: Mapping[str, Any]) -> str:
@@ -767,10 +867,14 @@ def _check_spacings(slides, tiling: Mapping[str, Any]) -> None:
             )
 
 
-def _index(output_dir: Path, names: Sequence[str], slides, fields: Sequence[str]) -> pd.DataFrame:
+def _index(output_dir: Path, plan, names: Sequence[str], work, fields: Sequence[str]) -> pd.DataFrame:
+    """One row per output directory and slide it holds: each bundle's slides in
+    ``records`` order, bundle after bundle."""
     rows = []
     for name in names:
-        for entry in slides:
+        for entry, carriers in work:
+            if name not in _names_of(plan, names, carriers):
+                continue
             record = _read_record(_record_path(output_dir, name, entry.sample_id))
             if record is None:
                 raise RuntimeError(f"slide '{entry.sample_id}' has no complete record in {output_dir / name}")
@@ -822,9 +926,14 @@ def predict_shard(plan: Mapping[str, Any], sample_ids: Sequence[str]) -> list[st
     models = _models(plan["predict"]["bundles"], device)
     names = _output_names(plan)
     identities = _identities(plan)
-    by_id = {entry.sample_id: entry for entry in _slides(plan["cohort"])}
+    by_id = {entry.sample_id: (entry, carriers) for entry, carriers in _work(plan)[0]}
     for sample_id in sample_ids:
-        _predict_slide(plan, models, names, identities, by_id[sample_id], output_dir)
+        # Only the slide's own bundles run; those sharing an encoder recipe share its forward.
+        entry, carriers = by_id[sample_id]
+        mine = [models[index] for index in carriers]
+        _predict_slide(
+            plan, mine, _names_of(plan, names, carriers), [identities[index] for index in carriers], entry, output_dir
+        )
     return list(sample_ids)
 
 

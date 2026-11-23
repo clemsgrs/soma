@@ -35,7 +35,15 @@ import yaml
 from soma.cli import main as soma_main
 from soma.evaluation.detection import match_points
 from tests.e2e.harness import CPU_EXECUTION, CPU_LOADER, learner_section, run_soma, sha256, trainer_section
-from tests.e2e.synthetic import BACKGROUND, CLASS_COLOURS, SPACING_UM, make_dense_dataset, noisy, write_tiff
+from tests.e2e.synthetic import (
+    BACKGROUND,
+    CLASS_COLOURS,
+    SPACING_UM,
+    make_dense_dataset,
+    make_segmentation_slides,
+    noisy,
+    write_tiff,
+)
 
 ROI_PX = 96
 #: The rows each annotation raster leaves out (255, the bundle's ignore value).
@@ -516,4 +524,156 @@ def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
     artifact.check_equal("average_refused/names_detection", "detection bundles" in error, True)
     artifact.check_equal("average_refused/slide_readers", readers_of(opened_files, [tmp_path / "slides" / "slide0.tif"]), [])
     artifact.check_equal("average_refused/output_dir", (tmp_path / "averaged").exists(), False)
+    artifact.assert_passed()
+
+
+# --- rotating cross-validation ------------------------------------------------------------ #
+
+#: The rotating-CV run's whole slides, and the ROIs it samples from them: nine a slide.
+FOLD_SLIDE_PX = 192
+FOLD_ROI_PX = 64
+NUM_FOLDS = 3
+
+
+def rotating_splits(path, sample_ids) -> dict[int, list[str]]:
+    """Three folds over six slides: fold ``k`` tests slides ``2k`` and ``2k + 1``, tunes on
+    the next one and trains on the other three. Returns each fold's test slides."""
+    rows, tests = [], {}
+    for fold in range(NUM_FOLDS):
+        tests[fold] = sample_ids[2 * fold : 2 * fold + 2]
+        tune = sample_ids[(2 * fold + 2) % len(sample_ids)]
+        for sample_id in sample_ids:
+            split = "test" if sample_id in tests[fold] else "tune" if sample_id == tune else "train"
+            rows.append({"sample_id": sample_id, "split": split, "fold": fold})
+    pd.DataFrame(rows).to_csv(path, index=False)
+    return tests
+
+
+def whole_slide_config(tmp_path, encoder_name, slides_csv, splits_csv):
+    """Segmentation over ROIs sampled from whole slides by their annotation rasters. The
+    slides are read with OpenSlide and the rasters with tifffile."""
+    return {
+        "run": {"output_dir": str(tmp_path / "runs"), "seed": 0},
+        "cohort": {"records": str(slides_csv), "splits": str(splits_csv)},
+        "features": {
+            "kind": "cached",
+            "encoder": {"name": encoder_name},
+            "extraction": {
+                "tiling": {
+                    "requested_spacing_um": SPACING_UM,
+                    "requested_tile_size_px": FOLD_ROI_PX,
+                    "tolerance": 0.05,
+                    "overlap": 0.0,
+                    "backend": "openslide",
+                    "mask_backend": "tifffile",
+                },
+                "masks": {
+                    "pixel_mapping": {"background": 0, "light": 1, "dark": 2},
+                    "min_coverage": {"background": 0.0, "light": 0.0, "dark": 0.0},
+                    "output_mode": "merged",
+                },
+            },
+            "dense": {"spacing_um": SPACING_UM, "target_size": FOLD_ROI_PX, "backend": "openslide"},
+            "execution": {**CPU_EXECUTION, "batch_size": 8},
+            "cache": {"enabled": True, "root_dir": str(tmp_path / "cache")},
+        },
+        "loaders": {"batch_size": 4, **CPU_LOADER},
+        "learner": learner_section(
+            "dense",
+            {
+                "decoder": {"name": "lightweight_conv"},
+                "head": {"name": "segmentation", "params": {"classes": {"background": [0], "light": [1], "dark": [2]}}},
+            },
+            learning_rate=3e-3,
+            normalization={"method": "zscore"},
+        ),
+        "trainer": trainer_section(3),
+        "evaluation": {"metrics": ["mean_dice"], "save_overlays": False},
+    }
+
+
+def files_of(directory) -> dict[str, str]:
+    return {path.name: sha256(path) for path in sorted(directory.iterdir())}
+
+
+def test_predict_gives_each_fold_bundle_the_slides_its_fold_held_out(
+    tmp_path, monkeypatch, encoder_name, new_artifact
+):
+    """A 3-fold rotating cross-validation, each fold with its own test slides. One
+    ``soma predict`` with ``cohort.fold: bundle`` predicts each fold's bundle on its own
+    fold's test slides, and writes the files of three calls with an explicit fold."""
+    artifact = new_artifact("predict_rotating_cv_folds")
+    slides_csv, _ = make_segmentation_slides(tmp_path / "data", size=FOLD_SLIDE_PX)
+    slides = pd.read_csv(slides_csv)
+    tests = rotating_splits(tmp_path / "splits.csv", list(slides.sample_id))
+    run = run_soma(whole_slide_config(tmp_path, encoder_name, slides_csv, tmp_path / "splits.csv"), tmp_path / "config.yaml")
+    artifact.record_run("run", run)
+    artifact.check_training_reduced_loss("run", run)
+    recorded = [json.loads((run.run_dir / f"fold_{k}" / "bundle" / "provenance.json").read_text()) for k in range(NUM_FOLDS)]
+    artifact.check_equal("bundles/folds", [(entry["fold"], entry["num_folds"]) for entry in recorded], [(k, NUM_FOLDS) for k in range(NUM_FOLDS)])
+    digests = [entry.get("fold_assignments") for entry in recorded]
+    artifact.check_equal("bundles/fold_assignments_distinct", len({str(d) for d in digests}), NUM_FOLDS)
+
+    # The slides with a tissue mask everywhere, and their annotation rasters to score.
+    rows = []
+    for row in slides.itertuples():
+        mask = tmp_path / "data" / f"{row.sample_id}_mask.tif"
+        tissue = np.ones((FOLD_SLIDE_PX, FOLD_SLIDE_PX), dtype=np.uint8)
+        tifffile.imwrite(mask, tissue, tile=(16, 16), resolution=(1e4 / SPACING_UM,) * 2, resolutionunit="CENTIMETER")
+        rows.append({**row._asdict(), "mask_path": str(mask)})
+    pd.DataFrame(rows).drop(columns="Index").to_csv(tmp_path / "slides.csv", index=False)
+
+    def predict(name, bundles, fold):
+        config = {
+            "predict": {"output_dir": name, "bundles": bundles, "batch_size": 8},
+            "cohort": {"records": "slides.csv", "splits": "splits.csv", "fold": fold},
+            "extraction": {"tiling": {"mask_backend": "tifffile"}},
+        }
+        (tmp_path / f"{name}.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+        soma_main(["predict", f"{name}.yaml"])
+        return tmp_path / name
+
+    monkeypatch.chdir(tmp_path)
+    run_dir = str(run.run_dir.relative_to(tmp_path))
+    output_dir = predict("predictions", run_dir, "bundle")
+
+    plan = yaml.safe_load((output_dir / "plan.yaml").read_text())
+    artifact.check_equal("plan/fold", plan["cohort"]["fold"], "bundle")
+    index = pd.read_parquet(output_dir / "index.parquet")
+    # One row per bundle and slide of its fold's test split.
+    pairs = [(f"fold_{k}", sample_id) for k in range(NUM_FOLDS) for sample_id in tests[k]]
+    artifact.check_equal("index/pairs", list(zip(index.bundle, index.sample_id)), pairs)
+    provenance = json.loads((output_dir / "provenance.json").read_text())
+    artifact.check_equal(
+        "provenance/folds",
+        [(entry["name"], entry["fold"], entry["fold_assignments"]) for entry in provenance["bundles"]],
+        [(f"fold_{k}", k, digests[k]) for k in range(NUM_FOLDS)],
+    )
+
+    # The same files as one call per fold, with an explicit fold.
+    for k in range(NUM_FOLDS):
+        single = predict(f"fold_{k}_alone", f"{run_dir}/fold_{k}/bundle", k)
+        artifact.check_equal(f"fold_{k}/files", files_of(output_dir / f"fold_{k}") == files_of(single / f"fold_{k}"), True)
+        artifact.check_equal(f"fold_{k}/files_per_slide", len(files_of(output_dir / f"fold_{k}")), 2 * len(tests[k]))
+        alone = pd.read_parquet(single / "index.parquet")
+        mine = index[index.bundle == f"fold_{k}"].reset_index(drop=True)
+        artifact.check_equal(f"fold_{k}/index", mine.equals(alone), True)
+
+    # Each fold is scored on its own, with its fold.
+    for k in range(NUM_FOLDS):
+        soma_main(
+            ["evaluate", f"predictions/fold_{k}", "--cohort", "slides.csv", "--splits", "splits.csv",
+             "--fold", str(k), "--metrics", "mean_dice", "--out", f"fold_{k}.json"]
+        )
+        scored = json.loads((tmp_path / f"fold_{k}.json").read_text())
+        artifact.check_equal(f"evaluate/fold_{k}/sample_ids", [row["sample_id"] for row in scored["per_sample"]], tests[k])
+        # The folds score 0.72 to 0.82 after three epochs; a map that finds no disc, about 0.3.
+        artifact.check_at_least(f"evaluate/fold_{k}/mean_dice", scored["metrics"]["mean_dice"], 0.5)
+    # Another fold's targets are not this bundle's slides: scoring fails.
+    try:
+        soma_main(["evaluate", "predictions/fold_0", "--cohort", "slides.csv", "--splits", "splits.csv", "--fold", "1"])
+        wrong_fold = 0
+    except SystemExit as stop:
+        wrong_fold = stop.code
+    artifact.check_equal("evaluate/wrong_fold_exit_code", wrong_fold, 2)
     artifact.assert_passed()

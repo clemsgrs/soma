@@ -127,7 +127,8 @@ working directory. The keys:
    * - ``cohort.subset``
      - The split to predict (default ``test``). It needs ``cohort.splits``.
    * - ``cohort.fold``
-     - The fold of that split (default 0). It needs ``cohort.splits``.
+     - The fold of that split (default 0), or ``bundle``: each bundle's own
+       fold (see :ref:`whole-slide-own-fold`). It needs ``cohort.splits``.
    * - ``extraction``
      - How the slides are tiled and read: the ``tiling``, ``segmentation``,
        ``filter`` and ``masks`` keys of the ``features.extraction`` schema of
@@ -194,7 +195,8 @@ A launch into an existing output directory is refused when:
   keys that differ. ``predict.devices`` and ``predict.num_workers`` may change,
   because they decide where the work runs, not what it computes.
 - a bundle changed since the directory was written. ``provenance.json`` records
-  the SHA-256 of each bundle's files.
+  the SHA-256 of each bundle's files and, with ``cohort.fold: bundle``, the fold
+  and the ``fold_assignments`` that each bundle records.
 
 .. _whole-slide-tiling:
 
@@ -391,12 +393,10 @@ must all be of one task family, and agree on the tile size, the read spacing and
 the read tolerance. The bundles that share an encoder recipe share one encoder
 pass per tile, so each extra bundle costs mostly its decoder's time.
 
-All the bundles predict the same slides: the ``cohort.subset`` split of fold
-``cohort.fold``. So predict a split that every bundle held out, such as a test
-split that all folds share. When each fold has its own test split, predict
-each fold's bundle on its own fold, into its own ``predict.output_dir``:
-``predict.bundles: runs/beetle/fold_<k>/bundle`` with ``cohort.fold: <k>``.
-Score it with ``--fold <k>``.
+With an explicit ``cohort.fold``, all the bundles predict the same slides: the
+``cohort.subset`` split of that fold. So predict a split that every bundle held
+out, such as a test split that all folds share. When each fold has its own test
+split, use ``cohort.fold: bundle`` (see :ref:`whole-slide-own-fold`).
 
 By default, each bundle gets its own prediction, in its own directory. The
 directory is named by the shortest end of the bundle's path that tells the
@@ -419,6 +419,72 @@ is the classes, the raw annotation values that form them and the values ignored.
 For detection, it is the classes, their annotated ids, the dropped ids, both
 distances and ``min_score``. An ensemble's points record no threshold (see
 :ref:`whole-slide-points-scoring`).
+
+.. _whole-slide-own-fold:
+
+Each fold's own slides
+~~~~~~~~~~~~~~~~~~~~~~
+
+In a cross-validation where each fold has its own test slides, set
+``cohort.fold: bundle``. Each bundle then predicts the ``cohort.subset`` split
+(default ``test``) of its own fold, the fold that its ``provenance.json``
+records:
+
+.. code-block:: yaml
+
+   predict:
+     output_dir: predictions/beetle-cv
+     bundles: runs/beetle          # fold_0/bundle, fold_1/bundle, ...
+   cohort:
+     records: dataset.csv
+     splits: splits.csv            # the splits the run was trained on
+     fold: bundle
+
+In Python, pass ``fold="bundle"`` to :func:`soma.predict_slides`.
+
+A fold bundle that ``soma run`` saves records its ``fold`` and its
+``fold_assignments``: the SHA-256 of the split of each sample in that fold (see
+:meth:`soma.data.FoldSplit.assignments_digest`). ``soma predict`` computes the
+digest again from that fold of ``cohort.splits``, and refuses the bundle when
+the two differ. So a bundle predicts only the slides it held out.
+
+These are refused with ``cohort.fold: bundle``:
+
+- no ``cohort.splits``;
+- ``predict.ensemble: true``, because the bundles predict different slides;
+- ``cohort.subset: train``, because each bundle was trained on it. To predict
+  training slides, use an explicit ``cohort.fold``;
+- a bundle that records no ``fold_assignments``: one saved by an older soma, or
+  by :func:`soma.save` without a fold. Predict such bundles with one config per
+  fold instead: ``predict.bundles: runs/beetle/fold_<k>/bundle`` with
+  ``cohort.fold: <k>``, each into its own ``predict.output_dir``;
+- a bundle whose fold ``cohort.splits`` assigns differently from the splits it
+  was trained on, or does not have;
+- a ``cohort.subset`` that is not a split of a bundle's fold, or has no slides
+  in it (such as ``tune`` in a fold with no tune rows).
+
+Two bundles may record the same fold, such as ``runs/uni2/fold_0/bundle`` and
+``runs/virchow2/fold_0/bundle`` trained on the same splits. Both predict the
+slides of that fold. Each slide goes only through the bundles that predict it,
+and the bundles that share an encoder recipe still share one encoder pass per
+tile. ``predict.stitch`` applies to each of those maps as it does with an
+explicit fold. ``index.parquet`` lists each bundle with its own slides.
+
+``plan.yaml`` keeps ``cohort.fold: bundle``, so a replay reads the fold of each
+bundle again. The output's ``provenance.json`` records each bundle's ``fold``
+and ``fold_assignments``.
+
+Score each bundle's directory with its own fold:
+
+.. code-block:: bash
+
+   for k in 0 1 2 3 4; do
+       soma evaluate predictions/beetle-cv/fold_$k --cohort dataset.csv \
+           --splits splits.csv --fold $k --out fold_$k.json
+   done
+
+A wrong ``--fold`` fails, because every prediction needs a target and every
+target a prediction. soma gives no summary over the folds.
 
 Score
 -----
@@ -702,7 +768,8 @@ were not measured.
 **Averaging** (``stitch: average``) also holds, for each map, float32 sums over
 one tile's height of rows and the map's whole width, one plane per class:
 classes × tile × map width × 4 bytes. Without ``ensemble: true``, each bundle's
-map has its own. The slide's height does not change this cost. With 4 classes
+map has its own; with ``cohort.fold: bundle``, only the maps of the bundles
+that predict the slide. The slide's height does not change this cost. With 4 classes
 and 512 px tiles, a map 50,176 px wide needs 392 MiB of sums. On a synthetic
 slide of 50,176 × 2,048 px, at overlap 0.5 with batch size 8 on the CPU (a
 weight-free encoder and a 4-class linear decoder), the peak memory while

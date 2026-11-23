@@ -11,6 +11,7 @@ import json
 import re
 import shutil
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -29,6 +30,7 @@ from tests.whole_slides import (
     TIFFFILE,
     TILE,
     blocky,
+    fold_provenance,
     model_of,
     peak_rss_of,
     read_map,
@@ -683,7 +685,9 @@ def test_relative_sam2_paths_are_stored_absolute_and_replay_from_anywhere(tmp_pa
     assert resolve_slide_prediction(**slide_prediction_kwargs(saved)) == plan
 
 
-@pytest.mark.parametrize("given", [{"subset": "test"}, {"fold": 0}], ids=["subset", "fold"])
+@pytest.mark.parametrize(
+    "given", [{"subset": "test"}, {"fold": 0}, {"fold": "bundle"}], ids=["subset", "fold", "fold-bundle"]
+)
 def test_subset_and_fold_need_splits(tmp_path, cohort, given):
     bundle = save_bundle(tmp_path / "run" / "bundle")
 
@@ -982,3 +986,222 @@ def test_splits_select_one_subset_of_one_fold(tmp_path):
     index = predict(tmp_path, records, bundle, splits=splits, subset="test", fold=1)
 
     assert list(index.sample_id) == ["s2"]
+
+
+# --- each bundle's own fold ------------------------------------------------------------- #
+
+#: Two folds over four slides, each with its own test slides.
+ROTATING = {
+    "sample_id": ["s0", "s1", "s2", "s3"] * 2,
+    "split": ["test", "test", "tune", "train", "tune", "train", "test", "test"],
+    "fold": [0, 0, 0, 0, 1, 1, 1, 1],
+}
+OWN_FOLD = {"extraction": {"tiling": {"overlap": 0.0, **TIFFFILE}}, "batch_size": 4, "fold": "bundle"}
+
+
+@pytest.fixture
+def rotating(tmp_path):
+    """Four slides with tissue everywhere, and two folds that test two slides each."""
+    rows = []
+    for k in range(4):
+        slide = write_slide(tmp_path / f"s{k}.tif", blocky(96, 96, seed=k))
+        mask = write_mask(tmp_path / f"s{k}_mask.tif", np.ones((96, 96)))
+        rows.append({"sample_id": f"s{k}", "image_path": str(slide), "mask_path": str(mask)})
+    records = write_records(tmp_path / "dataset.csv", rows)
+    splits = tmp_path / "splits.csv"
+    pd.DataFrame(ROTATING).to_csv(splits, index=False)
+    return records, splits
+
+
+def fold_bundles(tmp_path, records, splits, run="run", seed=0):
+    """A run's two fold bundles, each recording its fold as ``soma run`` does."""
+    return [
+        save_bundle(tmp_path / run / f"fold_{k}" / "bundle", seed=seed + k, provenance=fold_provenance(records, splits, k))
+        for k in (0, 1)
+    ]
+
+
+def files_of(output_dir) -> dict[str, str]:
+    return {str(path.relative_to(output_dir)): sha256(path) for path in sorted(output_dir.glob("*/s*"))}
+
+
+def test_each_bundle_predicts_its_own_fold_and_bundles_of_one_fold_share_its_forwards(
+    tmp_path, rotating, encoder_forwards
+):
+    """``fold="bundle"``: each bundle predicts the test slides of the fold it records. Two
+    runs over the same splits give two bundles of fold 0; both predict its slides behind
+    one encoder forward per batch."""
+    records, splits = rotating
+    bundles = [*fold_bundles(tmp_path, records, splits, run="a"), fold_bundles(tmp_path, records, splits, run="b")[0]]
+    encoder_forwards.clear()
+
+    index = soma.predict_slides(output_dir=tmp_path / "predictions", bundles=bundles, records=records, splits=splits, **OWN_FOLD)
+
+    assert list(zip(index.bundle, index.sample_id)) == [
+        ("a-fold_0", "s0"), ("a-fold_0", "s1"), ("a-fold_1", "s2"), ("a-fold_1", "s3"), ("b-fold_0", "s0"), ("b-fold_0", "s1"),
+    ]
+    assert encoder_forwards == [4, 4, 1] * 4  # 9 tiles per slide, encoded once per slide
+    provenance = json.loads((tmp_path / "predictions" / "provenance.json").read_text())
+    assert [(entry["name"], entry["fold"]) for entry in provenance["bundles"]] == [("a-fold_0", 0), ("a-fold_1", 1), ("b-fold_0", 0)]
+    assert [entry["fold_assignments"] for entry in provenance["bundles"]] == [
+        json.loads((Path(bundle) / "provenance.json").read_text())["fold_assignments"] for bundle in bundles
+    ]
+
+
+def test_fold_bundle_averages_each_fold_s_slides_as_an_explicit_fold_call_does(tmp_path, rotating):
+    """``fold="bundle"`` with ``stitch="average"`` and an overlap: each slide's maps are
+    averaged over its own bundles only, so each fold's directory holds the files and index
+    rows of a call with that bundle alone, an explicit fold and the same stitch."""
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+    averaged = {**OWN_FOLD, "extraction": HALF, "stitch": "average"}
+
+    index = soma.predict_slides(output_dir=tmp_path / "own", bundles=bundles, records=records, splits=splits, **averaged)
+
+    assert yaml.safe_load((tmp_path / "own" / "plan.yaml").read_text())["predict"]["stitch"] == "average"
+    assert list(zip(index.bundle, index.sample_id)) == [("fold_0", "s0"), ("fold_0", "s1"), ("fold_1", "s2"), ("fold_1", "s3")]
+    own = files_of(tmp_path / "own")
+    explicit = []
+    for k, bundle in enumerate(bundles):
+        alone = tmp_path / f"fold_{k}"
+        explicit.append(
+            soma.predict_slides(output_dir=alone, bundles=bundle, records=records, splits=splits, **{**averaged, "fold": k})
+        )
+        assert {path: digest for path, digest in own.items() if path.startswith(f"fold_{k}/")} == files_of(alone)
+    assert index.equals(pd.concat(explicit, ignore_index=True))
+
+
+def test_fold_bundle_refuses_an_ensemble(tmp_path, rotating):
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+
+    with pytest.raises(ValueError, match="cohort.fold: bundle gives each bundle the slides of its own fold"):
+        predict(tmp_path, records, bundles, splits=splits, fold="bundle", ensemble=True)
+
+
+def test_fold_bundle_refuses_a_bundle_that_records_no_fold_assignments(tmp_path, rotating):
+    """A bundle saved before soma recorded them, or by ``soma.save`` with no fold."""
+    records, splits = rotating
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    with pytest.raises(ValueError, match=r"run/bundle records no fold_assignments.*each with an explicit cohort\.fold"):
+        predict(tmp_path, records, bundle, splits=splits, fold="bundle")
+
+
+@pytest.mark.parametrize(
+    ("edit", "match"),
+    [
+        ("reassigned", r"fold_0/bundle records fold 0 with fold_assignments \w{12}, but fold 0 of .*splits.csv has fold_assignments \w{12}"),
+        ("fewer-folds", r"fold_1/bundle records fold 1 with fold_assignments \w{12}, but .*splits.csv has 1 fold\(s\)"),
+    ],
+)
+def test_fold_bundle_refuses_a_bundle_trained_on_other_splits(tmp_path, rotating, edit, match):
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+    edited = pd.DataFrame(ROTATING)
+    if edit == "reassigned":  # fold 0 tunes on s3 and trains on s2
+        edited.loc[[2, 3], "split"] = ["train", "tune"]
+    else:
+        edited = edited[edited.fold == 0]
+    edited.to_csv(splits, index=False)
+
+    with pytest.raises(ValueError, match=match + ": these splits differ from the ones the bundle was trained on"):
+        predict(tmp_path, records, bundles, splits=splits, fold="bundle")
+
+
+def test_fold_bundle_refuses_a_subset_that_is_not_a_split_of_a_bundle_s_fold(tmp_path, rotating):
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+
+    with pytest.raises(
+        ValueError, match=r"cohort.subset 'test_external' is not a split of fold 0 of bundle .*fold_0/bundle; its splits are \['test', 'train', 'tune'\]"
+    ):
+        predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset="test_external")
+
+
+@pytest.mark.parametrize("subset", ["train", Path("train")], ids=["str", "path"])
+def test_fold_bundle_refuses_the_train_subset(tmp_path, rotating, subset):
+    """Each bundle was trained on its fold's train split, so it held none of it out. The
+    refusal reads the subset the plan stores, so a non-``str`` spelling of it is refused too."""
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+
+    with pytest.raises(
+        ValueError, match=r"cohort.fold: bundle predicts only the slides each bundle held out.*explicit cohort\.fold"
+    ):
+        predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset=subset)
+
+
+def test_fold_bundle_refuses_a_bundle_whose_fold_has_no_slides_in_the_subset(tmp_path, rotating):
+    """A fold with no tune rows still has a ``tune`` split, an empty one: its bundle would
+    predict nothing and be missing from the output without a word."""
+    records, splits = rotating
+    edited = pd.DataFrame(ROTATING)
+    edited.loc[4, "split"] = "train"  # fold 1 tunes on nothing
+    edited.to_csv(splits, index=False)
+    bundles = fold_bundles(tmp_path, records, splits)
+
+    with pytest.raises(ValueError, match=r"cohort.subset 'tune' of fold 1 of bundle .*fold_1/bundle has no slides in it"):
+        predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset="tune")
+
+
+def test_a_stopped_fold_bundle_prediction_resumes_to_the_bytes_of_an_uninterrupted_one(
+    tmp_path, rotating, encoder_forwards, monkeypatch
+):
+    """Stopped in fold 1's first slide, then replayed from its ``plan.yaml``, which keeps
+    ``cohort.fold: bundle``: only fold 1's slides are predicted again."""
+    from soma.pipeline.slide_prediction import slide_prediction_kwargs
+
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+    whole = tmp_path / "whole"
+    soma.predict_slides(output_dir=whole, bundles=bundles, records=records, splits=splits, **OWN_FOLD)
+    per_slide = len(encoder_forwards) // 4
+    encoder_forwards.clear()
+    forward = soma.extract.FrozenEncoder.forward
+
+    def stops_in_the_third_slide(self, pixels):
+        if len(encoder_forwards) > 2 * per_slide:
+            raise KeyboardInterrupt
+        return forward(self, pixels)
+
+    stopped = tmp_path / "stopped"
+    with monkeypatch.context() as patched:
+        patched.setattr(soma.extract.FrozenEncoder, "forward", stops_in_the_third_slide)
+        with pytest.raises(KeyboardInterrupt):
+            soma.predict_slides(output_dir=stopped, bundles=bundles, records=records, splits=splits, **OWN_FOLD)
+    assert sorted(files_of(stopped)) == ["fold_0/s0.json", "fold_0/s0.tif", "fold_0/s1.json", "fold_0/s1.tif"]
+    plan = yaml.safe_load((stopped / "plan.yaml").read_text())
+    assert plan["cohort"]["fold"] == "bundle"
+    encoder_forwards.clear()
+
+    index = soma.predict_slides(**slide_prediction_kwargs(plan))
+
+    assert len(encoder_forwards) == 2 * per_slide  # s2 and s3 only
+    assert files_of(stopped) == files_of(whole)
+    assert index.equals(pd.read_parquet(whole / "index.parquet"))
+
+
+@pytest.mark.parametrize("change", ["fold", "fold_assignments"])
+def test_a_relaunch_is_refused_after_a_bundle_s_fold_changed(tmp_path, rotating, change):
+    """The plan keeps ``cohort.fold: bundle`` and the bundles' paths, and a bundle's digest
+    covers its model, not its ``provenance.json``: the fold and ``fold_assignments`` that
+    ``provenance.json`` records of each bundle guard the directory."""
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+    output_dir = tmp_path / "predictions"
+    soma.predict_slides(output_dir=output_dir, bundles=bundles, records=records, splits=splits, **OWN_FOLD)
+    recorded = [Path(bundle) / "provenance.json" for bundle in bundles]
+    if change == "fold":  # the two bundles now claim each other's fold
+        texts = [path.read_text() for path in recorded]
+        for path, text in zip(recorded, reversed(texts)):
+            path.write_text(text)
+    else:  # new splits in the same file, and bundles that record them
+        edited = pd.DataFrame(ROTATING)
+        edited.loc[[2, 3], "split"] = ["train", "tune"]
+        edited.to_csv(splits, index=False)
+        for k, path in enumerate(recorded):
+            path.write_text(json.dumps({**json.loads(path.read_text()), **fold_provenance(records, splits, k)}))
+
+    with pytest.raises(ValueError, match=r"fold_0/bundle records another fold than when its predictions were written into it"):
+        soma.predict_slides(output_dir=output_dir, bundles=bundles, records=records, splits=splits, **OWN_FOLD)
