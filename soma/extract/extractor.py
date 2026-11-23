@@ -397,8 +397,7 @@ class _PooledFeatureExtractor:
         with _suppress_logger_noise_ctx("cucim"):
             with _forward_tiling_progress_ctx():
                 pipeline.run(slides=build_slide_specs(self._images), tiling_only=True)
-        can_publish = str(cache_resolution.metadata.get("requested_backend")) == str(cfg.tiling.backend)
-        if can_publish and process_list_path.is_file():
+        if process_list_path.is_file():
             write_tiling_cache_payload(
                 live_dir=tiling_dir,
                 cache_resolution=cache_resolution,

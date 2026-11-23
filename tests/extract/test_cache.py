@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import errno
 import csv
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -360,6 +361,36 @@ def test_the_backend_probe_resolves_each_sample_as_tiling_does(tmp_path: Path):
             "slide_spacing_override": None,
         },
     ]
+
+
+def test_the_backend_probe_leaves_the_warning_filters_as_it_found_them(tmp_path: Path):
+    """Each hs2p probe enters ``warnings.catch_warnings()``, which is not thread-safe:
+    interleaved on the probe's threads, one can exit onto a filter list that holds
+    another's ignore filter, installed for the rest of the process. Whatever the probes
+    leave installed, the filters after the probe are the ones before it."""
+    from hs2p.wsi.reader import BackendSelection, ResolvedBackends
+
+    def _resolve_backends(**kwargs):
+        # What two interleaved catch_warnings blocks leave behind.
+        warnings.filterwarnings("ignore", message=r"^Slide spacing override conflict:", category=UserWarning)
+        mask = None if kwargs["mask_path"] is None else BackendSelection(backend="tifffile")
+        return ResolvedBackends(
+            slide=BackendSelection(backend="cucim"),
+            mask=mask,
+            requested_slide_backend=kwargs["requested_slide_backend"],
+            requested_mask_backend=kwargs["requested_mask_backend"],
+        )
+
+    filters_before = list(warnings.filters)
+    with patch("soma.extract.cache.keys.resolve_backends", side_effect=_resolve_backends):
+        probe_resolved_backends(
+            images=_slides_with_and_without_a_mask(tmp_path),
+            requested_backend="auto",
+            requested_mask_backend="auto",
+            num_workers=2,
+        )
+
+    assert warnings.filters == filters_before
 
 
 def _slides_resolved_by_any_reader(tmp_path: Path) -> ImageManifest:

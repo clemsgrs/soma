@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -248,15 +249,17 @@ def probe_resolved_backends(
         done="probed slide backends",
     )
     progress.start()
-    pool = ThreadPoolExecutor(max_workers=max(1, int(num_workers)))
-    try:
-        futures = {pool.submit(resolve, sample_id): sample_id for sample_id in sample_ids}
-        for future in as_completed(futures):
-            resolved[futures[future]] = future.result()
-            progress.update(len(resolved))
-    finally:
-        pool.shutdown(wait=True, cancel_futures=True)
-        progress.finish(len(resolved))
+    # hs2p's per-probe catch_warnings(), interleaved across threads, can leak a filter; undo it here.
+    with warnings.catch_warnings():
+        pool = ThreadPoolExecutor(max_workers=max(1, int(num_workers)))
+        try:
+            futures = {pool.submit(resolve, sample_id): sample_id for sample_id in sample_ids}
+            for future in as_completed(futures):
+                resolved[futures[future]] = future.result()
+                progress.update(len(resolved))
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+            progress.finish(len(resolved))
     return {sample_id: resolved[sample_id] for sample_id in sample_ids}
 
 
