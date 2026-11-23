@@ -789,11 +789,21 @@ def _spelled_out(config: ExperimentConfig, cohort: Any, *, infer: bool) -> Exper
 
 def _check_subgroup_names(columns: Sequence[str], records: Sequence[Any]) -> None:
     """Refuse a subgroup column, or a group value read with ``str()``, that a subgroup key
-    cannot spell (:func:`~soma.evaluation.subgroups.check_subgroup_name`)."""
+    cannot spell (:func:`~soma.evaluation.subgroups.check_subgroup_name`), and a column
+    named like a head target key: the per-epoch groups read the metadata column, but the
+    post-fit breakdown's frame (:func:`~soma.data.cohort.targets_frame`) holds the target
+    under that name instead."""
     from soma.evaluation.subgroups import check_subgroup_name
 
     for column in columns:
         check_subgroup_name(column, where="evaluation.subgroups")
+        if any(column in record.targets for record in records):
+            raise ValueError(
+                f"evaluation.subgroups column {column!r} is also a head target key, and subgroups "
+                "group by metadata columns only: the breakdown after the fit would group by the "
+                f"head's {column!r} target instead. Rename the metadata column, or drop {column!r} "
+                "from evaluation.subgroups."
+            )
         for record in records:
             if column in record.metadata:
                 check_subgroup_name(

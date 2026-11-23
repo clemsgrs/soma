@@ -549,6 +549,29 @@ def test_a_subgroup_column_with_a_slash_is_refused(tmp_path: Path):
         _resolve(config)
 
 
+def test_a_subgroup_column_named_like_a_head_target_key_is_refused(tmp_path: Path):
+    # The head reads its event target from os_status; the metadata column named event
+    # (the kind of event) is not that target.
+    files = _cohort_files(
+        tmp_path / "data",
+        os_months=[1.0, 2.0] * 4,
+        os_status=[1, 0] * 4,
+        bin=[0, 1, 2, 3] * 2,
+        event=["death", "relapse"] * 4,
+    )
+    targets = {"time": "os_months", "event": "os_status"}
+    config = experiment(
+        *files,
+        head="discrete_survival",
+        aggregator="abmil",
+        head_params={"targets": targets},
+        evaluation={"subgroups": ["event"]},
+    )
+
+    with pytest.raises(ValueError, match=r"evaluation.subgroups column 'event' is also a head target key"):
+        _resolve(config)
+
+
 def test_a_slide_encoder_takes_no_aggregator():
     # titan gives one vector per slide: there is no bag to pool, and check says so before
     # any slide is tiled or embedded.
