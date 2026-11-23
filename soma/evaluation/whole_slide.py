@@ -450,11 +450,11 @@ def predict_slide_label_maps(
         _LabelTiffStream(path, frame=frame, metadata=meta, tile_px=WRITE_TILE_PX)
         for path, meta in zip(paths, metadata)
     ]
-    bands = [_Band(frame, stream, WRITE_TILE_PX) for stream in streams]
-    if average:
-        classes = [models[0].head.num_classes] if ensemble else [model.head.num_classes for model in models]
-        bands = [_AveragingBand(frame, band, int(count)) for band, count in zip(bands, classes)]
     try:
+        bands = [_Band(frame, stream, WRITE_TILE_PX) for stream in streams]
+        if average:
+            classes = [models[0].head.num_classes] if ensemble else [model.head.num_classes for model in models]
+            bands = [_AveragingBand(frame, band, int(count)) for band, count in zip(bands, classes)]
         for batch_origins, values in _predicted_tiles(
             models,
             image=image,
@@ -507,11 +507,11 @@ def _predicted_tiles(
         models, source=source, origins=origins, batch_size=batch_size, num_workers=num_workers
     ):
         if average:
+            # Each bundle's softmax goes to the host before the next bundle is decoded.
             if ensemble:
-                softmax = [mean_softmax(outputs).float()]
+                yield batch_origins, [mean_softmax(outputs).float().cpu().numpy()]
             else:
-                softmax = [torch.softmax(output.logits.float(), dim=1) for output in outputs]
-            yield batch_origins, [probabilities.cpu().numpy() for probabilities in softmax]
+                yield batch_origins, [torch.softmax(o.logits.float(), dim=1).cpu().numpy() for o in outputs]
             continue
         if ensemble:
             maps = [mean_softmax(outputs).argmax(dim=1).to(torch.uint8).cpu().numpy()]

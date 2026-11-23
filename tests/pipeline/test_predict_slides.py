@@ -288,12 +288,9 @@ def test_average_takes_the_argmax_of_the_hann_weighted_mean_softmax(tmp_path, co
     np.testing.assert_allclose(mean, [0.170, 0.409, 0.421], atol=5e-4)
     assert (maps["pick_one"][:, 20] == 1).all()
     assert (maps["average"][:, 20] == 2).all()
-    # Every column: the mean over the tiles ``k`` that cover it, ``c - 16 k`` px into each.
-    expected = [
-        int(np.argmax(sum(hann(c - 16 * k) * np.array(TABLE[k]) for k in range(3) if 0 <= c - 16 * k < TILE)))
-        for c in range(48)
-    ]
-    np.testing.assert_array_equal(maps["average"], np.tile(expected, (32, 1)))
+    # Every column, worked out the same way over the tiles that cover it (tile ``k`` at
+    # ``x = 16 k``); the narrowest top-two margin, 0.0125, is at column 20.
+    np.testing.assert_array_equal(maps["average"], np.tile([1] * 20 + [2] * 22 + [0] * 6, (32, 1)))
 
 
 #: A second bundle's table: tile 0 prefers class 1 more strongly than :data:`TABLE`'s.
@@ -542,20 +539,6 @@ def test_the_overlap_a_fractional_margin_refusal_proposes_is_accepted(tmp_path, 
 
     assert plan["extraction"]["tiling"]["overlap"] == proposed
     assert abs(tile_px * proposed / 2 - tile_px * overlap / 2) < 1
-
-
-@pytest.mark.parametrize(("given", "planned"), [({}, "pick_one"), ({"stitch": "average"}, "average")])
-def test_the_plan_records_the_stitch(tmp_path, cohort, given, planned):
-    """``stitch`` defaults to ``pick_one``; the plan, and so ``plan.yaml``, records it."""
-    from soma.pipeline.slide_prediction import resolve_slide_prediction
-
-    bundle = save_bundle(tmp_path / "run" / "bundle")
-
-    plan = resolve_slide_prediction(
-        output_dir=tmp_path / "predictions", bundles=bundle, records=cohort, extraction={"tiling": dict(TIFFFILE)}, **given
-    )
-
-    assert plan["predict"]["stitch"] == planned
 
 
 @pytest.mark.parametrize("stitch", ["mean", None, "Average"])

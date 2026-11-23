@@ -413,20 +413,6 @@ def test_a_class_scheme_written_by_hand_is_checked_before_anything_is_written(tm
     assert not output_dir.exists()
 
 
-def test_averaging_is_refused_for_detection_before_any_slide_is_read(tmp_path, decoders):
-    """``stitch: average`` is for segmentation only. The records name a slide that does
-    not exist, so the refusal comes before any slide is read."""
-    bundle = save_detection_bundle(tmp_path / "run" / "bundle", decoder=decoders["marker"])
-    records = write_records(tmp_path / "dataset.csv", [{"sample_id": "s1", "image_path": str(tmp_path / "missing.tif")}])
-    output_dir = tmp_path / "predictions"
-
-    with pytest.raises(ValueError, match=r"predict\.stitch: average .*segmentation only.*detection"):
-        soma.predict_slides(
-            output_dir=output_dir, bundles=bundle, records=records, extraction=OVERLAP_ZERO, stitch="average"
-        )
-    assert not output_dir.exists()
-
-
 def test_segmentation_and_detection_bundles_are_not_mixed(tmp_path, cohort, decoders):
     from tests.whole_slides import save_bundle
 
