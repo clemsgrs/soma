@@ -323,7 +323,11 @@ Two tools apply a run's bundles to images larger than one tile:
   in memory, and returns its label map. It slides the fold ensemble over the
   image and blends the softmaxes of overlapping tiles. Use it for a bounded
   image, such as an ROI or a region read from a slide, in a notebook. Load each
-  fold's bundle with :func:`soma.load` and pass the list.
+  fold's bundle with :func:`soma.load` and pass the list. Like
+  :func:`soma.predict_slides`, it reads the image with the read spacing, read
+  tolerance and slide reader the bundles record, so it reads the image as
+  training did. Pass ``spacing_um=``, ``tolerance=`` or ``backend=`` to read it
+  another way.
 
 Both build each bundle's frozen encoder stage with
 :func:`soma.pipeline.build.bundle_encoder_stage`. A bundle trained live carries
