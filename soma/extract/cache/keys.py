@@ -13,14 +13,17 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from hs2p.wsi.reader import resolve_backend
+from hs2p.wsi.reader import AUTO_BACKEND, ResolvedBackends, resolve_backends
 from slide2vec import DenseImageOptions, DenseOptions, ExecutionOptions, PreprocessingConfig
 from slide2vec.encoders.registry import encoder_registry
 
 from soma.extract.cache._types import SCHEMA_VERSION, _FEATURE_TYPE_TO_RANK
+from soma.extract.cache.io import _CountProgress
 from soma.data.manifests import AnnotationManifest, ImageManifest
 from soma.models.encoders.validation import resolve_encoder_precision
 from soma.extract.preprocessing.supplied_coordinates import coordinates_digest
@@ -209,24 +212,55 @@ def probe_resolved_backends(
     *,
     images: ImageManifest,
     requested_backend: str,
-) -> dict[str, str]:
-    requested_backend = str(requested_backend)
-    if requested_backend != "auto":
-        return {
-            sample_id: requested_backend
-            for sample_id in sorted(images.sample_ids)
-        }
-    mapping: dict[str, str] = {}
-    for sample_id in sorted(images.sample_ids):
+    requested_mask_backend: str,
+    num_workers: int = 1,
+) -> dict[str, ResolvedBackends]:
+    """The slide and mask readers each sample resolves to, the way hs2p's tiling resolves
+    them (``resolve_backends``): the slide from the slide alone, the mask from the mask
+    alone. A sample without a mask has no mask reader.
+
+    An explicit backend is returned as is. Under ``auto`` hs2p opens and decodes each
+    file, so the samples are resolved on ``num_workers`` threads, behind a counter
+    (``… probing slide backends: k/N``).
+    """
+    sample_ids = sorted(images.sample_ids)
+
+    def resolve(sample_id: str) -> ResolvedBackends:
         sample = images[sample_id]
-        selection = resolve_backend(
-            requested_backend,
+        return resolve_backends(
+            requested_slide_backend=str(requested_backend),
+            requested_mask_backend=str(requested_mask_backend),
             wsi_path=sample.image_path,
             mask_path=sample.mask_path,
-            spacing_override=sample.spacing_at_level_0,
+            slide_spacing_override=sample.spacing_at_level_0,
         )
-        mapping[sample_id] = str(selection.backend)
-    return mapping
+
+    opens_files = str(requested_backend) == AUTO_BACKEND or (
+        str(requested_mask_backend) == AUTO_BACKEND
+        and any(images[sample_id].mask_path is not None for sample_id in sample_ids)
+    )
+    if not opens_files:
+        return {sample_id: resolve(sample_id) for sample_id in sample_ids}
+    resolved: dict[str, ResolvedBackends] = {}
+    progress = _CountProgress(
+        total=len(sample_ids),
+        task="Probing slide backends",
+        running="probing slide backends",
+        done="probed slide backends",
+    )
+    progress.start()
+    # hs2p's per-probe catch_warnings(), interleaved across threads, can leak a filter; undo it here.
+    with warnings.catch_warnings():
+        pool = ThreadPoolExecutor(max_workers=max(1, int(num_workers)))
+        try:
+            futures = {pool.submit(resolve, sample_id): sample_id for sample_id in sample_ids}
+            for future in as_completed(futures):
+                resolved[futures[future]] = future.result()
+                progress.update(len(resolved))
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+            progress.finish(len(resolved))
+    return {sample_id: resolved[sample_id] for sample_id in sample_ids}
 
 
 def execution_signature(

@@ -53,6 +53,15 @@ matching encoder and execution settings; patient embeddings are reused per
 patient. Datasets with overlapping samples can share their payloads while
 extracting only the missing samples.
 
+With ``features.extraction.tiling.backend: auto`` or ``mask_backend: auto``, a
+tiling is also reused only if each slide and its mask would still be read by the
+readers recorded for them. If a reader changed, soma tiles the slides again. To check
+this, soma opens every slide and mask, in parallel over
+``features.execution.num_preprocessing_workers`` threads, and prints
+``… probing slide backends`` with a count. It does this only when the tiling
+entry is otherwise complete: a cache miss, an explicit reader, and the run that
+has just tiled the slides open no file for this check.
+
 Sample identity includes ``sample_id``, ``image_path``, ``mask_path``, and the
 optional ``spacing_at_level_0`` declaration, read from each row of the image
 manifest. ``mask_path`` is the tissue or annotation-sampling mask; segmentation's

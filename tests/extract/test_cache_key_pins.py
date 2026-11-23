@@ -54,7 +54,6 @@ def _slide_keys(tmp_path: Path):
         cache_root=tmp_path / "cache",
         images=_images(csv),
         preprocessing=preprocessing,
-        backend_provenance={"requested_backend": "openslide"},
     )
     features = resolve_tile_cache(
         cache_root=tmp_path / "cache",

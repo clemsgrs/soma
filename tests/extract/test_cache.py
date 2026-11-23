@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import errno
 import csv
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -289,52 +291,194 @@ def test_resolve_tiling_cache_root_uses_output_root_when_provided(tmp_path: Path
     assert root == tmp_path / "outputs" / "cache" / "tiling"
 
 
-def test_probe_resolved_backends_uses_explicit_backend_without_probe(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
-    with patch("soma.extract.cache.keys.resolve_backend") as resolve_backend:
-        mapping = probe_resolved_backends(
-            images=dataset,
-            requested_backend="openslide",
+def _slides_with_and_without_a_mask(tmp_path: Path) -> ImageManifest:
+    """``s1`` with a tissue mask and a declared level-0 spacing, ``s2`` with neither. No
+    file exists."""
+    return _make_dataset(
+        tmp_path,
+        rows=[
+            {"sample_id": "s1", "image_path": "/slides/s1.svs", "mask_path": "/masks/s1.tif", "spacing_at_level_0": 0.25},
+            {"sample_id": "s2", "image_path": "/slides/s2.svs", "mask_path": None, "spacing_at_level_0": None},
+        ],
+    )
+
+
+def _readers(resolved) -> dict[str, tuple[str, str | None]]:
+    return {sample_id: (item.slide_backend, item.mask_backend) for sample_id, item in resolved.items()}
+
+
+def test_explicit_slide_and_mask_backends_open_no_files(tmp_path: Path):
+    images = _slides_with_and_without_a_mask(tmp_path)
+    # Under auto, resolving reads the files, which do not exist.
+    with pytest.raises(RuntimeError, match="Unable to open"):
+        probe_resolved_backends(images=images, requested_backend="auto", requested_mask_backend="auto")
+
+    resolved = probe_resolved_backends(
+        images=images, requested_backend="openslide", requested_mask_backend="tifffile"
+    )
+
+    assert _readers(resolved) == {"s1": ("openslide", "tifffile"), "s2": ("openslide", None)}
+
+
+def test_the_backend_probe_resolves_each_sample_as_tiling_does(tmp_path: Path):
+    """hs2p's tiling resolves the readers with ``resolve_backends``: the configured slide
+    and mask backends, the sample's mask and its declared level-0 spacing."""
+    from hs2p.wsi.reader import BackendSelection, ResolvedBackends
+
+    calls: list[dict[str, object]] = []
+
+    def _resolve_backends(**kwargs):
+        calls.append({key: None if value is None else str(value) for key, value in kwargs.items()})
+        mask = None if kwargs["mask_path"] is None else BackendSelection(backend="tifffile")
+        return ResolvedBackends(
+            slide=BackendSelection(backend="cucim"),
+            mask=mask,
+            requested_slide_backend=kwargs["requested_slide_backend"],
+            requested_mask_backend=kwargs["requested_mask_backend"],
         )
-    assert mapping == {"s1": "openslide", "s2": "openslide"}
-    resolve_backend.assert_not_called()
 
-
-def test_probe_resolved_backends_uses_runtime_backend_probe_for_auto(tmp_path: Path):
-    dataset = _make_dataset(tmp_path)
-
-    def _fake_resolve_backend(
-        requested_backend, *, wsi_path, mask_path=None, spacing_override=None
-    ):
-        del requested_backend, mask_path, spacing_override
-        return SimpleNamespace(backend="cucim" if Path(wsi_path).name == "s1.svs" else "openslide")
-
-    with patch("soma.extract.cache.keys.resolve_backend", side_effect=_fake_resolve_backend) as resolve_backend:
-        mapping = probe_resolved_backends(
-            images=dataset,
+    with patch("soma.extract.cache.keys.resolve_backends", side_effect=_resolve_backends):
+        resolved = probe_resolved_backends(
+            images=_slides_with_and_without_a_mask(tmp_path),
             requested_backend="auto",
+            requested_mask_backend="auto",
         )
 
-    assert mapping == {"s1": "cucim", "s2": "openslide"}
-    assert resolve_backend.call_count == 2
+    assert _readers(resolved) == {"s1": ("cucim", "tifffile"), "s2": ("cucim", None)}
+    assert sorted(calls, key=lambda call: str(call["wsi_path"])) == [
+        {
+            "requested_slide_backend": "auto",
+            "requested_mask_backend": "auto",
+            "wsi_path": "/slides/s1.svs",
+            "mask_path": "/masks/s1.tif",
+            "slide_spacing_override": "0.25",
+        },
+        {
+            "requested_slide_backend": "auto",
+            "requested_mask_backend": "auto",
+            "wsi_path": "/slides/s2.svs",
+            "mask_path": None,
+            "slide_spacing_override": None,
+        },
+    ]
 
 
-def test_resolve_tiling_cache_records_backend_provenance(tmp_path: Path):
+def test_the_backend_probe_leaves_the_warning_filters_as_it_found_them(tmp_path: Path):
+    """Each hs2p probe enters ``warnings.catch_warnings()``, which is not thread-safe:
+    interleaved on the probe's threads, one can exit onto a filter list that holds
+    another's ignore filter, installed for the rest of the process. Whatever the probes
+    leave installed, the filters after the probe are the ones before it."""
+    from hs2p.wsi.reader import BackendSelection, ResolvedBackends
+
+    def _resolve_backends(**kwargs):
+        # What two interleaved catch_warnings blocks leave behind.
+        warnings.filterwarnings("ignore", message=r"^Slide spacing override conflict:", category=UserWarning)
+        mask = None if kwargs["mask_path"] is None else BackendSelection(backend="tifffile")
+        return ResolvedBackends(
+            slide=BackendSelection(backend="cucim"),
+            mask=mask,
+            requested_slide_backend=kwargs["requested_slide_backend"],
+            requested_mask_backend=kwargs["requested_mask_backend"],
+        )
+
+    filters_before = list(warnings.filters)
+    with patch("soma.extract.cache.keys.resolve_backends", side_effect=_resolve_backends):
+        probe_resolved_backends(
+            images=_slides_with_and_without_a_mask(tmp_path),
+            requested_backend="auto",
+            requested_mask_backend="auto",
+            num_workers=2,
+        )
+
+    assert warnings.filters == filters_before
+
+
+def _slides_resolved_by_any_reader(tmp_path: Path) -> ImageManifest:
+    """``s0``, a PNG slide with a 16-bit TIFF tissue mask, and ``s1``, a PNG slide without
+    one. Under ``auto``, hs2p reads a PNG with PIL and a TIFF mask that a display reader
+    would rescale with ``tifffile``, whatever readers the machine has."""
+    import tifffile
+    from PIL import Image
+
+    image = np.full((64, 64, 3), 200, dtype=np.uint8)
+    mask = np.ones((64, 64), dtype=np.uint16)
+    for sample_id in ("s0", "s1"):
+        Image.fromarray(image).save(tmp_path / f"{sample_id}.png")
+    tifffile.imwrite(tmp_path / "s0_mask.tif", mask)
+    return _make_dataset(
+        tmp_path,
+        rows=[
+            {"sample_id": "s0", "image_path": str(tmp_path / "s0.png"), "mask_path": str(tmp_path / "s0_mask.tif"), "spacing_at_level_0": 0.5},
+            {"sample_id": "s1", "image_path": str(tmp_path / "s1.png"), "mask_path": None, "spacing_at_level_0": 0.5},
+        ],
+    )
+
+
+def _write_tiled_rows(cache_dir: Path, images: ImageManifest, backends: dict[str, tuple[str, str]]) -> None:
+    """A ``process_list.csv`` with a successful row per sample, read by ``backends``
+    (sample id → slide reader, mask reader)."""
+    rows = [
+        {
+            "sample_id": sample_id,
+            "annotation": "tissue",
+            "image_path": str(images[sample_id].image_path),
+            "mask_path": "" if images[sample_id].mask_path is None else str(images[sample_id].mask_path),
+            "requested_backend": "auto",
+            "backend": backend,
+            "requested_mask_backend": "auto",
+            "mask_backend": mask_backend,
+            "tiling_status": "success",
+            "num_tiles": 1,
+            "coordinates_npz_path": "",
+            "coordinates_meta_path": "",
+            "error": "",
+            "traceback": "",
+        }
+        for sample_id, (backend, mask_backend) in backends.items()
+    ]
+    pd.DataFrame(rows).to_csv(cache_dir / "process_list.csv", index=False)
+
+
+@pytest.mark.parametrize(
+    ("recorded", "reason"),
+    [
+        pytest.param({"s0": ("pil", "tifffile"), "s1": ("pil", "")}, None, id="same-readers"),
+        # A maskless sample has no mask reader to compare.
+        pytest.param({"s0": ("pil", "tifffile"), "s1": ("pil", "cucim")}, None, id="maskless-ignores-mask-backend"),
+        pytest.param({"s0": ("openslide", "tifffile"), "s1": ("pil", "")}, "backend mismatch for s0", id="slide-reader"),
+        # Tiled while a display reader rescaled the 16-bit labels.
+        pytest.param({"s0": ("pil", "pil"), "s1": ("pil", "")}, "mask backend mismatch for s0", id="mask-reader"),
+        # Tiled by an hs2p that recorded no mask reader.
+        pytest.param({"s0": ("pil", ""), "s1": ("pil", "")}, "mask backend mismatch for s0", id="no-mask-reader"),
+    ],
+)
+def test_a_tiling_is_reused_only_while_its_slide_and_mask_readers_resolve_the_same(
+    tmp_path: Path, capsys: pytest.CaptureFixture, recorded: dict[str, tuple[str, str]], reason: str | None
+):
+    images = _slides_resolved_by_any_reader(tmp_path)
+    preprocessing = extraction(0.5, 224, tiling_fields={"backend": "auto", "mask_backend": "auto"})
+    cache_root = tmp_path / "tiling_cache"
+    created = resolve_tiling_cache(cache_root=cache_root, images=images, preprocessing=preprocessing)
+    _write_tiled_rows(created.cache_dir, images, recorded)
+    capsys.readouterr()
+
+    resolution = resolve_tiling_cache(cache_root=cache_root, images=images, preprocessing=preprocessing)
+
+    printed = capsys.readouterr().out
+    assert resolution.complete is (reason is None)
+    if reason is None:
+        assert "✓ tiling cache hit" in printed
+    else:
+        assert f"✗ tiling cache miss: {created.cache_dir.resolve()} ({reason})" in printed
+
+
+def test_resolve_tiling_cache_records_the_requested_backend(tmp_path: Path):
     dataset = _make_dataset(tmp_path)
     cache_root = tmp_path / "tiling_cache"
-    provenance = {
-        "requested_backend": "auto",
-        "backend": "openslide",
-        "backend_by_sample_id": {
-            "s1": "openslide",
-            "s2": "openslide",
-        },
-    }
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
         images=dataset,
         preprocessing=extraction(0.5, 224),
-        backend_provenance=provenance,
         requested_preprocessing={"backend": "auto", "requested_tile_size_px": None},
     )
 
@@ -352,11 +496,6 @@ def test_write_tiling_cache_stub_points_to_shared_cache_paths(tmp_path: Path):
         cache_root=cache_root,
         images=dataset,
         preprocessing=extraction(0.5, 224),
-        backend_provenance={
-            "requested_backend": "openslide",
-            "backend": "openslide",
-            "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
-        },
     )
     canonical_process_list = resolution.cache_dir / "process_list.csv"
     canonical_process_list.write_text(
@@ -401,11 +540,6 @@ def test_write_tiling_cache_payload_rewrites_paths_into_cache(tmp_path: Path):
         cache_root=tmp_path / "tiling_cache",
         images=dataset,
         preprocessing=extraction(0.5, 224),
-        backend_provenance={
-            "requested_backend": "openslide",
-            "backend": "openslide",
-            "backend_by_sample_id": {"s1": "openslide"},
-        },
     )
 
     write_tiling_cache_payload(live_dir=live_dir, cache_resolution=resolution)
@@ -446,18 +580,18 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
         rows=[{"sample_id": "s1", "image_path": "/slides/s1.svs", "label": "tumor"}],
     )
     cache_root = tmp_path / "tiling_cache"
-    preprocessing = extraction(0.5, 224, requested_region_size_px=1792, region_tile_multiple=8)
-    provenance = {
-        "requested_backend": "openslide",
-        "backend": "openslide",
-        "backend_by_sample_id": {"s1": "openslide"},
-    }
+    preprocessing = extraction(
+        0.5,
+        224,
+        requested_region_size_px=1792,
+        region_tile_multiple=8,
+        tiling_fields={"backend": "openslide"},
+    )
 
     resolution = resolve_tiling_cache(
         cache_root=cache_root,
         images=dataset,
         preprocessing=preprocessing,
-        backend_provenance=provenance,
     )
     (resolution.cache_dir / "process_list.csv").write_text(
         "sample_id,tiling_status,backend,requested_backend\n"
@@ -485,7 +619,6 @@ def test_resolve_tiling_cache_accepts_hipt_region_size_metadata(tmp_path: Path):
             cache_root=cache_root,
             images=dataset,
             preprocessing=preprocessing,
-            backend_provenance=provenance,
         )
 
     assert refreshed.complete is True
@@ -933,11 +1066,6 @@ def test_resolve_tiling_cache_logs_resolving_state(tmp_path: Path):
             cache_root=cache_root,
             images=dataset,
             preprocessing=extraction(0.5, 224),
-            backend_provenance={
-                "requested_backend": "openslide",
-                "backend": "openslide",
-                "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
-            },
         )
     messages = [str(call.args[0]) for call in emit_progress_log.call_args_list]
     assert any("resolving tiling cache" in message for message in messages)
@@ -1018,11 +1146,6 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
         cache_root=cache_root,
         images=dataset,
         preprocessing=extraction(0.5, 224),
-        backend_provenance={
-            "requested_backend": "openslide",
-            "backend": "openslide",
-            "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
-        },
     )
     metadata = json.loads(resolution.metadata_path.read_text())
     metadata.pop("preprocessing")
@@ -1035,11 +1158,6 @@ def test_resolve_tiling_cache_reports_metadata_mismatch_details(tmp_path: Path):
             cache_root=cache_root,
             images=dataset,
             preprocessing=extraction(0.5, 224),
-            backend_provenance={
-                "requested_backend": "openslide",
-                "backend": "openslide",
-                "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
-            },
         )
 
     message = str(excinfo.value)
@@ -1068,16 +1186,10 @@ def test_resolve_tiling_cache_reuses_shared_sample_across_datasets(tmp_path: Pat
         ],
     )
     preprocessing = extraction(0.5, 224)
-    provenance_a = {
-        "requested_backend": "openslide",
-        "backend": "openslide",
-        "backend_by_sample_id": {"s1": "openslide"},
-    }
     resolution_a = resolve_tiling_cache(
         cache_root=cache_root,
         images=dataset_a,
         preprocessing=preprocessing,
-        backend_provenance=provenance_a,
     )
     stem_a = resolution_a.cache_stem_by_id["s1"]
     npz_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates.npz"
@@ -1100,11 +1212,6 @@ def test_resolve_tiling_cache_reuses_shared_sample_across_datasets(tmp_path: Pat
         cache_root=cache_root,
         images=dataset_b,
         preprocessing=preprocessing,
-        backend_provenance={
-            "requested_backend": "openslide",
-            "backend": "openslide",
-            "backend_by_sample_id": {"s1": "openslide", "s2": "openslide"},
-        },
     )
     assert resolution_b.complete is False
     assert resolution_b.reused is False
@@ -1128,11 +1235,6 @@ def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_p
         cache_root=cache_root,
         images=dataset_a,
         preprocessing=preprocessing,
-        backend_provenance={
-            "requested_backend": "openslide",
-            "backend": "openslide",
-            "backend_by_sample_id": {"s1": "openslide"},
-        },
     )
     stem_a = resolution_a.cache_stem_by_id["s1"]
     npz_a = resolution_a.artifacts_dir / f"{stem_a}.coordinates.npz"
@@ -1149,11 +1251,6 @@ def test_resolve_tiling_cache_treats_changed_image_path_as_distinct_sample(tmp_p
         cache_root=cache_root,
         images=dataset_b,
         preprocessing=preprocessing,
-        backend_provenance={
-            "requested_backend": "openslide",
-            "backend": "openslide",
-            "backend_by_sample_id": {"s1": "openslide"},
-        },
     )
     assert resolution_b.complete is False
     assert resolution_b.cache_stem_by_id["s1"] != stem_a
