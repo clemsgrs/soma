@@ -1048,6 +1048,29 @@ def test_each_bundle_predicts_its_own_fold_and_bundles_of_one_fold_share_its_for
     ]
 
 
+def test_fold_bundle_averages_each_fold_s_slides_as_an_explicit_fold_call_does(tmp_path, rotating):
+    """``fold="bundle"`` with ``stitch="average"`` and an overlap: each slide's maps are
+    averaged over its own bundles only, so each fold's directory holds the files and index
+    rows of a call with that bundle alone, an explicit fold and the same stitch."""
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+    averaged = {**OWN_FOLD, "extraction": HALF, "stitch": "average"}
+
+    index = soma.predict_slides(output_dir=tmp_path / "own", bundles=bundles, records=records, splits=splits, **averaged)
+
+    assert yaml.safe_load((tmp_path / "own" / "plan.yaml").read_text())["predict"]["stitch"] == "average"
+    assert list(zip(index.bundle, index.sample_id)) == [("fold_0", "s0"), ("fold_0", "s1"), ("fold_1", "s2"), ("fold_1", "s3")]
+    own = files_of(tmp_path / "own")
+    explicit = []
+    for k, bundle in enumerate(bundles):
+        alone = tmp_path / f"fold_{k}"
+        explicit.append(
+            soma.predict_slides(output_dir=alone, bundles=bundle, records=records, splits=splits, **{**averaged, "fold": k})
+        )
+        assert {path: digest for path, digest in own.items() if path.startswith(f"fold_{k}/")} == files_of(alone)
+    assert index.equals(pd.concat(explicit, ignore_index=True))
+
+
 def test_fold_bundle_refuses_an_ensemble(tmp_path, rotating):
     records, splits = rotating
     bundles = fold_bundles(tmp_path, records, splits)

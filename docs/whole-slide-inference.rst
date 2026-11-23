@@ -467,7 +467,8 @@ Two bundles may record the same fold, such as ``runs/uni2/fold_0/bundle`` and
 ``runs/virchow2/fold_0/bundle`` trained on the same splits. Both predict the
 slides of that fold. Each slide goes only through the bundles that predict it,
 and the bundles that share an encoder recipe still share one encoder pass per
-tile. ``index.parquet`` lists each bundle with its own slides.
+tile. ``predict.stitch`` applies to each of those maps as it does with an
+explicit fold. ``index.parquet`` lists each bundle with its own slides.
 
 ``plan.yaml`` keeps ``cohort.fold: bundle``, so a replay reads the fold of each
 bundle again. The output's ``provenance.json`` records each bundle's ``fold``
@@ -767,7 +768,8 @@ were not measured.
 **Averaging** (``stitch: average``) also holds, for each map, float32 sums over
 one tile's height of rows and the map's whole width, one plane per class:
 classes × tile × map width × 4 bytes. Without ``ensemble: true``, each bundle's
-map has its own. The slide's height does not change this cost. With 4 classes
+map has its own; with ``cohort.fold: bundle``, only the maps of the bundles
+that predict the slide. The slide's height does not change this cost. With 4 classes
 and 512 px tiles, a map 50,176 px wide needs 392 MiB of sums. On a synthetic
 slide of 50,176 × 2,048 px, at overlap 0.5 with batch size 8 on the CPU (a
 weight-free encoder and a 4-class linear decoder), the peak memory while
