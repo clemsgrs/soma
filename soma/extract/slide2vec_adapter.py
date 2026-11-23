@@ -9,10 +9,10 @@ from hs2p import SlideSpec
 from hs2p.preprocessing import validate_tiling_result_provenance
 from slide2vec import ExecutionOptions
 import slide2vec.api as slide2vec_api
-import slide2vec.progress as slide2vec_progress
 from slide2vec.utils.tiling_io import load_tiling_process_df, load_tiling_result_from_row
 
 from soma.data.manifests import ImageEntry, ImageManifest
+from soma.extract.cache.io import _CountProgress
 from soma.models.encoders.validation import resolve_encoder_precision
 
 
@@ -137,7 +137,12 @@ def load_tilings(
         for row in process_df.to_dict("records")
     }
     records = list(images)
-    progress = _CachedTilingLoadProgress(total=len(records))
+    progress = _CountProgress(
+        total=len(records),
+        task="Loading cached tilings",
+        running="loading cached tilings",
+        done="loaded cached tilings",
+    )
     progress.start()
     loaded: list[LoadedTiling] = []
     try:
@@ -182,53 +187,3 @@ def load_tilings(
         return loaded
     finally:
         progress.finish(len(loaded))
-
-
-class _CachedTilingLoadProgress:
-    """Single progress indicator for loading cached tilings."""
-
-    def __init__(self, *, total: int) -> None:
-        self._total = max(0, int(total))
-        self._reporter = slide2vec_progress.get_progress_reporter()
-        self._progress = getattr(self._reporter, "progress", None)
-        self._task_id: int | None = None
-        self._rich = hasattr(self._reporter, "console") and hasattr(self._progress, "add_task")
-
-    def start(self) -> None:
-        if self._total <= 0:
-            return
-        if self._rich:
-            ensure_started = getattr(self._reporter, "_ensure_progress_started", None)
-            if callable(ensure_started):
-                ensure_started()
-            else:
-                self._progress.start()
-            self._task_id = self._progress.add_task("Loading cached tilings", total=self._total)
-            return
-        slide2vec_progress.emit_progress_log(f"… loading cached tilings: 0/{self._total}")
-
-    def update(self, completed: int) -> None:
-        if self._total <= 0:
-            return
-        completed = max(0, min(int(completed), self._total))
-        if self._rich:
-            if self._task_id is not None:
-                self._progress.update(self._task_id, completed=completed)
-            return
-        if completed % 100 == 0 or completed == self._total:
-            slide2vec_progress.emit_progress_log(
-                f"… loading cached tilings: {completed}/{self._total}"
-            )
-
-    def finish(self, completed: int) -> None:
-        if self._total <= 0:
-            return
-        completed = max(0, min(int(completed), self._total))
-        if self._rich:
-            if self._task_id is not None:
-                self._progress.remove_task(self._task_id)
-                self._task_id = None
-            return
-        slide2vec_progress.emit_progress_log(
-            f"✓ loaded cached tilings: {completed}/{self._total}"
-        )

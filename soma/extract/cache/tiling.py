@@ -34,24 +34,29 @@ from soma.extract.cache.keys import (
     build_tiling_cache_key,
     dataset_manifest_rows,
     preprocessing_signature,
+    probe_resolved_backends,
 )
 from slide2vec import PreprocessingConfig
 from soma.data.manifests import ImageManifest
 
 
 def _optional_path(value: Any) -> Path | None:
+    value_str = _optional_str(value)
+    return None if value_str is None else Path(value_str)
+
+
+def _optional_str(value: Any) -> str | None:
     if value is None:
         return None
     value_str = str(value)
     if not value_str or value_str.lower() == "nan":
         return None
-    return Path(value_str)
+    return value_str
 
 
 def _build_tiling_cache_metadata(
     *,
     preprocessing: PreprocessingConfig,
-    backend_provenance: dict[str, Any],
     encoder_name: str | None = None,
     requested_preprocessing: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -62,7 +67,7 @@ def _build_tiling_cache_metadata(
             preprocessing=preprocessing,
         ),
         "preprocessing": preprocessing_signature(preprocessing),
-        "requested_backend": str(backend_provenance["requested_backend"]),
+        "requested_backend": str(preprocessing.tiling.backend),
     }
     if encoder_name is not None:
         metadata["resolved_by_encoder_name"] = str(encoder_name)
@@ -127,7 +132,8 @@ def _validate_tiling_cache_contents(
     cache_ids: Sequence[str],
     cache_stem_by_id: dict[str, str],
     preprocessing: PreprocessingConfig,
-    expected_backend_provenance: dict[str, Any] | None,
+    check_backends: bool,
+    num_probe_workers: int,
 ) -> CacheValidationResult:
     total = len(cache_ids)
     checked = 0
@@ -148,6 +154,7 @@ def _validate_tiling_cache_contents(
             continue
         rows_by_stem[str(stem)] = row
 
+    row_by_id: dict[str, dict[str, Any]] = {}
     progress = _CacheValidationProgress(cache_label="tiling", total=total)
     progress.start()
     try:
@@ -204,15 +211,45 @@ def _validate_tiling_cache_contents(
             if row_spacing is not None and str(row_spacing).strip() not in {"", "nan", "NaN"}:
                 if float(row_spacing) != float(preprocessing.tiling.requested_spacing_um):
                     return CacheValidationResult(complete=False, reason=f"spacing mismatch for {sample_id}")
-            expected_backend = None
-            if expected_backend_provenance is not None:
-                expected_backend = expected_backend_provenance.get("backend_by_sample_id", {}).get(str(sample_id))
-            actual_backend = row.get("backend")
-            if expected_backend is not None and str(expected_backend) != str(actual_backend):
-                return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
-        return CacheValidationResult(complete=True)
+            row_by_id[sample_id] = row
     finally:
         progress.finish()
+    if check_backends:
+        return _validate_tiling_backends(
+            images=images,
+            row_by_id=row_by_id,
+            preprocessing=preprocessing,
+            num_probe_workers=num_probe_workers,
+        )
+    return CacheValidationResult(complete=True)
+
+
+def _validate_tiling_backends(
+    *,
+    images: ImageManifest,
+    row_by_id: dict[str, dict[str, Any]],
+    preprocessing: PreprocessingConfig,
+    num_probe_workers: int,
+) -> CacheValidationResult:
+    """Whether each row was read by the slide and mask readers its sample resolves to now.
+
+    Under ``auto``, this is what stops a tiling one reader made from being reused where
+    ``auto`` now picks another. It opens every slide and mask, so it runs only on an
+    entry that every other check accepts.
+    """
+    resolved_by_id = probe_resolved_backends(
+        images=images,
+        requested_backend=preprocessing.tiling.backend,
+        requested_mask_backend=preprocessing.tiling.mask_backend,
+        num_workers=num_probe_workers,
+    )
+    for sample_id, row in row_by_id.items():
+        resolved = resolved_by_id[sample_id]
+        if _optional_str(row.get("backend")) != resolved.slide_backend:
+            return CacheValidationResult(complete=False, reason=f"backend mismatch for {sample_id}")
+        if resolved.mask_backend is not None and _optional_str(row.get("mask_backend")) != resolved.mask_backend:
+            return CacheValidationResult(complete=False, reason=f"mask backend mismatch for {sample_id}")
+    return CacheValidationResult(complete=True)
 
 
 def resolve_tiling_cache(
@@ -220,14 +257,22 @@ def resolve_tiling_cache(
     cache_root: Path,
     images: ImageManifest,
     preprocessing: PreprocessingConfig,
-    backend_provenance: dict[str, Any],
     encoder_name: str | None = None,
     requested_preprocessing: dict[str, Any] | None = None,
     complete_state: str = "hit",
+    check_backends: bool = True,
+    num_probe_workers: int = 1,
 ) -> TilingCacheResolution:
+    """The tiling cache entry of ``images`` under ``preprocessing``, and whether it is
+    complete.
+
+    ``check_backends`` compares each row's slide and mask readers with the ones its sample
+    resolves to now, which opens every file under ``auto`` (on ``num_probe_workers``
+    threads). It runs only on an entry that every other check accepts. Pass ``False``
+    right after tiling: hs2p has just written the rows in this environment.
+    """
     metadata = _build_tiling_cache_metadata(
         preprocessing=preprocessing,
-        backend_provenance=backend_provenance,
         encoder_name=encoder_name,
         requested_preprocessing=requested_preprocessing,
     )
@@ -271,7 +316,8 @@ def resolve_tiling_cache(
             cache_ids=cache_ids,
             cache_stem_by_id=cache_stem_by_id,
             preprocessing=preprocessing,
-            expected_backend_provenance=backend_provenance,
+            check_backends=check_backends,
+            num_probe_workers=num_probe_workers,
         )
         _emit_cache_state_log(
             cache_label="tiling",

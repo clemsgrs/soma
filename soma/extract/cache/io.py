@@ -387,6 +387,55 @@ def _emit_cache_resolve_log(
     )
 
 
+class _CountProgress:
+    """A counter over ``total`` items. Under a Rich reporter it is a ``task`` bar; else it
+    prints ``… <running>: k/N`` at the start, every 100 items and at the end, then
+    ``✓ <done>: k/N``."""
+
+    def __init__(self, *, total: int, task: str, running: str, done: str) -> None:
+        self._total = max(0, int(total))
+        self._task, self._running, self._done = task, running, done
+        self._reporter = slide2vec_progress.get_progress_reporter()
+        self._progress = getattr(self._reporter, "progress", None)
+        self._task_id: int | None = None
+        self._rich = hasattr(self._reporter, "console") and hasattr(self._progress, "add_task")
+
+    def start(self) -> None:
+        if self._total <= 0:
+            return
+        if self._rich:
+            ensure_started = getattr(self._reporter, "_ensure_progress_started", None)
+            if callable(ensure_started):
+                ensure_started()
+            else:
+                self._progress.start()
+            self._task_id = self._progress.add_task(self._task, total=self._total)
+            return
+        slide2vec_progress.emit_progress_log(f"… {self._running}: 0/{self._total}")
+
+    def update(self, completed: int) -> None:
+        if self._total <= 0:
+            return
+        completed = max(0, min(int(completed), self._total))
+        if self._rich:
+            if self._task_id is not None:
+                self._progress.update(self._task_id, completed=completed)
+            return
+        if completed % 100 == 0 or completed == self._total:
+            slide2vec_progress.emit_progress_log(f"… {self._running}: {completed}/{self._total}")
+
+    def finish(self, completed: int) -> None:
+        if self._total <= 0:
+            return
+        completed = max(0, min(int(completed), self._total))
+        if self._rich:
+            if self._task_id is not None:
+                self._progress.remove_task(self._task_id)
+                self._task_id = None
+            return
+        slide2vec_progress.emit_progress_log(f"✓ {self._done}: {completed}/{self._total}")
+
+
 class _CacheValidationProgress:
     """Rich progress helper for cache validation. No-op when no Rich reporter is active."""
 

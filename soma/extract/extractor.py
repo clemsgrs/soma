@@ -35,7 +35,6 @@ from soma.extract.cache import (
     record_empty_sample_ids,
     record_feature_dim,
     record_sample_identity_signatures,
-    probe_resolved_backends,
     resolve_cache_root,
     resolve_hierarchical_cache,
     resolve_cache_dtype,
@@ -225,19 +224,6 @@ def _feature_summary_from_sidecar(feature_dir: Path) -> tuple[int, int] | None:
     return _feature_rank_from_artifact_type(artifact_type), int(feature_dim)
 
 
-def _backend_provenance_from_mapping(
-    *,
-    requested_backend: str,
-    backend_by_sample_id: dict[str, str],
-) -> dict[str, object]:
-    unique_backends = sorted(set(backend_by_sample_id.values()))
-    return {
-        "requested_backend": str(requested_backend),
-        "backend": unique_backends[0] if len(unique_backends) == 1 else None,
-        "backend_by_sample_id": dict(backend_by_sample_id),
-    }
-
-
 def _empty_sample_ids_from_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]) -> list[str]:
     return [
         str(loaded.slide.sample_id)
@@ -374,14 +360,6 @@ class _PooledFeatureExtractor:
                     pipeline.run(slides=build_slide_specs(self._images), tiling_only=True)
             return
 
-        backend_by_sample_id = probe_resolved_backends(
-            images=self._images,
-            requested_backend=cfg.tiling.backend,
-        )
-        backend_provenance = _backend_provenance_from_mapping(
-            requested_backend=cfg.tiling.backend,
-            backend_by_sample_id=backend_by_sample_id,
-        )
         cache_root = resolve_tiling_cache_root(
             self._cache,
             tiling_dir=tiling_dir,
@@ -391,9 +369,9 @@ class _PooledFeatureExtractor:
             cache_root=cache_root,
             images=self._images,
             preprocessing=cfg,
-            backend_provenance=backend_provenance,
             encoder_name=self._encoder.name,
             requested_preprocessing=_jsonable(self._preprocessing),
+            num_probe_workers=self._execution.resolved_num_preprocessing_workers(),
         )
         if cache_resolution.complete:
             write_tiling_cache_stub(tiling_dir, cache_resolution=cache_resolution)
@@ -419,9 +397,7 @@ class _PooledFeatureExtractor:
         with _suppress_logger_noise_ctx("cucim"):
             with _forward_tiling_progress_ctx():
                 pipeline.run(slides=build_slide_specs(self._images), tiling_only=True)
-        can_publish = str(cache_resolution.metadata.get("requested_backend")) == str(
-            backend_provenance.get("requested_backend")
-        )
+        can_publish = str(cache_resolution.metadata.get("requested_backend")) == str(cfg.tiling.backend)
         if can_publish and process_list_path.is_file():
             write_tiling_cache_payload(
                 live_dir=tiling_dir,
@@ -431,10 +407,10 @@ class _PooledFeatureExtractor:
                 cache_root=cache_root,
                 images=self._images,
                 preprocessing=cfg,
-                backend_provenance=backend_provenance,
                 encoder_name=self._encoder.name,
                 requested_preprocessing=_jsonable(self._preprocessing),
                 complete_state="populated",
+                check_backends=False,
             )
             if refreshed.complete:
                 write_tiling_cache_stub(tiling_dir, cache_resolution=refreshed)
