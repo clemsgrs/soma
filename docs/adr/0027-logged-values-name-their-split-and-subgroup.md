@@ -30,4 +30,4 @@ A run that held its test split out and selected on tune could not see a value pe
 - The run-summary panel and `soma leaderboard` take a pooled metric as the primary metric, never a subgroup key.
 - The progress panel shows the pooled values and the monitors; per-group values go to `training_history.json` only.
 - Subgroups and the train pass are for the set shape: the grid shape refuses both. A set-shape learner needs the `subgroup_summary` hook to run with subgroups.
-- With the `mil` learner, `tune/loss` weighs every sample the same. For a mean-reduced loss it equals the old mean of batch means when all batches have the same size, and differs slightly when the last batch is smaller. A fully censored Cox tune split now fails fast when best-epoch selection or early stopping monitors its loss.
+- With the `mil` learner, `tune/loss` no longer depends on the batch size. For a mean-reduced loss it equals the old mean of batch means when all batches have the same size, and differs slightly when the last batch is smaller. A fully censored Cox tune split now fails fast when best-epoch selection or early stopping monitors its loss.

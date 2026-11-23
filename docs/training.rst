@@ -98,7 +98,8 @@ The plan refuses any other name before the run starts:
   can lack the group, and the monitor then does not exist. The error names the
   mean over the column's groups instead.
 - A mean over a column that ``evaluation.subgroups`` does not name, or a metric
-  the head does not report.
+  the head does not report (checked for the ``mil`` and ``dense`` learners; with
+  a custom learner, an unknown key fails at the first evaluation).
 
 A monitor that is NaN at an evaluated epoch stops the run with an error, in
 ``early_stopping`` and in a ``checkpoint`` with ``selection: best``, because it
@@ -152,9 +153,8 @@ shows the pooled values and the monitors, and ``train/loss`` when the train pass
 is on. The values of each group go to ``training_history.json`` only.
 
 With the ``mil`` learner, ``tune/loss`` is the head's loss computed once over the
-whole tune split, not a mean of per-batch losses. Each sample weighs the same,
-whatever the batch size. With the ``dense`` learner, it is the mean of the batch
-losses.
+whole tune split, not a mean of per-batch losses. The value does not depend on
+the batch size. With the ``dense`` learner, it is the mean of the batch losses.
 
 ``train_loss`` is not an evaluation of the train split: see :ref:`train-pass`
 for how it differs from ``train/loss``.
