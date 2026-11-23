@@ -1096,6 +1096,30 @@ def test_fold_bundle_refuses_a_subset_that_is_not_a_split_of_a_bundle_s_fold(tmp
         predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset="test_external")
 
 
+def test_fold_bundle_refuses_the_train_subset(tmp_path, rotating):
+    """Each bundle was trained on its fold's train split, so it held none of it out."""
+    records, splits = rotating
+    bundles = fold_bundles(tmp_path, records, splits)
+
+    with pytest.raises(
+        ValueError, match=r"cohort.fold: bundle predicts only the slides each bundle held out.*explicit cohort\.fold"
+    ):
+        predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset="train")
+
+
+def test_fold_bundle_refuses_a_bundle_whose_fold_has_no_slides_in_the_subset(tmp_path, rotating):
+    """A fold with no tune rows still has a ``tune`` split, an empty one: its bundle would
+    predict nothing and be missing from the output without a word."""
+    records, splits = rotating
+    edited = pd.DataFrame(ROTATING)
+    edited.loc[4, "split"] = "train"  # fold 1 tunes on nothing
+    edited.to_csv(splits, index=False)
+    bundles = fold_bundles(tmp_path, records, splits)
+
+    with pytest.raises(ValueError, match=r"cohort.subset 'tune' of fold 1 of bundle .*fold_1/bundle has no slides in it"):
+        predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset="tune")
+
+
 def test_a_stopped_fold_bundle_prediction_resumes_to_the_bytes_of_an_uninterrupted_one(
     tmp_path, rotating, encoder_forwards, monkeypatch
 ):

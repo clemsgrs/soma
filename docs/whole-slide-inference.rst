@@ -452,13 +452,16 @@ These are refused with ``cohort.fold: bundle``:
 
 - no ``cohort.splits``;
 - ``predict.ensemble: true``, because the bundles predict different slides;
+- ``cohort.subset: train``, because each bundle was trained on it. To predict
+  training slides, use an explicit ``cohort.fold``;
 - a bundle that records no ``fold_assignments``: one saved by an older soma, or
   by :func:`soma.save` without a fold. Predict such bundles with one config per
   fold instead: ``predict.bundles: runs/beetle/fold_<k>/bundle`` with
   ``cohort.fold: <k>``, each into its own ``predict.output_dir``;
 - a bundle whose fold ``cohort.splits`` assigns differently from the splits it
   was trained on, or does not have;
-- a ``cohort.subset`` that is not a split of a bundle's fold.
+- a ``cohort.subset`` that is not a split of a bundle's fold, or has no slides
+  in it (such as ``tune`` in a fold with no tune rows).
 
 Two bundles may record the same fold, such as ``runs/uni2/fold_0/bundle`` and
 ``runs/virchow2/fold_0/bundle`` trained on the same splits. Both predict the

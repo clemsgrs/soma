@@ -147,7 +147,8 @@ def predict_slides(
     bundle the ``subset`` split of its own fold, the ``fold`` its ``provenance.json``
     records. The bundle must also record that fold's ``fold_assignments``
     (:meth:`soma.data.FoldSplit.assignments_digest`), and ``splits`` must assign the fold
-    the same way; ``ensemble`` is refused with it. ``ensemble`` writes one file per
+    the same way; ``ensemble`` and ``subset="train"`` are refused with it, and so is a
+    bundle whose fold has no slides in ``subset``. ``ensemble`` writes one file per
     slide instead of one per bundle: the argmax of the bundles' mean softmax (to average,
     each tile's softmax is that mean), or the peaks of their mean heatmap, with no
     threshold recorded.
@@ -236,6 +237,12 @@ def resolve_slide_prediction(
             "gives each bundle the slides of its own fold, so the bundles do not predict the "
             "same slides. Predict a split they all held out with an explicit cohort.fold, or "
             "set predict.ensemble: false."
+        )
+    if fold == BUNDLE_FOLD and subset == "train":
+        raise ValueError(
+            "cohort.fold: bundle predicts only the slides each bundle held out, but "
+            "cohort.subset: train is the split each bundle was trained on. To predict "
+            "training slides, set an explicit cohort.fold."
         )
     for name, value, minimum in (("batch_size", batch_size, 1), ("num_workers", num_workers, 0)):
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
@@ -660,7 +667,15 @@ def _work(plan: Mapping[str, Any]) -> tuple[list[tuple[Any, tuple[int, ...]]], l
     carriers: dict[str, list[int]] = {}
     for index, (path, entry) in enumerate(zip(bundles, recorded)):
         where = f"fold {entry['fold']} of bundle {path}"
-        for sid in _subset(folds[entry["fold"]], cohort["subset"], where=where):
+        wanted = _subset(folds[entry["fold"]], cohort["subset"], where=where)
+        if not wanted:
+            # A fold with no tune rows still has a tune split, an empty one.
+            raise ValueError(
+                f"cohort.subset {cohort['subset']!r} of {where} has no slides in it, so the "
+                "bundle would predict nothing. Predict another subset, or leave the bundle "
+                "out of predict.bundles."
+            )
+        for sid in wanted:
             carriers.setdefault(sid, []).append(index)
     return [(manifest[sid], tuple(carriers[sid])) for sid in manifest.sample_ids if sid in carriers], recorded
 
