@@ -1184,6 +1184,38 @@ def invalidate_sample_identities(
     return replace(resolution, metadata=metadata)
 
 
+def resolve_whole_entry(resolution: FeatureCacheResolution) -> FeatureCacheResolution:
+    """``resolution``'s entry, resolved for every sample it holds a record or a payload for.
+
+    A resolution covers one run's samples, but several datasets share an entry: its key
+    ignores the dataset. The metadata is read again from disk, so the commits of the run
+    that just ended count. Each sample is resolved against the signature it is recorded
+    under, so it is held when an extraction committed it and its payload is on disk; a
+    payload no extraction committed is missing. Flat layout only: one ``<sample_id>.pt``
+    per sample, as tile, slide, patient and hierarchical entries store them.
+    """
+    if resolution.payload_stem_by_id is not None or resolution.identity_key_by_id is not None:
+        raise ValueError(f"resolve_whole_entry needs a flat entry, not {resolution.cache_dir}")
+    metadata = _load_metadata(resolution.metadata_path)
+    signatures = {
+        str(cache_id): str(signature)
+        for cache_id, signature in metadata.get("sample_identity_signature_by_id", {}).items()
+    }
+    payload_ids = {
+        name.removesuffix(".pt")
+        for name in _list_feature_filenames(resolution.features_dir)
+        if name.endswith(".pt") and "/" not in name and name != PACKED_FILENAME
+    }
+    cache_ids = tuple(sorted(set(signatures) | payload_ids))
+    whole = replace(
+        resolution,
+        cache_ids=cache_ids,
+        # An uncommitted payload has no signature to match.
+        cache_stem_by_id={cache_id: signatures.get(cache_id, "") for cache_id in cache_ids},
+    )
+    return _refresh_feature_cache_resolution(whole, metadata)
+
+
 def _commit_samples(
     resolution: FeatureCacheResolution,
     cache_ids: Sequence[str],

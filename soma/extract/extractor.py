@@ -11,7 +11,7 @@ import shutil
 import tempfile
 from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Iterator, Sequence
+from typing import Callable, Collection, Iterator, Sequence
 
 from slide2vec import ExecutionOptions, Pipeline, PreprocessingConfig
 from slide2vec.encoders.registry import (
@@ -44,6 +44,7 @@ from soma.extract.cache import (
     resolve_tiling_cache,
     resolve_tiling_cache_root,
     resolve_tile_cache,
+    resolve_whole_entry,
     write_tiling_cache_payload,
     write_tiling_cache_stub,
 )
@@ -701,8 +702,12 @@ class _PooledFeatureExtractor:
         feature_dir: Path,
         *,
         cache_resolution: FeatureCacheResolution,
+        missing: Collection[str] = (),
     ) -> None:
-        """Write the run-owned manifest pointing to reusable shared payloads."""
+        """Write a manifest of ``cache_resolution``'s samples pointing to their shared payloads.
+
+        A sample of ``missing`` is listed ``tbp``, so a reader does not serve its payload.
+        """
         metadata = cache_resolution.metadata
         sample_ids = cache_resolution.cache_ids
         empty_sample_ids = cache_resolution.empty_sample_ids
@@ -736,6 +741,8 @@ class _PooledFeatureExtractor:
         rows = []
         for sample_id in sample_ids:
             feature_status = "empty" if sample_id in empty_sample_ids else "success"
+            if sample_id in missing:
+                feature_status = "tbp"
             feature_path = ""
             if feature_status == "success":
                 feature_path = str(cache_resolution.feature_path_for_id(sample_id).resolve())
@@ -761,6 +768,16 @@ class _PooledFeatureExtractor:
             writer = csv.DictWriter(handle, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
+
+    def _write_cache_entry_process_list(self, cache_resolution: FeatureCacheResolution) -> None:
+        """Rewrite the entry's own manifest from what the entry holds, whichever run extracted it.
+
+        slide2vec leaves the run's tiling list there. It names every slide tiled with the
+        entry's settings, from any dataset, but marks only the slides this run embedded.
+        """
+        entry = resolve_whole_entry(cache_resolution)
+        missing = set(entry.missing_sample_ids())
+        self._write_cached_process_list(entry.cache_dir, cache_resolution=entry, missing=missing)
 
     def _materialize_feature_dir_from_cache(
         self,
@@ -1519,35 +1536,37 @@ class _PooledFeatureExtractor:
             wanted_ids=wanted,
             empty_ids=set(empty_sample_ids),
         )
-        if not selected_loaded:
+        try:
+            if selected_loaded:
+                with _slide2vec_output_dir(cache_resolution) as output_dir:
+                    execution = execution_options(
+                        self._execution,
+                        encoder_name=encoder_name,
+                        output_dir=output_dir,
+                        num_gpus=num_gpus,
+                        save_tile_embeddings=True,
+                        output_dtype=self._resolved_dtype(encoder_name=encoder_name),
+                    )
+                    commit = self._artifact_cache_committer(cache_resolution)
+
+                    artifacts = _embed_tile_artifacts_with_coordinates(
+                        model_name=encoder_name,
+                        output_variant=output_variant,
+                        allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                        preprocessing=preprocessing,
+                        execution=execution,
+                        tiling_dir=tiling_dir,
+                        slides=[loaded.slide for loaded in selected_loaded],
+                        on_slide_persisted=lambda artifact: commit([artifact]),
+                    )
+                    # Reconcile returned artifacts in case upstream omitted a callback.
+                    commit(artifacts)
             if empty_sample_ids:
                 record_empty_sample_ids(cache_resolution, empty_sample_ids)
-            return
-        with _slide2vec_output_dir(cache_resolution) as output_dir:
-            execution = execution_options(
-                self._execution,
-                encoder_name=encoder_name,
-                output_dir=output_dir,
-                num_gpus=num_gpus,
-                save_tile_embeddings=True,
-                output_dtype=self._resolved_dtype(encoder_name=encoder_name),
-            )
-            commit = self._artifact_cache_committer(cache_resolution)
-
-            artifacts = _embed_tile_artifacts_with_coordinates(
-                model_name=encoder_name,
-                output_variant=output_variant,
-                allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-                preprocessing=preprocessing,
-                execution=execution,
-                tiling_dir=tiling_dir,
-                slides=[loaded.slide for loaded in selected_loaded],
-                on_slide_persisted=lambda artifact: commit([artifact]),
-            )
-            # Reconcile returned artifacts in case upstream omitted a callback.
-            commit(artifacts)
-        if empty_sample_ids:
-            record_empty_sample_ids(cache_resolution, empty_sample_ids)
+        finally:
+            # A content-addressed entry has no manifest: slide2vec wrote to a scratch dir.
+            if cache_resolution.identity_key_by_id is None:
+                self._write_cache_entry_process_list(cache_resolution)
 
     def _populate_hierarchical_cache(
         self,
@@ -1571,34 +1590,34 @@ class _PooledFeatureExtractor:
             wanted_ids=wanted,
             empty_ids=set(empty_sample_ids),
         )
-        if not selected_loaded:
+        try:
+            if selected_loaded:
+                execution = execution_options(
+                    self._execution,
+                    encoder_name=encoder_name,
+                    output_dir=cache_resolution.cache_dir,
+                    num_gpus=num_gpus,
+                    save_tile_embeddings=True,
+                    output_dtype=self._resolved_dtype(encoder_name=encoder_name),
+                )
+                commit = self._artifact_cache_committer(cache_resolution)
+
+                artifacts = _embed_hierarchical_artifacts_with_coordinates(
+                    model_name=encoder_name,
+                    output_variant=output_variant,
+                    allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
+                    preprocessing=preprocessing,
+                    execution=execution,
+                    tiling_dir=tiling_dir,
+                    slides=[loaded.slide for loaded in selected_loaded],
+                    on_slide_persisted=lambda artifact: commit([artifact]),
+                )
+                # Reconcile returned artifacts in case upstream omitted a callback.
+                commit(artifacts)
             if empty_sample_ids:
                 record_empty_sample_ids(cache_resolution, empty_sample_ids)
-            return
-        execution = execution_options(
-            self._execution,
-            encoder_name=encoder_name,
-            output_dir=cache_resolution.cache_dir,
-            num_gpus=num_gpus,
-            save_tile_embeddings=True,
-            output_dtype=self._resolved_dtype(encoder_name=encoder_name),
-        )
-        commit = self._artifact_cache_committer(cache_resolution)
-
-        artifacts = _embed_hierarchical_artifacts_with_coordinates(
-            model_name=encoder_name,
-            output_variant=output_variant,
-            allow_non_recommended_settings=self._encoder.allow_non_recommended_settings,
-            preprocessing=preprocessing,
-            execution=execution,
-            tiling_dir=tiling_dir,
-            slides=[loaded.slide for loaded in selected_loaded],
-            on_slide_persisted=lambda artifact: commit([artifact]),
-        )
-        # Reconcile returned artifacts in case upstream omitted a callback.
-        commit(artifacts)
-        if empty_sample_ids:
-            record_empty_sample_ids(cache_resolution, empty_sample_ids)
+        finally:
+            self._write_cache_entry_process_list(cache_resolution)
 
     def _populate_slide_cache(
         self,
