@@ -6,8 +6,8 @@ encoder stage its models share, and decoded by every model
 (:func:`~soma.models.model.forward_sharing_encoder`). The class of each pixel goes into a
 rolling band of map rows, and full rows of the band go, in order, to hs2p's label-TIFF
 writer (:func:`hs2p.write_label_tiff`). Neither a slide's map nor all of its tiles' outputs
-are ever held in memory: only the band, a few rows of tiles in flight to the writer, and
-the writer's own reduced level.
+are ever held in memory: only the band (and, to average, the float sums of one tile's
+rows), a few rows of tiles in flight to the writer, and the writer's own reduced level.
 
 Output frame
 ------------
@@ -31,11 +31,23 @@ pixel per tile. The error stays inside each tile: it never accumulates across th
 
 Stitching
 ---------
-Pick one: each map pixel takes the class of exactly one tile. A tile contributes
-``[origin + margin, origin + tile - margin)`` on each axis, and from ``0`` on an axis where
-its lattice index is 0, so the map starts at pixel 0. With ``overlap: 0`` (no margin) each
-tile contributes its whole output. Map pixels no kept tile contributes are 0, "not
-predicted"; so are the margins a tile gives up next to a tile that was not kept.
+``stitch`` names how overlapping tiles are combined (:data:`STITCHES`).
+
+``pick_one``, the default: each map pixel takes the class of exactly one tile. A tile
+contributes ``[origin + margin, origin + tile - margin)`` on each axis, and from ``0`` on
+an axis where its lattice index is 0, so the map starts at pixel 0. With ``overlap: 0`` (no
+margin) each tile contributes its whole output. Map pixels no kept tile contributes are 0,
+"not predicted"; so are the margins a tile gives up next to a tile that was not kept.
+
+``average``: each map pixel is the argmax of the Hann-weighted mean softmax of every kept
+tile that covers it; with ``ensemble``, each tile's softmax is first the mean over the
+models. The window is :func:`_hann2d`, strictly positive, the one
+:class:`~soma.evaluation.sliding_window.SlidingWindowSegmentationPredictor` blends with.
+A tile adds its whole output, so next to a tile that was not kept, averaging labels the
+margin that pick one gives up, from the kept tile alone. Map pixels no kept tile covers
+are 0. The sums are float32, one plane per class, over one tile's height of rows and the
+map's width; a row goes to the band once no later tile row covers it. With ``overlap: 0``
+each pixel has one tile, and averaging writes the map picking does.
 
 Values: class ``k`` is written as ``k + 1``.
 """
@@ -57,7 +69,7 @@ from soma.data.images import RegionImageSource
 from soma.data.manifests import ImageEntry
 from soma.models.model import forward_sharing_encoder, mean_softmax
 
-__all__ = ["SlideFrame", "predict_slide_label_maps", "stitch_margin_px", "WRITE_TILE_PX"]
+__all__ = ["SlideFrame", "STITCHES", "predict_slide_label_maps", "stitch_margin_px", "WRITE_TILE_PX"]
 
 #: Side of the square tiles a label TIFF is stored in (hs2p needs a multiple of 16).
 WRITE_TILE_PX = 256
@@ -65,6 +77,10 @@ WRITE_TILE_PX = 256
 MAX_CLASSES = 255
 #: How often a blocked hand-over to a writer checks that the writer is still running.
 _POLL_SECONDS = 0.5
+#: How the overlapping tiles of a map are combined (``predict.stitch``); the first is the default.
+STITCHES = ("pick_one", "average")
+#: The rows of averaged sums turned into classes at a time: it bounds the temporaries.
+_RELEASE_ROWS = 32
 
 
 def stitch_margin_px(tile_px: int, overlap: float) -> int:
@@ -87,6 +103,23 @@ def stitch_margin_px(tile_px: int, overlap: float) -> int:
             f"overlap whose margin is whole, such as {nearest!r}."
         )
     return int(round(margin))
+
+
+def _hann2d(height: int, width: int) -> np.ndarray:
+    """Separable raised-cosine window, **strictly positive** everywhere (float32).
+
+    Pixel ``i`` of ``n`` on each axis weighs ``0.5 - 0.5 * cos(2 * pi * (i + 1) / (n + 1))``:
+    no zero endpoints, so overlapping tiles blend smoothly and the summed weight is never
+    zero where a tile covers. A degenerate dim (length 1) is uniform.
+    """
+
+    def _w(n: int) -> np.ndarray:
+        if n <= 1:
+            return np.ones(n, dtype=np.float32)
+        i = np.arange(1, n + 1, dtype=np.float32)
+        return (0.5 - 0.5 * np.cos(2.0 * np.pi * i / (n + 1))).astype(np.float32)
+
+    return np.outer(_w(height), _w(width)).astype(np.float32)
 
 
 @dataclass(frozen=True)
@@ -235,9 +268,9 @@ class _LabelTiffStream:
 class _Band:
     """The map rows still being filled: full rows of storage tiles go to ``stream``.
 
-    Tiles arrive in row order of the lattice, so the first row a tile writes never
-    decreases: every map row above it is final. The band holds one row of storage tiles
-    plus one model tile, enough for any tile's rows.
+    Writes arrive in row order, so the first row a write touches never decreases: every
+    map row above it is final. The band holds one row of storage tiles plus one model
+    tile, enough for any write (at most a tile's rows).
     """
 
     def __init__(self, frame: SlideFrame, stream: _LabelTiffStream, tile_px: int) -> None:
@@ -249,15 +282,19 @@ class _Band:
         self.not_predicted = 0
 
     def place(self, x: int, y: int, values: np.ndarray) -> None:
+        """Pick one: write the part of the tile at level-0 ``(x, y)`` that it contributes."""
         (row_first, row_stop), (col_first, col_stop) = self._frame.contribution(x, y)
         if row_stop <= row_first or col_stop <= col_first:
             return
-        while self._top + self._tile_px <= row_first:
-            self._emit()
         column, row = self._frame.origin(x, y)
-        self._rows[row_first - self._top : row_stop - self._top, col_first:col_stop] = values[
-            row_first - row : row_stop - row, col_first - column : col_stop - column
-        ]
+        self.write(row_first, col_first, values[row_first - row : row_stop - row, col_first - column : col_stop - column])
+
+    def write(self, row: int, column: int, values: np.ndarray) -> None:
+        """Write ``values`` from map ``(column, row)``: every row above ``row`` is final."""
+        while self._top + self._tile_px <= row:
+            self._emit()
+        rows, cols = values.shape
+        self._rows[row - self._top : row - self._top + rows, column : column + cols] = values
 
     def finish(self) -> None:
         while self._top < self._frame.height:
@@ -273,6 +310,79 @@ class _Band:
         self._rows[: -self._tile_px] = self._rows[self._tile_px :]
         self._rows[-self._tile_px :] = 0
         self._top += self._tile_px
+
+
+class _AveragingBand:
+    """Average: the map rows tiles still add to, as Hann-weighted sums of softmax. Once no
+    later tile covers a row, its classes go to ``labels``.
+
+    Tiles arrive in row order of the lattice, so a tile at map row ``row`` covers no row
+    above it: those rows are final. The sums hold one tile's height of rows, one float32
+    plane per class. A pixel's weight is the same for every class, so the argmax of its
+    weighted sum is that of its weighted mean, and no plane of weights is kept. A pixel no
+    tile covered has a zero sum, and is 0, not predicted.
+    """
+
+    def __init__(self, frame: SlideFrame, labels: _Band, num_classes: int) -> None:
+        self._frame = frame
+        self._labels = labels
+        self._window = _hann2d(frame.tile_px, frame.tile_px)
+        self._sums = np.zeros((num_classes, frame.tile_px, frame.width), dtype=np.float32)
+        self._top = 0
+
+    @property
+    def not_predicted(self) -> int:
+        return self._labels.not_predicted
+
+    def place(self, x: int, y: int, probabilities: np.ndarray) -> None:
+        """Add the ``(classes, tile, tile)`` softmax of the tile at level-0 ``(x, y)``."""
+        column, row = self._frame.origin(x, y)
+        self._release(row)
+        rows = min(self._frame.tile_px, self._frame.height - row)
+        cols = min(self._frame.tile_px, self._frame.width - column)
+        if rows <= 0 or cols <= 0:
+            return
+        self._sums[:, :rows, column : column + cols] += probabilities[:, :rows, :cols] * self._window[:rows, :cols]
+
+    def finish(self) -> None:
+        self._release(self._frame.height)
+        self._labels.finish()
+
+    def _release(self, row: int) -> None:
+        """Hand the rows above map row ``row`` to the labels, and move the sums up."""
+        count = min(row, self._frame.height) - self._top
+        if count <= 0:
+            return
+        # Rows below the sums were covered by no tile: the labels already hold them as 0.
+        final = min(count, self._frame.tile_px)
+        for start in range(0, final, _RELEASE_ROWS):
+            stop = min(start + _RELEASE_ROWS, final)
+            self._labels.write(self._top + start, 0, _classes(self._sums[:, start:stop]))
+        keep = self._frame.tile_px - final
+        # Move the rows up one class plane and one chunk at a time: the source and the
+        # target of each copy then do not overlap in memory, and NumPy copies no temporary.
+        for plane in self._sums:
+            for start in range(0, keep, final):
+                stop = min(start + final, keep)
+                plane[start:stop] = plane[start + final : stop + final]
+        self._sums[:, keep:] = 0
+        self._top += count
+
+
+def _classes(sums: np.ndarray) -> np.ndarray:
+    """The class + 1 of the largest of ``(classes, rows, width)`` sums, ``(rows, width)``
+    uint8: the first class on a tie, as ``argmax``, and 0 where every sum is 0 (no tile
+    covered the pixel). One class at a time, as ``argmax`` over the first axis would copy
+    the sums and return int64."""
+    best = sums[0].copy()
+    labels = np.ones(best.shape, dtype=np.uint8)
+    larger = np.empty(best.shape, dtype=bool)
+    for k in range(1, len(sums)):
+        np.greater(sums[k], best, out=larger)
+        labels[larger] = k + 1
+        np.maximum(best, sums[k], out=best)
+    labels[best <= 0] = 0
+    return labels
 
 
 class _Tiles(Dataset):
@@ -299,6 +409,7 @@ def predict_slide_label_maps(
     metadata: Sequence[Mapping[str, Any]],
     spacing_um: float,
     ensemble: bool = False,
+    stitch: str = "pick_one",
     backend: str = "auto",
     tolerance: float = 0.05,
     batch_size: int = 8,
@@ -312,14 +423,19 @@ def predict_slide_label_maps(
     built for. Each tile is read at ``spacing_um`` (``tolerance``, ``backend``) from
     ``image``. Without ``ensemble`` there is one path (and one ``metadata`` mapping, stored
     in the file) per model, and each map holds that model's classes; with it there is one
-    path, and the map holds the argmax of the models' mean softmax. A slide without a kept
-    tile gets an all-zero map. Returns each map's not-predicted fraction.
+    path, and the map holds the argmax of the models' mean softmax. ``stitch`` combines
+    overlapping tiles (see the module docstring): ``pick_one`` or ``average``. A slide
+    without a kept tile gets an all-zero map. Returns each map's not-predicted fraction.
     """
     models = list(models)
     paths = [Path(path) for path in paths]
     expected = 1 if ensemble else len(models)
     if not models:
         raise ValueError("predict_slide_label_maps needs at least one model")
+    if stitch not in STITCHES:
+        raise ValueError(f"stitch must be {' or '.join(map(repr, STITCHES))}, got {stitch!r}")
+    # With no margin every pixel has one tile, and averaging writes the map picking does.
+    average = stitch == "average" and frame.margin_px > 0
     if len(paths) != expected or len(metadata) != expected:
         raise ValueError(f"{expected} map(s) to write, got {len(paths)} path(s) and {len(metadata)} metadata")
     for model in models:
@@ -335,12 +451,16 @@ def predict_slide_label_maps(
         for path, meta in zip(paths, metadata)
     ]
     bands = [_Band(frame, stream, WRITE_TILE_PX) for stream in streams]
+    if average:
+        classes = [models[0].head.num_classes] if ensemble else [model.head.num_classes for model in models]
+        bands = [_AveragingBand(frame, band, int(count)) for band, count in zip(bands, classes)]
     try:
         for batch_origins, values in _predicted_tiles(
             models,
             image=image,
             origins=ordered,
             ensemble=ensemble,
+            average=average,
             spacing_um=spacing_um,
             backend=backend,
             tolerance=tolerance,
@@ -368,14 +488,16 @@ def _predicted_tiles(
     image: ImageEntry,
     origins: Sequence[tuple[int, int]],
     ensemble: bool,
+    average: bool,
     spacing_um: float,
     backend: str,
     tolerance: float,
     batch_size: int,
     num_workers: int,
 ):
-    """Yield ``(origins, values)`` per batch: ``values`` holds one ``(B, tile, tile)``
-    uint8 array per map, class ``k`` as ``k + 1``."""
+    """Yield ``(origins, values)`` per batch: ``values`` holds one array per map, the
+    ``(B, tile, tile)`` uint8 classes, class ``k`` as ``k + 1``, or with ``average`` the
+    ``(B, classes, tile, tile)`` float32 softmax."""
     if not origins:
         return
     source = tile_source(
@@ -384,6 +506,13 @@ def _predicted_tiles(
     for batch_origins, outputs in tile_outputs(
         models, source=source, origins=origins, batch_size=batch_size, num_workers=num_workers
     ):
+        if average:
+            if ensemble:
+                softmax = [mean_softmax(outputs).float()]
+            else:
+                softmax = [torch.softmax(output.logits.float(), dim=1) for output in outputs]
+            yield batch_origins, [probabilities.cpu().numpy() for probabilities in softmax]
+            continue
         if ensemble:
             maps = [mean_softmax(outputs).argmax(dim=1).to(torch.uint8).cpu().numpy()]
         else:

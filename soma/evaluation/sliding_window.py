@@ -14,8 +14,9 @@ Two sliding axes, deliberately distinct (do not conflate):
 * **Outer / pixel space** — *this module* slides the *whole trained tile* over the
   *image* and blends *softmaxes*. It wraps the model forward; the model is unchanged.
 
-The two share only the cover rule (:func:`soma.extract.dense.sliding.cover_origins`); the Hann
-blend lives in each axis's own space (token-grid torch vs pixel-canvas numpy).
+The two share only the cover rule (:func:`soma.extract.dense.sliding.cover_origins`). The
+pixel-space Hann window is the one whole-slide averaging uses
+(:mod:`soma.evaluation.whole_slide`).
 
 Spacing: the trained model expects its tiles at the **training read-spacing**. Pyramidal
 inputs (multi-resolution TIFF) are read at that spacing by the dense reader directly. A
@@ -43,6 +44,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from soma.data.geometry import DenseGridGeometry
+from soma.evaluation.whole_slide import _hann2d
 from soma.extract.dense.reader import read_image_at_spacing
 from soma.extract.dense.sliding import cover_origins
 from soma.models.model import forward_sharing_encoder, mean_softmax
@@ -90,23 +92,6 @@ def _raw_pixels(crops: Sequence[np.ndarray]) -> torch.Tensor:
     :class:`~soma.models.model.DenseModel` hands an image-prior decoder."""
     pixels = torch.from_numpy(np.ascontiguousarray(np.stack(crops)))
     return pixels.permute(0, 3, 1, 2).contiguous()
-
-
-def _hann2d(height: int, width: int) -> np.ndarray:
-    """Separable raised-cosine window, **strictly positive** everywhere (float32).
-
-    Same family as :func:`soma.extract.dense.sliding._hann_1d` (``0.5 - 0.5*cos(2*pi*(i+1)/(n+1))``,
-    no zero endpoints) so overlapping tiles blend smoothly and the accumulated weight is
-    never zero where a tile covers. A degenerate dim (length 1) is uniform.
-    """
-
-    def _w(n: int) -> np.ndarray:
-        if n <= 1:
-            return np.ones(n, dtype=np.float32)
-        i = np.arange(1, n + 1, dtype=np.float32)
-        return (0.5 - 0.5 * np.cos(2.0 * np.pi * i / (n + 1))).astype(np.float32)
-
-    return np.outer(_w(height), _w(width)).astype(np.float32)
 
 
 @dataclass
