@@ -467,9 +467,11 @@ def predict_slide_label_maps(
             batch_size=batch_size,
             num_workers=num_workers,
         ):
-            for band, maps in zip(bands, values):
+            # Strict: draining ``values`` to its end also frees the batch's encoder grid.
+            for band, maps in zip(bands, values, strict=True):
                 for (x, y), labels in zip(batch_origins, maps):
                     band.place(x, y, labels)
+            del values, maps, labels  # not held while the next batch is decoded
         for band in bands:
             band.finish()
         for stream in streams:
@@ -495,9 +497,11 @@ def _predicted_tiles(
     batch_size: int,
     num_workers: int,
 ):
-    """Yield ``(origins, values)`` per batch: ``values`` holds one array per map, the
+    """Yield ``(origins, values)`` per batch: ``values`` gives one array per map, the
     ``(B, tile, tile)`` uint8 classes, class ``k`` as ``k + 1``, or with ``average`` the
-    ``(B, classes, tile, tile)`` float32 softmax."""
+    ``(B, classes, tile, tile)`` float32 softmax. With ``average`` and without ``ensemble``,
+    each array is computed when it is asked for: consume ``values`` to its end before the
+    next batch."""
     if not origins:
         return
     source = tile_source(
@@ -507,11 +511,12 @@ def _predicted_tiles(
         models, source=source, origins=origins, batch_size=batch_size, num_workers=num_workers
     ):
         if average:
-            # Each bundle's softmax goes to the host before the next bundle is decoded.
             if ensemble:
                 yield batch_origins, [mean_softmax(outputs).float().cpu().numpy()]
             else:
-                yield batch_origins, [torch.softmax(o.logits.float(), dim=1).cpu().numpy() for o in outputs]
+                # Each bundle's softmax goes to the host, and into its band, before the
+                # next bundle is decoded.
+                yield batch_origins, (torch.softmax(o.logits.float(), dim=1).cpu().numpy() for o in outputs)
             continue
         if ensemble:
             maps = [mean_softmax(outputs).argmax(dim=1).to(torch.uint8).cpu().numpy()]

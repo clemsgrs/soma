@@ -293,24 +293,26 @@ def test_average_takes_the_argmax_of_the_hann_weighted_mean_softmax(tmp_path, co
     np.testing.assert_array_equal(maps["average"], np.tile([1] * 20 + [2] * 22 + [0] * 6, (32, 1)))
 
 
-#: A second bundle's table: tile 0 prefers class 1 more strongly than :data:`TABLE`'s.
-OTHER_TABLE = [[0.2, 0.7, 0.1], [0.05, 0.05, 0.9], [0.6, 0.2, 0.2]]
+#: A second bundle's table: tile 0 prefers class 0 and tile 1 class 1.
+OTHER_TABLE = [[0.6, 0.2, 0.2], [0.05, 0.9, 0.05], [0.6, 0.2, 0.2]]
 
 
 def test_average_writes_each_bundle_s_map_or_averages_the_ensemble_s_mean_softmax(tmp_path, column_softmax):
     """At column 20 (``w(20) = 0.827``, ``w(4) = 0.210``): bundle a alone gives
-    ``[0.170, 0.409, 0.421]``, class 2, and bundle b alone ``[0.170, 0.568, 0.262]``,
-    class 1. The ensemble averages each tile's mean softmax over the two, tile 0's
-    ``[0.2, 0.6, 0.2]``: ``[0.170, 0.489, 0.342]``, class 1."""
+    ``[0.170, 0.409, 0.421]``, class 2, and bundle b alone ``[0.489, 0.342, 0.170]``,
+    class 0. The ensemble averages each tile's softmax over the two, tile 0's
+    ``[0.4, 0.35, 0.25]`` and tile 1's ``[0.05, 0.475, 0.475]``: ``[0.329, 0.375, 0.296]``,
+    class 1. Pick one would take tile 0's class 0."""
     records = column_slide(tmp_path)
     bundles = [
         save_bundle(tmp_path / name / "bundle", decoder=column_softmax(table))
         for name, table in (("a", TABLE), ("b", OTHER_TABLE))
     ]
     w0, w1 = hann(20), hann(4)
-    ensemble_tile_0 = (np.array(TABLE[0]) + np.array(OTHER_TABLE[0])) / 2
-    np.testing.assert_allclose((w0 * np.array(OTHER_TABLE[0]) + w1 * np.array(OTHER_TABLE[1])) / (w0 + w1), [0.170, 0.568, 0.262], atol=5e-4)
-    np.testing.assert_allclose((w0 * ensemble_tile_0 + w1 * np.array(TABLE[1])) / (w0 + w1), [0.170, 0.489, 0.342], atol=5e-4)
+    ensemble_tile_0, ensemble_tile_1 = (np.array(TABLE[:2]) + np.array(OTHER_TABLE[:2])) / 2
+    np.testing.assert_allclose((w0 * np.array(OTHER_TABLE[0]) + w1 * np.array(OTHER_TABLE[1])) / (w0 + w1), [0.489, 0.342, 0.170], atol=5e-4)
+    np.testing.assert_allclose(ensemble_tile_0, [0.4, 0.35, 0.25])
+    np.testing.assert_allclose((w0 * ensemble_tile_0 + w1 * ensemble_tile_1) / (w0 + w1), [0.329, 0.375, 0.296], atol=5e-4)
 
     def column_20(output_dir, **kwargs) -> dict[str, np.ndarray]:
         index = soma.predict_slides(
@@ -322,7 +324,7 @@ def test_average_writes_each_bundle_s_map_or_averages_the_ensemble_s_mean_softma
     ensemble = column_20(tmp_path / "ensemble", ensemble=True)
 
     assert sorted(each) == ["a", "b"]
-    assert (each["a"] == 2).all() and (each["b"] == 1).all()
+    assert (each["a"] == 2).all() and (each["b"] == 0).all()
     assert list(ensemble) == ["ensemble"] and (ensemble["ensemble"] == 1).all()
 
 
