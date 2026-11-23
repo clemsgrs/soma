@@ -225,8 +225,7 @@ def run_primary_metric(summary: dict[str, float], split: str) -> str | None:
 
     Mirrors the run-summary panel in ``soma/pipeline/console.py``: the first metric key under the
     split prefix that is not a ``_std`` companion, a provenance bookkeeping field, nor a
-    subgroup key (``centre=A/auroc``, ``mean_over_centre/auroc``), so it stays pooled. A
-    split named ``test/external`` still ranks on ``test`` with ``external/mean_dice``.
+    subgroup key (``centre=A/auroc``, ``mean_over_centre/auroc``), so it stays pooled.
     """
     prefix = f"{split}/"
     for key in summary:

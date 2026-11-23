@@ -70,6 +70,7 @@ Splits format
   | Required columns: ``sample_id``, ``split``.
   | Optional column: ``fold`` (integer). Omit it for a single train/tune/test split; include distinct values (0, 1, 2, …) for cross-validation.
   | Valid split names: ``train``, ``tune``, or any name starting with ``test`` (e.g. ``test``, ``test_external``).
+  | A split name must not contain ``/``. Metric keys use ``/`` to separate the split from the metric (``test/auroc``), so a name like ``test/external`` is refused when the cohort loads. Use ``test_external`` instead.
   | Every fold must contain at least one test split, unless ``cohort.tune_is_test`` uses its tune split for both roles.
 
 Use explicit test split names for multiple held-out cohorts. See
