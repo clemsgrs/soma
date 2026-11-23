@@ -110,6 +110,7 @@ from soma.extract.cache.features import (
     resolve_patient_cache,
     resolve_slide_cache,
     resolve_tile_cache,
+    resolve_whole_entry,
 )
 
 __all__ = [
@@ -163,6 +164,7 @@ __all__ = [
     "resolve_tile_cache",
     "resolve_tiling_cache",
     "resolve_tiling_cache_root",
+    "resolve_whole_entry",
     "roi_sampling_signature",
     "sample_identity_signature",
     "write_cache_payload",
