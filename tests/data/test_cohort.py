@@ -117,6 +117,15 @@ def test_invalid_split_name_is_rejected() -> None:
         Cohort.from_frames(_records_df(), splits, targets=["label"])
 
 
+def test_a_missing_split_in_a_nullable_string_column_is_an_invalid_split_name() -> None:
+    """A nullable ``string`` column holds ``pd.NA``, whose truth value is ambiguous, so the
+    split-name check must reject it as a non-string before comparing it to a name."""
+    splits = _splits_df().astype({"split": "string"})
+    splits.loc[0, "split"] = pd.NA
+    with pytest.raises(ValueError, match="Invalid split name"):
+        Cohort.from_frames(_records_df(), splits, targets=["label"])
+
+
 def test_fold_without_test_split_is_rejected() -> None:
     splits = _splits_df().replace({"test": "tune"})
     with pytest.raises(ValueError, match="test"):

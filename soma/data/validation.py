@@ -86,7 +86,9 @@ def is_valid_test_split_name(name: object) -> bool:
 def is_valid_split_name(name: object) -> bool:
     """A split name is ``train``, ``tune``, or a test split name
     (:func:`is_valid_test_split_name`)."""
-    return name in (SPLIT_TRAIN, SPLIT_TUNE) or is_valid_test_split_name(name)
+    return isinstance(name, str) and (
+        name in (SPLIT_TRAIN, SPLIT_TUNE) or is_valid_test_split_name(name)
+    )
 
 
 def iter_rows(df: pd.DataFrame) -> Iterator[tuple[Hashable, pd.Series]]:
