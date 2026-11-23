@@ -238,12 +238,6 @@ def resolve_slide_prediction(
             "same slides. Predict a split they all held out with an explicit cohort.fold, or "
             "set predict.ensemble: false."
         )
-    if fold == BUNDLE_FOLD and subset == "train":
-        raise ValueError(
-            "cohort.fold: bundle predicts only the slides each bundle held out, but "
-            "cohort.subset: train is the split each bundle was trained on. To predict "
-            "training slides, set an explicit cohort.fold."
-        )
     for name, value, minimum in (("batch_size", batch_size, 1), ("num_workers", num_workers, 0)):
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"predict.{name} must be an integer >= {minimum}, got {value!r}")
@@ -551,10 +545,17 @@ def _cohort(records, splits, subset, fold) -> dict[str, Any]:
         return {"records": str(_absolute(records)), "splits": None, "subset": None, "fold": None}
     if fold is not None and fold != BUNDLE_FOLD and (isinstance(fold, bool) or not isinstance(fold, int) or fold < 0):
         raise ValueError(f"cohort.fold must be an integer >= 0 or {BUNDLE_FOLD!r}, got {fold!r}")
+    subset = "test" if subset is None else str(subset)
+    if fold == BUNDLE_FOLD and subset == "train":
+        raise ValueError(
+            "cohort.fold: bundle predicts only the slides each bundle held out, but "
+            "cohort.subset: train is the split each bundle was trained on. To predict "
+            "training slides, set an explicit cohort.fold."
+        )
     return {
         "records": str(_absolute(records)),
         "splits": str(_absolute(splits)),
-        "subset": "test" if subset is None else str(subset),
+        "subset": subset,
         "fold": 0 if fold is None else fold,
     }
 

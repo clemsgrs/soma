@@ -1096,15 +1096,17 @@ def test_fold_bundle_refuses_a_subset_that_is_not_a_split_of_a_bundle_s_fold(tmp
         predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset="test_external")
 
 
-def test_fold_bundle_refuses_the_train_subset(tmp_path, rotating):
-    """Each bundle was trained on its fold's train split, so it held none of it out."""
+@pytest.mark.parametrize("subset", ["train", Path("train")], ids=["str", "path"])
+def test_fold_bundle_refuses_the_train_subset(tmp_path, rotating, subset):
+    """Each bundle was trained on its fold's train split, so it held none of it out. The
+    refusal reads the subset the plan stores, so a non-``str`` spelling of it is refused too."""
     records, splits = rotating
     bundles = fold_bundles(tmp_path, records, splits)
 
     with pytest.raises(
         ValueError, match=r"cohort.fold: bundle predicts only the slides each bundle held out.*explicit cohort\.fold"
     ):
-        predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset="train")
+        predict(tmp_path, records, bundles, splits=splits, fold="bundle", subset=subset)
 
 
 def test_fold_bundle_refuses_a_bundle_whose_fold_has_no_slides_in_the_subset(tmp_path, rotating):
