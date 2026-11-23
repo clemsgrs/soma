@@ -80,7 +80,10 @@ Each distinct value of a column is a group. A run scores the groups after the
 fit, on tune and on each test split, and at every evaluated epoch during
 training. Subgroups are for the set shape; the grid shape refuses them. The
 plan also refuses a column name or a value that contains ``/`` or ``=``, because
-the names below cannot hold it: rename it.
+the names below cannot hold it: rename it. It also refuses a column with the
+name of one of the head's target keys (``label``, ``time``, ``event``, ...),
+even if the head reads that target from another column: rename the metadata
+column.
 
 After the fit
 ~~~~~~~~~~~~~
