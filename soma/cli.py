@@ -1301,7 +1301,7 @@ def _build_predict_parser() -> argparse.ArgumentParser:
             "k is stored as k + 1 and 0 means not predicted; a detection bundle writes a "
             "parquet of points (x and y in level-0 pixels, class, score), with no threshold "
             "applied. The config has a predict section (output_dir, bundles, ensemble, "
-            "batch_size, num_workers, devices), a cohort section (records, and optionally "
+            "stitch, batch_size, num_workers, devices), a cohort section (records, and optionally "
             "splits, subset and fold) and an extraction section (the features.extraction "
             "schema, without the tile size and spacing, which come from the bundles). The "
             "slides are read with the reader the bundles record unless "

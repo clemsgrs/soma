@@ -7,6 +7,7 @@ A prediction config has three sections::
       output_dir: predictions/beetle-test
       bundles: [runs/beetle/fold_0/bundle, runs/beetle/fold_1/bundle]   # or one run directory
       ensemble: false
+      stitch: pick_one            # or average (segmentation only)
       batch_size: 8
       num_workers: 0
       devices: [0, 1]
@@ -62,7 +63,7 @@ PROVENANCE_FILENAME = "provenance.json"
 INDEX_FILENAME = "index.parquet"
 #: The directory of the one map ``ensemble: true`` writes per slide.
 ENSEMBLE_NAME = "ensemble"
-PREDICT_KEYS = ("output_dir", "bundles", "ensemble", "batch_size", "num_workers", "devices")
+PREDICT_KEYS = ("output_dir", "bundles", "ensemble", "stitch", "batch_size", "num_workers", "devices")
 COHORT_KEYS = ("records", "splits", "subset", "fold")
 #: Plan keys that only place the work: a relaunch may change them.
 PLACEMENT_KEYS = ("devices", "num_workers")
@@ -87,6 +88,7 @@ def predict_slides(
     subset: str | None = None,
     fold: int | None = None,
     ensemble: bool = False,
+    stitch: str = "pick_one",
     batch_size: int = 8,
     num_workers: int = 0,
     devices: Sequence[str | int] | None = None,
@@ -96,9 +98,9 @@ def predict_slides(
     for a segmentation bundle and a points parquet for a detection bundle.
 
     One keyword per config key (see the module docstring for the config): ``output_dir``,
-    ``bundles``, ``ensemble``, ``batch_size``, ``num_workers`` and ``devices`` are the
-    ``predict`` section, ``records``, ``splits``, ``subset`` and ``fold`` the ``cohort``
-    section, and ``extraction`` the ``extraction`` section (a mapping, or a
+    ``bundles``, ``ensemble``, ``stitch``, ``batch_size``, ``num_workers`` and ``devices``
+    are the ``predict`` section, ``records``, ``splits``, ``subset`` and ``fold`` the
+    ``cohort`` section, and ``extraction`` the ``extraction`` section (a mapping, or a
     ``slide2vec.PreprocessingConfig``). Relative paths resolve against the working
     directory.
 
@@ -110,8 +112,13 @@ def predict_slides(
     Kept tiles are read at the bundles' read spacing and run through each bundle's model,
     behind one encoder forward for the bundles that share an encoder recipe.
 
-    Segmentation: each map pixel takes the class of one tile
-    (:mod:`soma.evaluation.whole_slide`), stored as class + 1; 0 is "not predicted".
+    Segmentation: ``stitch`` names how overlapping tiles are combined
+    (:mod:`soma.evaluation.whole_slide`). With ``pick_one`` (the default), each map pixel
+    takes the class of one tile. With ``average``, it takes the argmax of the Hann-weighted
+    mean softmax of every kept tile that covers it, so next to a tile that was not kept it
+    labels the margin that pick one leaves at 0. Averaging also holds, per map, float32 sums
+    over one tile's height of rows and the map's width, one plane per class. Class ``k`` is
+    stored as ``k + 1``; 0 is "not predicted". ``average`` is refused for detection bundles.
     Detection: each tile keeps the peaks in the region it contributes, lifted to level-0
     pixels, and one per-class NMS over the slide removes the duplicates across seams
     (:mod:`soma.evaluation.whole_slide_points`). The parquet holds every peak above the
@@ -129,8 +136,9 @@ def predict_slides(
 
     Without ``splits`` every row of ``records`` is predicted; with it, the ``subset``
     split (default ``test``) of fold ``fold`` (default 0). ``ensemble`` writes one file per
-    slide instead of one per bundle: the argmax of the bundles' mean softmax, or the peaks
-    of their mean heatmap, with no threshold recorded.
+    slide instead of one per bundle: the argmax of the bundles' mean softmax (to average,
+    each tile's softmax is that mean), or the peaks of their mean heatmap, with no
+    threshold recorded.
     ``devices`` (``[0, 1]``, ``["cpu"]``) predicts in one new process per device, the
     slides split across them; by default the slides are predicted in this process.
 
@@ -149,6 +157,7 @@ def predict_slides(
         subset=subset,
         fold=fold,
         ensemble=ensemble,
+        stitch=stitch,
         batch_size=batch_size,
         num_workers=num_workers,
         devices=devices,
@@ -196,16 +205,19 @@ def resolve_slide_prediction(
     subset=None,
     fold=None,
     ensemble=False,
+    stitch="pick_one",
     batch_size=8,
     num_workers=0,
     devices=None,
     extraction=None,
 ) -> dict[str, Any]:
     """The plan of a prediction: the config with every value resolved (see the module)."""
-    from soma.evaluation.whole_slide import MAX_CLASSES, stitch_margin_px
+    from soma.evaluation.whole_slide import MAX_CLASSES, STITCHES, stitch_margin_px
 
     if not isinstance(ensemble, bool):
         raise ValueError(f"predict.ensemble must be true or false, got {ensemble!r}")
+    if stitch not in STITCHES:
+        raise ValueError(f"predict.stitch must be {' or '.join(map(repr, STITCHES))}, got {stitch!r}")
     for name, value, minimum in (("batch_size", batch_size, 1), ("num_workers", num_workers, 0)):
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"predict.{name} must be an integer >= {minimum}, got {value!r}")
@@ -216,6 +228,11 @@ def resolve_slide_prediction(
     bundle_dirs = _bundle_dirs(bundles)
     infos = [_bundle_info(path) for path in bundle_dirs]
     family = _shared_family(infos)
+    if stitch == "average" and family != "segmentation":
+        raise ValueError(
+            "predict.stitch: average applies to segmentation only: it averages the tiles' "
+            f"softmax, and these are {family} bundles. Use predict.stitch: pick_one."
+        )
     tile_px, spacing_um, tolerance = _shared_tile(infos)
     if ensemble:
         _check_ensemble(infos, family)
@@ -235,6 +252,7 @@ def resolve_slide_prediction(
             "output_dir": str(_absolute(output_dir)),
             "bundles": [str(path) for path in bundle_dirs],
             "ensemble": ensemble,
+            "stitch": stitch,
             "batch_size": batch_size,
             "num_workers": num_workers,
             "devices": devices,
@@ -516,9 +534,13 @@ def _cohort(records, splits, subset, fold) -> dict[str, Any]:
 
 
 def _comparable(plan: Mapping[str, Any]) -> dict[str, Any]:
+    from soma.evaluation.whole_slide import STITCHES
+
     payload = copy.deepcopy(dict(plan))
+    predict = payload.get("predict") or {}
     for key in PLACEMENT_KEYS:
-        (payload.get("predict") or {}).pop(key, None)
+        predict.pop(key, None)
+    predict.setdefault("stitch", STITCHES[0])  # a plan without the key stitched with the default
     return payload
 
 
@@ -850,6 +872,7 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
         "read_spacing_um": float(tiling.requested_spacing_um),
         "tile_size_px": int(tiling.requested_tile_size_px),
         "overlap": float(tiling.overlap),
+        "stitch": plan["predict"]["stitch"],
     }
     if ensemble:
         metadata = [{**shared, **_class_scheme(models[0].head), "bundles": identities}]
@@ -868,6 +891,7 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
         metadata=metadata,
         spacing_um=float(tiling.requested_spacing_um),
         ensemble=ensemble,
+        stitch=plan["predict"]["stitch"],
         backend=tiling.backend,
         tolerance=float(tiling.tolerance),
         batch_size=plan["predict"]["batch_size"],

@@ -45,6 +45,7 @@ Write a config with three sections:
      output_dir: predictions/beetle-test
      bundles: runs/beetle          # a run directory: the bundle of each fold
      ensemble: false
+     stitch: pick_one              # or average (segmentation only)
      batch_size: 8
      num_workers: 8
      devices: null                 # or [0, 1]: one process per GPU
@@ -104,6 +105,10 @@ working directory. The keys:
    * - ``predict.ensemble``
      - ``false`` (default): one prediction per bundle. ``true``: one prediction
        from all the bundles. See :ref:`whole-slide-bundles`.
+   * - ``predict.stitch``
+     - How a label map combines overlapping tiles: ``pick_one`` (default) or
+       ``average``. ``average`` is for segmentation only. See
+       :ref:`whole-slide-stitching`.
    * - ``predict.batch_size``
      - Tiles per forward pass (default 8).
    * - ``predict.num_workers``
@@ -239,12 +244,15 @@ How tiles are combined
 ~~~~~~~~~~~~~~~~~~~~~~
 
 With ``overlap: 0``, the tiles touch and do not overlap. Each tile contributes
-its whole output.
+its whole output. Both ways of combining tiles below then write the same map.
 
-With an overlap, each tile gives up a margin of ``tile * overlap / 2`` pixels
-on each side and contributes the middle of its output. The tiles of the slide's
-first row and first column also keep their outer margin, so the map starts at
-pixel 0. Each map pixel comes from exactly one tile. No output is averaged.
+With an overlap, ``predict.stitch`` chooses how a label map combines the tiles.
+
+**Pick one** (``stitch: pick_one``, the default). Each tile gives up a margin of
+``tile * overlap / 2`` pixels on each side and contributes the middle of its
+output. The tiles of the slide's first row and first column also keep their
+outer margin, so the map starts at pixel 0. Each map pixel comes from exactly
+one tile.
 
 .. figure:: /_static/figures/whole-slide-stitching.svg
    :figclass: soma-figure
@@ -254,13 +262,33 @@ pixel 0. Each map pixel comes from exactly one tile. No output is averaged.
    contributes the middle. A tile on the slide's first row or column also
    keeps its outer margin.
 
+**Average** (``stitch: average``). Each map pixel takes the class with the
+highest weighted mean softmax over every kept tile that covers it. A tile's
+weight is highest at its middle and falls towards its border along a raised
+cosine (a Hann window that is never zero), so a tile counts most where it sees
+the most context around the pixel. With ``ensemble: true``, each tile's softmax
+is first the mean over the bundles. Averaging runs the model on the same tiles
+as pick one: it costs memory, not model time (see :ref:`whole-slide-cost`).
+
+On crops of the annotated regions of the 10 BEETLE test slides, at overlap 0.5,
+averaging gave a dataset-global mean Dice of 0.896, against 0.894 for pick one,
+and 0.891 with no overlap. Each crop was read with 128 px of context around it,
+and all three ways of combining tiles used the same tile predictions. Averaging
+was better on all four classes and on 8 of the 10 slides. These are crop
+scores, not slide scores (see :ref:`whole-slide-not-comparable`).
+
 The margin must be a whole number of pixels. With 512 px tiles, an overlap of
 0.25 gives 64 px and 0.5 gives 128 px. Another value is refused, and the error
 proposes one that works. An overlap of 0.5 gives about four times as many tiles,
 and takes about four times as long.
 
-A pixel that no kept tile contributes is 0, "not predicted". So is the margin a
-tile gives up next to a tile that was not kept.
+A pixel that no kept tile covers is 0, "not predicted". With pick one, so is
+the margin a tile gives up next to a tile that was not kept. Averaging labels
+that margin from the kept tile alone. At the border of the kept tiles, the two
+can therefore give a slide different ``not_predicted_fraction`` values.
+
+``stitch: average`` is for segmentation only. With detection bundles, the plan
+is refused before any slide is read.
 
 For detection, each tile keeps the peaks in the region it contributes, and
 places them on the slide in level-0 pixels. Then one NMS per class over the
@@ -310,7 +338,8 @@ The description of the first page holds a JSON record of what the map means:
 - ``ignore``: the raw annotation values left out of the loss and the metrics;
 - ``pixel_mapping``: the vocabulary that hs2p reads the annotation rasters with;
 - ``sample_id``, ``ensemble``, ``read_spacing_um``, ``tile_size_px``,
-  ``overlap``, and ``bundles``: the name, path and SHA-256 of each bundle.
+  ``overlap``, ``stitch``, and ``bundles``: the name, path and SHA-256 of each
+  bundle.
 
 ``soma evaluate`` scores the map with this class scheme. Any TIFF library reads
 the map:
@@ -669,6 +698,17 @@ One slide of 92,819 × 45,702 px, with 10,117 kept tiles:
 
 Detection, ensembles, several bundles and slides resampled from a finer level
 were not measured.
+
+**Averaging** (``stitch: average``) also holds, for each map, float32 sums over
+one tile's height of rows and the map's whole width, one plane per class:
+classes × tile × map width × 4 bytes. Without ``ensemble: true``, each bundle's
+map has its own. The slide's height does not change this cost. With 4 classes
+and 512 px tiles, a map 50,176 px wide needs 392 MiB of sums. On a synthetic
+slide of 50,176 × 2,048 px, at overlap 0.5 with batch size 8 on the CPU (a
+weight-free encoder and a 4-class linear decoder), the peak memory while
+predicting rose by about 200 MiB with pick one and by about 650 MiB with
+averaging. The 450 MiB more are mostly the sums and one batch of softmax
+(32 MiB).
 
 Reference
 ---------

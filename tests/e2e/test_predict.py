@@ -8,9 +8,13 @@ cuts larger slides with the same discs into hs2p's slide grid, runs the bundle o
 tile behind its frozen encoder stage, and writes one label TIFF per slide. ``soma
 evaluate`` scores the maps against the slides' annotation rasters.
 
+The same slides are predicted again with ``predict.stitch: average``: each map pixel is
+the argmax of the Hann-weighted mean softmax of the tiles that cover it.
+
 The detection run trains on the dense detection ROIs (small squares of two colours, their
 centres the points). ``soma predict`` writes one points parquet per slide, and ``soma
-evaluate`` scores the points against the slide's annotated cells.
+evaluate`` scores the points against the slide's annotated cells. ``predict.stitch:
+average`` is refused for the detection bundle before any slide is read.
 
 The runs read their ROIs with OpenSlide, and their bundles record that reader. The
 prediction configs name no slide reader, so ``soma predict`` reads the slides with
@@ -24,6 +28,7 @@ import json
 import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
+import pytest
 import tifffile
 import yaml
 
@@ -162,6 +167,7 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
     opened_files.clear()
 
     soma_main(["predict", "predict.yaml"])
+    tiles_encoded = sum(encoded_images)
 
     output_dir = tmp_path / "predictions"
     plan = yaml.safe_load((output_dir / "plan.yaml").read_text())
@@ -173,8 +179,9 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
     artifact.check_equal("plan/spacing_um", plan["extraction"]["tiling"]["requested_spacing_um"], SPACING_UM)
     # The bundle's slide reader is planned, and every slide is read with it.
     artifact.check_equal("plan/backend", plan["extraction"]["tiling"]["backend"], "openslide")
+    artifact.check_equal("plan/stitch", plan["predict"]["stitch"], "pick_one")
     artifact.check_equal("predict/slide_readers", readers_of(opened_files, slides), ["openslide"])
-    artifact.check_at_least("tiles_encoded", sum(encoded_images), 1)
+    artifact.check_at_least("tiles_encoded", tiles_encoded, 1)
     index = pd.read_parquet(output_dir / "index.parquet")
     artifact.check_equal("index/sample_ids", list(index.sample_id), ["slide0", "slide1"])
     label_maps = {}
@@ -262,6 +269,32 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
     in_workers = json.loads((tmp_path / "workers.json").read_text())
     artifact.check_equal("evaluate_workers/metrics", in_workers["metrics"], scored["metrics"])
     artifact.check_equal("evaluate_workers/per_sample", in_workers["per_sample"] == scored["per_sample"], True)
+
+    # stitch: average over the same tiles: as many tiles are encoded, every pixel is
+    # predicted, the maps score as well, and the stitch is recorded in the plan and the maps.
+    averaging = {**config, "predict": {**config["predict"], "output_dir": "averaged", "stitch": "average"}}
+    (tmp_path / "average.yaml").write_text(yaml.safe_dump(averaging, sort_keys=False))
+    encoded_images.clear()
+    soma_main(["predict", "average.yaml"])
+    averaged_dir = tmp_path / "averaged"
+    averaged_plan = yaml.safe_load((averaged_dir / "plan.yaml").read_text())
+    artifact.check_equal("average/plan/stitch", averaged_plan["predict"]["stitch"], "average")
+    artifact.check_equal("average/tiles_encoded", sum(encoded_images), tiles_encoded)
+    averaged = pd.read_parquet(averaged_dir / "index.parquet")
+    artifact.check_equal("average/index/sample_ids", list(averaged.sample_id), ["slide0", "slide1"])
+    for row in averaged.itertuples():
+        with tifffile.TiffFile(averaged_dir / row.path) as tiff:
+            label_map = tiff.pages[0].asarray()
+            metadata = json.loads(tiff.pages[0].description)
+        truth = truths[row.sample_id]
+        artifact.check_equal(f"average/{row.sample_id}/shape", list(label_map.shape), list(truth.shape))
+        artifact.check_equal(f"average/{row.sample_id}/not_predicted", int((label_map == 0).sum()), 0)
+        artifact.check_equal(f"average/{row.sample_id}/not_predicted_fraction", row.not_predicted_fraction, 0.0)
+        artifact.check_at_least(f"average/{row.sample_id}/mean_dice", mean_dice(label_map.astype(int) - 1, truth), 0.8)
+        artifact.check_equal(f"average/{row.sample_id}/metadata_stitch", metadata["stitch"], "average")
+        # The two stitches differ only near the tiles' seams.
+        changed = float((label_map != label_maps[row.sample_id]).mean())
+        artifact.check_at_most(f"average/{row.sample_id}/changed_fraction", changed, 0.05)
     artifact.assert_passed()
 
 
@@ -336,7 +369,7 @@ def closest_same_class_px(points: pd.DataFrame) -> float:
 
 
 def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
-    tmp_path, monkeypatch, encoder_name, encoded_images, new_artifact
+    tmp_path, monkeypatch, encoder_name, encoded_images, opened_files, capsys, new_artifact
 ):
     artifact = new_artifact("predict_detection_slides")
     run = run_soma(detection_config(tmp_path, encoder_name), tmp_path / "config.yaml")
@@ -467,4 +500,20 @@ def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
     # --threshold replaces the bundle's: at 0 every peak is scored.
     soma_main(["evaluate", "predictions", "--cohort", "annotations.csv", "--threshold", "0", "--metrics", "mean_f1", "f1_per_class", "--out", "all.json"])
     check_scored("evaluate_threshold", json.loads((tmp_path / "all.json").read_text()), by_hand(0.0))
+
+    # stitch: average is for segmentation only: the plan is refused before any slide is read.
+    averaging = {**config, "predict": {**config["predict"], "output_dir": "averaged", "stitch": "average"}}
+    (tmp_path / "average.yaml").write_text(yaml.safe_dump(averaging, sort_keys=False))
+    opened_files.clear()
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as refused:
+        soma_main(["predict", "average.yaml"])
+    error = capsys.readouterr().err
+    artifact.check_equal("average_refused/exit_code", refused.value.code, 2)
+    artifact.check_equal(
+        "average_refused/message", "predict.stitch: average applies to segmentation only" in error, True
+    )
+    artifact.check_equal("average_refused/names_detection", "detection bundles" in error, True)
+    artifact.check_equal("average_refused/slide_readers", readers_of(opened_files, [tmp_path / "slides" / "slide0.tif"]), [])
+    artifact.check_equal("average_refused/output_dir", (tmp_path / "averaged").exists(), False)
     artifact.assert_passed()

@@ -198,6 +198,180 @@ def test_each_pixel_comes_from_the_tile_the_pick_one_rule_names(tmp_path, proven
     np.testing.assert_array_equal(label_map.astype(int) - 1, expected)
 
 
+# --- average: the Hann-weighted mean softmax ------------------------------------------ #
+
+#: Each tile column's softmax for the column-softmax decoder: the tile at ``x = 16 k``
+#: (overlap 0.5 on 32 px tiles) gives every pixel ``TABLE[k]``.
+TABLE = [[0.2, 0.5, 0.3], [0.05, 0.05, 0.9], [0.6, 0.2, 0.2]]
+
+
+@dataclass
+class ColumnSoftmaxParams:
+    """``table[k]`` is the softmax of the tiles whose first patch has red ``k``."""
+
+    table: list | None = None
+
+
+class ColumnSoftmaxDecoder(Decoder):
+    """One softmax over a whole tile, picked by the red of its first 8 px patch: the
+    logits are ``log(table[red])``, so the softmax is ``table[red]`` exactly."""
+
+    def __init__(self, *, input_dim: int, num_classes: int, table=None) -> None:
+        super().__init__()
+        self._num_classes = int(num_classes)
+        self._table = torch.tensor(table or TABLE, dtype=torch.float32)
+
+    @property
+    def num_classes(self) -> int:
+        return self._num_classes
+
+    def forward(self, X):
+        red = torch.round((X[:, 0, 0, 0] * 0.25 + 0.5) * 255).long()  # the fake encoder's normalisation
+        batch, _, rows, cols = X.shape
+        logits = torch.log(self._table[red])[:, :, None, None]
+        return logits.expand(batch, self._num_classes, rows * 8, cols * 8).contiguous()
+
+
+@pytest.fixture
+def column_softmax(monkeypatch):
+    """Register :class:`ColumnSoftmaxDecoder` for one test, then restore the registry."""
+    from soma.models import decoder_registry
+
+    monkeypatch.setattr(decoder_registry, "_entries", dict(decoder_registry._entries))
+    soma.register("decoders", "column-softmax", ColumnSoftmaxDecoder, params=ColumnSoftmaxParams)
+    return lambda table=None: {"name": "column-softmax", "params": {"table": table}}
+
+
+def column_slide(tmp_path, *, tissue_columns: int | None = None) -> str:
+    """A 32 x 48 px slide whose red is ``column // 16``: with overlap 0.5 on 32 px tiles,
+    the tile at ``x = 16 k`` reads red ``k`` in its first patch. Its mask is tissue in the
+    first ``tissue_columns`` columns, or everywhere."""
+    height, width = 32, 48
+    image = np.zeros((height, width, 3), dtype=np.uint8)
+    image[..., 0] = np.arange(width)[None] // 16
+    image[..., 2] = 128
+    tissue = np.zeros((height, width), dtype=np.uint8)
+    tissue[:, : width if tissue_columns is None else tissue_columns] = 1
+    slide = write_slide(tmp_path / "s1.tif", image)
+    mask = write_mask(tmp_path / "s1_mask.tif", tissue)
+    return write_records(tmp_path / "dataset.csv", [{"sample_id": "s1", "image_path": str(slide), "mask_path": str(mask)}])
+
+
+def hann(i: int, n: int = TILE) -> float:
+    """The raised-cosine weight of pixel ``i`` of an ``n`` px tile, on one axis."""
+    return 0.5 - 0.5 * np.cos(2 * np.pi * (i + 1) / (n + 1))
+
+
+#: Overlap 0.5; ``a_t: 0`` keeps the tissue of a slide smaller than four tiles.
+HALF = {"tiling": {"overlap": 0.5, **TIFFFILE}, "filter": {"a_t": 0}}
+
+
+def test_average_takes_the_argmax_of_the_hann_weighted_mean_softmax(tmp_path, column_softmax):
+    """Map column 20 lies in tile 0's middle, 20 px into it, and 4 px into tile 1: pick one
+    takes tile 0's class 1. The tiles of one column share their softmax, so the mean over
+    the rows' weights drops out, and the mean softmax there is
+    ``(w(20) * TABLE[0] + w(4) * TABLE[1]) / (w(20) + w(4))``, with ``w(20) = 0.827`` and
+    ``w(4) = 0.210``: ``[0.170, 0.409, 0.421]``, class 2."""
+    records = column_slide(tmp_path)
+    bundle = save_bundle(tmp_path / "run" / "bundle", decoder=column_softmax())
+    maps = {}
+    for stitch in ("pick_one", "average"):
+        index = soma.predict_slides(
+            output_dir=tmp_path / stitch, bundles=bundle, records=records, extraction=HALF, stitch=stitch
+        )
+        (row,) = index.itertuples()
+        maps[stitch] = read_map(tmp_path / stitch / row.path).astype(int) - 1
+
+    w0, w1 = hann(20), hann(4)
+    mean = (w0 * np.array(TABLE[0]) + w1 * np.array(TABLE[1])) / (w0 + w1)
+    assert (round(w0, 3), round(w1, 3)) == (0.827, 0.210)
+    np.testing.assert_allclose(mean, [0.170, 0.409, 0.421], atol=5e-4)
+    assert (maps["pick_one"][:, 20] == 1).all()
+    assert (maps["average"][:, 20] == 2).all()
+    # Every column, worked out the same way over the tiles that cover it (tile ``k`` at
+    # ``x = 16 k``); the narrowest top-two margin, 0.0125, is at column 20.
+    np.testing.assert_array_equal(maps["average"], np.tile([1] * 20 + [2] * 22 + [0] * 6, (32, 1)))
+
+
+#: A second bundle's table: tile 0 prefers class 0 and tile 1 class 1.
+OTHER_TABLE = [[0.6, 0.2, 0.2], [0.05, 0.9, 0.05], [0.6, 0.2, 0.2]]
+
+
+def test_average_writes_each_bundle_s_map_or_averages_the_ensemble_s_mean_softmax(tmp_path, column_softmax):
+    """At column 20 (``w(20) = 0.827``, ``w(4) = 0.210``): bundle a alone gives
+    ``[0.170, 0.409, 0.421]``, class 2, and bundle b alone ``[0.489, 0.342, 0.170]``,
+    class 0. The ensemble averages each tile's softmax over the two, tile 0's
+    ``[0.4, 0.35, 0.25]`` and tile 1's ``[0.05, 0.475, 0.475]``: ``[0.329, 0.375, 0.296]``,
+    class 1. Pick one would take tile 0's class 0."""
+    records = column_slide(tmp_path)
+    bundles = [
+        save_bundle(tmp_path / name / "bundle", decoder=column_softmax(table))
+        for name, table in (("a", TABLE), ("b", OTHER_TABLE))
+    ]
+    w0, w1 = hann(20), hann(4)
+    ensemble_tile_0, ensemble_tile_1 = (np.array(TABLE[:2]) + np.array(OTHER_TABLE[:2])) / 2
+    np.testing.assert_allclose((w0 * np.array(OTHER_TABLE[0]) + w1 * np.array(OTHER_TABLE[1])) / (w0 + w1), [0.489, 0.342, 0.170], atol=5e-4)
+    np.testing.assert_allclose(ensemble_tile_0, [0.4, 0.35, 0.25])
+    np.testing.assert_allclose((w0 * ensemble_tile_0 + w1 * ensemble_tile_1) / (w0 + w1), [0.329, 0.375, 0.296], atol=5e-4)
+
+    def column_20(output_dir, **kwargs) -> dict[str, np.ndarray]:
+        index = soma.predict_slides(
+            output_dir=output_dir, bundles=bundles, records=records, extraction=HALF, stitch="average", **kwargs
+        )
+        return {row.bundle: read_map(output_dir / row.path)[:, 20].astype(int) - 1 for row in index.itertuples()}
+
+    each = column_20(tmp_path / "each")
+    ensemble = column_20(tmp_path / "ensemble", ensemble=True)
+
+    assert sorted(each) == ["a", "b"]
+    assert (each["a"] == 2).all() and (each["b"] == 0).all()
+    assert list(ensemble) == ["ensemble"] and (ensemble["ensemble"] == 1).all()
+
+
+def test_next_to_a_tile_that_was_not_kept_average_labels_the_margin_pick_one_gives_up(tmp_path, column_softmax):
+    """Tissue in the first 8 columns keeps the tiles of column 0 only (``x = 0``). Pick one
+    writes their middle and their outer margin, columns 0 to 23, and gives up their inner
+    margin, columns 24 to 31, which tile 1 would have written: those are 0. Averaging
+    labels columns 0 to 31 from tile 0 alone, class 1. Columns 32 on are covered by no kept
+    tile: 0 in both."""
+    records = column_slide(tmp_path, tissue_columns=8)
+    bundle = save_bundle(tmp_path / "run" / "bundle", decoder=column_softmax())
+    maps, rows = {}, {}
+    for stitch in ("pick_one", "average"):
+        index = soma.predict_slides(
+            output_dir=tmp_path / stitch,
+            bundles=bundle,
+            records=records,
+            extraction={**HALF, "masks": {"min_coverage": {"tissue": 0.1}}},
+            stitch=stitch,
+        )
+        (rows[stitch],) = index.itertuples()
+        maps[stitch] = read_map(tmp_path / stitch / rows[stitch].path)
+
+    assert rows["pick_one"].num_tiles == rows["average"].num_tiles == 2
+    assert (maps["pick_one"][:, :24] == 2).all() and not maps["pick_one"][:, 24:].any()
+    assert (maps["average"][:, :32] == 2).all() and not maps["average"][:, 32:].any()
+    assert rows["pick_one"].not_predicted_fraction == pytest.approx(24 / 48)
+    assert rows["average"].not_predicted_fraction == pytest.approx(16 / 48)
+
+
+def test_with_overlap_zero_average_writes_the_pick_one_map(tmp_path):
+    """With no overlap each pixel has one tile: both stitches write the same map."""
+    _, records, _ = one_slide_cohort(tmp_path)
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    rows, maps = {}, {}
+    for stitch in ("pick_one", "average"):
+        index = soma.predict_slides(
+            output_dir=tmp_path / stitch, bundles=bundle, records=records, extraction=OVERLAP_ZERO, stitch=stitch
+        )
+        (rows[stitch],) = index.itertuples()
+        maps[stitch] = read_map(tmp_path / stitch / rows[stitch].path)
+
+    np.testing.assert_array_equal(maps["average"], maps["pick_one"])
+    assert maps["average"].any()
+    assert rows["average"].not_predicted_fraction == rows["pick_one"].not_predicted_fraction
+
+
 # --- not predicted -------------------------------------------------------------------- #
 
 
@@ -367,6 +541,35 @@ def test_the_overlap_a_fractional_margin_refusal_proposes_is_accepted(tmp_path, 
 
     assert plan["extraction"]["tiling"]["overlap"] == proposed
     assert abs(tile_px * proposed / 2 - tile_px * overlap / 2) < 1
+
+
+@pytest.mark.parametrize("stitch", ["mean", None, "Average"])
+def test_another_stitch_is_refused_naming_the_two_allowed(tmp_path, cohort, stitch):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    with pytest.raises(ValueError, match=r"predict\.stitch must be 'pick_one' or 'average', got"):
+        predict(tmp_path, cohort, bundle, stitch=stitch)
+    assert not (tmp_path / "predictions").exists()
+
+
+def test_a_plan_without_the_stitch_key_is_pick_one_and_resumes(tmp_path, two_slides, encoder_forwards):
+    """A ``plan.yaml`` written without ``predict.stitch`` replays as ``pick_one``, and a
+    relaunch into its directory with the default is not refused."""
+    from soma.pipeline.slide_prediction import slide_prediction_kwargs
+
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+    first = soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
+    saved = yaml.safe_load((output_dir / "plan.yaml").read_text())
+    del saved["predict"]["stitch"]
+    (output_dir / "plan.yaml").write_text(yaml.safe_dump(saved, sort_keys=False))
+    encoder_forwards.clear()
+
+    replayed = soma.predict_slides(**slide_prediction_kwargs(saved))
+
+    assert encoder_forwards == []
+    assert replayed.equals(first)
+    assert yaml.safe_load((output_dir / "plan.yaml").read_text())["predict"]["stitch"] == "pick_one"
 
 
 def test_a_plan_s_own_tile_size_and_spacing_are_accepted(tmp_path, cohort):
@@ -675,21 +878,25 @@ def test_a_directory_predicted_with_another_reader_is_refused_with_how_to_keep_i
 #: bundle, the reader), resets the peak RSS, predicts the large slide and prints the RSS
 #: before it and the peak during it.
 MEMORY_CHILD = MEMORY_PRELUDE + r"""
-tmp = Path(sys.argv[1])
-extraction = {"tiling": {"backend": "tifffile", "mask_backend": "tifffile"}}
+tmp, stitch = Path(sys.argv[1]), sys.argv[2]
+extraction = {"tiling": {"backend": "tifffile", "mask_backend": "tifffile", "overlap": 0.5}}
 bundle = str(tmp / "run" / "bundle")
-soma.predict_slides(output_dir=tmp / "warm", bundles=bundle, records=str(tmp / "small.csv"), extraction=extraction)
+predict = dict(bundles=bundle, extraction=extraction, stitch=stitch)
+soma.predict_slides(output_dir=tmp / "warm", records=str(tmp / "small.csv"), **predict)
 reset_peak()
 before = status("VmRSS")
-soma.predict_slides(output_dir=tmp / "large", bundles=bundle, records=str(tmp / "large.csv"), extraction=extraction, batch_size=64)
+soma.predict_slides(output_dir=tmp / "large", records=str(tmp / "large.csv"), batch_size=64, **predict)
 print(json.dumps({"before": before, "peak": status("VmHWM")}))
 """
 
 
-def test_peak_memory_stays_far_below_the_raw_map(tmp_path):
-    """A 32768 x 32768 px map (1 GiB as raw uint8) with three tissue patches in rows far
-    apart. The band holds a strip of rows; hs2p's writer holds the reduced levels, about
-    a third of the map. The peak RSS while predicting stays below half the raw map."""
+@pytest.mark.parametrize("stitch", ["pick_one", "average"])
+def test_peak_memory_stays_far_below_the_raw_map(tmp_path, stitch):
+    """A 32768 x 32768 px map (1 GiB as raw uint8, 12 GiB as float32 for the 3 classes)
+    with three tissue patches in rows far apart, at overlap 0.5. The band holds a strip of
+    rows (and, to average, the float sums of one tile's rows); hs2p's writer holds the
+    reduced levels, about a third of the map. The peak RSS while predicting stays below
+    half the raw map."""
     side = 32768
     write_large_slide(tmp_path / "large.tif", side)
     coarse = 32  # the mask is at 16 um/px
@@ -706,10 +913,10 @@ def test_peak_memory_stays_far_below_the_raw_map(tmp_path):
         )
     save_bundle(tmp_path / "run" / "bundle")
 
-    rss = peak_rss_of(MEMORY_CHILD, str(tmp_path))
+    rss = peak_rss_of(MEMORY_CHILD, str(tmp_path), stitch)
 
     (row,) = pd.read_parquet(tmp_path / "large" / "index.parquet").itertuples()
-    assert (row.width, row.height, row.num_tiles) == (side, side, 3 * 16)
+    assert (row.width, row.height, row.num_tiles) == (side, side, 3 * 8 * 8)
     raw = side * side
     assert rss["peak"] - rss["before"] < raw / 2
 
