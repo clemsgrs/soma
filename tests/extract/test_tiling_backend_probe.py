@@ -12,6 +12,7 @@ metadata required) refuses, while hs2p resolves the mask from the mask alone.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 import pandas as pd
@@ -21,6 +22,7 @@ from hs2p import FilterConfig
 from slide2vec import ExecutionOptions
 
 import soma
+import soma.extract.cache.keys
 from soma.config import CacheOptions
 from soma.data import ImageManifest
 from tests.extraction_configs import extraction, tissue_masks
@@ -56,12 +58,29 @@ def _write_cohort(root: Path, sample_ids: list[str]) -> ImageManifest:
     return ImageManifest.from_csv(root / "images.csv")
 
 
+class Run(NamedTuple):
+    """What a run printed, and the slide file of each ``resolve_backends`` call soma's
+    backend probe made (hs2p's tiling calls its own reference, which is not counted)."""
+
+    printed: str
+    probed: list[str]
+
+
 @pytest.fixture
 def cached_extract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture):
     """Run ``soma.extract`` under ``backend: auto`` on CPU with the weight-free ``fake``
-    encoder, caching under one root; return what the run printed."""
+    encoder, caching under one root; return what the run printed and which slides the
+    backend probe resolved."""
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(torch.cuda, "device_count", lambda: 0)
+    probed: list[str] = []
+    resolve_backends = soma.extract.cache.keys.resolve_backends
+
+    def spy(**kwargs):
+        probed.append(Path(kwargs["wsi_path"]).name)  # list.append: the probe runs on threads
+        return resolve_backends(**kwargs)
+
+    monkeypatch.setattr(soma.extract.cache.keys, "resolve_backends", spy)
     kwargs = dict(
         encoder="fake",
         extraction=extraction(
@@ -78,10 +97,11 @@ def cached_extract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pyte
         cache=CacheOptions(enabled=True, root_dir=tmp_path / "cache"),
     )
 
-    def run(images: ImageManifest, name: str) -> str:
+    def run(images: ImageManifest, name: str) -> Run:
         capsys.readouterr()
+        probed.clear()
         soma.extract(images, output_dir=tmp_path / name, **kwargs)
-        return capsys.readouterr().out
+        return Run(printed=capsys.readouterr().out, probed=list(probed))
 
     return run
 
@@ -91,11 +111,12 @@ def test_a_cold_run_tiles_without_probing_the_backends(tmp_path: Path, cached_ex
     written every row in this environment, so the entry is published unprobed."""
     images = _write_cohort(tmp_path / "slides", ["s0", "s1"])
 
-    printed = cached_extract(images, "first")
+    first = cached_extract(images, "first")
 
-    assert "tiling cache miss" in printed
-    assert "✓ tiling cache populated" in printed
-    assert "probing slide backends" not in printed
+    assert "tiling cache miss" in first.printed
+    assert "✓ tiling cache populated" in first.printed
+    assert first.probed == []
+    assert "probing slide backends" not in first.printed
 
 
 def _drop_a_coordinates_artifact(tmp_path: Path) -> None:
@@ -117,11 +138,12 @@ def test_an_entry_that_is_a_miss_anyway_is_tiled_again_without_probing_the_backe
     if damage is not None:
         damage(tmp_path)
 
-    printed = cached_extract(_write_cohort(tmp_path / "slides", second_samples), "second")
+    second = cached_extract(_write_cohort(tmp_path / "slides", second_samples), "second")
 
-    assert f"({reason})" in printed
-    assert "✓ tiling cache populated" in printed
-    assert "probing slide backends" not in printed
+    assert f"({reason})" in second.printed
+    assert "✓ tiling cache populated" in second.printed
+    assert second.probed == []
+    assert "probing slide backends" not in second.printed
 
 
 def test_a_slide_whose_mask_its_reader_cannot_open_beside_it_is_a_hit_on_the_next_run(
@@ -135,16 +157,18 @@ def test_a_slide_whose_mask_its_reader_cannot_open_beside_it_is_a_hit_on_the_nex
 
     second = cached_extract(images, "second")
 
-    assert "✓ tiling cache hit" in second
-    assert "tiling cache miss" not in second
+    assert "✓ tiling cache hit" in second.printed
+    assert "tiling cache miss" not in second.printed
 
 
 def test_a_hit_under_auto_prints_the_probe_counter(tmp_path: Path, cached_extract) -> None:
     images = _write_cohort(tmp_path / "slides", ["s0", "s1"])
     cached_extract(images, "first")
 
-    lines = cached_extract(images, "second").splitlines()
+    second = cached_extract(images, "second")
 
+    assert sorted(second.probed) == ["s0.tif", "s1.tif"]
+    lines = second.printed.splitlines()
     assert "… probing slide backends: 0/2" in lines
     assert "✓ probed slide backends: 2/2" in lines
     hit = next(index for index, line in enumerate(lines) if line.startswith("✓ tiling cache hit"))
