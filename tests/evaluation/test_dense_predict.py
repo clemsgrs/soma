@@ -24,6 +24,7 @@ from soma.models.heads.segmentation import SegmentationHead
 from soma.testing import FakeEncoder
 from soma.models.model import DenseModel
 from tests.experiment_configs import experiment
+from tests.whole_slides import RECIPE, blocky, save_bundle, write_slide
 
 PATCH = 16
 TILE = 64
@@ -400,3 +401,31 @@ def test_from_bundles_needs_a_recipe_or_a_stage_of_the_trained_frame_for_cached_
     other = FakeEncoder(target_size=32, patch_size=PATCH)
     with pytest.raises(ValueError, match="frame"):
         SlidingWindowSegmentationPredictor.from_bundles(bundles, encoder=other)
+
+
+# --- from_bundles: the read settings ------------------------------------------------- #
+
+
+def _loaded(path, **preprocessing):
+    """A loaded segmentation bundle over the ``fake`` encoder's grids; ``preprocessing``
+    overrides what it records."""
+    import soma
+
+    return soma.load(save_bundle(path, **preprocessing))
+
+
+def _reading(**recipe) -> dict:
+    """What a bundle records when its slides were read with these encoder recipe settings."""
+    return {"encoder": {**RECIPE, **recipe}}
+
+
+def test_from_bundles_reads_with_the_reader_and_tolerance_the_bundles_record(tmp_path):
+    """A slide 9% finer than the read spacing is within the recorded tolerance of 0.1, so
+    it is read unresized, as in training, and with the recorded reader."""
+    bundle = _loaded(tmp_path / "bundle", **_reading(backend="tifffile", tolerance=0.1))
+    slide = write_slide(tmp_path / "slide.tif", blocky(100, 100), spacing_um=0.457)
+
+    predictor = SlidingWindowSegmentationPredictor.from_bundles([bundle], device="cpu")
+
+    assert (predictor.spacing_um, predictor.tolerance, predictor.backend) == (0.5, 0.1, "tifffile")
+    assert predictor.predict_image(slide, overlap=0.0).labels.shape == (100, 100)
