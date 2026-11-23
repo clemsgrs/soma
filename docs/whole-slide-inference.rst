@@ -270,10 +270,12 @@ the most context around the pixel. With ``ensemble: true``, each tile's softmax
 is first the mean over the bundles. Averaging runs the model on the same tiles
 as pick one: it costs memory, not model time (see :ref:`whole-slide-cost`).
 
-On the annotated regions of the 10 BEETLE test slides, at overlap 0.5,
-averaging gave a dataset-global mean Dice of 0.896, against 0.894 for pick
-one, and 0.891 with no overlap. Averaging was better on all four classes and
-on 8 of the 10 slides.
+On crops of the annotated regions of the 10 BEETLE test slides, at overlap 0.5,
+averaging gave a dataset-global mean Dice of 0.896, against 0.894 for pick one,
+and 0.891 with no overlap. Each crop was read with 128 px of context around it,
+and all three ways of combining tiles used the same tile predictions. Averaging
+was better on all four classes and on 8 of the 10 slides. These are crop
+scores, not slide scores (see :ref:`whole-slide-not-comparable`).
 
 The margin must be a whole number of pixels. With 512 px tiles, an overlap of
 0.25 gives 64 px and 0.5 gives 128 px. Another value is refused, and the error
