@@ -420,6 +420,7 @@ class Pipeline:
             run_id=layout.run_id,
             run_dir=layout.run_dir,
             source_identity=source_identity(context.source),
+            fold_assignments=tuple(fold.assignments_digest() for fold in self._cohort.folds),
             encoder_stage=context.encoder_stage,
             dense=dense,
             roi_population_cache_root=(

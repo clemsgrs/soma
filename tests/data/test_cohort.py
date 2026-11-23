@@ -189,6 +189,22 @@ def test_with_test_from_tune_mirrors_tune_into_test() -> None:
     assert cohort.folds[0].tests == {}  # immutable
 
 
+def test_assignments_digest_is_the_sha256_of_the_fold_s_sorted_split_rows() -> None:
+    """The ``fold_assignments`` a fold bundle records, pinned: a changed encoding would
+    refuse every bundle saved before it. A tune split mirrored into test is no split of
+    the table, so a ``tune_is_test`` run records the digest of its table's rows."""
+    import hashlib
+
+    rows = '[["test","s4"],["test","s5"],["train","s0"],["train","s1"],["tune","s2"],["tune","s3"]]'
+    fold = FoldSplit(train=("s1", "s0"), tune=("s3", "s2"), tests={"test": ("s5", "s4")})
+    assert fold.assignments_digest() == hashlib.sha256(rows.encode()).hexdigest()
+
+    table = Cohort.from_frames(_records_df(), _splits_df().replace({"test": "train"}), allow_missing_test=True)
+    mirrored = table.with_test_from_tune().folds[0]
+    assert mirrored.tests == {"test": ("s2", "s3")}
+    assert mirrored.assignments_digest() == table.folds[0].assignments_digest()
+
+
 def test_with_test_from_tune_refuses_a_fold_that_already_has_a_test_split() -> None:
     cohort = Cohort.from_frames(_records_df(), _splits_df(), targets=["label"])
     with pytest.raises(ValueError, match="both"):

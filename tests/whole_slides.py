@@ -20,6 +20,7 @@ import tifffile
 import torch
 
 import soma
+from soma.data import Cohort
 from soma.data.images import RegionImageSource
 from soma.data.manifests import ImageEntry
 from soma.learn import DenseLearner, FitResult
@@ -117,12 +118,15 @@ def write_records(path, rows: list[dict]) -> str:
     return str(path)
 
 
-def save_bundle(path, *, seed: int = 0, num_classes: int = 3, decoder=None, head=None, **preprocessing):
+def save_bundle(
+    path, *, seed: int = 0, num_classes: int = 3, decoder=None, head=None, provenance=None, **preprocessing
+):
     """A segmentation bundle over the ``fake`` encoder's grids, with random weights.
 
     ``head`` adds segmentation head params, such as a class scheme (``label_remap``,
     ``pixel_mapping`` and ``class_names``); ``preprocessing`` overrides what the bundle
-    records in ``preprocessing.json``.
+    records in ``preprocessing.json``, and ``provenance`` adds to its ``provenance.json``
+    (such as :func:`fold_provenance`).
     """
     stage = soma.extract.live_encoder(**RECIPE)
     torch.manual_seed(seed)
@@ -146,7 +150,14 @@ def save_bundle(path, *, seed: int = 0, num_classes: int = 3, decoder=None, head
         "encoder": dict(RECIPE),
         **preprocessing,
     }
-    return soma.save(fit, path, preprocessing=recorded)
+    return soma.save(fit, path, preprocessing=recorded, provenance=provenance)
+
+
+def fold_provenance(records, splits, fold: int) -> dict:
+    """What a run's fold bundle records of its fold, as ``soma run`` writes it: ``fold``,
+    ``num_folds`` and the ``fold_assignments`` of that fold of ``splits``."""
+    folds = Cohort.from_csv(records, splits, allow_missing_test=True).folds
+    return {"fold": fold, "num_folds": len(folds), "fold_assignments": folds[fold].assignments_digest()}
 
 
 def save_detection_bundle(

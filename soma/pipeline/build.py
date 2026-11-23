@@ -179,7 +179,8 @@ class FoldSetup:
     the placeholder predictor (step 5, set shape); ``callbacks()`` and ``trainer`` the
     fit (step 6); ``tune_step(predictions, split, head)`` the tune-time threshold
     (step 7, detection); ``metrics(head)`` what every split is scored with (step 8);
-    ``preprocessing(head, threshold)`` and ``provenance`` the bundle's metadata (step 9).
+    ``preprocessing(head, threshold)``, ``provenance`` and ``fold_assignments`` the
+    bundle's metadata (step 9).
     """
 
     fold: int
@@ -195,6 +196,7 @@ class FoldSetup:
     provenance: dict[str, Any]
     fit_baseline: Callable[[Any], Baseline] | None = None
     tune_step: Callable[[Any, SplitPlan, Any], Any] | None = None
+    fold_assignments: str | None = None
 
 
 @dataclass
@@ -219,6 +221,9 @@ class RunInputs:
     run_id: str
     run_dir: Path
     source_identity: dict[str, Any]
+    #: Each fold's :meth:`~soma.data.FoldSplit.assignments_digest`, over the splits of
+    #: the cohort the config names (before ROIs or ``cohort.train_subset``).
+    fold_assignments: tuple[str, ...]
     encoder_stage: Any = None
     #: A grid run's slide2vec ``DenseOptions`` (its read spacing, tolerance and backend).
     dense: DenseOptions | None = None
@@ -1077,6 +1082,7 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
         metrics=metrics,
         preprocessing=preprocessing,
         provenance=inputs.provenance,
+        fold_assignments=inputs.fold_assignments[fold],
     )
 
 
@@ -1546,6 +1552,7 @@ def build_grid_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> Fold
         preprocessing=preprocessing,
         provenance=inputs.provenance,
         tune_step=tune_step if family == "detection" else None,
+        fold_assignments=inputs.fold_assignments[fold],
     )
 
 
