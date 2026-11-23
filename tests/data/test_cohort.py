@@ -117,6 +117,15 @@ def test_invalid_split_name_is_rejected() -> None:
         Cohort.from_frames(_records_df(), splits, targets=["label"])
 
 
+def test_a_missing_split_in_a_nullable_string_column_is_an_invalid_split_name() -> None:
+    """A nullable ``string`` column holds ``pd.NA``, whose truth value is ambiguous, so the
+    split-name check must reject it as a non-string before comparing it to a name."""
+    splits = _splits_df().astype({"split": "string"})
+    splits.loc[0, "split"] = pd.NA
+    with pytest.raises(ValueError, match="Invalid split name"):
+        Cohort.from_frames(_records_df(), splits, targets=["label"])
+
+
 def test_fold_without_test_split_is_rejected() -> None:
     splits = _splits_df().replace({"test": "tune"})
     with pytest.raises(ValueError, match="test"):
@@ -198,6 +207,18 @@ def test_test_from_tune_flag_requires_a_true_mirror_of_tune() -> None:
             )
 
 
+def test_from_csv_refuses_a_split_name_with_a_slash(tmp_path) -> None:
+    """``/`` separates the split from the metric in keys such as ``test/auroc``, and the
+    split names its output files, so ``test/external`` is refused before any training."""
+    _records_df().to_csv(tmp_path / "dataset.csv", index=False)
+    splits = _splits_df()
+    splits.loc[splits["split"] == "test", "split"] = "test/external"
+    splits.to_csv(tmp_path / "splits.csv", index=False)
+
+    with pytest.raises(ValueError, match=r"'test/external'.*[Rr]ename"):
+        Cohort.from_csv(tmp_path / "dataset.csv", tmp_path / "splits.csv", targets=["label"])
+
+
 @pytest.mark.parametrize("name", ["train", "tune", "holdout", ""])
 def test_list_constructor_rejects_test_splits_not_named_test(name: str) -> None:
     """The programmatic constructor enforces the same split vocabulary as from_frames; a
@@ -205,6 +226,13 @@ def test_list_constructor_rejects_test_splits_not_named_test(name: str) -> None:
     records = [SampleRecord(s, {"label": i % 2}, patient_id="p") for i, s in enumerate("ab")]
     with pytest.raises(ValueError, match="Invalid split name"):
         Cohort(records, [FoldSplit(train=("a",), tune=(), tests={name: ("b",)})])
+
+
+def test_list_constructor_refuses_a_test_split_name_with_a_slash() -> None:
+    records = [SampleRecord(s, {"label": i % 2}) for i, s in enumerate("abc")]
+    fold = FoldSplit(train=("a",), tune=("b",), tests={"test/external": ("c",)})
+    with pytest.raises(ValueError, match=r"'test/external'.*[Rr]ename"):
+        Cohort(records, [fold])
 
 
 def test_collapse_to_patient_unit_keeps_representative_targets() -> None:

@@ -22,6 +22,7 @@ __all__ = [
     "is_filename_safe_id",
     "ensure_filename_safe_id",
     "is_valid_split_name",
+    "is_valid_test_split_name",
     "iter_rows",
     "optional_text",
     "optional_path",
@@ -75,10 +76,18 @@ def ensure_filename_safe_id(value: object, *, field: str = "sample_id") -> str:
     return str(value)
 
 
+def is_valid_test_split_name(name: object) -> bool:
+    """A test split name starts with ``test`` and holds no ``/``: ``/`` separates the split
+    from the metric in keys such as ``test/auroc``, and the split names its output files
+    (``predictions_<split>.parquet``)."""
+    return isinstance(name, str) and name.startswith(SPLIT_TEST_PREFIX) and "/" not in name
+
+
 def is_valid_split_name(name: object) -> bool:
-    """A split name is ``train``, ``tune``, or anything starting with ``test``."""
+    """A split name is ``train``, ``tune``, or a test split name
+    (:func:`is_valid_test_split_name`)."""
     return isinstance(name, str) and (
-        name in (SPLIT_TRAIN, SPLIT_TUNE) or name.startswith(SPLIT_TEST_PREFIX)
+        name in (SPLIT_TRAIN, SPLIT_TUNE) or is_valid_test_split_name(name)
     )
 
 

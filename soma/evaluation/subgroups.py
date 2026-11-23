@@ -162,10 +162,10 @@ def is_subgroup_key(name: str) -> bool:
     """Whether a split-relative metric key (the part after ``<split>/``) is a subgroup key:
     ``<column>=<group>/<metric>`` or ``mean_over_<column>/<metric>``.
 
-    A ``/`` alone does not make one, since a split name may hold a ``/`` (the split
-    ``test/external`` gives ``external/mean_dice`` under ``test``). Plan time and
-    ``Trainer.fit`` refuse ``/`` and ``=`` in subgroup columns and values
-    (:func:`check_subgroup_name`), so the first segment decides.
+    A split name holds no ``/`` (the cohort refuses one when it loads), so the first ``/``
+    of a full key ends the split. Plan time and ``Trainer.fit`` refuse ``/`` and ``=`` in
+    subgroup columns and values (:func:`check_subgroup_name`), so the first segment of
+    ``name`` decides.
     """
     head, slash, _ = name.partition("/")
     return bool(slash) and ("=" in head or head.startswith("mean_over_"))
