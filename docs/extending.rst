@@ -234,8 +234,9 @@ differ:
   calls ``validation_summary`` on them, so a subclass that overrides
   ``validation_summary`` reduces each group the same way. Override the hook too
   when ``validation_step`` stores ``outputs`` that are not one row per sample. A
-  learner that subclasses :class:`soma.learn.Learner` directly has no hook, and a
-  run with subgroups refuses it, when the plan is built and in ``Trainer.fit``.
+  learner that subclasses :class:`soma.learn.Learner` directly must define the hook
+  itself. Without it, a run with subgroups refuses the learner, both when the plan
+  is built and in ``Trainer.fit``.
   ``soma.learn.learner.has_subgroup_summary(cls)`` says whether a class has the hook.
 - ``predict_step(batch)`` returns a :class:`soma.learn.PredictOutput`. A column it
   adds lands in ``predictions_<split>.parquet`` next to the head's columns.
