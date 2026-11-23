@@ -24,6 +24,7 @@ from soma.models.heads.segmentation import SegmentationHead
 from soma.testing import FakeEncoder
 from soma.models.model import DenseModel
 from tests.experiment_configs import experiment
+from tests.whole_slides import RECIPE, blocky, save_bundle, write_slide
 
 PATCH = 16
 TILE = 64
@@ -400,3 +401,88 @@ def test_from_bundles_needs_a_recipe_or_a_stage_of_the_trained_frame_for_cached_
     other = FakeEncoder(target_size=32, patch_size=PATCH)
     with pytest.raises(ValueError, match="frame"):
         SlidingWindowSegmentationPredictor.from_bundles(bundles, encoder=other)
+
+
+# --- from_bundles: the read settings ------------------------------------------------- #
+
+
+def _loaded(path, **preprocessing):
+    """A loaded segmentation bundle over the ``fake`` encoder's grids; ``preprocessing``
+    overrides what it records."""
+    import soma
+
+    return soma.load(save_bundle(path, **preprocessing))
+
+
+def _reading(**recipe) -> dict:
+    """What a bundle records when its slides were read with these encoder recipe settings."""
+    return {"encoder": {**RECIPE, **recipe}}
+
+
+def test_from_bundles_reads_with_the_reader_and_tolerance_the_bundles_record(tmp_path):
+    """A slide 9% finer than the read spacing is within the recorded tolerance of 0.1, so
+    it is read unresized, as in training, and with the recorded reader."""
+    bundle = _loaded(tmp_path / "bundle", **_reading(backend="tifffile", tolerance=0.1))
+    slide = write_slide(tmp_path / "slide.tif", blocky(100, 100), spacing_um=0.457)
+
+    predictor = SlidingWindowSegmentationPredictor.from_bundles([bundle], device="cpu")
+
+    assert (predictor.spacing_um, predictor.tolerance, predictor.backend) == (0.5, 0.1, "tifffile")
+    assert predictor.predict_image(slide, overlap=0.0).labels.shape == (100, 100)
+
+
+def test_from_bundles_reads_a_bundle_that_records_no_reader_or_tolerance_with_auto_and_0_05(tmp_path):
+    """The recipe records neither, and the bundle no read spacing of its own: the spacing
+    is the recipe's."""
+    bundle = _loaded(tmp_path / "bundle", spacing_um=None)
+
+    predictor = SlidingWindowSegmentationPredictor.from_bundles([bundle], device="cpu")
+
+    assert (predictor.spacing_um, predictor.tolerance, predictor.backend) == (0.5, 0.05, "auto")
+
+
+def test_from_bundles_refuses_bundles_read_with_different_readers_unless_backend_names_one(tmp_path):
+    bundles = [
+        _loaded(tmp_path / "a" / "bundle", **_reading(backend="tifffile")),
+        _loaded(tmp_path / "b" / "bundle", **_reading(backend="openslide")),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match=r"different readers: .*/a/bundle with 'tifffile'; .*/b/bundle with 'openslide'\. Name the reader to predict with in backend=\.",
+    ):
+        SlidingWindowSegmentationPredictor.from_bundles(bundles, device="cpu")
+
+    with pytest.warns(UserWarning, match=r"/b/bundle with 'openslide'"):
+        predictor = SlidingWindowSegmentationPredictor.from_bundles(bundles, backend="tifffile", device="cpu")
+    assert predictor.backend == "tifffile"
+
+
+def test_from_bundles_warns_when_backend_is_not_the_reader_a_bundle_records(tmp_path):
+    bundle = _loaded(tmp_path / "bundle", **_reading(backend="openslide"))
+
+    with pytest.warns(UserWarning, match=r"backend= is 'tifffile', but .*/bundle with 'openslide'"):
+        SlidingWindowSegmentationPredictor.from_bundles([bundle], backend="tifffile", device="cpu")
+
+
+@pytest.mark.parametrize(
+    "other",
+    [{"tile_size": [64, 64]}, {"spacing_um": 1.0}, _reading(tolerance=0.1)],
+    ids=["tile-size", "spacing", "tolerance"],
+)
+def test_from_bundles_refuses_bundles_that_record_different_tiles_spacings_or_tolerances(tmp_path, other):
+    bundles = [_loaded(tmp_path / "a" / "bundle"), _loaded(tmp_path / "b" / "bundle", **other)]
+
+    with pytest.raises(ValueError, match="must agree on tile size, read spacing and read tolerance"):
+        SlidingWindowSegmentationPredictor.from_bundles(bundles, device="cpu")
+
+
+@pytest.mark.filterwarnings("ignore:backend= is 'openslide'")
+def test_from_bundles_reads_with_the_settings_passed_over_those_the_bundles_record(tmp_path):
+    bundle = _loaded(tmp_path / "bundle", **_reading(backend="tifffile", tolerance=0.1))
+
+    predictor = SlidingWindowSegmentationPredictor.from_bundles(
+        [bundle], spacing_um=0.25, tolerance=0.2, backend="openslide", device="cpu"
+    )
+
+    assert (predictor.spacing_um, predictor.tolerance, predictor.backend) == (0.25, 0.2, "openslide")

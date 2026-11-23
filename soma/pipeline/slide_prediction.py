@@ -317,27 +317,13 @@ def _bundle_info(path: Path) -> dict[str, Any]:
             f"{where} was trained on a composite of several encoders' grids. Whole-slide "
             "prediction needs a single frozen encoder stage, and a composite has none."
         )
-    tile = preprocessing.get("tile_size")
-    tile = [tile, tile] if isinstance(tile, int) else list(tile or ())
-    if len(tile) != 2 or tile[0] != tile[1]:
+    info = {**_read_settings(preprocessing, path), "task_family": family}
+    if info["tile_px"] is None:
         raise ValueError(f"{where} records the tile size {preprocessing.get('tile_size')}; soma predict needs square tiles")
-    spacing = preprocessing.get("spacing_um")
-    if spacing is None and isinstance(recipe, Mapping):
-        spacing = recipe.get("spacing_um")
-    if spacing is None:
+    if info["spacing_um"] is None:
         raise ValueError(f"{where} records no read spacing (spacing_um)")
-    tolerance = recipe.get("tolerance", 0.05) if isinstance(recipe, Mapping) else 0.05
-    backend = recipe.get("backend") if isinstance(recipe, Mapping) else None
-    info = {
-        "path": str(path),
-        "task_family": family,
-        "tile_px": int(tile[0]),
-        "spacing_um": float(spacing),
-        "tolerance": float(tolerance),
-        "backend": None if backend is None else str(backend),
-        "num_classes": int(preprocessing["num_classes"]),
-        "class_names": preprocessing.get("class_names"),
-    }
+    info["num_classes"] = int(preprocessing["num_classes"])
+    info["class_names"] = preprocessing.get("class_names")
     if family == "segmentation":
         info["ignore_index"] = int(preprocessing.get("ignore_index", 255))
         info["label_remap"] = preprocessing.get("label_remap")
@@ -349,6 +335,29 @@ def _bundle_info(path: Path) -> dict[str, Any]:
         info["nms_distance_um"] = float(head.nms_distance)
         info["min_score"] = float(head.min_score)
     return info
+
+
+def _read_settings(preprocessing: Mapping[str, Any], path) -> dict[str, Any]:
+    """How a bundle's slides were read in training, from its ``preprocessing.json`` (a
+    loaded bundle's ``preprocessing``): the tile size (``tile_px``, ``None`` unless it
+    records a square tile), the read spacing (the bundle's, else its encoder recipe's;
+    ``None`` when neither records one), the read tolerance (0.05 when the recipe records
+    none) and the slide reader (``None`` when the recipe records none)."""
+    recipe = preprocessing.get("encoder")
+    recipe = recipe if isinstance(recipe, Mapping) else {}
+    tile = preprocessing.get("tile_size")
+    tile = [tile, tile] if isinstance(tile, int) else list(tile or ())
+    spacing = preprocessing.get("spacing_um")
+    if spacing is None:
+        spacing = recipe.get("spacing_um")
+    backend = recipe.get("backend")
+    return {
+        "path": str(path),
+        "tile_px": int(tile[0]) if len(tile) == 2 and tile[0] == tile[1] else None,
+        "spacing_um": None if spacing is None else float(spacing),
+        "tolerance": float(recipe.get("tolerance", 0.05)),
+        "backend": None if backend is None else str(backend),
+    }
 
 
 def _detection_head(path: Path):
@@ -444,23 +453,24 @@ def _shared_tile(infos: Sequence[Mapping[str, Any]]) -> tuple[int, float, float]
     return first["tile_px"], first["spacing_um"], first["tolerance"]
 
 
-def _slide_reader(configured: str | None, infos: Sequence[Mapping[str, Any]]) -> str:
-    """The reader of the slides: ``extraction.tiling.backend``, or else the one the bundles
-    record. A bundle that records none (one saved before soma recorded it) leaves the
-    choice to the others, and ``auto`` when no bundle records one."""
+def _slide_reader(configured: str | None, infos: Sequence[Mapping[str, Any]], *, setting: str) -> str:
+    """The reader of the slides: ``configured``, the value of ``setting``
+    (``extraction.tiling.backend`` for soma predict), or else the one the bundles record. A
+    bundle that records none (one saved before soma recorded it) leaves the choice to the
+    others, and ``auto`` when no bundle records one."""
     recording = [info for info in infos if info["backend"] is not None]
     if configured is None:
         if len({info["backend"] for info in recording}) > 1:
             raise ValueError(
                 "the bundles of one prediction were trained on slides read with different "
                 f"readers: {_readers(recording)}. Name the reader to predict with in "
-                "extraction.tiling.backend."
+                f"{setting}."
             )
         return recording[0]["backend"] if recording else "auto"
     others = [info for info in recording if info["backend"] != configured]
     if others:
         warnings.warn(
-            f"extraction.tiling.backend is {configured!r}, but these bundles were trained on "
+            f"{setting} is {configured!r}, but these bundles were trained on "
             f"slides read with another reader: {_readers(others)}. The slides are read with "
             f"{configured!r}, which may decode their pixels differently than in training.",
             stacklevel=2,
@@ -500,7 +510,7 @@ def _extraction(given, *, tile_px: int, spacing_um: float, tolerance: float, inf
         "tolerance": tolerance,
         "overlap": 0.0,
         **tiling,
-        "backend": _slide_reader(tiling.get("backend"), infos),
+        "backend": _slide_reader(tiling.get("backend"), infos, setting="extraction.tiling.backend"),
         "requested_tile_size_px": tile_px,
         "requested_spacing_um": spacing_um,
         "grid": "slide",

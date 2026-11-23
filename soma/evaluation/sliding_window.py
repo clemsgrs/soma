@@ -158,8 +158,8 @@ class SlidingWindowSegmentationPredictor:
         *,
         encoder=None,
         spacing_um: float | None = None,
-        backend: str = "auto",
-        tolerance: float = 0.05,
+        backend: str | None = None,
+        tolerance: float | None = None,
         device: str | torch.device | None = None,
     ) -> "SlidingWindowSegmentationPredictor":
         """Build the fold ensemble from loaded bundles (:func:`soma.load`, one per fold).
@@ -169,14 +169,29 @@ class SlidingWindowSegmentationPredictor:
         the encoder recipe it records (:func:`soma.pipeline.build.bundle_encoder_stage`)
         is put in front of its adaptor, decoder and head, one stage for every bundle with
         the same recipe. ``encoder`` replaces that stage; its frame must match the one the
-        bundle was trained on. ``spacing_um`` defaults to the read spacing the bundles
-        record.
+        bundle was trained on.
+
+        The images are read as in training, with the reader settings the bundles record,
+        as :func:`soma.predict_slides` reads slides. ``spacing_um`` defaults to the read
+        spacing of the bundles, else of their encoder recipe. ``tolerance`` defaults to the
+        recipe's read tolerance, or 0.05 when it records none. ``backend`` defaults to the
+        slide reader the bundles record, or ``auto`` when none records one. A value you
+        pass wins. Bundles that record different readers need ``backend``, and a
+        ``backend`` other than a bundle's reader gives a warning. Bundles that record
+        different tile sizes, read spacings or tolerances are refused.
         """
         from soma.models.model import DenseModel
         from soma.pipeline.build import bundle_encoder_stage
+        from soma.pipeline.slide_prediction import _read_settings, _shared_tile, _slide_reader
 
         if not bundles:
             raise ValueError("SlidingWindowSegmentationPredictor needs at least one bundle")
+        infos = [
+            _read_settings(bundle.preprocessing, f"bundles[{index}]" if bundle.path is None else bundle.path)
+            for index, bundle in enumerate(bundles)
+        ]
+        _, recorded_spacing, recorded_tolerance = _shared_tile(infos)
+        backend = _slide_reader(backend, infos, setting="backend=")
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         models = []
@@ -193,10 +208,12 @@ class SlidingWindowSegmentationPredictor:
                     )
                 model = DenseModel(model.decoder, model.head, encoder=stage, adaptor=model.adaptor)
             models.append(model.to(device).eval())
-        if spacing_um is None:
-            spacing_um = bundles[0].preprocessing.get("spacing_um")
         return cls.from_encoder(
-            models[0].encoder, models, spacing_um=spacing_um, backend=backend, tolerance=tolerance
+            models[0].encoder,
+            models,
+            spacing_um=recorded_spacing if spacing_um is None else spacing_um,
+            backend=backend,
+            tolerance=recorded_tolerance if tolerance is None else tolerance,
         )
 
     @torch.inference_mode()
