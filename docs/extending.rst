@@ -230,10 +230,12 @@ differ:
   epoch of a run with ``evaluation.subgroups`` (see :ref:`subgroup-metrics`). Each
   :class:`soma.learn.StepOutput` carries its batch's ``sample_ids`` in row order,
   so the learner can pick a group's rows; a ``validation_step`` override must keep
-  them, or no sample is in a group. ``MILLearner``'s hook picks those rows and
-  calls ``validation_summary`` on them, so a subclass that overrides
-  ``validation_summary`` reduces each group the same way. Override the hook too
-  when ``validation_step`` stores ``outputs`` that are not one row per sample. A
+  them, or no sample is in a group. ``MILLearner``'s hook joins the group's rows
+  into one ``StepOutput``, with ``loss=None``, and calls ``validation_summary`` on
+  it. So a subclass whose ``validation_summary`` reduces ``outputs`` and
+  ``targets`` reduces each group the same way. Override the hook too when
+  ``validation_step`` stores ``outputs`` or ``targets`` that are not one row per
+  sample, or when ``validation_summary`` reads each step's ``loss``. A
   learner that subclasses :class:`soma.learn.Learner` directly must define the hook
   itself. Without it, a run with subgroups refuses the learner, both when the plan
   is built and in ``Trainer.fit``.
