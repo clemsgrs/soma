@@ -223,7 +223,26 @@ differ:
   adds the term.
 - ``validation_step(batch)`` and ``validation_summary(outputs)`` reduce a split. The
   summary has bare keys and must contain ``loss``. The trainer prefixes each key with
-  its split, so ``Checkpoint`` and ``EarlyStopping`` monitor ``tune/<key>``.
+  its split, so ``Checkpoint`` and ``EarlyStopping`` monitor ``tune/<key>`` (see
+  :ref:`logged-values`).
+- ``subgroup_summary(outputs, sample_ids)`` reduces the rows of ``sample_ids`` alone
+  to the keys of ``validation_summary``: one group's values, at every evaluated
+  epoch of a run with ``evaluation.subgroups`` (see :ref:`subgroup-metrics`). Each
+  :class:`soma.learn.StepOutput` carries its batch's ``sample_ids`` in row order,
+  so the learner can pick a group's rows; a ``validation_step`` override must keep
+  them, or no sample is in a group. ``MILLearner.validation_step`` returns
+  ``loss=None``, and its ``validation_summary`` computes the loss once, with
+  ``task_loss``, from the joined ``outputs`` and ``targets``. Its hook joins the
+  group's rows into one ``StepOutput``, also with ``loss=None``, and calls
+  ``validation_summary`` on it. So a subclass whose ``validation_summary`` reduces
+  ``outputs`` and ``targets`` reduces each group the same way. A
+  ``validation_summary`` that reads each step's ``loss`` needs a
+  ``validation_step`` that returns one, and its own hook. Also override the hook
+  when ``validation_step`` stores ``outputs`` or ``targets`` that are not one row
+  per sample. A learner that subclasses :class:`soma.learn.Learner` directly must define the hook
+  itself. Without it, a run with subgroups refuses the learner, both when the plan
+  is built and in ``Trainer.fit``.
+  ``soma.learn.learner.has_subgroup_summary(cls)`` says whether a class has the hook.
 - ``predict_step(batch)`` returns a :class:`soma.learn.PredictOutput`. A column it
   adds lands in ``predictions_<split>.parquet`` next to the head's columns.
 - ``configure_optimizers(budget)`` builds the optimizer and schedulers, for

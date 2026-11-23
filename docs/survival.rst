@@ -33,6 +33,15 @@ preset takes the loss as its ``loss`` argument: ``"nll"`` builds the
 ``num_bins`` (required), and ``"cox"`` the ``cox_survival`` head in
 accumulation mode, with ``cox_window: 32`` (it takes no ``num_bins``).
 
+During training, a Cox head's ``tune/loss`` is the partial-likelihood loss over
+the whole tune split. With the train pass, ``train/loss`` is the one over the
+whole train split, not over the event-balanced training batches (see
+:ref:`train-pass`). A split without an event has no partial-likelihood loss and
+no C-index: both are NaN. When best-epoch selection or early stopping monitors
+either one, the run stops with an error. With ``evaluation.subgroups``, each
+group's loss is computed over the group's own risk sets, so the groups' losses
+do not average to ``tune/loss`` (see :ref:`subgroup-metrics`).
+
 Survival datasets carry these target columns; the head's ``targets`` param maps
 a target to a differently named column, for example ``targets: {time: label}``:
 

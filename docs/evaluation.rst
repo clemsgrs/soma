@@ -63,6 +63,8 @@ list means the defaults); score a metric of your own from Python, or with
 :func:`soma.evaluation.compare` runs a paired permutation test of several
 prediction sets against the best one.
 
+.. _subgroup-metrics:
+
 Subgroup metrics
 ----------------
 
@@ -74,12 +76,84 @@ receive their own metrics:
    evaluation:
      subgroups: [center, grade]
 
-For each column, every value with at least two samples gets the run's metrics
-and its sample count. A significance test then compares each group with the
+Each distinct value of a column is a group. A run scores the groups after the
+fit, on tune and on each test split, and at every evaluated epoch during
+training. Subgroups are for the set shape; the grid shape refuses them. The
+plan also refuses a column name or a value that contains ``/`` or ``=``, because
+the names below cannot hold it: rename it.
+
+After the fit
+~~~~~~~~~~~~~
+
+For each column, every group with at least two samples gets the run's metrics
+and its sample count, and the column gets the unweighted mean of each metric
+over its groups. A significance test then compares each group with the
 rest of the split by permuting group membership 1,000 times; it needs at least
 10 samples in the group and two in the remainder. Patient-level runs read each
-patient's metadata from its first slide. Results are written to
-``subgroup_metrics_<split>.json`` for each test split.
+patient's metadata from its first slide. Each fold writes the results to
+``subgroup_metrics_<split>.json`` for tune, with or without ``holdout_test``,
+and for each test split the run scores:
+
+.. code-block:: json
+
+   {
+     "metrics": {"center": {"A": {"auroc": 0.812, "n": 40}, "B": {"auroc": 0.706, "n": 35}}},
+     "mean_over": {"center": {"auroc": 0.759, "auroc_groups": 2}},
+     "stats": {"center": {"A": {"auroc": 0.214}, "B": {"auroc": 0.221}}}
+   }
+
+``stats`` holds the p-values of the significance test. A group whose metric is
+NaN, such as an AUROC over one class or a C-index without comparable pairs, is
+left out of the mean, and ``<metric>_groups`` counts the groups that are in it.
+With no finite group, the mean is NaN.
+
+``summary.json`` holds the same values under the split's name:
+``test/center=A/auroc`` for one group and ``test/mean_over_center/auroc`` for the
+mean, with ``_mean``, ``_std`` and ``_nan_folds`` over several folds (see
+:ref:`the summary keys <summary-keys>`). The sample counts, the ``_groups``
+counts and the p-values stay in the file.
+
+During training
+~~~~~~~~~~~~~~~
+
+At every evaluated epoch, the trainer also scores each group of the tune split,
+and of the train split when ``trainer.eval_train`` is on (see
+:ref:`train-pass`). For each column it logs the loss and the metrics of each
+group, and their unweighted mean over the column's groups:
+
+- ``tune/<column>=<group>/loss`` and ``tune/<column>=<group>/<metric>``;
+- ``tune/mean_over_<column>/loss`` and ``tune/mean_over_<column>/<metric>``, with
+  ``<name>_groups`` counting the groups in each mean;
+- the same names under ``train/`` with the train pass.
+
+The rules are the same as after the fit: a group needs two samples, and a NaN
+group is left out of the mean. These values go to ``training_history.json``
+(see :ref:`logged-values`); the progress panel shows only the pooled values and
+the monitors. They cover the samples with features; a tune or test sample
+without features is scored after the fit only, by the baseline.
+
+A tune mean over groups can be the monitor (see :ref:`monitors`), but the value
+of one group cannot: a fold's tune split can lack the group.
+
+.. code-block:: yaml
+
+   evaluation:
+     subgroups: [center]
+   trainer:
+     callbacks:
+       - {name: checkpoint, params: {monitor: tune/mean_over_center/auroc, mode: max}}
+       - {name: early_stopping, params: {monitor: tune/mean_over_center/auroc, mode: max}}
+
+A group's loss is the head's loss over the samples of the group alone, as
+``tune/loss`` is the loss over the whole split. For a loss that is a mean over
+samples, it is the mean of the group's per-sample losses. For a Cox head, it is
+the partial-likelihood loss over the group's own risk sets: each group is a
+stratum. The groups' losses then do not average to ``tune/loss``, whose risk
+sets span the whole split. The loss of a group without an event is NaN, and the
+mean over groups leaves it out.
+
+A learner needs the ``subgroup_summary`` hook to run with subgroups. The ``mil``
+learner has it; a custom learner may need to add it (see :ref:`custom-learner`).
 
 Holding out test data
 ---------------------
@@ -87,7 +161,9 @@ Holding out test data
 Set ``evaluation.holdout_test: true`` to train and report tune results without
 test inference or test artifacts. Checkpoint selection and tune evaluation
 continue normally. This supports selecting a candidate on tune results before
-evaluating it on the held-out test cohort.
+evaluating it on the held-out test cohort. ``summary.json`` then holds the tune
+metrics, subgroups included, under ``tune/``. Without ``holdout_test``, it holds
+the test splits only.
 
 Test identities are recorded in ``test_results.json``. Re-scoring an already
 recorded test identity is skipped unless ``evaluation.overwrite_test: true``;
