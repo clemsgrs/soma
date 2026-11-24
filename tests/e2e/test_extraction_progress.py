@@ -188,6 +188,29 @@ def test_a_slide_encoder_embeds_then_aggregates_and_reuses_cached_tile_features(
     artifact.assert_passed()
 
 
+def test_a_slide_encoder_reports_embedding_done_while_a_cached_slide_has_its_tiles_encoded_again(
+    tmp_path, new_artifact
+):
+    """Slide A keeps its slide feature but loses its tile features; slide B keeps its tile
+    features but loses its slide feature. B is the only pending slide and has nothing to
+    encode, so ``embedding`` is done from its start while A's tiles are encoded again."""
+    artifact = new_artifact("extraction_progress_slide_encoder_tile_repair")
+    records, _splits = synthetic_cohort(tmp_path / "cohort", n=3)
+    images = ImageManifest.from_csv(records)
+    _extract_slides(images, "fake-slide", tmp_path, "cold")
+    repaired, pending = images.sample_ids[:2]
+    for kind, sample_id in (("tile_embeddings", repaired), ("slide_embeddings", pending)):
+        (feature,) = (tmp_path / "cache").rglob(f"{kind}/{sample_id}.pt")
+        feature.unlink()
+
+    resume = _extract_slides(images, "fake-slide", tmp_path, "resume")
+    phases = ["checking_cache", "embedding", "aggregating", "finished"]
+    _check_cycle(artifact, "resume", resume, phases=phases, total=len(images), cached=2)
+    embedding = [(s.samples_done, s.tiles_done == s.tiles_total) for s in resume if s.phase == "embedding"]
+    artifact.check_equal("resume/embedding_done", sorted(set(embedding)), [(1, True)])
+    artifact.assert_passed()
+
+
 def test_dense_grids_on_pre_cropped_images_count_images_cold_then_from_the_warm_cache(
     tmp_path, encoder_name, new_artifact
 ):

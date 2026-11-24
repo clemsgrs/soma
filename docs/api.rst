@@ -138,13 +138,16 @@ and a phase never comes back:
      - Always the last call of an extraction that succeeds. An extraction that
        fails raises and sends no ``finished``.
 
-When every sample is in the cache, ``fn`` sees ``checking_cache``, then
-``finished``.
+When every sample is in the cache and no slide has to be tiled or sampled
+again, ``fn`` sees ``checking_cache``, then ``finished``. If a slide has to be
+tiled or sampled again, ``tiling`` comes between them.
 
 ``samples_cached`` is ``None`` until the cache has been checked, then it does
 not change. Over whole slides that need tiling, the slides are tiled before the
 cache is checked, so ``samples_cached`` stays ``None`` during most of
-``tiling``. For a slide encoder, a sample is cached when its slide feature is.
+``tiling``. With ``rois=``, a slide of the manifest that has no ROI in ``rois``
+has nothing to encode, so it is counted in ``samples_cached``, even with the
+cache off. For a slide encoder, a sample is cached when its slide feature is.
 ``samples_done`` counts the samples not cached that have completed the current
 phase, and starts again from 0 in each phase. A slide whose tile features are
 already cached counts as done in ``embedding`` from the start. ``tiles_done`` and

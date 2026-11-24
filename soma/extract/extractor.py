@@ -257,27 +257,25 @@ def _report_checked(
     pending: Collection[str],
     embedded: Collection[str] = (),
     tiles_per_tile: int = 1,
-) -> None:
+) -> bool:
     """Tell the progress hook which rows the cache lacks, which of them have nothing left to
     encode (their tile features are cached, or they have no tile), and each one's tiles.
+    Return whether every pending row has nothing left to encode.
 
     ``tiles_per_tile`` counts what the encoder sees per tiling tile: the region's
     sub-tiles on a hierarchical run, as slide2vec counts them."""
     if not progress.reporting_active():
-        return
+        return False
     pending = {str(sample_id) for sample_id in pending}
     empty = set(_empty_sample_ids_from_loaded_tilings(loaded_tilings))
+    embedded = (set(map(str, embedded)) | empty) & pending
     tiles: dict[str, int] = {}
     for loaded in loaded_tilings:
         sample_id = str(loaded.slide.sample_id)
         if sample_id in pending:
             tiles[sample_id] = tiles.get(sample_id, 0) + tiling_num_tiles(loaded.tiling_result) * tiles_per_tile
-    progress.report(
-        "soma.checked",
-        pending=sorted(pending),
-        embedded=sorted((set(map(str, embedded)) | empty) & pending),
-        tiles=tiles,
-    )
+    progress.report("soma.checked", pending=sorted(pending), embedded=sorted(embedded), tiles=tiles)
+    return embedded == pending
 
 
 class _PooledFeatureExtractor:
@@ -1223,11 +1221,14 @@ class _PooledFeatureExtractor:
             # The slide cache is the final one; a pending slide whose tile features are
             # cached is not embedded again.
             slide_pending = set(slide_cache.missing_sample_ids())
-            _report_checked(
+            if _report_checked(
                 loaded_tilings,
                 pending=slide_pending,
                 embedded=slide_pending - set(tile_cache.missing_sample_ids()),
-            )
+            ):
+                # The first pass has nothing to encode for a pending slide. A tile-cache
+                # repair below is for slides that are not pending.
+                progress.report("soma.embedding.started")
 
         # Always-aggregate: ensure the tile-dependency cache is complete first,
         # then aggregate from it. This reuses the incremental, crash-safe tile
@@ -1259,9 +1260,6 @@ class _PooledFeatureExtractor:
                 validate_payloads=self._cache.validate_payloads,
                 feature_identity=tile_identity,
             )
-        else:
-            # The first pass has nothing to encode.
-            progress.report("soma.embedding.started")
 
         self._populate_slide_cache(
             tile_cache=tile_cache,
@@ -1366,14 +1364,14 @@ class _PooledFeatureExtractor:
             patient_pending = {
                 sample_id for sample_id, patient_id in patient_id_map.items() if patient_id in missing_patients
             }
-            _report_checked(
+            if _report_checked(
                 loaded_tilings,
                 pending=patient_pending,
                 embedded=patient_pending - set(tile_cache.missing_sample_ids()),
-            )
-        if tile_cache.complete:
-            # The first pass has nothing to encode.
-            progress.report("soma.embedding.started")
+            ):
+                # The first pass has nothing to encode for a pending row. A tile-cache
+                # repair below is for rows that are not pending.
+                progress.report("soma.embedding.started")
 
         self._populate_tile_cache(
             cache_resolution=tile_cache,
