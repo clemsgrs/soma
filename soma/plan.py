@@ -58,6 +58,10 @@ RESUME_EXCLUDED_RUN_FIELDS = ("output_dir", "run_id", "resume", "mirror_root", "
 #: Checkpointing a Cox window gives the same gradients with less memory, so a run that ran
 #: out of GPU memory resumes with it on.
 RESUME_EXCLUDED_LEARNER_PARAMS = ("checkpoint_cox_window",)
+#: ``evaluation`` fields a resume may change. A fold scores the same under either
+#: ``unpredicted`` policy (``error`` stops a run that misses a sample before any fold
+#: trains), so a run that ``error`` refused resumes with ``exclude``.
+RESUME_EXCLUDED_EVALUATION_FIELDS = ("unpredicted",)
 #: The ``learner.params`` keys that build the model rather than the learner.
 MODEL_PARAMS = (*LEAF_PARAMS[:3], "normalization", "projection")
 #: The ``learner.params`` keys that are not the learner class's own keywords: the model's
@@ -126,8 +130,9 @@ class Plan(Mapping):
 
     def comparable(self) -> dict[str, Any]:
         """The plan a resume must match: without the launch-only ``run`` fields
-        (``output_dir``, ``run_id``, ``resume``, ``mirror_root``, ``folds``) and
-        ``learner.params.checkpoint_cox_window``. ``run.seed`` stays."""
+        (``output_dir``, ``run_id``, ``resume``, ``mirror_root``, ``folds``),
+        ``learner.params.checkpoint_cox_window`` and ``evaluation.unpredicted``.
+        ``run.seed`` stays."""
         return comparable(self.to_dict())
 
     @property
@@ -165,6 +170,10 @@ def comparable(payload: Mapping[str, Any]) -> dict[str, Any]:
     if isinstance(params, dict):
         for name in RESUME_EXCLUDED_LEARNER_PARAMS:
             params.pop(name, None)
+    evaluation = payload.get("evaluation")
+    if isinstance(evaluation, dict):
+        for name in RESUME_EXCLUDED_EVALUATION_FIELDS:
+            evaluation.pop(name, None)
     cohort = payload.get("cohort")
     if isinstance(cohort, dict) and cohort.get("train_subset") is None:
         cohort.pop("train_subset", None)
@@ -377,6 +386,13 @@ def _check(config: ExperimentConfig) -> None:
         raise ValueError(
             f"trainer.eval_train is supported for the set shape only, and learner "
             f"'{learner.name}' is a grid-shape learner. Drop trainer.eval_train."
+        )
+    if evaluation.unpredicted != "error" and learner_shape(config) == "grid":
+        # Grid predictions cover every sample of their target source: none is left out.
+        raise ValueError(
+            f"evaluation.unpredicted: {evaluation.unpredicted} is supported for the set shape "
+            f"only, and learner '{learner.name}' is a grid-shape learner. Drop "
+            "evaluation.unpredicted."
         )
     if evaluation.subgroups and learner_shape(config) == "grid":
         # The grid loaders form no groups, whatever hooks the learner implements.

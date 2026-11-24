@@ -1,5 +1,7 @@
 # The pipeline is the public verbs in a canonical order, gated by parity
 
+> Superseded in part by [ADR 0028](0028-runs-score-real-predictions-only.md): step 5 (the baseline fit) is removed and the steps after it move up by one, so step 7 predicts and evaluates each split with the `evaluation.unpredicted` policy and adds no rows. The set parity scenario keeps its tile-less test sample and scores it under `exclude` on both sides. The rest of the order and the parity gate are unchanged.
+
 `soma.pipeline` is a package whose `Pipeline.run()` only orchestrates: open the run layout and its resume guards, attach the supplied feature source or extract one, run every fold not yet complete, aggregate the summary from disk, render attention heatmaps from the bundles, and record provenance. Each fold is `run_fold(fold_dir, setup)`, which applies the public verbs in one fixed order. The former `train`, `train_one_fold` and `train_one_grid_fold` entry points are retired.
 
 ## Why

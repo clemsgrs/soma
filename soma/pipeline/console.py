@@ -89,12 +89,7 @@ def build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
                 metric_name = key[len(prefix):]
             if is_subgroup_key(metric_name) or metric_name.endswith("_std"):
                 continue  # a subgroup key or a spread: the primary metric stays pooled
-            if metric_name in {
-                "coverage",
-                "num_samples",
-                "num_real_samples",
-                "num_placeholder_samples",
-            }:
+            if metric_name in {"coverage", "num_samples", "num_predicted"}:
                 continue
             primary_metric_name = metric_name
             primary_metric_mean = value
@@ -102,14 +97,8 @@ def build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
 
         coverage = _split_metric(split_name, "coverage")
         num_samples = _split_metric(split_name, "num_samples")
-        num_real = _split_metric(split_name, "num_real_samples")
-        num_placeholder = _split_metric(split_name, "num_placeholder_samples")
-        if (
-            coverage is None
-            or num_samples is None
-            or num_real is None
-            or num_placeholder is None
-        ):
+        num_predicted = _split_metric(split_name, "num_predicted")
+        if coverage is None or num_samples is None or num_predicted is None:
             continue
         metric_text = (
             f"{primary_metric_name}={primary_metric_mean:.4f}  ·  "
@@ -118,8 +107,7 @@ def build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
         )
         coverage_text = (
             f"{metric_text}{coverage * 100:.1f}%"
-            f" ({int(round(num_real))}/{int(round(num_samples))})"
-            f"  ·  placeholder={int(round(num_placeholder))}"
+            f" ({int(round(num_predicted))}/{int(round(num_samples))})"
         )
         grid.add_row(f"{split_name} coverage", coverage_text)
 

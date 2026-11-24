@@ -17,7 +17,6 @@ import numpy as np
 import pandas as pd
 
 __all__ = [
-    "PLACEHOLDER_COLUMN",
     "Predictions",
     "encode_labels",
     "family_prediction_columns",
@@ -25,8 +24,6 @@ __all__ = [
     "infer_task_family",
 ]
 
-#: Marks a row filled by a :class:`~soma.evaluation.Baseline` instead of the model.
-PLACEHOLDER_COLUMN = "is_placeholder"
 _METADATA_KEY = b"soma"
 _CLASSIFICATION = frozenset({"binary_classification", "multiclass_classification"})
 
@@ -124,12 +121,11 @@ class Predictions:
     """A frame of per-sample predictions keyed by ``sample_id``.
 
     Args:
-        frame: One row per sample: a ``sample_id`` column, the declared prediction
-            columns, an optional boolean ``is_placeholder`` column, and any extra columns
-            a custom learner adds.
+        frame: One row per predicted sample: a ``sample_id`` column, the declared
+            prediction columns, and any extra columns a custom learner adds.
         task_family: The head's ``task_family``; it selects the metrics that apply.
         prediction_columns: The columns the head declares. Defaults to every column of
-            ``frame`` except ``sample_id`` and ``is_placeholder``.
+            ``frame`` except ``sample_id``.
         classes: The raw label of each class index, in ``prob_<i>`` order. With it,
             :func:`~soma.evaluate` maps the cohort's raw labels onto class indices;
             without it, labels must already be integer class indices.
@@ -148,12 +144,10 @@ class Predictions:
         frame = frame.reset_index(drop=True).copy()
         frame["sample_id"] = frame["sample_id"].astype(str)
         if prediction_columns is None:
-            prediction_columns = [c for c in frame.columns if c not in {"sample_id", PLACEHOLDER_COLUMN}]
+            prediction_columns = [c for c in frame.columns if c != "sample_id"]
         missing = [c for c in prediction_columns if c not in frame.columns]
         if missing:
             raise ValueError(f"predictions lack their declared column(s) {missing}")
-        if PLACEHOLDER_COLUMN in frame.columns:
-            frame[PLACEHOLDER_COLUMN] = frame[PLACEHOLDER_COLUMN].astype(bool)
         self._frame = frame
         self._task_family = str(task_family)
         self._prediction_columns = tuple(str(c) for c in prediction_columns)
@@ -183,11 +177,6 @@ class Predictions:
         return self._frame["sample_id"].tolist()
 
     @property
-    def has_placeholders(self) -> bool:
-        """Whether the frame carries the ``is_placeholder`` column (even all ``False``)."""
-        return PLACEHOLDER_COLUMN in self._frame.columns
-
-    @property
     def probability_columns(self) -> list[str]:
         """``prob_<i>`` prediction columns in class-index order."""
         probs = [c for c in self._prediction_columns if c.startswith("prob_")]
@@ -195,15 +184,13 @@ class Predictions:
 
     @property
     def column_roles(self) -> dict[str, str]:
-        """Each column's role: ``id``, ``prediction``, ``placeholder`` or ``extra``."""
+        """Each column's role: ``id``, ``prediction`` or ``extra``."""
         roles = {}
         for column in self._frame.columns:
             if column == "sample_id":
                 roles[column] = "id"
             elif column in self._prediction_columns:
                 roles[column] = "prediction"
-            elif column == PLACEHOLDER_COLUMN:
-                roles[column] = "placeholder"
             else:
                 roles[column] = "extra"
         return roles
@@ -221,7 +208,7 @@ class Predictions:
 
     @classmethod
     def concat(cls, parts: Sequence["Predictions"]) -> "Predictions":
-        """Stack predictions of one family; ``is_placeholder`` is ``False`` where absent."""
+        """Stack predictions of one family, classes and prediction columns."""
         parts = list(parts)
         if not parts:
             raise ValueError("Predictions.concat needs at least one Predictions")
@@ -239,11 +226,6 @@ class Predictions:
                     f"{other.prediction_columns}"
                 )
         frames = [p._frame for p in parts]
-        if any(p.has_placeholders for p in parts):
-            frames = [
-                f if PLACEHOLDER_COLUMN in f.columns else f.assign(**{PLACEHOLDER_COLUMN: False})
-                for f in frames
-            ]
         columns = list(dict.fromkeys(c for f in frames for c in f.columns))
         # Empty parts only contribute their columns: concatenating an empty frame would
         # coerce the others' dtypes.
@@ -285,9 +267,9 @@ class Predictions:
     def from_parquet(cls, path: str | Path, *, task_family: str | None = None) -> "Predictions":
         """Read predictions written by :meth:`to_parquet` or by any parquet writer.
 
-        A file without soma metadata declares every column other than ``sample_id`` /
-        ``is_placeholder`` a prediction column; its family is ``task_family`` or, when
-        omitted, read off the column names.
+        A file without soma metadata declares every column other than ``sample_id`` a
+        prediction column; its family is ``task_family`` or, when omitted, read off the
+        column names.
         """
         import pyarrow.parquet as pq
 

@@ -475,7 +475,7 @@ def write_cached_bags(
     Each sample is a bag of ``(n_tiles, dim)`` vectors whose mean depends on its label, so
     a MIL model can learn the task. The feature manifest (``process_list.csv``) records
     the ``tileless`` samples as ``empty``: tiling found no tissue, so they have no bag and
-    are scored with the training baseline. Returns ``(dataset_csv, splits_csv,
+    the model cannot predict them. Returns ``(dataset_csv, splits_csv,
     feature_dir)``; samples ``s00``..``s09`` train, the next three tune, the rest test.
     """
     import torch

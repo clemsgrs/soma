@@ -9,14 +9,14 @@ step for step by the parity scenarios in ``tests/e2e/test_parity.py``:
    head's registry ``fit`` hook on the training population (the survival bin edges)
 3. build the model (weight initialisation draws here) and its learner
 4. build the loaders
-5. ``Baseline.fit`` on the train targets (set shape)
-6. ``Trainer.fit`` with exactly the plan's callbacks (``Checkpoint`` in memory, no file,
+5. ``Trainer.fit`` with exactly the plan's callbacks (``Checkpoint`` in memory, no file,
    and ``EarlyStopping``), then the read-only runtime observers ``Pipeline`` built for
    the fold before step 1
-7. the tune-time step (detection: ``sweep_threshold`` on tune)
-8. per split: ``soma.predict`` (+ baseline rows) -> ``soma.evaluate`` -> write
-   ``predictions_<split>`` and ``metrics.json``
-9. ``soma.save`` the fold's bundle
+6. the tune-time step (detection: ``sweep_threshold`` on tune)
+7. per split: ``soma.predict`` -> ``soma.evaluate`` (with ``evaluation.unpredicted``) ->
+   write ``predictions_<split>``, ``not_predicted_<split>`` (set shape) and
+   ``metrics.json``
+8. ``soma.save`` the fold's bundle
 
 Shape differences live in the :class:`~soma.pipeline.build.FoldSetup` the builders return.
 """
@@ -31,7 +31,7 @@ from typing import Any
 from soma import evaluation as _verbs
 from soma import learn
 from soma._internal.atomic_io import atomic_write_json
-from soma.evaluation import Evaluation, Predictions
+from soma.evaluation import Evaluation
 from soma.pipeline.aggregate import save_metrics, save_training_history
 from soma.pipeline.build import FoldSetup, SplitPlan
 from soma.pipeline.layout import BUNDLE_DIRNAME
@@ -60,12 +60,11 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup, *, observers: Sequence[Any]
     adaptor = setup.fit_adaptor(fold_dir)  # 2
     learner = setup.build_learner(adaptor)  # 2 (the head's fit hook), 3
     loaders = setup.build_loaders(learner, fold_dir)  # 4
-    baseline = setup.fit_baseline(learner.head) if setup.fit_baseline is not None else None  # 5
     # The plan's callbacks are the whole policy: no implicit Checkpoint, EarlyStopping or
     # Progress, so a run without ``checkpoint`` keeps its final weights. The runtime
     # observers only read, after them.
     trainer = learn.Trainer(callbacks=[*setup.callbacks(), *observers], **setup.trainer)
-    fit = trainer.fit(  # 6
+    fit = trainer.fit(  # 5
         learner,
         loaders.train,
         loaders.tune,
@@ -81,26 +80,29 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup, *, observers: Sequence[Any]
     def predict(split: SplitPlan):
         # Each split is inferred once, so the tune-time step and scoring share it.
         if split.name not in predicted:
-            predictions = _verbs.predict(
+            predicted[split.name] = _verbs.predict(
                 fit.learner, split.loader, list(split.callbacks), device=trainer.device
             )
-            if baseline is not None:
-                predictions = Predictions.concat([predictions, baseline.predict(list(split.placeholder_ids))])
-            predicted[split.name] = predictions
         return predicted[split.name]
 
     tune_split = loaders.splits[0]
-    threshold = setup.tune_step(predict(tune_split), tune_split, head) if setup.tune_step else None  # 7
+    threshold = setup.tune_step(predict(tune_split), tune_split, head) if setup.tune_step else None  # 6
     evaluations: dict[str, Evaluation] = {}
-    for split in loaders.splits:  # 8
+    for split in loaders.splits:  # 7
         predictions = predict(split)
         del predicted[split.name]  # only the loop holds it now: released once written
         scored = predictions if threshold is None else predictions.with_threshold(threshold)
         evaluations[split.name] = _verbs.evaluate(
-            scored, split.targets, metrics=setup.metrics(head), subgroups=split.subgroups
+            scored,
+            split.targets,
+            metrics=setup.metrics(head),
+            subgroups=split.subgroups,
+            unpredicted=setup.unpredicted,
         )
         if split.write:
             _write_predictions(predictions, fold_dir / f"predictions_{split.name}")
+            if split.not_predicted is not None:
+                _write_not_predicted(split.not_predicted, fold_dir / f"not_predicted_{split.name}.parquet")
         if split.subgroups:
             atomic_write_json(
                 fold_dir / f"subgroup_metrics_{split.name}.json", evaluations[split.name].subgroups
@@ -108,7 +110,7 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup, *, observers: Sequence[Any]
     tune_evaluation = evaluations.pop("tune")
     save_metrics(tune_evaluation, evaluations, fold_dir / "metrics.json")
     save_training_history(fit.history, fold_dir / "training_history.json")
-    bundle = learn.save(  # 9
+    bundle = learn.save(  # 8
         fit,
         fold_dir / BUNDLE_DIRNAME,
         preprocessing=setup.preprocessing(head, threshold),
@@ -128,6 +130,21 @@ def run_fold(fold_dir: str | Path, setup: FoldSetup, *, observers: Sequence[Any]
         test_evaluations=evaluations,
         bundle=bundle,
     )
+
+
+def _write_not_predicted(not_predicted: dict[str, str], path: Path) -> None:
+    """One row per target the split could not predict, ``sample_id`` and ``reason``;
+    written with no row when the model predicted every target."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    table = pa.table(
+        {
+            "sample_id": pa.array([str(sid) for sid in not_predicted], pa.string()),
+            "reason": pa.array(list(not_predicted.values()), pa.string()),
+        }
+    )
+    pq.write_table(table, path)
 
 
 def _write_predictions(predictions, stem: Path) -> None:

@@ -58,8 +58,8 @@ def test_tile_classification_is_learned(tmp_path, encoder_name, encoded_images, 
 def test_tile_multi_output_regression_is_learned(tmp_path, encoder_name, new_artifact):
     """The head's ``num_outputs`` makes the cohort carry ``value_<k>`` targets: two
     outputs, each a function of the tile's colour, scored by ``mean_pearson``. An unused
-    ``value_2`` manifest column stays metadata: neither the head nor the baseline that
-    fills feature-less samples reads it as a third output."""
+    ``value_2`` manifest column stays metadata: the head does not read it as a third
+    output."""
     import numpy as np
     import pandas as pd
     from PIL import Image

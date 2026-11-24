@@ -1,5 +1,5 @@
-"""Public-API pins for the evaluation verbs: ``Predictions``, ``evaluate``, ``Baseline``,
-``compare``, ``predict`` (with its callbacks) and ``Cohort.targets``."""
+"""Public-API pins for the evaluation verbs: ``Predictions``, ``evaluate``, ``compare``,
+``predict`` (with its callbacks) and ``Cohort.targets``."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 import soma
 from soma.models.aggregators import aggregator_registry
 from soma.data import Cohort, FoldSplit, SampleRecord, from_arrays
-from soma.evaluation import Baseline, Evaluation, Predictions, compare, evaluate, predict
+from soma.evaluation import Evaluation, Predictions, compare, evaluate, predict
 from soma.evaluation.heatmaps import SaveAttention
 from soma.models.heads.classification import BinaryClassificationHead
 from soma.learn.bag_dataset import BagDataset
@@ -44,6 +44,10 @@ def _binary(ids=IDS, probs=(0.2, 0.9, 0.4, 0.7), **kwargs) -> Predictions:
 
 def _labels(labels=(0, 1, 0, 1), ids=IDS) -> pd.DataFrame:
     return pd.DataFrame({"label": list(labels)}, index=pd.Index(list(ids), name="sample_id"))
+
+
+#: The counts every set-shape evaluation reports, when each of the four targets is predicted.
+COUNTS = {"num_samples": 4, "num_predicted": 4, "coverage": 1.0}
 
 
 # --- Predictions ------------------------------------------------------------------- #
@@ -81,14 +85,11 @@ def test_a_plain_parquet_reads_its_family_off_the_columns(tmp_path):
     assert Predictions.from_parquet(tmp_path / "p.parquet").task_family == "survival"
 
 
-def test_concat_marks_rows_without_the_flag_as_real():
-    real = _binary(ids=["a", "b"], probs=(0.2, 0.9))
-    filled = Baseline.fit(_labels(), task_family="binary_classification").predict(["c"])
-
-    combined = Predictions.concat([real, filled])
+def test_concat_stacks_the_rows_and_adds_no_column():
+    combined = Predictions.concat([_binary(ids=["a", "b"], probs=(0.2, 0.9)), _binary(ids=["c"], probs=(0.4,))])
 
     assert combined.sample_ids == ["a", "b", "c"]
-    assert combined.frame["is_placeholder"].tolist() == [False, False, True]
+    assert list(combined.frame.columns) == ["sample_id", "prob_0", "prob_1", "predicted_label"]
 
 
 # --- evaluate ---------------------------------------------------------------------- #
@@ -99,7 +100,7 @@ def test_evaluate_scores_the_joined_frames():
 
     assert isinstance(evaluation, Evaluation)
     # Positives (b 0.9, d 0.7) outrank both negatives (a 0.2, c 0.4).
-    assert evaluation.metrics == {"auroc": 1.0, "accuracy": 1.0}
+    assert evaluation.metrics == {"auroc": 1.0, "accuracy": 1.0, **COUNTS}
     assert evaluation.num_samples == 4
     assert evaluation.task_family == "binary_classification"
 
@@ -107,7 +108,7 @@ def test_evaluate_scores_the_joined_frames():
 def test_default_metrics_are_the_family_catalogue_defaults():
     evaluation = evaluate(_binary(), _labels())
 
-    assert list(evaluation.metrics) == ["auroc", "balanced_accuracy", "auprc", "f1"]
+    assert list(evaluation.metrics) == ["auroc", "balanced_accuracy", "auprc", "f1", *COUNTS]
 
 
 def _gene_panel(values=((0.1, 2.0), (0.4, 1.0), (0.3, 3.5), (0.9, 0.5))) -> Predictions:
@@ -124,7 +125,7 @@ def test_a_multi_output_regression_defaults_to_mean_pearson():
 
     evaluation = evaluate(_gene_panel(), targets)
 
-    assert list(evaluation.metrics) == ["mean_pearson"]
+    assert list(evaluation.metrics) == ["mean_pearson", *COUNTS]
     assert evaluation.metrics == evaluate(_gene_panel(), targets, metrics=["mean_pearson"]).metrics
 
 
@@ -133,10 +134,36 @@ def test_a_prediction_without_a_target_is_refused():
         evaluate(_binary(), _labels(ids=["a", "b", "c", "x"]))
 
 
-def test_a_target_without_a_prediction_is_refused_and_points_at_baseline():
+def test_a_target_without_a_prediction_is_refused_by_default_with_both_ways_forward():
     targets = pd.concat([_labels(), _labels(labels=(1,), ids=["e"])])
-    with pytest.raises(ValueError, match="1 target.*Baseline"):
+
+    with pytest.raises(ValueError) as refused:
         evaluate(_binary(), targets)
+
+    message = str(refused.value)
+    assert "1 target(s) have no prediction: ['e']" in message
+    assert "remove them from the cohort or the splits" in message
+    assert "unpredicted='exclude'" in message
+
+
+def test_exclude_scores_the_predicted_samples_only_and_counts_the_rest():
+    # e is a positive the model never saw; a, b, c, d score as before.
+    targets = pd.concat([_labels(), _labels(labels=(1,), ids=["e"])])
+
+    evaluation = evaluate(_binary(), targets, metrics=["auroc"], unpredicted="exclude")
+
+    assert evaluation.metrics == {"auroc": 1.0, "num_samples": 5, "num_predicted": 4, "coverage": 0.8}
+    assert evaluation.num_samples == 5
+
+
+def test_an_unknown_unpredicted_policy_is_refused():
+    with pytest.raises(ValueError, match=r"unpredicted must be one of \['error', 'exclude'\], got 'fill'"):
+        evaluate(_binary(), _labels(), unpredicted="fill")
+
+
+def test_exclude_still_refuses_a_prediction_without_a_target():
+    with pytest.raises(ValueError, match="1 prediction id"):
+        evaluate(_binary(), _labels(ids=["a", "b", "c", "x"]), unpredicted="exclude")
 
 
 def test_duplicate_prediction_ids_are_refused():
@@ -163,14 +190,15 @@ def test_callables_and_dotted_paths_are_metrics():
         ],
     )
 
-    assert evaluation.metrics == {"<lambda>": 1.0, "positives_predicted": 2.0}
+    assert evaluation.metrics == {"<lambda>": 1.0, "positives_predicted": 2.0, **COUNTS}
 
 
 def test_raw_labels_map_through_the_declared_classes():
     targets = _labels(labels=("benign", "tumor", "benign", "tumor"))
 
     assert evaluate(_binary(classes=["benign", "tumor"]), targets, metrics=["accuracy"]).metrics == {
-        "accuracy": 1.0
+        "accuracy": 1.0,
+        **COUNTS,
     }
     with pytest.raises(ValueError, match="not class indices"):
         evaluate(_binary(), targets)
@@ -178,23 +206,10 @@ def test_raw_labels_map_through_the_declared_classes():
         evaluate(_binary(classes=["normal", "tumor"]), targets)
 
 
-def test_placeholders_add_coverage_and_counts():
-    predictions = Predictions.concat(
-        [
-            _binary(ids=["a", "b", "c"], probs=(0.2, 0.9, 0.4)),
-            Baseline.fit(_labels(), task_family="binary_classification").predict(["d"]),
-        ]
-    )
+def test_every_evaluation_counts_the_samples_and_the_predicted_ones():
+    metrics = evaluate(_binary(), _labels(), metrics=["accuracy"]).metrics
 
-    metrics = evaluate(predictions, _labels(), metrics=["accuracy"]).metrics
-
-    assert metrics == {
-        "accuracy": 0.75,
-        "coverage": 0.75,
-        "num_samples": 4,
-        "num_real_samples": 3,
-        "num_placeholder_samples": 1,
-    }
+    assert metrics == {"accuracy": 1.0, "num_samples": 4, "num_predicted": 4, "coverage": 1.0}
 
 
 def test_to_json_holds_metrics_and_subgroups(tmp_path):
@@ -204,100 +219,9 @@ def test_to_json_holds_metrics_and_subgroups(tmp_path):
     payload = json.loads(evaluation.to_json(tmp_path / "e.json"))
 
     assert payload == json.loads((tmp_path / "e.json").read_text())
-    assert payload["metrics"] == {"accuracy": 1.0}
+    assert payload["metrics"] == {"accuracy": 1.0, **COUNTS}
     assert payload["num_samples"] == 4
     assert payload["subgroups"]["metrics"]["site"]["A"] == {"accuracy": 1.0, "n": 2}
-
-
-# --- Baseline ---------------------------------------------------------------------- #
-
-
-def test_baseline_predicts_the_training_class_prior():
-    baseline = Baseline.fit(
-        _labels(labels=("tumor", "tumor", "tumor", "benign")),
-        task_family="binary_classification",
-        classes=["benign", "tumor"],
-    )
-
-    frame = baseline.predict(["x", "y"]).frame
-
-    assert frame["prob_1"].tolist() == [0.75, 0.75]
-    assert frame["predicted_label"].tolist() == [1, 1]
-    assert frame["is_placeholder"].all()
-
-
-def test_a_binary_baseline_keeps_both_probability_columns_when_training_shows_one_class():
-    baseline = Baseline.fit(_labels(labels=(0, 0, 0, 0)), task_family="binary_classification")
-
-    frame = baseline.predict(["x"]).frame
-
-    assert baseline.prediction_columns == ("prob_0", "prob_1", "predicted_label")
-    assert frame[["prob_0", "prob_1"]].iloc[0].tolist() == [1.0, 0.0]
-
-
-@pytest.mark.parametrize(
-    ("family", "targets", "expected"),
-    [
-        ("ordinal_classification", {"label": [0, 1, 2, 2]}, {"raw_score": 1.25, "predicted_label": 1}),
-        ("regression", {"value": [1.0, 2.0, 6.0, 7.0]}, {"predicted_value": 4.0}),
-        ("survival", {"time": [1.0, 2, 3, 4], "event": [1, 0, 1, 1]}, {"risk_score": 0.0}),
-    ],
-)
-def test_baseline_per_family(family, targets, expected):
-    frame = Baseline.fit(pd.DataFrame(targets, index=IDS), task_family=family).predict(["x"]).frame
-
-    assert {column: frame[column].iloc[0] for column in expected} == expected
-
-
-def test_a_multi_output_regression_baseline_predicts_each_output_mean():
-    targets = pd.DataFrame({"value_0": [1.0, 2.0, 6.0, 7.0], "value_1": [0.0, 0.0, 1.0, 1.0]}, index=IDS)
-
-    baseline = Baseline.fit(targets, task_family="regression")
-    frame = baseline.predict(["x"]).frame
-
-    assert baseline.prediction_columns == ("value_0", "value_1")
-    assert frame[["value_0", "value_1"]].iloc[0].tolist() == [4.0, 0.5]
-
-
-def test_a_scalar_regression_baseline_ignores_value_like_metadata_columns():
-    from soma.data import Cohort
-
-    records = pd.DataFrame(
-        {
-            "sample_id": IDS,
-            "value_0": [1.0, 2.0, 6.0, 7.0],
-            "value_1": [0.0, 0.0, 1.0, 1.0],  # an unused manifest column, kept as metadata
-            "split": ["train", "train", "tune", "test"],
-        }
-    )
-    cohort = Cohort.from_frames(records, targets={"value": "value_0"}, dtypes={"value": float})
-
-    baseline = Baseline.fit(cohort.targets("train"), task_family="regression")
-
-    assert baseline.prediction_columns == ("predicted_value",)
-    assert baseline.predict(["x"]).frame["predicted_value"].iloc[0] == 1.5
-
-
-def test_a_multi_output_regression_baseline_keeps_to_the_heads_target_keys():
-    from soma.data import Cohort
-    from soma.models.heads.regression import RegressionHead
-
-    records = pd.DataFrame(
-        {
-            "sample_id": IDS,
-            "value_0": [1.0, 2.0, 6.0, 7.0],
-            "value_1": [0.0, 0.0, 1.0, 1.0],
-            "value_2": [5.0, 5.0, 5.0, 5.0],  # an unused manifest column, kept as metadata
-            "split": ["train", "train", "tune", "test"],
-        }
-    )
-    head = RegressionHead(input_dim=4, num_outputs=2)
-    cohort = Cohort.from_frames(records, targets=list(head.target_keys), dtypes=dict(head.target_schema))
-
-    baseline = Baseline.fit(cohort.targets("train"), task_family="regression", target_keys=head.target_keys)
-
-    assert baseline.prediction_columns == ("value_0", "value_1")
-    assert baseline.predict(["x"]).frame[["value_0", "value_1"]].iloc[0].tolist() == [1.5, 0.0]
 
 
 # --- compare ----------------------------------------------------------------------- #
@@ -314,6 +238,19 @@ def test_compare_gives_the_best_set_one_and_others_a_p_value():
     assert p_values[1] == 1.0
     assert 0.0 <= p_values[0] < 0.5
     assert compare([good], _labels(labels=labels, ids=ids), "auroc") == [None]
+
+
+def test_compare_refuses_a_set_that_misses_a_target_and_says_to_filter_to_the_common_ids():
+    everything = _binary()
+    without_d = _binary(ids=["a", "b", "c"], probs=(0.2, 0.9, 0.4))
+
+    with pytest.raises(ValueError) as refused:
+        compare([everything, without_d], _labels(), "auroc", n_permutations=5)
+
+    message = str(refused.value)
+    assert "1 target(s) have no prediction: ['d']" in message
+    assert "filter the targets to the ids every set predicts" in message
+    assert "unpredicted" not in message
 
 
 def test_compare_refuses_sets_with_different_class_orders():
@@ -533,6 +470,16 @@ def test_integer_threshold_keys_are_class_indices_even_with_decimal_class_names(
     assert predictions.with_threshold({"1": 0.3, "2": 0.7}).frame["score"].tolist() == [0.5, 0.8]
     with pytest.raises(ValueError, match="unknown class '3'"):
         predictions.with_threshold({"1": 0.3, "3": 0.7})
+
+
+def test_grid_predictions_take_no_unpredicted_policy():
+    from soma.evaluation import PointPredictions
+
+    frame = pd.DataFrame({"sample_id": ["s"], "x": [1.0], "y": [2.0], "class": [0], "score": [0.9]})
+    predictions = PointPredictions(frame, classes=["cell"], sample_ids=["s"], match_distance_px=3.0)
+
+    with pytest.raises(ValueError, match="unpredicted applies to set-shape Predictions"):
+        evaluate(predictions, object(), unpredicted="exclude")
 
 
 def test_point_predictions_with_numpy_classes_round_trip(tmp_path):

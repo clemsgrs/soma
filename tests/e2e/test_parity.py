@@ -9,11 +9,10 @@ fold order (ADR 0017):
 2. fit the feature adaptor on the train split
 3. build the model
 4. build the loaders
-5. ``Baseline.fit`` on the train targets (set shape)
-6. ``soma.fit`` with ``Checkpoint`` and ``EarlyStopping``
-7. the tune-time step (detection: ``sweep_threshold`` on tune)
-8. per split: ``soma.predict`` (+ baseline rows) -> ``soma.evaluate`` -> write predictions
-9. ``soma.save``
+5. ``soma.fit`` with ``Checkpoint`` and ``EarlyStopping``
+6. the tune-time step (detection: ``sweep_threshold`` on tune)
+7. per split: ``soma.predict`` -> ``soma.evaluate`` -> write predictions
+8. ``soma.save``
 
 Every predictions file must be byte-identical, the metrics equal and
 ``bundle/weights.safetensors`` byte-identical. A failure here is fixed in the pipeline,
@@ -42,7 +41,7 @@ from soma.data import (
 )
 from soma.models.decoders.registry import build_decoder_for_grid
 from soma.extract.dense import CachedGridSource
-from soma.evaluation import Baseline, Predictions, sweep_threshold
+from soma.evaluation import sweep_threshold
 from soma.learn import Checkpoint, DenseLearner, EarlyStopping, MILLearner, loaders
 from soma.models.heads.classification import BinaryClassificationHead
 from soma.models.heads.detection import DetectionHead
@@ -127,7 +126,7 @@ def _check_observer_changes_nothing(artifact, run, source) -> None:
 
 
 def _fit(learner, fold, *, epochs: int):
-    """Step 6 with the callbacks the YAML's trainer section describes."""
+    """Step 5 with the callbacks the YAML's trainer section describes."""
     return soma.fit(
         learner,
         fold.train,
@@ -168,7 +167,8 @@ def _learner_and_trainer(name: str, model: dict, *, epochs: int, learning_rate: 
 
 def test_set_mil_classification_pipeline_equals_hand_composition(tmp_path, new_artifact):
     """Set shape: ABMIL over cached bags; one test sample is tile-less, so the pipeline
-    and the hand composition must both score it with the training ``Baseline``."""
+    and the hand composition both score the test split without it
+    (``evaluation.unpredicted: exclude``)."""
     artifact = new_artifact("parity_set_mil_classification")
     dataset_csv, splits_csv, feature_dir = write_cached_bags(tmp_path / "data")
     epochs, learning_rate, batch_size = 6, 5e-3, 2
@@ -183,7 +183,7 @@ def test_set_mil_classification_pipeline_equals_hand_composition(tmp_path, new_a
             epochs=epochs,
             learning_rate=learning_rate,
         ),
-        "evaluation": {"metrics": ["auroc", "balanced_accuracy"]},
+        "evaluation": {"metrics": ["auroc", "balanced_accuracy"], "unpredicted": "exclude"},
     }
     run = run_soma(config, tmp_path / "config.yaml", "--feature-dir", str(feature_dir))
 
@@ -216,24 +216,18 @@ def test_set_mil_classification_pipeline_equals_hand_composition(tmp_path, new_a
         [FoldSplit(train=covered(split.train), tune=covered(split.tune), tests={"test": covered(split.tests["test"])})],
     )
     fold = loaders(source, with_features, head=head, batch_size=batch_size, num_workers=0, pin_memory=False)  # 4
-    baseline = Baseline.fit(  # 5
-        with_features.targets("train"),
-        task_family=head.task_family,
-        classes=head.classes,
-        target_keys=head.target_keys,
-    )
-    result = _fit(learner, fold, epochs=epochs)  # 6
+    result = _fit(learner, fold, epochs=epochs)  # 5
     metrics = {}
-    for name, loader in (("tune", fold.tune), ("test", fold.tests["test"])):  # 8
-        ids = split.tune if name == "tune" else split.tests["test"]
-        tileless = [sid for sid in ids if sid not in source.sample_ids]
-        predictions = Predictions.concat([soma.predict(result.learner, loader), baseline.predict(tileless)])
-        metrics[name] = soma.evaluate(predictions, cohort.targets(name), metrics=["auroc", "balanced_accuracy"]).metrics
+    for name, loader in (("tune", fold.tune), ("test", fold.tests["test"])):  # 7
+        predictions = soma.predict(result.learner, loader)
+        metrics[name] = soma.evaluate(
+            predictions, cohort.targets(name), metrics=["auroc", "balanced_accuracy"], unpredicted="exclude"
+        ).metrics
         if name == "test":
             predictions.to_parquet(hand / "predictions_test.parquet")
-    soma.save(result, hand / "bundle")  # 9
+    soma.save(result, hand / "bundle")  # 8
 
-    artifact.check_equal("tileless/placeholder_rows", metrics["test"]["num_placeholder_samples"], 1)
+    artifact.check_equal("tileless/left_out", (metrics["test"]["num_samples"], metrics["test"]["num_predicted"]), (3, 2))
     _check_parity(artifact, run, hand, metrics)
     _check_observer_changes_nothing(artifact, run, CachedSetSource(feature_dir))
     artifact.assert_passed()
@@ -315,13 +309,13 @@ def test_grid_segmentation_pipeline_equals_hand_composition(tmp_path, new_artifa
         AnnotationManifest.from_csv(dataset_csv), ImageManifest.from_csv(dataset_csv), **head.label_map_read_params
     )
     fold = loaders(source, cohort, head=head, targets=label_maps, batch_size=4, pin_memory=False)  # 4
-    result = _fit(learner, fold, epochs=epochs)  # 6
+    result = _fit(learner, fold, epochs=epochs)  # 5
     metrics = {}
     for name, loader, ids in (("tune", fold.tune, split.tune), ("test", fold.tests["test"], split.tests["test"])):
-        predictions = soma.predict(result.learner, loader)  # 8
+        predictions = soma.predict(result.learner, loader)  # 7
         metrics[name] = soma.evaluate(predictions, label_maps.subset(ids), metrics=metric_names).metrics
         predictions.save(hand / f"predictions_{name}")
-    soma.save(result, hand / "bundle")  # 9
+    soma.save(result, hand / "bundle")  # 8
 
     _check_parity(artifact, run, hand, metrics)
     _check_observer_changes_nothing(artifact, run, CachedGridSource(grid_dir))
@@ -329,7 +323,7 @@ def test_grid_segmentation_pipeline_equals_hand_composition(tmp_path, new_artifa
 
 
 def test_grid_detection_pipeline_equals_hand_composition(tmp_path, new_artifact):
-    """Grid detection: the per-class threshold is swept on tune (step 7) and applied
+    """Grid detection: the per-class threshold is swept on tune (step 6) and applied
     unchanged to every split before scoring; the written predictions keep every peak."""
     artifact = new_artifact("parity_grid_detection")
     dataset_csv, splits_csv = make_dense_dataset(tmp_path / "data", "detection", size=ROI_PX)
@@ -365,17 +359,17 @@ def test_grid_detection_pipeline_equals_hand_composition(tmp_path, new_artifact)
     learner = _grid_model(source, head, split, learning_rate=learning_rate)  # 2-3
     points = PointSource.from_manifest(AnnotationManifest.from_csv(dataset_csv))
     fold = loaders(source, cohort, head=head, targets=points, batch_size=4, pin_memory=False)  # 4
-    result = _fit(learner, fold, epochs=epochs)  # 6
-    tune_predictions = soma.predict(result.learner, fold.tune)  # 7
+    result = _fit(learner, fold, epochs=epochs)  # 5
+    tune_predictions = soma.predict(result.learner, fold.tune)  # 6
     threshold, _ = sweep_threshold(tune_predictions, points.subset(split.tune), per_class=True)
     leaves = [{"name": name, "params": {"matching": "hungarian"}} for name in metric_names]
     metrics = {}
-    for name, ids in (("tune", split.tune), ("test", split.tests["test"])):  # 8
+    for name, ids in (("tune", split.tune), ("test", split.tests["test"])):  # 7
         predictions = tune_predictions if name == "tune" else soma.predict(result.learner, fold.tests["test"])
         scored = predictions.with_threshold(threshold)
         metrics[name] = soma.evaluate(scored, points.subset(ids), metrics=leaves).metrics
         predictions.to_parquet(hand / f"predictions_{name}.parquet")
-    soma.save(result, hand / "bundle")  # 9
+    soma.save(result, hand / "bundle")  # 8
 
     # The bundle records the swept cut keyed by class name, so it applies as recorded.
     recorded = soma.load(run.run_dir / "bundle").preprocessing["score_threshold"]

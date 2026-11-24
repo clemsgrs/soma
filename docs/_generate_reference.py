@@ -166,7 +166,7 @@ def build_cli_rst() -> str:
            narrows the encoders to ``tile``, ``slide``, or ``patient``.
            :func:`soma.components` returns the same listing in Python.
 
-        ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--out JSON] [--backend NAME] [--mask-backend NAME] [--num-workers N] [--threshold T]``
+        ``soma evaluate PREDICTIONS --cohort CSV [--splits CSV --split NAME --fold N] [--metrics M ...] [--subgroups COL ...] [--unpredicted {error,exclude}] [--out JSON] [--backend NAME] [--mask-backend NAME] [--num-workers N] [--threshold T]``
            Score saved predictions against the targets in ``dataset.csv``,
            joined by ``sample_id``; no run directory is needed. ``PREDICTIONS``
            is a predictions parquet, a points parquet (detection), a
@@ -200,7 +200,11 @@ def build_cli_rst() -> str:
            without points. ``--splits``
            selects one split (default ``test``) of one fold (default ``0``);
            without it every row of the cohort is a target. Every prediction
-           needs a target and every target a prediction. ``--metrics`` takes
+           needs a target. A target without a prediction (a predictions
+           parquet only) follows ``--unpredicted``: ``error`` (default) refuses
+           to score and names the samples, ``exclude`` scores the predicted
+           samples only. The metrics hold ``num_samples``, ``num_predicted``
+           and ``coverage`` either way. ``--metrics`` takes
            metric names or dotted import paths (default: the task family's
            defaults); ``--subgroups`` names metadata columns to break the
            metrics down by. The metrics table is printed; ``--out`` also writes

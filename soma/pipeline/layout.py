@@ -1104,8 +1104,9 @@ def guard_resume_plan_drift(run_dir: Path, plan: Plan) -> None:
     ``plan.yaml`` is checked: a fresh run, or a pinned run id naming a not-yet-created
     dir, has nothing to compare against. The plans are compared without where and how a
     launch runs (``run.output_dir``, ``run.run_id``, ``run.resume``, ``run.mirror_root``,
-    ``run.folds``, the folds this launch takes on, and
-    ``learner.params.checkpoint_cox_window``, which saves memory and keeps the gradients;
+    ``run.folds``, the folds this launch takes on,
+    ``learner.params.checkpoint_cox_window``, which saves memory and keeps the gradients,
+    and ``evaluation.unpredicted``, under which a completed fold scores the same;
     :meth:`Plan.comparable`), so an otherwise identical relaunch passes while a changed
     seed, encoder, head or evaluation protocol is caught before it mixes incompatible
     folds (issue #244). The manifest guard then checks the cohort files' content, and the

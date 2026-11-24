@@ -275,7 +275,7 @@ def test_a_star_import_brings_every_export():
         ("Trainer", "soma.learn"),
         ("MILLearner", "soma.learn"),
         ("SampleDataset", "soma.learn.sample_dataset"),
-        ("Baseline", "soma.evaluation"),
+        ("compare", "soma.evaluation"),
         ("FoldResult", "soma.pipeline"),
         ("evaluate_representation", "soma.pipeline.representation"),
     ],

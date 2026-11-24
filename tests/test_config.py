@@ -273,6 +273,13 @@ def test_features_validate_their_kind_policy_and_upstream_types():
         CacheOptions(on_identity_mismatch="ignore")
 
 
+def test_the_unpredicted_policy_is_error_or_exclude():
+    assert EvaluationConfig().unpredicted == "error"
+    assert EvaluationConfig(unpredicted="exclude").unpredicted == "exclude"
+    with pytest.raises(ValueError, match=r"evaluation.unpredicted must be one of \['error', 'exclude'\], got 'fill'"):
+        EvaluationConfig(unpredicted="fill")
+
+
 def test_the_trainer_takes_one_budget():
     assert TrainerConfig().max_epochs == 50
     # A step budget replaces the epoch budget, as it does in the Trainer.
