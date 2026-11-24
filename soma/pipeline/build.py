@@ -68,6 +68,7 @@ from soma.extract.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
 from soma.evaluation import Baseline
 from soma.evaluation.metrics import resolve_metrics
 from soma.extract.extractor import _release_parent_cuda_state
+from soma.extract.progress import ExtractionProgress
 from soma.extract.rois import RoiSet, label_map_identity
 from soma.learn import (
     Learner,
@@ -1897,7 +1898,13 @@ def log_cuda_memory(tag: str) -> None:
     torch.cuda.reset_peak_memory_stats()
 
 
-def build_composite_dense_store(plan: Plan | ExperimentConfig, images: ImageManifest, *, output_root: Path):
+def build_composite_dense_store(
+    plan: Plan | ExperimentConfig,
+    images: ImageManifest,
+    *,
+    output_root: Path,
+    on_progress: Callable[[ExtractionProgress], Any] | None = None,
+):
     """Extract every composite member of ``images`` into its own cache; return the concat
     view.
 
@@ -1907,7 +1914,8 @@ def build_composite_dense_store(plan: Plan | ExperimentConfig, images: ImageMani
     ``ExecutionOptions`` plus its own overrides, exactly as that encoder does in a
     single-encoder run, so its dense cache is the one a single-encoder run of it uses. The
     token grids are combined at load time by :class:`CompositeDenseFeatureStore` per
-    ``concat_resolution`` / ``concat_grid_size``.
+    ``concat_resolution`` / ``concat_grid_size``. ``on_progress`` is passed to each
+    member's :func:`soma.extract` call.
     """
     from soma.models.encoders import CompositeParams
     from soma.models.encoders.composite import member_norm_for
@@ -1937,6 +1945,7 @@ def build_composite_dense_store(plan: Plan | ExperimentConfig, images: ImageMani
                     dense=member_dense,
                     execution=member.execution_options(features.execution),
                     output_dir=Path(output_root) / f"member_{index}_{member.name}",
+                    on_progress=on_progress,
                 )
             )
     finally:

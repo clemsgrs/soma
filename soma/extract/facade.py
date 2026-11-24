@@ -21,6 +21,7 @@ from typing import Any, Callable, Literal
 from slide2vec import DenseOptions, ExecutionOptions, PreprocessingConfig
 
 from soma._internal.logging import ensure_default_logging
+from soma.extract import progress
 from soma.extract.cache.options import CacheOptions
 from soma.extract.preprocessing import is_annotation_sampling
 from soma.models.encoders import EncoderLeaf
@@ -48,6 +49,7 @@ def extract(
     dense: DenseOptions | None = None,
     spacing_policy: str = "strict",
     output_dir: str | Path,
+    on_progress: Callable[[progress.ExtractionProgress], Any] | None = None,
 ):
     """Extract (or reuse from the feature cache) ``encoder``'s features of ``images``.
 
@@ -73,6 +75,11 @@ def extract(
         spacing_policy: How a grid run reads a sample coarser than ``dense.spacing_um``
             (``native_if_coarser`` reads it at its own spacing).
         output_dir: Where the run's tiling, extraction record and uncached features go.
+        on_progress: Called with an :class:`~soma.extract.ExtractionProgress` each time
+            the extraction's state changes (at most twice a second within a phase), in
+            this process and one call at a time. The last call of a successful extraction
+            has ``phase="finished"``. An exception from it is logged once and ignored. A
+            slow hook slows the extraction down.
 
     Returns:
         A :class:`~soma.data.SetSource` (``CachedSetSource``) or, with ``dense`` or
@@ -92,7 +99,12 @@ def extract(
         dense=dense,
         spacing_policy=spacing_policy,
         output_dir=output_dir,
+        on_progress=on_progress,
     ).run()
+
+
+def _report_tiled(sample_id: str) -> None:
+    progress.report("soma.sample.tiled", sample_id=str(sample_id))
 
 
 class _Extraction:
@@ -112,6 +124,7 @@ class _Extraction:
         dense: DenseOptions | None,
         spacing_policy: str,
         output_dir: str | Path,
+        on_progress: Callable[[progress.ExtractionProgress], Any] | None = None,
     ) -> None:
         ensure_default_logging()
         if not isinstance(images, ImageManifest):
@@ -144,6 +157,9 @@ class _Extraction:
         self._execution = execution if execution is not None else ExecutionOptions()
         self._cache = cache
         self._output_root = Path(output_dir).resolve()
+        if on_progress is not None and not callable(on_progress):
+            raise TypeError(f"on_progress must be callable, got {type(on_progress).__name__}.")
+        self._on_progress = on_progress
         self._engine = self._resolve_engine()
 
     def _resolve_engine(self) -> Callable[[], Any]:
@@ -196,7 +212,13 @@ class _Extraction:
     def run(self):
         self._output_root.mkdir(parents=True, exist_ok=True)
         (self._output_root / "extraction_provenance.json").unlink(missing_ok=True)
-        return self._engine()
+        with progress.reporting(
+            self._on_progress,
+            encoder=self._encoder.name,
+            samples_total=len(self._images),
+            output_dir=self._output_root / "features",
+        ):
+            return self._engine()
 
     def _dense_preprocessing(self) -> PreprocessingConfig:
         """The extraction with its tiling reconciled with ``dense`` (ROIs are sampled at the
@@ -329,12 +351,17 @@ class _Extraction:
             )
             fresh: dict[str, list[tuple[int, int]]] = {}
             if sampling_cache.miss_sample_ids:
+                misses = set(sampling_cache.miss_sample_ids)
+                # Sampling ROIs is the slides' tiling; a slide sampled before counts as tiled.
+                hits = [sid for sid in slides.sample_ids if sid not in misses]
+                progress.report("soma.tiling.started", tiled=hits)
                 fresh = sample_slide_rois(
                     slides,
                     annotations,
                     preprocessing=preprocessing,
                     spacing_policy=self._spacing_policy,
                     sample_ids=sampling_cache.miss_sample_ids,
+                    on_sampled=_report_tiled if progress.reporting_active() else None,
                 )
                 write_roi_sampling_coords(cache_resolution=sampling_cache, coords_by_sample_id=fresh)
             coords_by_slide = {**sampling_cache.coords_by_id, **fresh}
@@ -342,16 +369,24 @@ class _Extraction:
             # A hit slide's crops are all present; only freshly sampled slides need theirs.
             crop_slide_ids = set(fresh)
         else:
+            progress.report("soma.tiling.started", tiled=[])
             coords_by_slide = sample_slide_rois(
-                slides, annotations, preprocessing=preprocessing, spacing_policy=self._spacing_policy
+                slides,
+                annotations,
+                preprocessing=preprocessing,
+                spacing_policy=self._spacing_policy,
+                on_sampled=_report_tiled if progress.reporting_active() else None,
             )
+            fresh = coords_by_slide
             crops_root = self._output_root / "segmentation_rois" / "masks"
             mask_crop_dirs = {sid: crops_root / sid for sid in slides.sample_ids}
             crop_slide_ids = set(slides.sample_ids)
         zero_sample_ids = tuple(sid for sid in slides.sample_ids if not coords_by_slide[sid])
         entries = roi_entries(slides, annotations, coords_by_slide, mask_crop_dirs=mask_crop_dirs)
         roi_table = write_roi_table(entries, out_dir=self._output_root / "segmentation_rois")
-        store = self._encode_rois(entries, preprocessing)
+        store = self._encode_rois(
+            entries, preprocessing, sampled_empty=[sid for sid in fresh if not coords_by_slide[sid]]
+        )
         # Crops are read at each grid's recorded spacing (a slide within tolerance is read
         # natively), so they are written once the grids exist; a crash before this point
         # leaves the slide's coords without crops, a miss that re-samples next launch.
@@ -406,7 +441,7 @@ class _Extraction:
             artifacts=ExtractionArtifacts(feature_dir=store.feature_dir),
         )
 
-    def _encode_rois(self, entries, preprocessing: PreprocessingConfig):
+    def _encode_rois(self, entries, preprocessing: PreprocessingConfig, *, sampled_empty=()):
         from soma.extract.dense_slide_extraction import _SlideRegionExtractor
         from soma.extract.orchestration import _release_parent_cuda_state
 
@@ -418,6 +453,7 @@ class _Extraction:
             spacing_policy=self._spacing_policy,
             execution=self._execution,
             cache=self._cache,
+            sampled_empty=sampled_empty,
         )
         try:
             store = extractor.run(self._output_root / "features")

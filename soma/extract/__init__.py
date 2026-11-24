@@ -18,9 +18,18 @@ from types import ModuleType
 from soma.extract.contracts import FeatureSource, PooledFeatureSource
 from soma.extract.facade import extract
 from soma.extract.live import FrozenEncoder, live_encoder
+from soma.extract.progress import ExtractionProgress
 from soma.extract.rois import RoiSet
 
-__all__ = ["FeatureSource", "FrozenEncoder", "PooledFeatureSource", "RoiSet", "extract", "live_encoder"]
+__all__ = [
+    "ExtractionProgress",
+    "FeatureSource",
+    "FrozenEncoder",
+    "PooledFeatureSource",
+    "RoiSet",
+    "extract",
+    "live_encoder",
+]
 
 
 class _ExtractNamespace(ModuleType):

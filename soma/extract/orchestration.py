@@ -53,6 +53,7 @@ def _embed_tiles(
     tiling_results: Sequence[object],
     preprocessing: Slide2VecPreprocessingConfig,
     execution: ExecutionOptions,
+    on_slide_persisted: Callable[[object], None] | None = None,
 ) -> list:
     def _run_embedding() -> list:
         model = _load_model(
@@ -65,6 +66,7 @@ def _embed_tiles(
             tiling_results,
             preprocessing=preprocessing,
             execution=execution,
+            on_slide_persisted=on_slide_persisted,
         )
 
     return run_with_filtered_stderr(_run_embedding)
@@ -178,17 +180,26 @@ def _aggregate_tiles(
     tile_artifacts,
     preprocessing: Slide2VecPreprocessingConfig | None,
     execution: ExecutionOptions,
+    on_aggregated: Callable[[str], None] | None = None,
 ):
+    """Encode each slide from its tile features. ``on_aggregated`` is called with each
+    slide's id once it is encoded; with it, slide2vec is called one slide at a time."""
     model = _load_model(
         model_name,
         output_variant=output_variant,
         allow_non_recommended_settings=allow_non_recommended_settings,
     )
-    return model.aggregate_tiles(
-        tile_artifacts,
-        preprocessing=preprocessing,
-        execution=execution,
-    )
+    if on_aggregated is None:
+        return model.aggregate_tiles(
+            tile_artifacts,
+            preprocessing=preprocessing,
+            execution=execution,
+        )
+    outputs = []
+    for artifact in tile_artifacts:
+        outputs.extend(model.aggregate_tiles([artifact], preprocessing=preprocessing, execution=execution))
+        on_aggregated(str(artifact.sample_id))
+    return outputs
 
 
 def _aggregate_patients(
@@ -201,6 +212,7 @@ def _aggregate_patients(
     preprocessing: Slide2VecPreprocessingConfig | None,
     slide_execution: ExecutionOptions,
     patient_execution: ExecutionOptions,
+    on_aggregated: Callable[[str], None] | None = None,
 ):
     """Aggregate per-slide tile artifacts into patient-level embeddings.
 
@@ -217,6 +229,7 @@ def _aggregate_patients(
             intermediate slide embeddings.
         patient_execution: ExecutionOptions with output_dir for patient
             embedding artifacts.
+        on_aggregated: Called with each slide's id once its slide embedding exists.
 
     Returns:
         List of PatientEmbeddingArtifact objects, one per unique patient.
@@ -230,11 +243,19 @@ def _aggregate_patients(
     )
 
     # Step 1: Compute per-slide embeddings from tile artifacts.
-    slide_artifacts = model.aggregate_tiles(
-        tile_artifacts,
-        preprocessing=preprocessing,
-        execution=slide_execution,
-    )
+    if on_aggregated is None:
+        slide_artifacts = model.aggregate_tiles(
+            tile_artifacts,
+            preprocessing=preprocessing,
+            execution=slide_execution,
+        )
+    else:
+        slide_artifacts = []
+        for artifact in tile_artifacts:
+            slide_artifacts.extend(
+                model.aggregate_tiles([artifact], preprocessing=preprocessing, execution=slide_execution)
+            )
+            on_aggregated(str(artifact.sample_id))
 
     # Step 2: Group slide embeddings by patient_id.
     patient_slide_embs: dict[str, list[torch.Tensor]] = {}

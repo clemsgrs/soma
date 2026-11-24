@@ -58,9 +58,18 @@ if the correct pixels, features and labels reach it.
 | `parity_grid_segmentation` | the same pipeline-versus-hand comparison over cached segmentation grids: identical label-map PNGs and indexes for tune and test, equal Dice / IoU, identical weights; and the same run with a read-only runtime observer is identical to the CLI run |
 | `parity_grid_detection` | the same comparison over cached detection grids, with the per-class threshold swept on tune (step 7) and applied to every split; the bundle records the chosen threshold |
 | `verbs_journey` | the library journey over user arrays: `Cohort` + `from_arrays` → `soma.learn.loaders` → `soma.fit` → `soma.predict` → `soma.evaluate`, with string labels mapped through the head's classes |
+| `extraction_progress_pre_cropped_images` | `soma.extract(on_progress=...)` over pre-cropped images: the cold call reports `checking_cache` → `loading_model` → `embedding` → `finished`, phases only move forward, counters stay within their totals, no tile counts; the warm call reports `checking_cache` → `finished` with every image cached |
+| `extraction_progress_whole_slides` | the same over whole slides with a tile encoder, adding `tiling` and cohort-wide tile counts: three slides cold, all six (three cached, tiles of the new three only), then all six warm |
+| `extraction_progress_slide_encoder` | `fake-slide`: `embedding` then `aggregating`, the warm call a full cache hit, features identical without the hook; over a tile cache filled by `fake`, the embedding pass starts with every slide done |
+| `extraction_progress_dense_images` | dense grids over pre-cropped images, cold then warm, no tile counts |
+| `extraction_progress_sampled_rois` | dense grids over ROIs sampled from whole slides: sampling is `tiling`, a sample is a slide and its ROIs are the tiles; two slides cold, all four (two cached, tile total = the new slides' ROIs), then all four warm |
+| `extraction_progress_failed_extraction` | an extraction that fails (an image is missing) raises, and the hook got snapshots before the error but no `finished` |
+| `extraction_progress_failing_hook` | a hook that raises is logged once as a warning with its traceback, is still called up to `finished`, and the features equal a run without a hook |
+| `extraction_progress_caller_reporter` | a slide2vec reporter the caller activated receives the same event kinds with the hook as without it, none of soma's own, and is closed once |
+| `extraction_progress_pipeline` | `Pipeline(on_extraction_progress=...)` reports one cycle for a single encoder and one per member of a composite encoder, each named by its encoder |
 
-Every scenario checks that training loss fell (last epoch ≤ 0.9 × first epoch), as
-well as checking its metric thresholds.
+Every scenario that trains to a metric checks that training loss fell (last epoch ≤
+0.9 × first epoch), as well as checking its metric thresholds.
 
 ## Running
 

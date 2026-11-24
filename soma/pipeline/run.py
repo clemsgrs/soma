@@ -28,7 +28,7 @@ from soma._internal.atomic_io import atomic_write_json
 from soma.extract.cache import resolve_cache_root
 from soma.config import ExperimentConfig
 from soma.data import AnnotationManifest, Cohort, FoldSplit, GridSource, ImageManifest, TileImageSource
-from soma.extract import RoiSet
+from soma.extract import ExtractionProgress, RoiSet
 from soma.pipeline.aggregate import aggregate_fold_metrics_from_disk, save_summary
 from soma.pipeline.build import (
     FoldSetup,
@@ -143,6 +143,11 @@ class Pipeline:
             must pickle. A one-fold run or a representation run ignores ``devices``
             with a warning. Like ``source``, it is not part of the config or the plan.
             ``None`` (the default) trains the folds one after another, here.
+        on_extraction_progress: Follows the run's feature extraction: passed as
+            ``on_progress`` to every :func:`soma.extract` call ``run()`` makes (one per
+            member of a composite encoder). Extraction runs in this process, also with
+            ``devices``, so it is never pickled. Like ``callback_factory``, it is not part
+            of the config, the plan or the experiment identity.
     """
 
     def __init__(
@@ -152,6 +157,7 @@ class Pipeline:
         source: Any = None,
         callback_factory: Callable[[FoldContext], Sequence[Any]] | None = None,
         devices: Sequence[str | int] | None = None,
+        on_extraction_progress: Callable[[ExtractionProgress], Any] | None = None,
     ) -> None:
         ensure_default_logging()
         if not isinstance(config, ExperimentConfig):
@@ -163,6 +169,11 @@ class Pipeline:
         self._source = source
         self._callback_factory = callback_factory
         self._devices = None if devices is None else resolve_devices(devices)
+        if on_extraction_progress is not None and not callable(on_extraction_progress):
+            raise TypeError(
+                f"on_extraction_progress must be callable, got {type(on_extraction_progress).__name__}."
+            )
+        self._on_extraction_progress = on_extraction_progress
         #: False in a fold's worker process: the launch that started it summarizes the run.
         self._summarizes = True
         self._cohort, self._image_manifest, self._annotation_manifest = load_pipeline_data(config)
@@ -489,7 +500,12 @@ class Pipeline:
         if grid and features.is_composite:
             from soma.extract.dense import DenseSourceProvenance
 
-            store = build_composite_dense_store(plan, self._image_manifest, output_root=run_dir / "features")
+            store = build_composite_dense_store(
+                plan,
+                self._image_manifest,
+                output_root=run_dir / "features",
+                on_progress=self._on_extraction_progress,
+            )
             store.provenance = DenseSourceProvenance(kind="composite_dense_cache", dataset_csv=plan.cohort.records)
             return RunFeatures(source=store, cohort=self._cohort)
         if features.encoder is None:
@@ -498,6 +514,7 @@ class Pipeline:
             self._image_manifest,
             annotations=self._annotation_manifest if roi_sampled else None,
             **extraction_options(plan, run_dir=run_dir),
+            on_progress=self._on_extraction_progress,
         )
         _record_cohort_csv(source, plan.cohort.records)
         rois = getattr(source, "rois", None)

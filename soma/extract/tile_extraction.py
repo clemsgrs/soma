@@ -29,6 +29,7 @@ from soma.extract.cache import (
     resolve_cache_root,
     resolve_image_cache,
 )
+from soma.extract import progress
 from soma.extract.cache.compute_key import resolved_output_variant
 from soma.extract.cache.options import CacheOptions
 from soma.models.encoders import EncoderLeaf
@@ -106,6 +107,7 @@ class _TileFeatureExtractor:
 
         records = list(self._images)
         if not self._cache.enabled:
+            progress.report("soma.checked", pending=[record.sample_id for record in records])
             feature_dir.mkdir(parents=True, exist_ok=True)
             if records:
                 # slide2vec may replace a reused output directory's vectors (a re-pointed
@@ -125,6 +127,7 @@ class _TileFeatureExtractor:
             feature_identity=self._feature_identity_check(feature_dir, dtype=dtype),
         )
         if cache_resolution.complete:
+            progress.report("soma.checked", pending=[])
             logger.info(
                 "Reusing cached tile features from %s",
                 cache_resolution.features_dir,
@@ -133,6 +136,7 @@ class _TileFeatureExtractor:
 
         missing = set(cache_resolution.missing_sample_ids())
         pending_ids = [record.sample_id for record in records if record.sample_id in missing]
+        progress.report("soma.checked", pending=pending_ids)
         if pending_ids:
             # Nothing may vouch for these samples while slide2vec may replace their
             # features: a failure from here on leaves them unsigned, for slide2vec to

@@ -47,6 +47,7 @@ from soma.extract.cache import (
     write_tiling_cache_payload,
     write_tiling_cache_stub,
 )
+from soma.extract import progress
 from soma.extract.cache.options import CacheOptions
 from soma.extract.preprocessing import is_annotation_sampling
 from soma.models.encoders import EncoderLeaf
@@ -234,6 +235,49 @@ def _empty_sample_ids_from_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]
 
 def _non_empty_loaded_tilings(loaded_tilings: Sequence[LoadedTiling]) -> list[LoadedTiling]:
     return [loaded for loaded in loaded_tilings if tiling_num_tiles(loaded.tiling_result) > 0]
+
+
+def _tiles_per_tile(preprocessing: PreprocessingConfig) -> int:
+    """What the encoder sees per tiling tile: one tile, or a hierarchical region's sub-tiles."""
+    multiple = preprocessing.region_tile_multiple
+    return 1 if multiple is None else int(multiple) ** 2
+
+
+def _report_embedded(artifact: object) -> None:
+    progress.report("soma.sample.embedded", sample_ids=[str(artifact.sample_id)])
+
+
+def _report_aggregated(sample_id: str) -> None:
+    progress.report("soma.sample.aggregated", sample_id=str(sample_id))
+
+
+def _report_checked(
+    loaded_tilings: Sequence[LoadedTiling],
+    *,
+    pending: Collection[str],
+    embedded: Collection[str] = (),
+    tiles_per_tile: int = 1,
+) -> None:
+    """Tell the progress hook which rows the cache lacks, which of them have nothing left to
+    encode (their tile features are cached, or they have no tile), and each one's tiles.
+
+    ``tiles_per_tile`` counts what the encoder sees per tiling tile: the region's
+    sub-tiles on a hierarchical run, as slide2vec counts them."""
+    if not progress.reporting_active():
+        return
+    pending = {str(sample_id) for sample_id in pending}
+    empty = set(_empty_sample_ids_from_loaded_tilings(loaded_tilings))
+    tiles: dict[str, int] = {}
+    for loaded in loaded_tilings:
+        sample_id = str(loaded.slide.sample_id)
+        if sample_id in pending:
+            tiles[sample_id] = tiles.get(sample_id, 0) + tiling_num_tiles(loaded.tiling_result) * tiles_per_tile
+    progress.report(
+        "soma.checked",
+        pending=sorted(pending),
+        embedded=sorted((set(map(str, embedded)) | empty) & pending),
+        tiles=tiles,
+    )
 
 
 class _PooledFeatureExtractor:
@@ -807,6 +851,11 @@ class _PooledFeatureExtractor:
         slides = [loaded.slide for loaded in embeddable_tilings]
         embedding_tiling_results = [loaded.tiling_result for loaded in embeddable_tilings]
         model_name = self._encoder.name
+        _report_checked(
+            loaded_tilings,
+            pending=self._images.sample_ids,
+            tiles_per_tile=_tiles_per_tile(preprocessing),
+        )
 
         if hierarchical:
             _embed_hierarchical_artifacts_with_coordinates(
@@ -868,6 +917,10 @@ class _PooledFeatureExtractor:
                 tiling_results=embedding_tiling_results,
                 preprocessing=preprocessing,
                 execution=tile_execution,
+                on_slide_persisted=_report_embedded if progress.reporting_active() else None,
+            )
+            progress.report(
+                "soma.aggregation.started", aggregated=_empty_sample_ids_from_loaded_tilings(loaded_tilings)
             )
             _aggregate_tiles(
                 model_name=model_name,
@@ -876,6 +929,7 @@ class _PooledFeatureExtractor:
                 tile_artifacts=tile_artifacts,
                 preprocessing=preprocessing,
                 execution=execution,
+                on_aggregated=_report_aggregated if progress.reporting_active() else None,
             )
 
 
@@ -982,10 +1036,12 @@ class _PooledFeatureExtractor:
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
+            _report_checked(loaded_tilings, pending=())
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
             return CachedSetSource(feature_dir)
 
+        _report_checked(loaded_tilings, pending=cache_resolution.missing_sample_ids())
         self._populate_tile_cache(
             cache_resolution=cache_resolution,
             loaded_tilings=loaded_tilings,
@@ -1054,10 +1110,16 @@ class _PooledFeatureExtractor:
         )
         self._write_cache_marker(feature_dir, cache_resolution=cache_resolution)
         if cache_resolution.complete:
+            _report_checked(loaded_tilings, pending=())
             self._write_cached_process_list(feature_dir, cache_resolution=cache_resolution)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
             return CachedSetSource(feature_dir)
 
+        _report_checked(
+            loaded_tilings,
+            pending=cache_resolution.missing_sample_ids(),
+            tiles_per_tile=_tiles_per_tile(preprocessing),
+        )
         self._populate_hierarchical_cache(
             cache_resolution=cache_resolution,
             loaded_tilings=loaded_tilings,
@@ -1151,9 +1213,18 @@ class _PooledFeatureExtractor:
         )
         self._write_cache_marker(feature_dir, cache_resolution=slide_cache)
         if tile_cache.complete and slide_cache.complete:
+            _report_checked(loaded_tilings, pending=())
             self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=slide_cache)
             return CachedSetSource(feature_dir)
+        # The slide cache is the final one; a pending slide whose tile features are
+        # cached is not embedded again.
+        slide_pending = set(slide_cache.missing_sample_ids())
+        _report_checked(
+            loaded_tilings,
+            pending=slide_pending,
+            embedded=slide_pending - set(tile_cache.missing_sample_ids()),
+        )
 
         # Always-aggregate: ensure the tile-dependency cache is complete first,
         # then aggregate from it. This reuses the incremental, crash-safe tile
@@ -1185,6 +1256,9 @@ class _PooledFeatureExtractor:
                 validate_payloads=self._cache.validate_payloads,
                 feature_identity=tile_identity,
             )
+        else:
+            # The first pass has nothing to encode.
+            progress.report("soma.embedding.started")
 
         self._populate_slide_cache(
             tile_cache=tile_cache,
@@ -1277,11 +1351,25 @@ class _PooledFeatureExtractor:
         )
         self._write_cache_marker(feature_dir, cache_resolution=patient_cache)
         if tile_cache.complete and patient_cache.complete:
+            _report_checked(loaded_tilings, pending=())
             self._write_cached_process_list(feature_dir, cache_resolution=patient_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=patient_cache)
             return CachedSetSource(feature_dir)
 
         patient_id_map = self._patient_id_map_for_patient_encoder()
+        # A row is pending when its patient is not in the patient cache.
+        missing_patients = set(patient_cache.missing_sample_ids())
+        patient_pending = {
+            sample_id for sample_id, patient_id in patient_id_map.items() if patient_id in missing_patients
+        }
+        _report_checked(
+            loaded_tilings,
+            pending=patient_pending,
+            embedded=patient_pending - set(tile_cache.missing_sample_ids()),
+        )
+        if tile_cache.complete:
+            # The first pass has nothing to encode.
+            progress.report("soma.embedding.started")
 
         self._populate_tile_cache(
             cache_resolution=tile_cache,
@@ -1370,6 +1458,7 @@ class _PooledFeatureExtractor:
         )
         if empty_patient_ids:
             record_empty_sample_ids(patient_cache, empty_patient_ids)
+        progress.report("soma.aggregation.started", aggregated=sorted(empty_sample_ids))
         if not selected_loaded:
             return
         slide_exec = execution_options(
@@ -1410,6 +1499,7 @@ class _PooledFeatureExtractor:
                 preprocessing=None,
                 slide_execution=slide_exec,
                 patient_execution=patient_exec,
+                on_aggregated=_report_aggregated if progress.reporting_active() else None,
             )
         feature_dim = self._write_artifacts_to_cache_resolution(
             artifacts=patient_artifacts,
@@ -1623,6 +1713,9 @@ class _PooledFeatureExtractor:
             )
         empty_sample_ids = set(_empty_sample_ids_from_loaded_tilings(loaded_tilings))
         selected_loaded = self._filter_tilings_for_ids(loaded_tilings, slide_missing, empty_sample_ids)
+        if slide_missing:
+            # The second pass, over the tile features the first one cached.
+            progress.report("soma.aggregation.started", aggregated=sorted(empty_sample_ids & slide_missing))
         if selected_loaded:
             slide_execution = execution_options(
                 self._execution,
@@ -1716,6 +1809,7 @@ class _PooledFeatureExtractor:
                         tile_artifacts=tile_artifacts,
                         preprocessing=None,
                         execution=slide_execution,
+                        on_aggregated=_report_aggregated if progress.reporting_active() else None,
                     )
                 slide_feature_dim = self._write_artifacts_to_cache_resolution(
                     artifacts=slide_artifacts,
