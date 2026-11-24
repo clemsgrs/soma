@@ -341,7 +341,8 @@ class _FoldingReporter:
         self._fold_failed = False
 
     def __getattr__(self, name: str) -> Any:
-        # Rich-aware helpers read the display's ``console`` and ``progress``.
+        # Rich-aware helpers read the display's ``console`` and ``progress``. ``write_log``
+        # is delegated too, so slide2vec prints a log itself when the inner has none.
         if name.startswith("__") or name in {"_fold", "_inner", "_owns_inner", "_fold_failed"}:
             raise AttributeError(name)
         return getattr(self._inner, name)
@@ -355,9 +356,6 @@ class _FoldingReporter:
             if not self._fold_failed:
                 self._fold_failed = True
                 logger.warning("Could not fold progress event %r.", getattr(event, "kind", event), exc_info=True)
-
-    def write_log(self, message: str, *, stream=None) -> None:
-        self._inner.write_log(message, stream=stream)
 
     def close(self) -> None:
         if self._owns_inner:

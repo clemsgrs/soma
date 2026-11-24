@@ -1041,7 +1041,8 @@ class _PooledFeatureExtractor:
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
             return CachedSetSource(feature_dir)
 
-        _report_checked(loaded_tilings, pending=cache_resolution.missing_sample_ids())
+        if progress.reporting_active():
+            _report_checked(loaded_tilings, pending=cache_resolution.missing_sample_ids())
         self._populate_tile_cache(
             cache_resolution=cache_resolution,
             loaded_tilings=loaded_tilings,
@@ -1115,11 +1116,12 @@ class _PooledFeatureExtractor:
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=cache_resolution)
             return CachedSetSource(feature_dir)
 
-        _report_checked(
-            loaded_tilings,
-            pending=cache_resolution.missing_sample_ids(),
-            tiles_per_tile=_tiles_per_tile(preprocessing),
-        )
+        if progress.reporting_active():
+            _report_checked(
+                loaded_tilings,
+                pending=cache_resolution.missing_sample_ids(),
+                tiles_per_tile=_tiles_per_tile(preprocessing),
+            )
         self._populate_hierarchical_cache(
             cache_resolution=cache_resolution,
             loaded_tilings=loaded_tilings,
@@ -1217,14 +1219,15 @@ class _PooledFeatureExtractor:
             self._write_cached_process_list(feature_dir, cache_resolution=slide_cache)
             self._materialize_feature_dir_from_cache(feature_dir, cache_resolution=slide_cache)
             return CachedSetSource(feature_dir)
-        # The slide cache is the final one; a pending slide whose tile features are
-        # cached is not embedded again.
-        slide_pending = set(slide_cache.missing_sample_ids())
-        _report_checked(
-            loaded_tilings,
-            pending=slide_pending,
-            embedded=slide_pending - set(tile_cache.missing_sample_ids()),
-        )
+        if progress.reporting_active():
+            # The slide cache is the final one; a pending slide whose tile features are
+            # cached is not embedded again.
+            slide_pending = set(slide_cache.missing_sample_ids())
+            _report_checked(
+                loaded_tilings,
+                pending=slide_pending,
+                embedded=slide_pending - set(tile_cache.missing_sample_ids()),
+            )
 
         # Always-aggregate: ensure the tile-dependency cache is complete first,
         # then aggregate from it. This reuses the incremental, crash-safe tile
@@ -1357,16 +1360,17 @@ class _PooledFeatureExtractor:
             return CachedSetSource(feature_dir)
 
         patient_id_map = self._patient_id_map_for_patient_encoder()
-        # A row is pending when its patient is not in the patient cache.
-        missing_patients = set(patient_cache.missing_sample_ids())
-        patient_pending = {
-            sample_id for sample_id, patient_id in patient_id_map.items() if patient_id in missing_patients
-        }
-        _report_checked(
-            loaded_tilings,
-            pending=patient_pending,
-            embedded=patient_pending - set(tile_cache.missing_sample_ids()),
-        )
+        if progress.reporting_active():
+            # A row is pending when its patient is not in the patient cache.
+            missing_patients = set(patient_cache.missing_sample_ids())
+            patient_pending = {
+                sample_id for sample_id, patient_id in patient_id_map.items() if patient_id in missing_patients
+            }
+            _report_checked(
+                loaded_tilings,
+                pending=patient_pending,
+                embedded=patient_pending - set(tile_cache.missing_sample_ids()),
+            )
         if tile_cache.complete:
             # The first pass has nothing to encode.
             progress.report("soma.embedding.started")

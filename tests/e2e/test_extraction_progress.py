@@ -36,14 +36,15 @@ def _phases(snapshots: list[ExtractionProgress]) -> list[str]:
     return list(dict.fromkeys(snapshot.phase for snapshot in snapshots))
 
 
-def _check_cycle(artifact, name: str, snapshots: list[ExtractionProgress], *, phases, cached: int) -> None:
+def _check_cycle(
+    artifact, name: str, snapshots: list[ExtractionProgress], *, phases, total: int, cached: int
+) -> None:
     """One extraction's snapshots: the phases in order, each moving forward, the end last,
-    and every counter within its total."""
+    every counter within its total, and ``samples_total`` the manifest's ``total`` rows."""
     artifact.check_equal(f"{name}/phases", _phases(snapshots), phases)
     order = [PHASES.index(snapshot.phase) for snapshot in snapshots]
     artifact.check_equal(f"{name}/phases_move_forward", order == sorted(order), True)
-    total = snapshots[0].samples_total
-    artifact.check_equal(f"{name}/samples_total_constant", sorted({s.samples_total for s in snapshots}), [total])
+    artifact.check_equal(f"{name}/samples_total_is_the_manifest", sorted({s.samples_total for s in snapshots}), [total])
     known = sorted({s.samples_cached for s in snapshots} - {None})
     artifact.check_equal(f"{name}/samples_cached_once_known", known, [cached])
     artifact.check_equal(f"{name}/first_samples_cached", snapshots[0].samples_cached, None)
@@ -83,10 +84,11 @@ def test_pre_cropped_images_report_progress_cold_then_from_the_warm_cache(tmp_pa
         )
         calls.append(snapshots)
     cold, warm = calls
-    _check_cycle(artifact, "cold", cold, phases=["checking_cache", "loading_model", "embedding", "finished"], cached=0)
+    cold_phases = ["checking_cache", "loading_model", "embedding", "finished"]
+    _check_cycle(artifact, "cold", cold, phases=cold_phases, total=len(images), cached=0)
     artifact.check_equal("cold/encoder", sorted({s.encoder for s in cold}), [encoder_name])
     artifact.check_equal("cold/tiles", sorted({str((s.tiles_done, s.tiles_total)) for s in cold}), ["(None, None)"])
-    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], cached=8)
+    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], total=len(images), cached=8)
     artifact.assert_passed()
 
 
@@ -139,11 +141,11 @@ def test_whole_slides_with_a_tile_encoder_report_tiles_and_a_partial_resume(tmp_
     slide_phases = ["checking_cache", "tiling", "loading_model", "embedding", "finished"]
 
     part = _extract_slides(first, encoder_name, tmp_path, "part")
-    _check_cycle(artifact, "part", part, phases=slide_phases, cached=0)
+    _check_cycle(artifact, "part", part, phases=slide_phases, total=len(first), cached=0)
     resume = _extract_slides(images, encoder_name, tmp_path, "resume")
-    _check_cycle(artifact, "resume", resume, phases=slide_phases, cached=3)
+    _check_cycle(artifact, "resume", resume, phases=slide_phases, total=len(images), cached=3)
     warm = _extract_slides(images, encoder_name, tmp_path, "warm")
-    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], cached=6)
+    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], total=len(images), cached=6)
 
     # Every tile of the pending slides is counted, and the resume counts only the new slides'.
     part_tiles, resume_tiles = _tiles_seen(part), _tiles_seen(resume)
@@ -166,19 +168,18 @@ def test_a_slide_encoder_embeds_then_aggregates_and_reuses_cached_tile_features(
 
     cold: list[ExtractionProgress] = []
     hooked = _features(_slides_source(images, "fake-slide", tmp_path / "slide", "cold", cold.append))
-    _check_cycle(artifact, "cold", cold, phases=every_phase, cached=0)
+    _check_cycle(artifact, "cold", cold, phases=every_phase, total=len(images), cached=0)
     plain = _features(_slides_source(images, "fake-slide", tmp_path / "plain", "cold", None))
     artifact.check_equal("same_samples", sorted(hooked), sorted(plain))
     artifact.check_equal("same_features", all(np.array_equal(hooked[k], plain[k]) for k in plain), True)
     warm = _extract_slides(images, "fake-slide", tmp_path / "slide", "warm")
-    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], cached=4)
+    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], total=len(images), cached=4)
 
     # The tile cache filled by ``fake`` is the one ``fake-slide`` aggregates.
     _extract_slides(images, "fake", tmp_path / "shared", "tiles")
     reused = _extract_slides(images, "fake-slide", tmp_path / "shared", "slides")
-    _check_cycle(
-        artifact, "reused", reused, phases=["checking_cache", "embedding", "aggregating", "finished"], cached=0
-    )
+    reused_phases = ["checking_cache", "embedding", "aggregating", "finished"]
+    _check_cycle(artifact, "reused", reused, phases=reused_phases, total=len(images), cached=0)
     embedding = [s for s in reused if s.phase == "embedding"]
     artifact.check_equal("reused/embedding_starts_done", embedding[0].samples_done if embedding else None, 4)
     artifact.assert_passed()
@@ -206,9 +207,10 @@ def test_dense_grids_on_pre_cropped_images_count_images_cold_then_from_the_warm_
         )
         calls.append(snapshots)
     cold, warm = calls
-    _check_cycle(artifact, "cold", cold, phases=["checking_cache", "loading_model", "embedding", "finished"], cached=0)
+    cold_phases = ["checking_cache", "loading_model", "embedding", "finished"]
+    _check_cycle(artifact, "cold", cold, phases=cold_phases, total=len(images), cached=0)
     artifact.check_equal("cold/tiles", sorted({str((s.tiles_done, s.tiles_total)) for s in cold}), ["(None, None)"])
-    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], cached=6)
+    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], total=len(images), cached=6)
     artifact.assert_passed()
 
 
@@ -248,13 +250,15 @@ def test_rois_sampled_from_whole_slides_count_slides_and_their_regions_as_tiles(
     artifact = new_artifact("extraction_progress_sampled_rois")
     slides_csv, _splits = make_segmentation_slides(tmp_path / "slides", n=4)
     every_phase = ["checking_cache", "tiling", "loading_model", "embedding", "finished"]
+    first = ["slide0", "slide1"]
+    every_slide = len(ImageManifest.from_csv(slides_csv))
 
-    part, _ = _sample_rois(slides_csv, tmp_path, "part", sample_ids=["slide0", "slide1"])
-    _check_cycle(artifact, "part", part, phases=every_phase, cached=0)
+    part, _ = _sample_rois(slides_csv, tmp_path, "part", sample_ids=first)
+    _check_cycle(artifact, "part", part, phases=every_phase, total=len(first), cached=0)
     resume, store = _sample_rois(slides_csv, tmp_path, "resume")
-    _check_cycle(artifact, "resume", resume, phases=every_phase, cached=2)
+    _check_cycle(artifact, "resume", resume, phases=every_phase, total=every_slide, cached=2)
     warm, _ = _sample_rois(slides_csv, tmp_path, "warm")
-    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], cached=4)
+    _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], total=every_slide, cached=4)
 
     new_rois = sum(1 for slide in store.rois.children.values() if slide in {"slide2", "slide3"})
     artifact.check_equal("resume/tiles_total", _tiles_seen(resume), [new_rois])
@@ -315,28 +319,23 @@ def test_a_pipeline_reports_every_extraction_it_runs_to_its_hook(tmp_path, encod
     from soma.pipeline import Pipeline
 
     artifact = new_artifact("extraction_progress_pipeline")
+    cold_phases = ["checking_cache", "loading_model", "embedding", "finished"]
     single: list[ExtractionProgress] = []
     config = _segmentation_config(tmp_path / "single", {"name": encoder_name})
+    rows = len(ImageManifest.from_csv(config["cohort"]["records"]))
     Pipeline(ExperimentConfig.from_dict(config), on_extraction_progress=single.append).run()
     (cycle,) = _cycles(single)
-    _check_cycle(
-        artifact, "single", cycle, phases=["checking_cache", "loading_model", "embedding", "finished"], cached=0
-    )
+    _check_cycle(artifact, "single", cycle, phases=cold_phases, total=rows, cached=0)
 
     composite: list[ExtractionProgress] = []
     members = [{"name": encoder_name}, {"name": encoder_name, "dense": {"overlap": 0.25}}]
     config = _segmentation_config(tmp_path / "composite", {"name": "composite", "params": {"members": members}})
+    rows = len(ImageManifest.from_csv(config["cohort"]["records"]))
     Pipeline(ExperimentConfig.from_dict(config), on_extraction_progress=composite.append).run()
     cycles = _cycles(composite)
     artifact.check_equal("composite/cycles", len(cycles), 2)
     for index, member_cycle in enumerate(cycles):
-        _check_cycle(
-            artifact,
-            f"composite/member_{index}",
-            member_cycle,
-            phases=["checking_cache", "loading_model", "embedding", "finished"],
-            cached=0,
-        )
+        _check_cycle(artifact, f"composite/member_{index}", member_cycle, phases=cold_phases, total=rows, cached=0)
         encoders = sorted({s.encoder for s in member_cycle})
         artifact.check_equal(f"composite/member_{index}/encoder", encoders, [encoder_name])
     artifact.assert_passed()

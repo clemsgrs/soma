@@ -15,9 +15,10 @@ import time
 from pathlib import Path
 
 import pytest
+import slide2vec.progress as slide2vec_progress
 from slide2vec.progress import ProgressEvent
 
-from soma.extract import ExtractionProgress
+from soma.extract import ExtractionProgress, progress
 from soma.extract.progress import ProgressFold
 
 
@@ -496,3 +497,17 @@ def test_hook_calls_from_several_threads_never_overlap() -> None:
     for thread in threads:
         thread.join()
     assert calls == 2 + 400 and overlaps == 0
+
+
+def test_a_caller_reporter_without_write_log_keeps_slide2vec_printing_the_log(tmp_path: Path, capsys) -> None:
+    class EmitOnly:
+        def emit(self, event) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    with slide2vec_progress.activate_progress_reporter(EmitOnly()):
+        with progress.reporting(lambda snapshot: None, encoder="uni2", samples_total=1, output_dir=tmp_path):
+            slide2vec_progress.emit_progress_log("cache entry rebuilt")
+    assert "cache entry rebuilt" in capsys.readouterr().out
