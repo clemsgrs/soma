@@ -269,6 +269,102 @@ def test_single_seed_leaves_std_blank(tmp_path: Path):
     assert table.rows[0].std is None
 
 
+# --- coverage below 1 (evaluation.unpredicted: exclude) ------------------------------
+
+
+def test_a_row_whose_runs_left_targets_out_shows_its_coverage(tmp_path: Path):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    full = make_run_dir(_cfg(root, ds, sp, encoder="virchow2"), {"test/accuracy": 0.90, "test/coverage": 1.0})
+    partial = make_run_dir(_cfg(root, ds, sp, encoder="uni2"), {"test/accuracy": 0.80, "test/coverage": 0.75})
+
+    table = project_leaderboard([full, partial], LeaderboardFacet(vary=("encoder",)))
+
+    assert [(row.vary_values["encoder"], row.coverage) for row in table.rows] == [
+        ("virchow2", 1.0),
+        ("uni2", 0.75),
+    ]
+    header, first, second = format_table(table).splitlines()[1:]
+    assert header.split()[:5] == ["#", "encoder", "accuracy", "n", "coverage"]
+    assert first.split()[:5] == ["1", "virchow2", "0.9000", "1", "—"]  # blank coverage, then the diff
+    assert second.split()[:5] == ["2", "uni2", "0.8000", "1", "0.7500"]
+    csv_lines = render_csv(table).splitlines()
+    assert csv_lines[0] == "rank,encoder,mean,std,n,seeds,coverage,config_diff"
+    assert [line.split(",")[6] for line in csv_lines[1:]] == ["", "0.750000"]
+    assert [row["coverage"] for row in json.loads(render_json(table))["rows"]] == [1.0, 0.75]
+    html = render_html(table)
+    assert "<th>n</th><th>coverage</th>" in html
+    assert "<td>1</td><td></td>" in html and "<td>1</td><td>0.7500</td>" in html
+
+
+def test_a_coverage_just_below_1_never_prints_as_1(tmp_path: Path):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    # One target left out of 50000.
+    run = make_run_dir(_cfg(root, ds, sp), {"test/accuracy": 0.80, "test/coverage": 0.99998})
+
+    table = project_leaderboard([run], LeaderboardFacet(vary=("encoder",)))
+
+    assert format_table(table).splitlines()[2].split()[:5] == ["1", "uni2", "0.8000", "1", "0.9999"]
+    assert render_csv(table).splitlines()[1].split(",")[6] == "0.999980"
+
+
+def test_a_row_averages_the_coverage_of_its_seed_runs(tmp_path: Path):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    # Cross-validated runs: the summary holds the means over folds.
+    d0 = make_run_dir(_cfg(root, ds, sp, seed=0), {"test/accuracy_mean": 0.80, "test/coverage_mean": 0.5})
+    d1 = make_run_dir(_cfg(root, ds, sp, seed=1), {"test/accuracy_mean": 0.90, "test/coverage_mean": 1.0})
+
+    table = project_leaderboard([d0, d1], LeaderboardFacet(vary=("encoder",)))
+
+    assert table.rows[0].coverage == pytest.approx(0.75)
+
+
+def test_a_board_whose_runs_scored_every_target_shows_no_coverage(tmp_path: Path):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    full = make_run_dir(_cfg(root, ds, sp, encoder="uni2"), {"test/accuracy": 0.80, "test/coverage": 1.0})
+    unrecorded = make_run_dir(_cfg(root, ds, sp, encoder="virchow2"), {"test/accuracy": 0.90})
+
+    table = project_leaderboard([full, unrecorded], LeaderboardFacet(vary=("encoder",)))
+
+    assert [row.coverage for row in table.rows] == [None, 1.0]
+    assert "coverage" not in format_table(table)
+    assert "coverage" not in render_csv(table)
+    assert "<th>coverage</th>" not in render_html(table)
+    assert [row["coverage"] for row in json.loads(render_json(table))["rows"]] == [None, 1.0]
+
+
+def test_a_multi_metric_row_whose_runs_left_targets_out_shows_its_coverage(tmp_path: Path):
+    root = tmp_path / "out"
+    ds, sp = _dataset_csv(tmp_path), _splits_csv(tmp_path)
+    scores = {"test/croma_median": 0.20, "test/croma_f0": 0.13, "test/croma_ltm10": 0.11}
+    partial = make_run_dir(_cfg(root, ds, sp, encoder="uni2"), {**scores, "test/coverage": 0.5})
+    full = make_run_dir(_cfg(root, ds, sp, encoder="virchow2"), {**scores, "test/coverage": 1.0})
+
+    table = project_leaderboard(
+        [partial, full], LeaderboardFacet(vary=("encoder",)), benchmark=_MultiMetricBenchmark()
+    )
+
+    assert [(row.vary_values["encoder"], row.coverage) for row in table.rows] == [
+        ("uni2", 0.5),
+        ("virchow2", 1.0),
+    ]
+    header, first, second = format_table(table).splitlines()[1:]
+    assert header.split()[:5] == ["encoder", "croma_median", "croma_f0", "croma_ltm10", "coverage"]
+    assert first.split()[:5] == ["uni2", "0.2000", "0.1300", "0.1100", "0.5000"]
+    assert second.split()[:5] == ["virchow2", "0.2000", "0.1300", "0.1100", "1"]  # blank, then a rank
+    csv_lines = [line.split(",") for line in render_csv(table).splitlines()]
+    column = csv_lines[0].index("coverage")
+    assert csv_lines[0][column - 1 : column + 2] == ["croma_ltm10_seeds", "coverage", "croma_median_rank"]
+    assert [line[column] for line in csv_lines[1:]] == ["0.500000", ""]
+    assert [row["coverage"] for row in json.loads(render_json(table))["rows"]] == [0.5, 1.0]
+    html = render_html(table)
+    assert "<th>croma_ltm10</th><th>coverage</th>" in html
+    assert "<td>0.1100</td><td>0.5000</td>" in html and "<td>0.1100</td><td></td>" in html
+
+
 # --- the never-pool rule -------------------------------------------------------------
 
 
@@ -1398,6 +1494,7 @@ def test_legacy_scalar_json_matches_exact_golden():
       "seeds": [
         0
       ],
+      "coverage": null,
       "config_diff": {},
       "reference": null
     }

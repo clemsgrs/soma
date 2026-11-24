@@ -76,7 +76,9 @@ invents a prediction for such a sample:
   With ``error``, the run stops at fold setup, after feature extraction and
   before any training. The error names the samples of every fold. With
   ``exclude``, each split is scored over the samples the model predicted. At the
-  end of the run, a warning names each split whose coverage is below 1.
+  end of the run, a warning names each split whose coverage is below 1. The
+  run-summary panel and ``soma leaderboard`` show this coverage too (see
+  :ref:`the summary keys <summary-keys>`).
 
 Next to the predictions of each test split, a slide, patient or tile run writes
 ``not_predicted_<split>.parquet``: one row per sample the model could not

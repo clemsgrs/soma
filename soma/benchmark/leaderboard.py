@@ -340,6 +340,10 @@ class LeaderboardRow:
     ranking_eligible: bool = True
     metrics: dict[str, LeaderboardMetric] = field(default_factory=dict)
     pareto: bool | None = None
+    #: The share of the split's targets the row's runs scored (the mean of their
+    #: ``coverage``); below 1 under ``evaluation.unpredicted: exclude``, ``None`` when
+    #: the runs record none. The text, CSV and HTML tables show it below 1 only.
+    coverage: float | None = None
 
 
 @dataclass(frozen=True)
@@ -441,11 +445,12 @@ def project_leaderboard(
 
     prelim: list[dict[str, Any]] = []
     for experiment_id, recs in groups.items():
-        values = [
-            v
+        observed = [
+            (r, v)
             for r in recs
             if (v := _metric_value(r.summary, metric_name, chosen_split)) is not None
         ]
+        values = [v for _, v in observed]
         if not values:
             continue
         spec = recs[0].canonical_spec
@@ -458,6 +463,7 @@ def project_leaderboard(
                 "std": sample_std(values) if len(values) > 1 else None,
                 "n": len(values),
                 "seeds": tuple(sorted(r.seed for r in recs if r.seed is not None)),
+                "coverage": _coverage([r for r, _ in observed], chosen_split),
                 "vary_values": vary_values,
                 "ranking_eligible": _is_ranking_eligible(
                     benchmark, {**facet.fixed, **vary_values}
@@ -513,6 +519,7 @@ def project_leaderboard(
                 seeds=entry["seeds"],
                 config_diff=entry["config_diff"],
                 ranking_eligible=entry["ranking_eligible"],
+                coverage=entry["coverage"],
                 **ref,
             )
         )
@@ -591,6 +598,7 @@ def _project_multi_metric(
                 "metrics": metrics,
                 "vary_values": vary_values,
                 "ranking_eligible": ranking_eligible,
+                "coverage": _coverage(recs, split),
             }
         )
 
@@ -652,6 +660,7 @@ def _project_multi_metric(
                 ranking_eligible=entry["ranking_eligible"],
                 metrics=row_metrics,
                 pareto=pareto.get(experiment_id),
+                coverage=entry["coverage"],
             )
         )
 
@@ -732,6 +741,16 @@ def _refuse_mixed_code(groups: dict[str, list[RunRecord]]) -> None:
             + ". Rerun the stale seeds on the current code (a seed's latest run replaces its "
             "older ones), or move their run dirs out of the root."
         )
+
+
+def _coverage(records: list[RunRecord], split: str) -> float | None:
+    """The mean ``coverage`` the runs record on ``split``, or ``None`` when none does."""
+    values = [
+        value
+        for record in records
+        if (value := _metric_value(record.summary, "coverage", split)) is not None
+    ]
+    return float(np.mean(values)) if values else None
 
 
 def _is_ranking_eligible(
@@ -937,6 +956,19 @@ def _fmt_diff(diff: dict[str, Any]) -> str:
     return ", ".join(f"{k}={v}" for k, v in sorted(diff.items()))
 
 
+def _fmt_coverage(row: LeaderboardRow, digits: int = 4) -> str:
+    """A row's coverage when its runs left targets out (below 1), else blank. It never
+    prints as 1: a coverage that would round up shows the largest value below it."""
+    if row.coverage is None or row.coverage >= 1:
+        return ""
+    return f"{min(row.coverage, 1 - 0.1**digits):.{digits}f}"
+
+
+def _shows_coverage(table: LeaderboardTable) -> bool:
+    """Whether the table needs a coverage column: some row's runs left targets out."""
+    return any(_fmt_coverage(row) for row in table.rows)
+
+
 def _row_dict(row: LeaderboardRow) -> dict[str, Any]:
     return {
         "rank": row.rank,
@@ -947,6 +979,7 @@ def _row_dict(row: LeaderboardRow) -> dict[str, Any]:
         "std": row.std,
         "n": row.n,
         "seeds": list(row.seeds),
+        "coverage": row.coverage,
         "config_diff": dict(row.config_diff),
         "reference": (
             None
@@ -1020,6 +1053,7 @@ def to_dict(table: LeaderboardTable) -> dict[str, Any]:
                         description.metric: _metric_dict(row.metrics[description.metric])
                         for description in table.reported_metrics
                     },
+                    "coverage": row.coverage,
                     "pareto": row.pareto,
                     "config_diff": dict(row.config_diff),
                 }
@@ -1069,6 +1103,7 @@ def render_csv(table: LeaderboardTable) -> str:
     import io
 
     buffer = io.StringIO()
+    shows_coverage = _shows_coverage(table)
     if table.reported_metrics:
         columns = list(table.vary)
         referenced_metrics = {
@@ -1086,6 +1121,8 @@ def render_csv(table: LeaderboardTable) -> str:
                 columns += [f"{name}_reference_expected", f"{name}_reference_delta"]
                 if name == table.metric:
                     columns += [f"{name}_reference_pass"]
+        if shows_coverage:
+            columns += ["coverage"]
         columns += [f"{description.metric}_rank" for description in table.ranking_metrics]
         columns += ["ranking_eligible", "pareto", "config_diff"]
         writer = csv.writer(buffer)
@@ -1111,6 +1148,8 @@ def render_csv(table: LeaderboardTable) -> str:
                             "" if reference is None or reference.within_tolerance is None
                             else ("PASS" if reference.within_tolerance else "FAIL")
                         ]
+            if shows_coverage:
+                cells += [_fmt_coverage(row, digits=6)]
             cells += [
                 "" if row.metrics[description.metric].rank is None
                 else row.metrics[description.metric].rank
@@ -1125,6 +1164,8 @@ def render_csv(table: LeaderboardTable) -> str:
         return buffer.getvalue()
 
     columns = ["rank", *table.vary, "mean", "std", "n", "seeds"]
+    if shows_coverage:
+        columns += ["coverage"]
     has_reference = any(r.reference_expected is not None for r in table.rows)
     if has_reference:
         columns += ["reference_expected", "reference_tolerance", "reference_pass"]
@@ -1135,6 +1176,8 @@ def render_csv(table: LeaderboardTable) -> str:
         cells = [row.rank, *[row.vary_values.get(ax) for ax in table.vary]]
         cells += [f"{row.mean:.6f}", "" if row.std is None else f"{row.std:.6f}", row.n]
         cells += ["|".join(str(s) for s in row.seeds)]
+        if shows_coverage:
+            cells += [_fmt_coverage(row, digits=6)]
         if has_reference:
             cells += [
                 "" if row.reference_expected is None else f"{row.reference_expected:.6f}",
@@ -1170,7 +1213,10 @@ def format_table(table: LeaderboardTable) -> str:
                 f"  · {anchor.label}: {anchor.metric} = {anchor.expected:.4f}{link}"
             )
     has_reference = any(r.reference_expected is not None for r in table.rows)
+    shows_coverage = _shows_coverage(table)
     header = ["#", *table.vary, table.metric, "n"]
+    if shows_coverage:
+        header += ["coverage"]
     if has_reference:
         header += ["ref", "check"]
     header += ["config diff"]
@@ -1181,6 +1227,8 @@ def format_table(table: LeaderboardTable) -> str:
             *[str(_clean(row.vary_values.get(ax))) for ax in table.vary],
         ]
         cells += [_fmt_metric(row), str(row.n)]
+        if shows_coverage:
+            cells += [_fmt_coverage(row)]
         if has_reference:
             cells += [
                 "" if row.reference_expected is None else f"{row.reference_expected:.4f}",
@@ -1225,8 +1273,10 @@ def _wide_table_grid(
     table: LeaderboardTable,
 ) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]:
     """Project the shared wide display columns once for text and HTML encoders."""
+    shows_coverage = _shows_coverage(table)
     header = tuple(table.vary)
     header += tuple(description.metric for description in table.reported_metrics)
+    header += ("coverage",) if shows_coverage else ()
     header += tuple(
         f"{description.metric} rank" for description in table.ranking_metrics
     )
@@ -1239,6 +1289,7 @@ def _wide_table_grid(
             _fmt_wide_metric(row.metrics[description.metric])
             for description in table.reported_metrics
         )
+        cells += (_fmt_coverage(row),) if shows_coverage else ()
         cells += tuple(
             ""
             if row.metrics[description.metric].rank is None
@@ -1297,7 +1348,10 @@ def render_html(table: LeaderboardTable) -> str:
 </html>"""
 
     has_reference = any(r.reference_expected is not None for r in table.rows)
+    shows_coverage = _shows_coverage(table)
     header_cells = ["#", *table.vary, esc(table.metric), "n"]
+    if shows_coverage:
+        header_cells += ["coverage"]
     if has_reference:
         header_cells += ["reference", "check"]
     header_cells += ["config diff"]
@@ -1311,6 +1365,8 @@ def render_html(table: LeaderboardTable) -> str:
         ]
         cells.append(esc(_fmt_metric(row)))
         cells.append(str(row.n))
+        if shows_coverage:
+            cells.append(_fmt_coverage(row))
         if has_reference:
             cells.append("" if row.reference_expected is None else f"{row.reference_expected:.4f}")
             if row.reference_pass is None:

@@ -105,11 +105,10 @@ def build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
             if primary_metric_name is not None and primary_metric_mean is not None
             else ""
         )
-        coverage_text = (
-            f"{metric_text}{coverage * 100:.1f}%"
-            f" ({int(round(num_predicted))}/{int(round(num_samples))})"
-        )
-        grid.add_row(f"{split_name} coverage", coverage_text)
+        counts = f"{_count(num_predicted)}/{_count(num_samples)}"
+        if f"{split_name}/coverage_mean" in summary_metrics:
+            counts += " per fold"  # over folds, the counts are means per fold
+        grid.add_row(f"{split_name} coverage", f"{metric_text}{coverage * 100:.1f}% ({counts})")
 
     if not grid.rows:
         grid.add_row("coverage", "[dim]—[/dim]")
@@ -121,3 +120,9 @@ def build_completed_run_panel(*, summary_metrics: dict[str, float]) -> Panel:
         box=box.ROUNDED,
         padding=(0, 1),
     )
+
+
+def _count(value: float) -> str:
+    """A sample count as a whole number. A mean over folds that is not whole keeps two
+    decimals, so a split that left a sample out does not read as the full count."""
+    return f"{value:.0f}" if float(value).is_integer() else f"{value:.2f}"
