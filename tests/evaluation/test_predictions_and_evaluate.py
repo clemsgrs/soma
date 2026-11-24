@@ -206,10 +206,34 @@ def test_raw_labels_map_through_the_declared_classes():
         evaluate(_binary(classes=["normal", "tumor"]), targets)
 
 
-def test_every_evaluation_counts_the_samples_and_the_predicted_ones():
-    metrics = evaluate(_binary(), _labels(), metrics=["accuracy"]).metrics
+def _filled(flags) -> Predictions:
+    """Predictions with the ``is_placeholder`` column an earlier soma version wrote: true
+    on the rows it filled instead of the model."""
+    frame = _binary().frame.assign(is_placeholder=list(flags))
+    columns = ["prob_0", "prob_1", "predicted_label"]
+    return Predictions(frame, task_family="binary_classification", prediction_columns=columns)
 
-    assert metrics == {"accuracy": 1.0, "num_samples": 4, "num_predicted": 4, "coverage": 1.0}
+
+@pytest.mark.parametrize("unpredicted", ["error", "exclude"])
+def test_rows_an_earlier_version_filled_are_refused(tmp_path, unpredicted):
+    path = _filled([False, False, False, True]).to_parquet(tmp_path / "p.parquet")
+    filled = Predictions.from_parquet(path)
+
+    with pytest.raises(ValueError) as refused:
+        evaluate(filled, _labels(), metrics=["auroc"], unpredicted=unpredicted)
+
+    message = str(refused.value)
+    assert "1 row(s) of the predictions are flagged is_placeholder: ['d']" in message
+    assert "written by an earlier soma version" in message
+    assert "drop those rows" in message
+    with pytest.raises(ValueError, match="written by an earlier soma version"):
+        compare([filled, _binary()], _labels(), "auroc", n_permutations=5)
+
+
+def test_an_is_placeholder_column_without_a_flagged_row_is_scored():
+    evaluation = evaluate(_filled([False] * 4), _labels(), metrics=["auroc"])
+
+    assert evaluation.metrics == {"auroc": 1.0, **COUNTS}
 
 
 def test_to_json_holds_metrics_and_subgroups(tmp_path):
@@ -249,7 +273,7 @@ def test_compare_refuses_a_set_that_misses_a_target_and_says_to_filter_to_the_co
 
     message = str(refused.value)
     assert "1 target(s) have no prediction: ['d']" in message
-    assert "filter the targets to the ids every set predicts" in message
+    assert "filter the targets and the sets to the ids every set predicts" in message
     assert "unpredicted" not in message
 
 

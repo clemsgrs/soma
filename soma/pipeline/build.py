@@ -715,9 +715,9 @@ class _SetFoldRecords:
     tune: list[Any]
     tests: dict[str, list[Any]]
     tune_output_ids: tuple[str, ...]
-    tune_not_predicted: list[str]
+    tune_not_predicted: dict[str, str]  # target id -> why the loader serves no features
     test_output_ids: dict[str, tuple[str, ...]]
-    test_not_predicted: dict[str, list[str]]
+    test_not_predicted: dict[str, dict[str, str]]
     records_by_id: dict[str, SampleRecord]
     train_records: list[SampleRecord]
 
@@ -766,13 +766,24 @@ def _feature_statuses(source) -> dict[str, str] | None:
     return source.feature_statuses
 
 
+#: Why the model has no prediction for a sample the feature manifest records as ``empty``.
+NO_TILES = "no tiles"
+
+
+def _not_predicted_reason(status: str) -> str:
+    """Why the model has no prediction for a sample of feature-manifest ``status``."""
+    return NO_TILES if status == "empty" else f"feature status '{status}'"
+
+
 def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, log: bool = True) -> _SetFoldRecords:
     """Resolve the fold's train / tune / test membership against the features on disk.
 
     Samples the feature manifest records as ``empty`` (tiling kept no tile, so no bag)
     leave training; in tune and test they stay targets the model cannot predict, which
     ``evaluation.unpredicted`` refuses (:func:`check_unpredicted`) or leaves out of the
-    metrics. ``tune_is_test``, ``allow_missing_tune`` and ``evaluation.holdout_test``
+    metrics. So do tune and test samples of any other status but ``success`` (an
+    extraction ``error``, a ``tbp`` never processed): the source serves no features for
+    them. ``tune_is_test``, ``allow_missing_tune`` and ``evaluation.holdout_test``
     reshape the splits as their docs say. ``log=False`` resolves without logging.
     """
     plan, samples, feature_store = inputs.plan, inputs.cohort, inputs.source
@@ -915,7 +926,6 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
             )
         )
 
-    empty_eval = empty_by_split or {}
     if patient:
         # Patient ids score against the patient's first slide in cohort order, as
         # Cohort.collapse does. A tune split that falls back to train scores the train
@@ -932,21 +942,25 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
             tune_output = tuple(fold_split.tune)
         test_output = {name: tuple(fold_split.tests[name]) for name in tests_items}
         records_by_id = {record.sample_id: record for record in samples.records}
+
+    def not_predicted(target_ids: Sequence[str]) -> dict[str, str]:
+        # The targets the source serves no features for; a tune split that falls back to
+        # train has none, as its targets are the train samples it predicts.
+        if statuses is None:
+            return {}
+        return {i: _not_predicted_reason(statuses[i]) for i in target_ids if statuses[i] != "success"}
+
     return _SetFoldRecords(
         train=list(train_items),
         tune=list(tune_items),
         tests={name: list(items) for name, items in tests_items.items()},
         tune_output_ids=tune_output,
-        tune_not_predicted=[] if fallback_to_train else list(empty_eval.get("tune", [])),
+        tune_not_predicted=not_predicted(tune_output),
         test_output_ids=test_output,
-        test_not_predicted={name: list(empty_eval.get(name, [])) for name in tests_items},
+        test_not_predicted={name: not_predicted(test_output[name]) for name in tests_items},
         records_by_id=records_by_id,
         train_records=list(train_records),
     )
-
-
-#: Why the model has no prediction for a sample the feature manifest records as ``empty``.
-NO_TILES = "no tiles"
 
 
 def check_unpredicted(inputs: RunInputs) -> None:
@@ -954,25 +968,31 @@ def check_unpredicted(inputs: RunInputs) -> None:
     under ``evaluation.unpredicted: error``, before any fold trains.
 
     Every fold of the run is checked, completed ones too, so a resume under ``error``
-    refuses a run that an ``exclude`` launch completed. Train samples without features
+    refuses a run that an ``exclude`` launch completed. The configured splits are
+    checked: the test-clobber guard's hold-out of a test split already scored
+    (``inputs.evaluation.holdout_test``) does not hide it. Train samples without features
     are left out of training whatever the policy.
     """
     if inputs.plan.shape == "grid" or inputs.evaluation.unpredicted != "error":
         return
+    inputs = replace(inputs, evaluation=inputs.plan.evaluation)
     missing: list[str] = []
     for fold, fold_split in enumerate(inputs.folds):
         records = _set_fold_records(inputs, fold, fold_split, log=False)
         where = f"fold {fold} " if inputs.num_folds > 1 else ""
-        for name, ids in (("tune", records.tune_not_predicted), *records.test_not_predicted.items()):
-            if ids:
-                missing.append(f"{where}{name}: {list(ids)}")
+        for name, reasons in (("tune", records.tune_not_predicted), *records.test_not_predicted.items()):
+            by_reason: dict[str, list[str]] = {}
+            for sample_id, reason in reasons.items():
+                by_reason.setdefault(reason, []).append(sample_id)
+            if by_reason:
+                listed = ", ".join(f"{ids} ({reason})" for reason, ids in by_reason.items())
+                missing.append(f"{where}{name}: {listed}")
     if missing:
         unit = "patients" if inputs.plan.unit == "patient" else "samples"
         raise ValueError(
-            f"The model cannot predict these tune and test {unit}, which have no features "
-            f"(tiling kept no tile): {'; '.join(missing)}. Either remove them from the "
-            "cohort or the splits, or set evaluation.unpredicted: exclude to score the "
-            f"predicted {unit} only."
+            f"The model cannot predict these tune and test {unit}, which have no features: "
+            f"{'; '.join(missing)}. Either remove them from the cohort or the splits, or set "
+            f"evaluation.unpredicted: exclude to score the predicted {unit} only."
         )
 
 
@@ -1193,7 +1213,7 @@ def _set_loaders(
             name="tune",
             loader=tune_loader,
             targets=targets(records.tune_output_ids),
-            not_predicted=dict.fromkeys(records.tune_not_predicted, NO_TILES),
+            not_predicted=dict(records.tune_not_predicted),
             subgroups=subgroups,
             write=False,
         )
@@ -1204,7 +1224,7 @@ def _set_loaders(
                 name=name,
                 loader=test_loader,
                 targets=targets(records.test_output_ids[name]),
-                not_predicted=dict.fromkeys(records.test_not_predicted[name], NO_TILES),
+                not_predicted=dict(records.test_not_predicted[name]),
                 subgroups=subgroups,
             )
         )

@@ -149,9 +149,12 @@ def resolve_frame_metrics(
 
 
 _COMPARE_WAYS_FORWARD = (
-    "compare pairs the same samples across the sets: filter the targets to the ids every "
-    "set predicts."
+    "compare pairs the same samples across the sets: filter the targets and the sets to "
+    "the ids every set predicts."
 )
+
+#: The column an earlier soma version set on the rows it filled instead of the model.
+_LEGACY_FILL_COLUMN = "is_placeholder"
 
 
 def _targets_by_id(targets: pd.DataFrame) -> pd.DataFrame:
@@ -177,12 +180,22 @@ def _align(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Join predictions and targets by ``sample_id``.
 
-    A prediction without a target and a duplicate id are refused. A target without a
-    prediction is refused with ``ways_forward``, or left out with
-    ``exclude_unpredicted``. Returns both frames indexed by ``sample_id`` in the targets'
-    order, with ``label`` mapped onto class indices for the label families.
+    A prediction without a target, a duplicate id and a row an earlier soma version
+    filled (flagged ``is_placeholder``) are refused. A target without a prediction is
+    refused with ``ways_forward``, or left out with ``exclude_unpredicted``. Returns both
+    frames indexed by ``sample_id`` in the targets' order, with ``label`` mapped onto
+    class indices for the label families.
     """
     frame = predictions.frame
+    if _LEGACY_FILL_COLUMN in frame.columns:
+        filled = frame["sample_id"][frame[_LEGACY_FILL_COLUMN].astype(bool)]
+        if len(filled):
+            raise ValueError(
+                f"{len(filled)} row(s) of the predictions are flagged {_LEGACY_FILL_COLUMN}: "
+                f"{_ids(set(filled))}. The file was written by an earlier soma version, which "
+                "filled the samples the model could not predict with a train-split constant; "
+                "drop those rows, then score the rest."
+            )
     targets = _targets_by_id(targets)
     duplicated = frame["sample_id"][frame["sample_id"].duplicated()]
     if len(duplicated):
@@ -325,10 +338,10 @@ def compare(
     """Paired permutation test of each prediction set against the best one.
 
     Every set is aligned to ``targets`` as in :func:`evaluate`, strictly: a set that
-    misses a target is refused, so filter the targets to the ids every set predicts. Sets
-    declaring different ``classes`` (including a set without ``classes`` next to one with)
-    are refused. For each permutation the prediction columns of the best set
-    and another are swapped on a random half of the samples and the metric delta
+    misses a target is refused, so filter the targets and the sets to the ids every set
+    predicts. Sets declaring different ``classes`` (including a set without ``classes``
+    next to one with) are refused. For each permutation the prediction columns of the
+    best set and another are swapped on a random half of the samples and the metric delta
     recomputed. The best set gets ``1.0``; a set whose metric cannot be computed, or that
     lacks one of the best set's prediction columns, gets ``None``.
     """

@@ -58,8 +58,9 @@ Samples without features
 ------------------------
 
 A slide whose tiling kept no tile has no features, so the model cannot predict
-it. The feature manifest records it as ``empty``. A run never invents a
-prediction for such a sample:
+it. The feature manifest records it as ``empty``. Neither has a sample of any
+other status but ``success``, such as an extraction ``error``. A run never
+invents a prediction for such a sample:
 
 - In the train split, the sample is left out of training, and the fold's log
   line counts it. The policy below does not apply to train samples.
@@ -79,14 +80,15 @@ prediction for such a sample:
 
 Next to the predictions of each test split, a slide, patient or tile run writes
 ``not_predicted_<split>.parquet``: one row per sample the model could not
-predict, with ``sample_id`` and ``reason`` (``no tiles``). The file is written
-even when it has no row. Segmentation and detection runs have no such file:
+predict, with ``sample_id`` and ``reason``: ``no tiles`` for an ``empty``
+sample, else the feature status, such as ``feature status 'error'``. The file
+is written even when it has no row. Segmentation and detection runs have no such file:
 their predictions cover every sample of their targets, so they refuse
 ``unpredicted: exclude``.
 
 :func:`soma.evaluation.compare` takes no policy: every prediction set must
 predict every target. To compare sets that miss different samples, filter the
-targets to the ids that every set predicts.
+targets and the sets to the ids that every set predicts.
 
 Migration
 ~~~~~~~~~
@@ -104,6 +106,8 @@ and the ``num_real_samples`` and ``num_placeholder_samples`` metric keys:
   count. Read ``num_predicted`` where you read ``num_real_samples``.
 - Code that filled predictions before :func:`soma.evaluate` passes
   ``unpredicted="exclude"`` instead, or filters the targets.
+- A predictions file an earlier version wrote with filled rows is refused: drop
+  the rows flagged ``is_placeholder``, then score the rest.
 
 Choose metrics
 --------------

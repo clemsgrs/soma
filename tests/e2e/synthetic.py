@@ -468,34 +468,41 @@ def write_coordinates_artifact(
 
 
 def write_cached_bags(
-    root: Path, n: int = 16, dim: int = 8, seed: int = 0, tileless: tuple[str, ...] = ("s15",)
+    root: Path,
+    n: int = 16,
+    dim: int = 8,
+    seed: int = 0,
+    tileless: tuple[str, ...] = ("s15",),
+    statuses: dict[str, str] | None = None,
 ) -> tuple[Path, Path, Path]:
     """A pooled tile-feature cache over a labelled cohort, written without extraction.
 
     Each sample is a bag of ``(n_tiles, dim)`` vectors whose mean depends on its label, so
     a MIL model can learn the task. The feature manifest (``process_list.csv``) records
     the ``tileless`` samples as ``empty``: tiling found no tissue, so they have no bag and
-    the model cannot predict them. Returns ``(dataset_csv, splits_csv,
+    the model cannot predict them. ``statuses`` gives more samples another manifest status
+    (``error``, ``tbp``): they have no bag either. Returns ``(dataset_csv, splits_csv,
     feature_dir)``; samples ``s00``..``s09`` train, the next three tune, the rest test.
     """
     import torch
 
+    unserved = {**dict.fromkeys(tileless, "empty"), **(statuses or {})}
     rng = np.random.default_rng(seed)
     feature_dir = root / "features"
     feature_dir.mkdir(parents=True)
     sample_ids = [f"s{i:02d}" for i in range(n)]
     labels = ["tumor" if i % 2 == 0 else "normal" for i in range(n)]
-    statuses = []
+    rows = []
     for index, (sample_id, label) in enumerate(zip(sample_ids, labels)):
-        if sample_id in tileless:
-            statuses.append({"sample_id": sample_id, "feature_status": "empty", "feature_path": ""})
+        if sample_id in unserved:
+            rows.append({"sample_id": sample_id, "feature_status": unserved[sample_id], "feature_path": ""})
             continue
         centre = 1.0 if label == "tumor" else -1.0
         bag = rng.normal(centre, 1.0, size=(4 + index % 5, dim)).astype(np.float32)
         path = feature_dir / f"{sample_id}.pt"
         torch.save(torch.from_numpy(bag), path)
-        statuses.append({"sample_id": sample_id, "feature_status": "success", "feature_path": str(path)})
-    pd.DataFrame(statuses).to_csv(feature_dir / "process_list.csv", index=False)
+        rows.append({"sample_id": sample_id, "feature_status": "success", "feature_path": str(path)})
+    pd.DataFrame(rows).to_csv(feature_dir / "process_list.csv", index=False)
     dataset_csv = root / "dataset.csv"
     pd.DataFrame(
         {

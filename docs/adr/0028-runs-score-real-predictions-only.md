@@ -17,7 +17,7 @@ A run filled each sample without features with a constant fitted on the train sp
 - **Train samples are not scored.** A train sample without features is left out of training, as before, and the fold's log line counts it. The policy does not apply to it.
 - **The policy is not part of the experiment identity.** A completed fold scores the same under either policy, because `error` stops a run that misses a sample before any fold trains. `evaluation.unpredicted` is left out of the identity and of the resume comparison, so a run that `error` refused resumes with `exclude`.
 - **Set shape only.** Grid predictions cover every sample of their target source. A grid run, and grid predictions in `soma.evaluate` and `soma evaluate`, refuse `exclude`.
-- **`compare` stays strict.** A paired permutation test needs the same samples in every set, so `soma.evaluation.compare` takes no policy. Its error says to filter the targets to the ids every set predicts.
+- **`compare` stays strict.** A paired permutation test needs the same samples in every set, so `soma.evaluation.compare` takes no policy. Its error says to filter the targets and the sets to the ids every set predicts.
 - **The end of a run warns.** Under `exclude`, a warning names each split whose coverage is below 1.
 
 ## Considered and rejected
