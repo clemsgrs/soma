@@ -175,7 +175,7 @@ def test_cli_scores_a_multi_output_regression_parquet(tmp_path, new_artifact):
         ]
     )
     result = json.loads(out.read_text())
-    artifact.check_equal("metrics", sorted(result["metrics"]), ["mean_pearson"])
+    artifact.check_equal("metrics", sorted(result["metrics"]), ["coverage", "mean_pearson", "num_predicted", "num_samples"])
     artifact.check_equal("mean_pearson", round(result["metrics"]["mean_pearson"], 9), 0.0)
     artifact.check_equal("num_samples", result["num_samples"], 8)
     artifact.assert_passed()

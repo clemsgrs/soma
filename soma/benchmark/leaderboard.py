@@ -60,12 +60,7 @@ _AXIS_ALIASES: dict[str, str] = {
 
 # Summary keys that are provenance bookkeeping, not a rankable metric (mirror the run
 # panel's primary-metric detection in soma/pipeline/console.py).
-_BOOKKEEPING_KEYS = {
-    "coverage",
-    "num_samples",
-    "num_real_samples",
-    "num_placeholder_samples",
-}
+_BOOKKEEPING_KEYS = {"coverage", "num_samples", "num_predicted"}
 
 # Flat config-diff keys suppressed from a row's annotation (machine-local noise that is
 # shared-by-checksum within a triple anyway).

@@ -11,8 +11,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from soma.evaluation import Baseline, Predictions, evaluate, sweep_threshold
-from soma.evaluation.predictions import PLACEHOLDER_COLUMN, family_target_keys
+from soma.evaluation import Predictions, evaluate, sweep_threshold
+from soma.evaluation.predictions import family_target_keys
 from soma.testing._errors import ConformanceError
 
 __all__ = ["check_task_head"]
@@ -189,9 +189,7 @@ def check_task_head(head, batch: Any, *, tolerance: float = 1e-6) -> None:
     Set heads: ``batch`` carries ``features`` (the head's input), ``targets`` (the
     encoded target tensors ``compute_metrics`` reads) and ``sample_ids`` — a
     :class:`~soma.learn.sample_dataset.SampleBatch` does. Asserts: ``to_columns``
-    emits exactly ``prediction_columns``, one numeric value per sample; a
-    :class:`~soma.evaluation.Baseline` fitted on the batch's targets and the head's
-    ``target_keys`` (as the pipeline fits it) yields the same columns; and
+    emits exactly ``prediction_columns``, one numeric value per sample; and
     :func:`~soma.evaluate` on the predictions read back from parquet agrees with
     ``compute_metrics`` within ``tolerance`` on every metric the head reports.
 
@@ -239,20 +237,6 @@ def check_task_head(head, batch: Any, *, tolerance: float = 1e-6) -> None:
             raise ConformanceError("to_columns", f"'{name}' is not numeric (dtype {values.dtype})")
 
     targets = _targets_frame(head, batch.targets, sample_ids)
-    try:
-        baseline = Baseline.fit(
-            targets, task_family=head.task_family, classes=head.classes, target_keys=head.target_keys
-        )
-        placeholders = baseline.predict(sample_ids)
-    except Exception as error:  # noqa: BLE001
-        raise ConformanceError("Baseline", f"raised {error!r}") from error
-    baseline_columns = [c for c in placeholders.frame.columns if c not in {"sample_id", PLACEHOLDER_COLUMN}]
-    if tuple(baseline_columns) != declared:
-        raise ConformanceError(
-            "prediction_columns",
-            f"the family Baseline yields {baseline_columns}, the head declares {list(declared)}",
-        )
-
     frame = pd.DataFrame({"sample_id": sample_ids, **{name: np.asarray(columns[name]) for name in declared}})
     predictions = Predictions(
         frame, task_family=head.task_family, prediction_columns=declared, classes=head.classes

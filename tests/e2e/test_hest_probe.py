@@ -142,7 +142,11 @@ def test_hest_run_composes_extract_fit_predict_evaluate(tmp_path, encoder_name, 
 
     (run,) = (tmp_path / "run").glob("experiments/*/runs/*")
     metrics = json.loads((run / "metrics.json").read_text())["test"]
-    artifact.check_equal("summary/keys", sorted(summary)[:1], ["test/mean_pearson"])
+    artifact.check_equal(
+        "summary/keys",
+        sorted(k for k in summary if not k.startswith("test/pearson_gene")),
+        ["test/coverage", "test/mean_pearson", "test/num_predicted", "test/num_samples"],
+    )
     artifact.check_equal(
         "per_gene_keys", sorted(k for k in metrics if k.startswith("pearson_gene")),
         [f"pearson_gene{k:02d}_{gene}" for k, gene in enumerate(GENES)],

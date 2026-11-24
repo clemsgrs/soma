@@ -40,20 +40,17 @@ gives byte-identical predictions and weights.
      - :func:`soma.learn.loaders`
      - An ``augment`` callable on the live grid path; a ``sampler`` leaf for
        cached segmentation
-   * - 5. Baseline
-     - ``Baseline.fit`` on the train targets, for samples without features
-     -
-   * - 6. Fit
+   * - 5. Fit
      - :func:`soma.fit` with ``Checkpoint`` and ``EarlyStopping``
      - A learner (:ref:`custom-learner`); fit callbacks (:ref:`custom-callbacks`)
-   * - 7. Tune step
+   * - 6. Tune step
      - Detection sweeps its score threshold on tune
      -
-   * - 8. Predict and evaluate
-     - :func:`soma.predict` (plus baseline rows), then :func:`soma.evaluate`, per
-       split
+   * - 7. Predict and evaluate
+     - :func:`soma.predict`, then :func:`soma.evaluate` with
+       ``evaluation.unpredicted``, per split
      - The learner's ``predict_step``; predict callbacks; metric callables
-   * - 9. Save
+   * - 8. Save
      - :func:`soma.save` writes the fold's bundle
      - ``soma.learn.record_builder``, so that :func:`soma.load` can rebuild a model
        you built by hand
@@ -380,9 +377,8 @@ of its base class, so a subclass names the params and the hooks it reuses
 ``num_classes`` and ``label_map`` itself.
 
 :func:`soma.testing.check_task_head` checks a head on one batch: its declared
-``prediction_columns``, the columns of the family's
-:class:`~soma.evaluation.Baseline`, and that :func:`soma.evaluate` on a disk round
-trip agrees with ``compute_metrics`` (for a grid head, also the logits' size and
+``prediction_columns``, and that :func:`soma.evaluate` on a disk round trip
+agrees with ``compute_metrics`` (for a grid head, also the logits' size and
 the prediction type it assembles).
 
 The head methods worth overriding are:

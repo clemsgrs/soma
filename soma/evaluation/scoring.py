@@ -19,14 +19,22 @@ from soma.evaluation.metrics import (
     metric_registry,
 )
 from soma.evaluation.predictions import (
-    PLACEHOLDER_COLUMN,
     Predictions,
     encode_labels,
     family_target_keys,
 )
 from soma.evaluation.subgroups import subgroup_breakdown
 
-__all__ = ["Evaluation", "compare", "evaluate", "resolve_frame_metrics"]
+__all__ = ["UNPREDICTED_POLICIES", "Evaluation", "compare", "evaluate", "resolve_frame_metrics"]
+
+#: What :func:`evaluate` does with a target that has no prediction: refuse to score
+#: (``error``), or score the predicted samples only (``exclude``).
+UNPREDICTED_POLICIES = ("error", "exclude")
+_UNPREDICTED_WAYS_FORWARD = (
+    "Either remove them from the cohort or the splits (or filter the targets to the "
+    "predicted ids), or set unpredicted='exclude' (soma evaluate --unpredicted exclude) to "
+    "score the predicted samples only."
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +48,9 @@ _LABEL_FAMILIES = frozenset(
 class Evaluation:
     """The scores of one set of predictions.
 
-    ``metrics`` maps each metric to its value (plus ``coverage`` and the sample counts
-    when the predictions carry placeholders); ``subgroups`` holds the per-column,
+    ``metrics`` maps each metric to its value; set-shape metrics also hold
+    ``num_samples`` (the targets, as the ``num_samples`` field), ``num_predicted`` and
+    ``coverage``. ``subgroups`` holds the per-column,
     per-group metrics, their mean over each column's groups and the permutation p-values
     (``{"metrics": ..., "mean_over": ..., "stats": ...}``, empty without subgroup
     columns). ``per_sample`` holds one row of counts per slide for
@@ -139,6 +148,15 @@ def resolve_frame_metrics(
     return resolved
 
 
+_COMPARE_WAYS_FORWARD = (
+    "compare pairs the same samples across the sets: filter the targets and the sets to "
+    "the ids every set predicts."
+)
+
+#: The column an earlier soma version set on the rows it filled instead of the model.
+_LEGACY_FILL_COLUMN = "is_placeholder"
+
+
 def _targets_by_id(targets: pd.DataFrame) -> pd.DataFrame:
     if "sample_id" in targets.columns:
         targets = targets.set_index("sample_id")
@@ -153,13 +171,31 @@ def _ids(values, limit: int = 10) -> str:
     return f"{values[:limit]}{' ...' if len(values) > limit else ''}"
 
 
-def _align(predictions: Predictions, targets: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Join predictions and targets by ``sample_id`` under strict set equality.
+def _align(
+    predictions: Predictions,
+    targets: pd.DataFrame,
+    *,
+    exclude_unpredicted: bool = False,
+    ways_forward: str = _UNPREDICTED_WAYS_FORWARD,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Join predictions and targets by ``sample_id``.
 
-    Returns both frames indexed by ``sample_id`` in the targets' order, with ``label``
-    mapped onto class indices for the label families.
+    A prediction without a target, a duplicate id and a row an earlier soma version
+    filled (flagged ``is_placeholder``) are refused. A target without a prediction is
+    refused with ``ways_forward``, or left out with ``exclude_unpredicted``. Returns both
+    frames indexed by ``sample_id`` in the targets' order, with ``label`` mapped onto
+    class indices for the label families.
     """
     frame = predictions.frame
+    if _LEGACY_FILL_COLUMN in frame.columns:
+        filled = frame["sample_id"][frame[_LEGACY_FILL_COLUMN].astype(bool)]
+        if len(filled):
+            raise ValueError(
+                f"{len(filled)} row(s) of the predictions are flagged {_LEGACY_FILL_COLUMN}: "
+                f"{_ids(set(filled))}. The file was written by an earlier soma version, which "
+                "filled the samples the model could not predict with a train-split constant; "
+                "drop those rows, then score the rest."
+            )
     targets = _targets_by_id(targets)
     duplicated = frame["sample_id"][frame["sample_id"].duplicated()]
     if len(duplicated):
@@ -182,12 +218,10 @@ def _align(predictions: Predictions, targets: pd.DataFrame) -> tuple[pd.DataFram
             "every predicted sample."
         )
     missing = expected - predicted
+    if missing and not exclude_unpredicted:
+        raise ValueError(f"{len(missing)} target(s) have no prediction: {_ids(missing)}. {ways_forward}")
     if missing:
-        raise ValueError(
-            f"{len(missing)} target(s) have no prediction: {_ids(missing)}. Fill them with "
-            "soma.evaluation.Baseline (placeholder predictions) or filter the targets to the "
-            "predicted ids."
-        )
+        targets = targets[targets.index.isin(predicted)]
     try:
         keys = family_target_keys(predictions.task_family)
     except ValueError:  # a family soma does not know: its metrics read what they need
@@ -214,6 +248,8 @@ def evaluate(
     targets,
     metrics: str | Sequence[MetricLike] | None = "default",
     subgroups: Sequence[str] = (),
+    *,
+    unpredicted: str = "error",
 ) -> "Evaluation":
     """Score ``predictions`` against ``targets``; the prediction noun picks the scoring.
 
@@ -239,9 +275,12 @@ def evaluate(
       ``matching`` and ``match_distance`` every metric names; the default (Hungarian, at
       the bundle's distance) when the metrics name none, or name different ones.
 
-    Both sides must cover the same ids: an unknown prediction id, a target without a
-    prediction, or a duplicate id is refused. Fill samples the model could not score with
-    :class:`~soma.evaluation.Baseline` first; restrict a target source with ``subset``.
+    A prediction without a target and a duplicate id are refused. ``unpredicted`` says
+    what a target without a prediction does (set shape): ``"error"`` refuses to score and
+    names the samples, ``"exclude"`` scores the predicted samples only. Set-shape metrics
+    always hold ``num_samples`` (the targets), ``num_predicted`` and ``coverage`` (their
+    ratio, 1.0 for no target). Grid predictions must cover their target source: restrict
+    it with ``subset``.
 
     Args:
         predictions: What the model said.
@@ -252,33 +291,40 @@ def evaluate(
             multi-output regression's ``value_<k>`` columns) or a list of registry keys,
             ``{name, params}`` leaves (grid), dotted paths and callables.
         subgroups: Target columns to break the metrics down by (set shape only).
+        unpredicted: ``"error"`` (default) or ``"exclude"``, for targets without a
+            prediction (set shape only).
     """
     from soma.evaluation.grid import LabelMapPredictions, PointPredictions, evaluate_grid
     from soma.evaluation.slide_label_maps import SlideLabelMaps
     from soma.evaluation.slide_points import SlidePoints
 
+    if unpredicted not in UNPREDICTED_POLICIES:
+        raise ValueError(f"unpredicted must be one of {list(UNPREDICTED_POLICIES)}, got {unpredicted!r}")
     if isinstance(predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps, SlidePoints)):
+        if unpredicted != "error":
+            raise ValueError(
+                "unpredicted applies to set-shape Predictions; grid predictions score every "
+                "sample of their target source, so restrict the source with subset instead"
+            )
         return evaluate_grid(predictions, targets, metrics=metrics, subgroups=subgroups)
     family = predictions.task_family
     if _is_default(metrics) and _output_columns(predictions):
         metrics = MULTI_OUTPUT_REGRESSION_METRICS
     resolved = resolve_frame_metrics(metrics, family)
-    missing = [column for column in subgroups if column not in _targets_by_id(targets).columns]
+    by_id = _targets_by_id(targets)
+    missing = [column for column in subgroups if column not in by_id.columns]
     if missing:
         raise ValueError(f"subgroup column(s) {missing} are not target columns")
-    frame, aligned = _align(predictions, targets)
+    frame, aligned = _align(predictions, by_id, exclude_unpredicted=unpredicted == "exclude")
     values: dict[str, float | int] = {}
     if len(frame):
         values = {name: float(fn(frame, aligned)) for name, fn in resolved.items()}
-    if predictions.has_placeholders:
-        placeholder = int(frame[PLACEHOLDER_COLUMN].sum())
-        total = len(frame)
-        values["coverage"] = float((total - placeholder) / total) if total else 0.0
-        values["num_samples"] = total
-        values["num_real_samples"] = total - placeholder
-        values["num_placeholder_samples"] = placeholder
+    num_samples = len(by_id)
+    values["num_samples"] = num_samples
+    values["num_predicted"] = len(frame)
+    values["coverage"] = len(frame) / num_samples if num_samples else 1.0
     breakdown = subgroup_breakdown(frame, aligned, resolved, list(subgroups)) if subgroups else {}
-    return Evaluation(metrics=values, task_family=family, num_samples=len(frame), subgroups=breakdown)
+    return Evaluation(metrics=values, task_family=family, num_samples=num_samples, subgroups=breakdown)
 
 
 def compare(
@@ -291,9 +337,11 @@ def compare(
 ) -> list[float | None]:
     """Paired permutation test of each prediction set against the best one.
 
-    Every set is aligned to ``targets`` as in :func:`evaluate`; sets declaring different
-    ``classes`` (including a set without ``classes`` next to one with) are refused. For each permutation the prediction columns of the best set
-    and another are swapped on a random half of the samples and the metric delta
+    Every set is aligned to ``targets`` as in :func:`evaluate`, strictly: a set that
+    misses a target is refused, so filter the targets and the sets to the ids every set
+    predicts. Sets declaring different ``classes`` (including a set without ``classes``
+    next to one with) are refused. For each permutation the prediction columns of the
+    best set and another are swapped on a random half of the samples and the metric delta
     recomputed. The best set gets ``1.0``; a set whose metric cannot be computed, or that
     lacks one of the best set's prediction columns, gets ``None``.
     """
@@ -309,7 +357,7 @@ def compare(
         raise ValueError(f"compare needs prediction sets with the same classes, got {listed}")
     (name, fn), = resolve_frame_metrics([metric], sets[0].task_family).items()
     higher = metric_registry.higher_is_better(name)
-    aligned = [_align(p, targets) for p in sets]
+    aligned = [_align(p, targets, ways_forward=_COMPARE_WAYS_FORWARD) for p in sets]
 
     def score(frame: pd.DataFrame, truth: pd.DataFrame) -> float | None:
         if len(frame) < 2:

@@ -22,8 +22,7 @@ def test_the_completed_run_panel_shows_the_pooled_metric_when_subgroup_keys_come
         "tune/accuracy": 0.7,
         "tune/coverage": 1.0,
         "tune/num_samples": 8.0,
-        "tune/num_real_samples": 8.0,
-        "tune/num_placeholder_samples": 0.0,
+        "tune/num_predicted": 8.0,
     }
 
     assert "tune coverage  accuracy=0.7000" in _rendered(summary)

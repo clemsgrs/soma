@@ -747,6 +747,25 @@ def test_evaluate_refuses_a_threshold_for_predictions_without_points(tmp_path: P
     assert "--threshold only applies to detection points" in capsys.readouterr().err
 
 
+def test_evaluate_refuses_an_unpredicted_policy_for_points(tmp_path: Path, capsys):
+    """``--unpredicted exclude`` leaves set-shape targets without a prediction out; point
+    predictions are scored over every sample of their targets."""
+    from soma.cli import main
+    from soma.evaluation import PointPredictions
+
+    dataset_csv, _ = _zero_padded_cohort(tmp_path / "cohort")
+    ids = ["001", "002", "003", "004"]
+    frame = pd.DataFrame([(sample_id, 2, 3, 0, 0.9) for sample_id in ids], columns=["sample_id", "x", "y", "class", "score"])
+    predictions = tmp_path / "points.parquet"
+    PointPredictions(frame, classes=["cell"], sample_ids=ids, match_distance_px=2.0).to_parquet(predictions)
+
+    with pytest.raises(SystemExit) as exit_info:
+        main(["evaluate", str(predictions), "--cohort", str(dataset_csv), "--unpredicted", "exclude"])
+
+    assert exit_info.value.code == 2
+    assert "--unpredicted only applies to set-shape predictions" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize("kind", ["set", "points", "slide-points", "roi-label-maps"])
 def test_evaluate_refuses_workers_for_predictions_other_than_slide_label_maps(tmp_path: Path, capsys, kind):
     """``--num-workers`` scores the slides of a ``soma predict`` output of label maps in

@@ -1108,9 +1108,10 @@ def _evaluation_grid_targets(args: argparse.Namespace, predictions):
 
 def _check_slide_readers(args: argparse.Namespace, predictions) -> None:
     """Refuse ``--backend`` and ``--mask-backend`` for predictions that read no slide or no
-    mask, ``--num-workers`` for predictions other than whole-slide label maps, and
-    ``--threshold`` for predictions without scores."""
-    from soma.evaluation import PointPredictions, SlideLabelMaps, SlidePoints
+    mask, ``--num-workers`` for predictions other than whole-slide label maps,
+    ``--threshold`` for predictions without scores, and ``--unpredicted exclude`` for grid
+    predictions."""
+    from soma.evaluation import LabelMapPredictions, PointPredictions, SlideLabelMaps, SlidePoints
 
     given = [flag for flag, value in (("--backend", args.backend), ("--mask-backend", args.mask_backend)) if value]
     if isinstance(predictions, SlidePoints) and args.backend:
@@ -1132,6 +1133,13 @@ def _check_slide_readers(args: argparse.Namespace, predictions) -> None:
         )
     if args.threshold is not None and not isinstance(predictions, (PointPredictions, SlidePoints)):
         raise ValueError(f"--threshold only applies to detection points; {args.predictions} holds none")
+    if args.unpredicted != "error" and isinstance(
+        predictions, (LabelMapPredictions, PointPredictions, SlideLabelMaps, SlidePoints)
+    ):
+        raise ValueError(
+            "--unpredicted only applies to set-shape predictions; the label maps or points in "
+            f"{args.predictions} are scored over every sample of their targets"
+        )
 
 
 def _cmd_evaluate(args: argparse.Namespace) -> int:
@@ -1156,6 +1164,7 @@ def _cmd_evaluate(args: argparse.Namespace) -> int:
             targets,
             metrics=args.metrics or "default",
             subgroups=args.subgroups or (),
+            unpredicted=args.unpredicted,
         )
     except (ValueError, KeyError, FileNotFoundError) as error:
         print(f"Error: {error}", file=sys.stderr)
@@ -1201,7 +1210,8 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
         prog="soma evaluate",
         description=(
             "Score predictions against a cohort's targets, joined by sample_id. Every "
-            "predicted sample needs a target and every target a prediction. Set-shape "
+            "predicted sample needs a target, and every target a prediction unless "
+            "--unpredicted exclude scores the predicted samples only. Set-shape "
             "predictions score against dataset.csv's target columns; label-map directories "
             "against its label_mask_path rasters (class indices); soma predict outputs of "
             "label maps against its label_mask_path annotation rasters, read with the class "
@@ -1235,6 +1245,17 @@ def _build_evaluate_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--subgroups", nargs="+", default=None, help="Metadata columns to break metrics down by."
+    )
+    parser.add_argument(
+        "--unpredicted",
+        choices=("error", "exclude"),
+        default="error",
+        help=(
+            "What a target without a prediction does, for set-shape predictions: error "
+            "refuses to score and names the samples (default), exclude scores the "
+            "predicted samples only. The metrics hold num_samples, num_predicted and "
+            "coverage either way."
+        ),
     )
     parser.add_argument("--out", default=None, help="Write the evaluation as JSON to this path.")
     parser.add_argument(

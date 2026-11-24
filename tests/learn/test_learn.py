@@ -487,8 +487,9 @@ class TestTrainerBudget:
         assert result.selected_epoch == 1
 
     def test_an_empty_tune_loader_is_no_validation_and_early_stopping_is_inert(self, tmp_path):
-        """A fold whose tune split holds only placeholder samples trains to the budget and
-        keeps the final epoch; the installed EarlyStopping never fires."""
+        """A fold whose tune split holds only samples without features (left out under
+        ``evaluation.unpredicted: exclude``) trains to the budget and keeps the final
+        epoch; the installed EarlyStopping never fires."""
         empty = DataLoader(
             [], batch_size=1, collate_fn=functools.partial(bag_collate_fn, target_dtypes={"label": torch.long})
         )

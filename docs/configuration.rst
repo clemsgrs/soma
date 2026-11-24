@@ -41,8 +41,9 @@ cannot appear in YAML.
        ``callbacks``
    * - ``evaluation``
      - :func:`soma.evaluate`
-     - ``metrics``, ``subgroups``, ``holdout_test``, ``overwrite_test``, the
-       saved artifacts, ``attention_heatmaps`` and ``representation``
+     - ``metrics``, ``subgroups``, ``unpredicted``, ``holdout_test``,
+       ``overwrite_test``, the saved artifacts, ``attention_heatmaps`` and
+       ``representation``
 
 Only ``cohort`` is required. A field left out keeps its default;
 ``examples/reference.yaml`` spells every section at its defaults (see the

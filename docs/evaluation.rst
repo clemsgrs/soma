@@ -32,20 +32,82 @@ Score predictions
    evaluation.to_json("evaluation.json")
 
 ``evaluate`` scores exactly the ids it is given. It refuses a prediction
-without a target, a target without a prediction, and duplicate ids; the error
-names the count. Fill the samples a model could not score with
-:class:`~soma.evaluation.Baseline` (class prior, mean value or constant risk,
-fitted on the training targets), or filter the targets. When the predictions
-carry ``is_placeholder``, the metrics add ``coverage``, ``num_samples``,
-``num_real_samples`` and ``num_placeholder_samples``. The pipeline fills
-samples without features this way.
+without a target and duplicate ids. For a target without a prediction, the
+``unpredicted`` policy decides:
 
-``soma evaluate`` does the same from the command line (see :doc:`cli`), without a
-run directory.
+- ``"error"`` (the default) refuses to score. The error names the samples and
+  the two ways forward: remove them from the cohort or the splits (or filter the
+  targets), or set ``unpredicted="exclude"``.
+- ``"exclude"`` scores the predicted samples only.
+
+The metrics always hold three counts: ``num_samples`` (the targets),
+``num_predicted`` and ``coverage`` (``num_predicted / num_samples``). A
+coverage below 1 means the metrics leave samples out, so two evaluations with
+different coverage may not score the same samples.
+
+``soma evaluate`` does the same from the command line, with ``--unpredicted``
+(see :doc:`cli`), without a run directory.
 
 ``predict`` writes side artefacts through callbacks (see :ref:`custom-callbacks`):
 ``soma.evaluation.heatmaps.SaveAttention(dir)`` writes each bag's normalised tile
 attention to ``<dir>/<sample_id>.npz``.
+
+.. _unpredicted-samples:
+
+Samples without features
+------------------------
+
+A slide whose tiling kept no tile has no features, so the model cannot predict
+it. The feature manifest records it as ``empty``. Neither has a sample of any
+other status but ``success``, such as an extraction ``error``. A run never
+invents a prediction for such a sample:
+
+- In the train split, the sample is left out of training, and the fold's log
+  line counts it. The policy below does not apply to train samples.
+- In a tune or test split, the sample is a target without a prediction.
+  ``evaluation.unpredicted`` decides what happens. It takes the same values as
+  ``soma.evaluate``:
+
+  .. code-block:: yaml
+
+     evaluation:
+       unpredicted: exclude   # the default is error
+
+  With ``error``, the run stops at fold setup, after feature extraction and
+  before any training. The error names the samples of every fold. With
+  ``exclude``, each split is scored over the samples the model predicted. At the
+  end of the run, a warning names each split whose coverage is below 1.
+
+Next to the predictions of each test split, a slide, patient or tile run writes
+``not_predicted_<split>.parquet``: one row per sample the model could not
+predict, with ``sample_id`` and ``reason``: ``no tiles`` for an ``empty``
+sample, else the feature status, such as ``feature status 'error'``. The file
+is written even when it has no row. Segmentation and detection runs have no such file:
+their predictions cover every sample of their targets, so they refuse
+``unpredicted: exclude``.
+
+:func:`soma.evaluation.compare` takes no policy: every prediction set must
+predict every target. To compare sets that miss different samples, filter the
+targets and the sets to the ids that every set predicts.
+
+Migration
+~~~~~~~~~
+
+Earlier versions filled each sample without features with a constant fitted on
+the train split (the class prior, the mean value, or a risk of 0.0), and scored
+these rows with the real predictions. This fill is removed, with
+``soma.evaluation.Baseline``, the ``is_placeholder`` column of the predictions,
+and the ``num_real_samples`` and ``num_placeholder_samples`` metric keys:
+
+- A run with a tune or test sample without features now stops by default.
+  Remove the sample from the cohort or the splits, or set
+  ``evaluation.unpredicted: exclude``.
+- With ``exclude``, the metrics of such a run change: the filled rows no longer
+  count. Read ``num_predicted`` where you read ``num_real_samples``.
+- Code that filled predictions before :func:`soma.evaluate` passes
+  ``unpredicted="exclude"`` instead, or filters the targets.
+- A predictions file an earlier version wrote with filled rows is refused: drop
+  the rows flagged ``is_placeholder``, then score the rest.
 
 Choose metrics
 --------------
@@ -132,8 +194,8 @@ group, and their unweighted mean over the column's groups:
 The rules are the same as after the fit: a group needs two samples, and a NaN
 group is left out of the mean. These values go to ``training_history.json``
 (see :ref:`logged-values`); the progress panel shows only the pooled values and
-the monitors. They cover the samples with features; a tune or test sample
-without features is scored after the fit only, by the baseline.
+the monitors. They cover the samples with features, as the scores after the
+fit do (see :ref:`unpredicted-samples`).
 
 A tune mean over groups can be the monitor (see :ref:`monitors`), but the value
 of one group cannot: a fold's tune split can lack the group.
@@ -268,9 +330,6 @@ Reference
    :members:
 
 .. autoclass:: soma.evaluation.Evaluation
-   :members:
-
-.. autoclass:: soma.evaluation.Baseline
    :members:
 
 .. autofunction:: soma.evaluation.compare

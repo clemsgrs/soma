@@ -4,7 +4,6 @@ Inference and scoring are two verbs with one noun between them. Targets never tr
 inside predictions; ``evaluate`` joins them from the cohort by ``sample_id``.
 """
 
-from soma.evaluation.baseline import Baseline
 from soma.evaluation.confusion_evidence import (
     ConfusionMetrics,
     SegmentationConfusionRecord,
@@ -33,7 +32,6 @@ from soma.evaluation.slide_label_maps import SlideLabelMaps
 from soma.evaluation.slide_points import SlidePoints
 
 __all__ = [
-    "Baseline",
     "DEFAULT_METRICS",
     "Evaluation",
     "LabelMapPredictions",

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import json
 import logging
 import pickle
 import warnings
@@ -36,6 +37,7 @@ from soma.pipeline.build import (
     annotation_sampled,
     build_composite_dense_store,
     build_fold,
+    check_unpredicted,
     extraction_options,
     live_encoder_for,
     load_pipeline_data,
@@ -219,6 +221,9 @@ class Pipeline:
         with RunRecorder(layout, plan) as recorder:
             with self._preparing(layout.run_dir):
                 inputs = self._prepare(layout, recorder.components)
+            # The samples without features are known now: under evaluation.unpredicted
+            # error, a tune or test one stops the run before any fold trains.
+            check_unpredicted(inputs)
             if devices is not None:
                 # This launch trains no fold, so it drops a live run's frozen encoder before
                 # a worker loads its own, maybe on the same GPU.
@@ -252,6 +257,7 @@ class Pipeline:
                 num_folds=num_folds,
             )
             save_summary(summary, layout.run_dir / "summary.json")
+            _warn_partial_coverage(layout.run_dir, num_folds, unit=plan.unit)
             if plan.evaluation.attention_heatmaps is not None:
                 self._render_heatmaps(layout.run_dir, inputs)
             _write_source_provenance(layout.run_dir, inputs.source)
@@ -598,6 +604,36 @@ class Pipeline:
             tiling_dir=run_dir / "tiling",
             seg_downsample=plan.features.extraction.segmentation.downsample,
             **plan.evaluation.attention_heatmaps,
+        )
+
+
+def _warn_partial_coverage(run_dir: Path, num_folds: int, *, unit: str) -> None:
+    """Warn once when a scored split left targets out (``evaluation.unpredicted:
+    exclude``): its metrics are over the predicted samples only."""
+    noun = "patients" if unit == "patient" else "samples"
+    partial: list[str] = []
+    for fold in range(num_folds):
+        directory = fold_dir(run_dir, fold, num_folds)
+        metrics_path = directory / "metrics.json"
+        if not metrics_path.is_file():
+            continue
+        where = f"fold {fold} " if num_folds > 1 else ""
+        for split, values in json.loads(metrics_path.read_text()).items():
+            coverage = values.get("coverage")
+            if coverage is None or coverage >= 1.0:
+                continue
+            listed = directory / f"not_predicted_{split}.parquet"
+            see = f"; see {listed.name}" if listed.is_file() else ""
+            partial.append(
+                f"{where}{split} scored {int(values['num_predicted'])} of {int(values['num_samples'])} "
+                f"{noun} (coverage {coverage:.3f}{see})"
+            )
+    if partial:
+        logger.warning(
+            "The metrics leave out the %s the model could not predict "
+            "(evaluation.unpredicted: exclude): %s.",
+            noun,
+            "; ".join(partial),
         )
 
 

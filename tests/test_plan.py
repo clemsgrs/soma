@@ -210,6 +210,14 @@ def test_comparable_leaves_out_where_and_which_folds_a_launch_runs_but_keeps_its
     assert refolded.comparable() == base.comparable()
 
 
+def test_a_resume_may_change_the_unpredicted_policy(files):
+    # A completed fold scores the same under either policy: error stops a run that misses
+    # a sample before any fold trains, so a run refused by error resumes with exclude.
+    base = _resolve(experiment(*files, aggregator="abmil"))
+    excluding = _resolve(experiment(*files, aggregator="abmil", evaluation={"unpredicted": "exclude"}))
+    assert excluding != base and excluding.comparable() == base.comparable()
+
+
 def test_derived_shape_family_and_unit(files):
     mil = _resolve(experiment(*files, aggregator="abmil", features=FeaturesConfig(encoder="uni2")))
     assert (mil.shape, mil.task_family, mil.unit) == ("set", "binary_classification", "slide")
@@ -454,6 +462,13 @@ def test_subgroups_are_refused_on_the_grid_shape_even_with_the_hook(files, user_
     for learner in ("dense", "mylab.learners.GroupedDense"):
         with pytest.raises(ValueError, match="evaluation.subgroups is supported for the set shape only"):
             check(_grid(files, learner=learner, evaluation=subgroups))
+
+
+def test_the_unpredicted_policy_applies_to_the_set_shape_only(files):
+    # Grid predictions cover every sample of their target source: there is nothing to exclude.
+    check(experiment(*files, aggregator="abmil", evaluation={"unpredicted": "exclude"}))
+    with pytest.raises(ValueError, match="evaluation.unpredicted: exclude is supported for the set shape only"):
+        check(_grid(files, evaluation={"unpredicted": "exclude"}))
 
 
 def test_the_eval_mode_train_pass_is_refused_on_the_grid_shape(files):

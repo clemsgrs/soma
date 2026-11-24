@@ -2,7 +2,7 @@
 
 The root exports the verbs, the nouns they take or return, and the namespaces. Everything
 else is reached through its namespace (``soma.models.ABMIL``, ``soma.learn.Trainer``,
-``soma.evaluation.Baseline``, ``soma.data.from_arrays``); config sub-dataclasses live in
+``soma.evaluation.compare``, ``soma.data.from_arrays``); config sub-dataclasses live in
 :mod:`soma.config`. The benchmark package is imported explicitly.
 """
 

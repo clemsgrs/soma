@@ -57,8 +57,8 @@ per-fold artifacts are written directly inside it; with several folds, each
   the methods, ``eps`` floor and floored-channel count, dimensions, projection
   seed, PCA explained variance, and the number of samples and feature rows used
   to fit each stage
-- ``predictions_<split>.parquet`` for each test split of a slide, patient or
-  tile run
+- ``predictions_<split>.parquet`` and ``not_predicted_<split>.parquet`` for each
+  test split of a slide, patient or tile run
 - ``subgroup_metrics_<split>.json`` for tune and for each test split when
   ``evaluation.subgroups`` is set (see :ref:`subgroup-metrics`)
 - ``attention/<split>/<sample_id>.npz`` and ``heatmaps/<sample_id>.png`` when
@@ -224,17 +224,18 @@ artifacts, e.g. ``predictions_test.parquet`` and
 Prediction files
 ----------------
 
-``predictions_<split>.parquet`` holds one row per sample of the split: a
-``sample_id`` column, the columns the task head declares (``prob_0`` …
+``predictions_<split>.parquet`` holds one row per sample of the split that the
+model predicted: a ``sample_id`` column, the columns the task head declares (``prob_0`` …
 ``prob_<k-1>`` and ``predicted_label`` for classification, ``predicted_label``
 and ``raw_score`` for ordinal classification, ``predicted_value`` for
 regression (``value_0`` … ``value_<G-1>`` with ``num_outputs: G``),
-``risk_score`` for survival), any column a custom learner adds, and
-``is_placeholder``. A placeholder row is a baseline prediction for a sample
-without features (see :doc:`evaluation`). Targets are not stored here; they
-come from ``dataset.csv``. The parquet schema metadata records the task family,
-the soma version, the role of each column and the class label of each
-probability column. Read the file with
+``risk_score`` for survival), and any column a custom learner adds. A sample
+the model could not predict (no features) has no row: it is listed in
+``not_predicted_<split>.parquet`` instead, with ``sample_id`` and ``reason``.
+That file is written even when it has no row (see :ref:`unpredicted-samples`).
+Targets are not stored here; they come from ``dataset.csv``. The parquet schema
+metadata records the task family, the soma version, the role of each column and
+the class label of each probability column. Read the file with
 :meth:`soma.evaluation.Predictions.from_parquet` and score it again with
 ``soma evaluate`` (see :doc:`cli`).
 
@@ -244,6 +245,11 @@ Metric keys in ``summary.json`` are prefixed by split name:
 
 - **Single fold**: ``test/auroc``, ``test_external/auroc``
 - **Cross-validation**: ``test/auroc_mean``, ``test/auroc_std``
+
+Each split also has ``num_samples``, ``num_predicted`` and ``coverage``
+(``test/coverage``, or ``test/coverage_mean`` over folds). A coverage below 1
+means the metrics leave out samples the model could not predict (see
+:ref:`unpredicted-samples`).
 
 ``*_std`` is the sample standard deviation (``ddof=1``) across folds. Threshold-free
 metrics (AUROC, AUPRC, C-index, ...) are ``nan`` on a fold whose split holds a single

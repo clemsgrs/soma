@@ -1,5 +1,7 @@
 # Evaluate scores exactly the ids it is given; baselines are predictors; no HTML report
 
+> Superseded in part by [ADR 0028](0028-runs-score-real-predictions-only.md): runs no longer fill the samples the model cannot predict, and the baseline predictor, its flag column and the real / placeholder counts are removed. A target without a prediction follows the `unpredicted` policy (`error` by default, or `exclude`), and every set-shape evaluation reports `num_samples`, `num_predicted` and `coverage`. The other decisions below are unchanged.
+
 Inference and scoring are two public verbs with one noun between them. `soma.predict(learner_or_model, loader, callbacks=())` returns `Predictions`, a frame keyed by `sample_id` whose other columns the task head declares (`TaskHead.prediction_columns` / `to_columns`). `soma.evaluate(predictions, targets, metrics="default", subgroups=())` joins them with the cohort's targets (`Cohort.targets(split, fold)`) and returns a frozen `Evaluation`. The pipeline's set-shape folds compose these verbs; the private evaluation path (`_evaluate`, `SamplePrediction`, `EvaluationReport`, the CSV writer) is gone, and `soma/reporting/` with it.
 
 ## Why

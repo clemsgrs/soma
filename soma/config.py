@@ -261,15 +261,18 @@ class CRoMaOptions:
 
 @dataclass
 class EvaluationConfig(Editable):
-    """``evaluation``: :func:`soma.evaluate`'s ``metrics`` and ``subgroups`` (columns), and
-    what a run scores and saves. ``holdout_test`` skips test work; ``overwrite_test``
-    re-scores a test set. The grid shape saves overlays, the segmentation softmax and the
+    """``evaluation``: :func:`soma.evaluate`'s ``metrics``, ``subgroups`` (columns) and
+    ``unpredicted`` policy, and what a run scores and saves. ``unpredicted`` decides what a
+    tune or test sample without features does (set shape): ``error`` stops the run before
+    any fold trains, ``exclude`` scores the predicted samples only. ``holdout_test`` skips
+    test work; ``overwrite_test`` re-scores a test set. The grid shape saves overlays, the segmentation softmax and the
     detection heatmaps; ``attention_heatmaps`` (``cmap``, ``alpha``, ``blur_sigma``)
     renders tile attention; ``representation`` makes the run a task-free CRoMa evaluation.
     """
 
     metrics: list[Any] = field(default_factory=list)
     subgroups: list[str] = field(default_factory=list)
+    unpredicted: str = "error"
     holdout_test: bool = False
     overwrite_test: bool = False
     save_overlays: bool = True
@@ -279,6 +282,7 @@ class EvaluationConfig(Editable):
     representation: CRoMaOptions | None = None
 
     def __post_init__(self) -> None:
+        _check_choice("evaluation.unpredicted", self.unpredicted, ("error", "exclude"))
         if self.attention_heatmaps is not None:
             unknown = sorted(set(self.attention_heatmaps) - {"cmap", "alpha", "blur_sigma"})
             if unknown:

@@ -133,6 +133,7 @@ trainer:
 evaluation:
   metrics: []
   subgroups: []
+  unpredicted: error
   holdout_test: false
   overwrite_test: false
   save_overlays: true

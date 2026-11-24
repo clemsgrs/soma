@@ -65,7 +65,6 @@ from soma.data.records import targets_equal
 from soma.models.decoders.registry import build_decoder_for_grid
 from soma.extract.dense.composite import CompositeDenseFeatureStore
 from soma.extract.dense.reader import CLASS_SCHEME_KEYS, resolve_class_scheme
-from soma.evaluation import Baseline
 from soma.evaluation.metrics import resolve_metrics
 from soma.extract.extractor import _release_parent_cuda_state
 from soma.extract.rois import RoiSet, label_map_identity
@@ -110,6 +109,7 @@ __all__ = [
     "build_set_fold",
     "build_set_model",
     "bundle_encoder_stage",
+    "check_unpredicted",
     "extraction_options",
     "extraction_unit",
     "live_encoder_for",
@@ -127,18 +127,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SplitPlan:
-    """How one split is scored: its loader, its targets, and the ids the baseline scores.
+    """How one split is scored: its loader, its targets, and the samples it cannot predict.
 
     ``targets`` is what :func:`soma.evaluate` scores against (a targets frame for the set
-    shape, a target source for the grid). ``placeholder_ids`` are the split's samples
-    without features (set shape), scored by the training :class:`~soma.evaluation.Baseline`.
-    ``write`` says whether ``predictions_<name>`` lands in the fold dir.
+    shape, a target source for the grid). ``not_predicted`` maps each target the loader
+    serves no features for (set shape) to the reason; ``evaluation.unpredicted`` decides
+    whether they stop the run or are left out of the metrics. ``None`` for the grid, whose
+    predictions cover their target source. ``write`` says whether ``predictions_<name>``
+    (and, for the set shape, ``not_predicted_<name>``) lands in the fold dir.
     """
 
     name: str
     loader: DataLoader
     targets: Any
-    placeholder_ids: tuple[str, ...] = ()
+    not_predicted: dict[str, str] | None = None
     subgroups: tuple[str, ...] = ()
     write: bool = True
     callbacks: tuple[Any, ...] = ()
@@ -175,12 +177,11 @@ class FoldSetup:
     population (the rest of step 2, set shape), then builds the model and its learner
     (step 3);
     ``build_loaders(learner, fold_dir)`` the loaders and scored splits (step 4);
-    ``fit_baseline(head)``
-    the placeholder predictor (step 5, set shape); ``callbacks()`` and ``trainer`` the
-    fit (step 6); ``tune_step(predictions, split, head)`` the tune-time threshold
-    (step 7, detection); ``metrics(head)`` what every split is scored with (step 8);
-    ``preprocessing(head, threshold)``, ``provenance`` and ``fold_assignments`` the
-    bundle's metadata (step 9).
+    ``callbacks()`` and ``trainer`` the fit (step 5); ``tune_step(predictions, split,
+    head)`` the tune-time threshold (step 6, detection); ``metrics(head)`` what every split
+    is scored with and ``unpredicted`` the policy for its targets without a prediction
+    (step 7); ``preprocessing(head, threshold)``, ``provenance`` and ``fold_assignments``
+    the bundle's metadata (step 8).
     """
 
     fold: int
@@ -194,7 +195,7 @@ class FoldSetup:
     metrics: Callable[[Any], list[Any]]
     preprocessing: Callable[[Any, Any], dict[str, Any]]
     provenance: dict[str, Any]
-    fit_baseline: Callable[[Any], Baseline] | None = None
+    unpredicted: str = "error"
     tune_step: Callable[[Any, SplitPlan, Any], Any] | None = None
     fold_assignments: str | None = None
 
@@ -437,7 +438,7 @@ def build_grid_model(
 
 
 # ---------------------------------------------------------------------------
-# Learner and fit (step 6)
+# Learner and fit (step 5)
 # ---------------------------------------------------------------------------
 
 
@@ -500,22 +501,22 @@ def _format_fold_summary(
     train_count: int,
     tune_count: int,
     tests_counts: dict[str, int],
-    empty_sample_ids_by_split: dict[str, list[str]] | None = None,
+    unserved_ids_by_split: dict[str, list[str]] | None = None,
 ) -> str:
     tests_str = " ".join(f"{name}={count}" for name, count in sorted(tests_counts.items()))
     base = f"Fold {fold}: train={train_count} tune={tune_count} {tests_str}"
-    if not empty_sample_ids_by_split:
+    if not unserved_ids_by_split:
         return base
-    empty_counts = {split: len(ids) for split, ids in empty_sample_ids_by_split.items()}
-    if not any(empty_counts.values()):
+    unserved_counts = {split: len(ids) for split, ids in unserved_ids_by_split.items()}
+    if not any(unserved_counts.values()):
         return base
     extras: list[str] = []
-    if empty_counts.get("train", 0):
-        extras.append(f"train empty dropped={empty_counts['train']}")
-    fallback = {split: count for split, count in empty_counts.items() if split != "train" and count}
-    if fallback:
+    if unserved_counts.get("train", 0):
+        extras.append(f"train dropped (no features)={unserved_counts['train']}")
+    not_predicted = {split: count for split, count in unserved_counts.items() if split != "train" and count}
+    if not_predicted:
         extras.append(
-            "eval empty fallback=" + ", ".join(f"{split}={count}" for split, count in sorted(fallback.items()))
+            "not predicted: " + ", ".join(f"{split}={count}" for split, count in sorted(not_predicted.items()))
         )
     return f"{base} | {' | '.join(extras)}" if extras else base
 
@@ -713,9 +714,9 @@ class _SetFoldRecords:
     tune: list[Any]
     tests: dict[str, list[Any]]
     tune_output_ids: tuple[str, ...]
-    tune_placeholders: list[str]
+    tune_not_predicted: dict[str, str]  # target id -> why the loader serves no features
     test_output_ids: dict[str, tuple[str, ...]]
-    test_placeholders: dict[str, list[str]]
+    test_not_predicted: dict[str, dict[str, str]]
     records_by_id: dict[str, SampleRecord]
     train_records: list[SampleRecord]
 
@@ -764,12 +765,26 @@ def _feature_statuses(source) -> dict[str, str] | None:
     return source.feature_statuses
 
 
-def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _SetFoldRecords:
+#: Why the model has no prediction for a sample the feature manifest records as ``empty``.
+NO_TILES = "no tiles"
+
+
+def _not_predicted_reason(status: str) -> str:
+    """Why the model has no prediction for a sample of feature-manifest ``status``."""
+    return NO_TILES if status == "empty" else f"feature status '{status}'"
+
+
+def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, log: bool = True) -> _SetFoldRecords:
     """Resolve the fold's train / tune / test membership against the features on disk.
 
-    Samples the feature manifest records as ``empty`` (no tissue, no bag) leave training
-    and are scored with the training baseline; ``tune_is_test``, ``allow_missing_tune``
-    and ``evaluation.holdout_test`` reshape the splits as their docs say.
+    The source serves no features for a sample the feature manifest records with any
+    status but ``success`` (``empty``: tiling kept no tile; an extraction ``error``; a
+    ``tbp`` never processed). Such samples leave training; in tune and test they stay
+    targets the model cannot predict, which ``evaluation.unpredicted`` refuses
+    (:func:`check_unpredicted`) or leaves out of the metrics, so a tune split made of
+    them does not fall back to train. ``tune_is_test``, ``allow_missing_tune`` and
+    ``evaluation.holdout_test`` reshape the splits as their docs say. ``log=False``
+    resolves without logging.
     """
     plan, samples, feature_store = inputs.plan, inputs.cohort, inputs.source
     cohort, evaluation = plan.cohort, inputs.evaluation
@@ -797,7 +812,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
                     f"Patient feature manifest is missing patient(s) required by fold {fold}: {missing}"
                 )
             expected = {pid for pid, status in statuses.items() if status == "success"}
-            empty = {pid for pid, status in statuses.items() if status == "empty"}
+            unserved = {pid for pid, status in statuses.items() if status != "success"}
             unexpected_missing = sorted(expected - set(feature_store.sample_ids))
             if unexpected_missing:
                 raise ValueError(
@@ -807,10 +822,10 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
             train_ids = [pid for pid in train_ids if pid in expected]
             tune_ids = [pid for pid in tune_ids if pid in expected]
             test_ids = {name: [pid for pid in ids if pid in expected] for name, ids in test_ids.items()}
-            empty_by_split: dict[str, list[str]] | None = {
-                "train": [pid for pid in raw_train_ids if pid in empty],
-                "tune": [pid for pid in raw_tune_ids if pid in empty],
-                **{name: [pid for pid in ids if pid in empty] for name, ids in raw_test_ids.items()},
+            unserved_by_split: dict[str, list[str]] | None = {
+                "train": [pid for pid in raw_train_ids if pid in unserved],
+                "tune": [pid for pid in raw_tune_ids if pid in unserved],
+                **{name: [pid for pid in ids if pid in unserved] for name, ids in raw_test_ids.items()},
             }
         else:
             missing = sorted(split_ids - set(feature_store.sample_ids))
@@ -819,21 +834,21 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
                     "Patient feature store is missing patient embedding(s) required by fold "
                     f"{fold}: {missing}"
                 )
-            empty_by_split = None
+            unserved_by_split = None
     elif statuses is not None:
         split_ids = set(fold_split.train) | set(fold_split.tune) | all_test_ids
         missing = sorted(split_ids - set(statuses))
         if missing:
             raise ValueError(f"Feature manifest is missing sample(s) required by fold {fold}: {missing}")
         expected = {sid for sid, status in statuses.items() if status == "success"}
-        empty = {sid for sid, status in statuses.items() if status == "empty"}
+        unserved = {sid for sid, status in statuses.items() if status != "success"}
         unexpected_missing = sorted(expected - set(feature_store.sample_ids))
         if unexpected_missing:
             raise ValueError(f"Feature store is missing expected sample(s) for fold {fold}: {unexpected_missing}")
-        empty_by_split = {
-            "train": [sid for sid in fold_split.train if sid in empty],
-            "tune": [sid for sid in fold_split.tune if sid in empty],
-            **{name: [sid for sid in ids if sid in empty] for name, ids in fold_split.tests.items()},
+        unserved_by_split = {
+            "train": [sid for sid in fold_split.train if sid in unserved],
+            "tune": [sid for sid in fold_split.tune if sid in unserved],
+            **{name: [sid for sid in ids if sid in unserved] for name, ids in fold_split.tests.items()},
         }
         train_records = [samples.record(sid) for sid in fold_split.train if sid in expected]
         tune_records = [samples.record(sid) for sid in fold_split.tune if sid in expected]
@@ -847,23 +862,24 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
         test_records_by_split = {
             name: [samples.record(sid) for sid in ids] for name, ids in fold_split.tests.items()
         }
-        empty_by_split = None
+        unserved_by_split = None
 
     tune_from_test: str | None = None
     if cohort.tune_is_test:
         tune_from_test = _resolve_tune_is_test_split(fold_split, _fp)
-        logger.warning(
-            "%s uses test split '%s' as tune because cohort.tune_is_test is set; "
-            "checkpoint selection and test reporting use the same samples",
-            _fp,
-            tune_from_test,
-        )
+        if log:
+            logger.warning(
+                "%s uses test split '%s' as tune because cohort.tune_is_test is set; "
+                "checkpoint selection and test reporting use the same samples",
+                _fp,
+                tune_from_test,
+            )
         tune_records = list(test_records_by_split[tune_from_test])
         if patient:
             tune_ids = list(test_ids[tune_from_test])
             raw_tune_ids = list(raw_test_ids[tune_from_test])
-        if empty_by_split is not None:
-            empty_by_split["tune"] = list(empty_by_split.get(tune_from_test, []))
+        if unserved_by_split is not None:
+            unserved_by_split["tune"] = list(unserved_by_split.get(tune_from_test, []))
 
     if evaluation.holdout_test:
         # Tune-only model-selection run: no test loader, no test inference; metrics and
@@ -871,8 +887,8 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
         test_records_by_split = {}
         if patient:
             test_ids, raw_test_ids = {}, {}
-        if empty_by_split is not None:
-            empty_by_split = {k: v for k, v in empty_by_split.items() if k in ("train", "tune")}
+        if unserved_by_split is not None:
+            unserved_by_split = {k: v for k, v in unserved_by_split.items() if k in ("train", "tune")}
 
     train_items = train_ids if patient else train_records
     tune_items = tune_ids if patient else tune_records
@@ -880,61 +896,104 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> _S
     unit = "patients" if patient else "samples"
     if not train_items:
         raise ValueError(f"{_fp} has no training {unit} with available features")
-    fallback_to_train = not tune_items and not (empty_by_split and empty_by_split.get("tune"))
+    fallback_to_train = not tune_items and not (unserved_by_split and unserved_by_split.get("tune"))
     if fallback_to_train and not cohort.allow_missing_tune:
         raise ValueError(f"{_fp} has no tuning {unit} with available features")
     if fallback_to_train:
-        logger.warning(
-            "%s has no tuning %s with available features; "
-            "using train split as tune because cohort.allow_missing_tune is set",
-            _fp,
-            unit,
-        )
+        if log:
+            logger.warning(
+                "%s has no tuning %s with available features; "
+                "using train split as tune because cohort.allow_missing_tune is set",
+                _fp,
+                unit,
+            )
         tune_items = list(train_items)
         tune_records = list(train_records)
         if patient:
             raw_tune_ids = list(raw_train_ids)
     for name, items in tests_items.items():
-        split_empty = empty_by_split.get(name, []) if empty_by_split else []
-        if not items and not split_empty:
+        split_unserved = unserved_by_split.get(name, []) if unserved_by_split else []
+        if not items and not split_unserved:
             raise ValueError(f"{_fp} has no {unit} with available features in split '{name}'")
-    logger.info(
-        _format_fold_summary(
-            fold=fold,
-            train_count=len(train_items),
-            tune_count=len(tune_items),
-            tests_counts={name: len(items) for name, items in tests_items.items()},
-            empty_sample_ids_by_split=empty_by_split,
+    if log:
+        logger.info(
+            _format_fold_summary(
+                fold=fold,
+                train_count=len(train_items),
+                tune_count=len(tune_items),
+                tests_counts={name: len(items) for name, items in tests_items.items()},
+                unserved_ids_by_split=unserved_by_split,
+            )
         )
-    )
 
-    empty_eval = empty_by_split or {}
     if patient:
         # Patient ids score against the patient's first slide in cohort order, as
-        # Cohort.collapse does.
-        tune_output = tuple(raw_train_ids if fallback_to_train else raw_tune_ids)
+        # Cohort.collapse does. A tune split that falls back to train scores the train
+        # patients it predicts: the policy does not apply to train.
+        tune_output = tuple(train_ids if fallback_to_train else raw_tune_ids)
         test_output = {name: tuple(raw_test_ids[name]) for name in tests_items}
         records_by_id = _patient_records(samples)
     else:
         if fallback_to_train:
-            tune_output = tuple(fold_split.train)
+            tune_output = tuple(record.sample_id for record in train_records)
         elif tune_from_test is not None:
             tune_output = tuple(fold_split.tests[tune_from_test])
         else:
             tune_output = tuple(fold_split.tune)
         test_output = {name: tuple(fold_split.tests[name]) for name in tests_items}
         records_by_id = {record.sample_id: record for record in samples.records}
+
+    def not_predicted(target_ids: Sequence[str]) -> dict[str, str]:
+        # The targets the source serves no features for; a tune split that falls back to
+        # train has none, as its targets are the train samples it predicts.
+        if statuses is None:
+            return {}
+        return {i: _not_predicted_reason(statuses[i]) for i in target_ids if statuses[i] != "success"}
+
     return _SetFoldRecords(
         train=list(train_items),
         tune=list(tune_items),
         tests={name: list(items) for name, items in tests_items.items()},
         tune_output_ids=tune_output,
-        tune_placeholders=list(empty_eval.get("train" if fallback_to_train else "tune", [])),
+        tune_not_predicted=not_predicted(tune_output),
         test_output_ids=test_output,
-        test_placeholders={name: list(empty_eval.get(name, [])) for name in tests_items},
+        test_not_predicted={name: not_predicted(test_output[name]) for name in tests_items},
         records_by_id=records_by_id,
         train_records=list(train_records),
     )
+
+
+def check_unpredicted(inputs: RunInputs) -> None:
+    """Refuse a set-shape run whose tune or test splits hold samples without features,
+    under ``evaluation.unpredicted: error``, before any fold trains.
+
+    Every fold of the run is checked, completed ones too, so a resume under ``error``
+    refuses a run that an ``exclude`` launch completed. The configured splits are
+    checked: the test-clobber guard's hold-out of a test split already scored
+    (``inputs.evaluation.holdout_test``) does not hide it. Train samples without features
+    are left out of training whatever the policy.
+    """
+    if inputs.plan.shape == "grid" or inputs.evaluation.unpredicted != "error":
+        return
+    inputs = replace(inputs, evaluation=inputs.plan.evaluation)
+    missing: list[str] = []
+    for fold, fold_split in enumerate(inputs.folds):
+        records = _set_fold_records(inputs, fold, fold_split, log=False)
+        where = f"fold {fold} " if inputs.num_folds > 1 else ""
+        for name, reasons in (("tune", records.tune_not_predicted), *records.test_not_predicted.items()):
+            by_reason: dict[str, list[str]] = {}
+            for sample_id, reason in reasons.items():
+                by_reason.setdefault(reason, []).append(sample_id)
+            if by_reason:
+                listed = ", ".join(f"{ids} ({reason})" for reason, ids in by_reason.items())
+                missing.append(f"{where}{name}: {listed}")
+    if missing:
+        unit = "patients" if inputs.plan.unit == "patient" else "samples"
+        raise ValueError(
+            f"The model cannot predict these tune and test {unit}, which have no features: "
+            f"{'; '.join(missing)}. Either remove them from the cohort or the splits, or set "
+            f"evaluation.unpredicted: exclude to score the predicted {unit} only."
+        )
 
 
 def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldSetup:
@@ -1033,16 +1092,6 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
     def build_loaders(learner: Learner, fold_dir: Path) -> FoldLoaders:
         return _set_loaders(inputs, feature_store, records, learner.head, kind=kind)
 
-    def fit_baseline(head) -> Baseline:
-        # Samples without features are scored with the training split's baseline (class
-        # prior / mean / constant risk), flagged as placeholders.
-        return Baseline.fit(
-            targets_frame(records.train_records),
-            task_family=task_family,
-            classes=head.classes,
-            target_keys=head.target_keys,
-        )
-
     def metrics(head) -> list[Any]:
         # The head resolved its metrics for its own outputs (a multi-output regression
         # reports mean_pearson, not the family's single-value defaults).
@@ -1076,12 +1125,12 @@ def build_set_fold(inputs: RunInputs, fold: int, fold_split: FoldSplit) -> FoldS
         ),
         build_learner=build_fold_learner,
         build_loaders=build_loaders,
-        fit_baseline=fit_baseline,
         callbacks=_fit_callbacks(plan.trainer, fold=fold, num_folds=inputs.num_folds),
         trainer=_trainer_kwargs(plan.trainer),
         metrics=metrics,
         preprocessing=preprocessing,
         provenance=inputs.provenance,
+        unpredicted=evaluation.unpredicted,
         fold_assignments=inputs.fold_assignments[fold],
     )
 
@@ -1164,7 +1213,7 @@ def _set_loaders(
             name="tune",
             loader=tune_loader,
             targets=targets(records.tune_output_ids),
-            placeholder_ids=tuple(records.tune_placeholders),
+            not_predicted=dict(records.tune_not_predicted),
             subgroups=subgroups,
             write=False,
         )
@@ -1175,7 +1224,7 @@ def _set_loaders(
                 name=name,
                 loader=test_loader,
                 targets=targets(records.test_output_ids[name]),
-                placeholder_ids=tuple(records.test_placeholders[name]),
+                not_predicted=dict(records.test_not_predicted[name]),
                 subgroups=subgroups,
             )
         )
