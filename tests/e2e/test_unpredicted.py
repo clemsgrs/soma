@@ -134,6 +134,38 @@ def test_a_tune_split_whose_extractions_all_failed_is_refused_not_replaced_by_tr
     artifact.assert_passed()
 
 
+def test_a_later_fold_without_features_stops_the_run_before_the_first_fold_trains(tmp_path, new_artifact):
+    """Two folds share train and tune: fold 0 tests on s13 and s14, which have features,
+    and fold 1 also tests on s15, which has no tiles. The check covers every fold up
+    front, so fold 0 does not train either."""
+    artifact = new_artifact("unpredicted_error_later_fold")
+    dataset_csv, _, feature_dir = write_cached_bags(tmp_path / "data", tileless=("s15",))
+    sample_ids = [f"s{i:02d}" for i in range(16)]
+    roles = dict.fromkeys(sample_ids[:10], "train") | dict.fromkeys(sample_ids[10:13], "tune")
+    rows = [(0, s, roles.get(s, "test")) for s in sample_ids[:15]] + [(1, s, roles.get(s, "test")) for s in sample_ids]
+    splits_csv = tmp_path / "data" / "splits_cv.csv"
+    pd.DataFrame(rows, columns=["fold", "sample_id", "split"]).to_csv(splits_csv, index=False)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(_config(tmp_path, dataset_csv, splits_csv), sort_keys=False))
+    seen: list = []
+    pipeline = soma.Pipeline(
+        soma.ExperimentConfig.from_yaml(config_path),
+        source=CachedSetSource(feature_dir),
+        callback_factory=lambda context: [_FitWatcher(seen)],
+    )
+
+    with pytest.raises(ValueError) as refused:
+        pipeline.run()
+
+    message = str(refused.value)
+    artifact.check_equal("message/names_fold_1", "fold 1 test: ['s15'] (no tiles)" in message, True)
+    artifact.check_equal("message/not_fold_0", "fold 0" in message, False)
+    artifact.check_equal("observer/no_fit_started", seen, [])
+    trained = [p.name for p in (tmp_path / "runs").rglob("*") if p.name in {"training_history.json", "bundle"}]
+    artifact.check_equal("nothing_trained", trained, [])
+    artifact.assert_passed()
+
+
 def test_exclude_scores_the_predicted_samples_and_lists_the_others(tmp_path, new_artifact, caplog):
     """s15 has no tiles and s16's extraction failed (feature status ``error``): neither
     has a bag, and both are listed with their reason."""
