@@ -251,6 +251,13 @@ Each split also has ``num_samples``, ``num_predicted`` and ``coverage``
 means the metrics leave out samples the model could not predict (see
 :ref:`unpredicted-samples`).
 
+The run-summary panel prints the coverage of each split with its counts, for
+example ``50.0% (2/4)``. Over folds, the counts are means per fold:
+``97.0% (10/10.33 per fold)``. ``soma leaderboard`` adds a ``coverage`` column
+when a row's runs left samples out. The column shows the mean coverage of the
+row's runs, on the rows below 1 only. Its JSON output has a ``coverage`` value
+on every row (``null`` when the runs record none).
+
 ``*_std`` is the sample standard deviation (``ddof=1``) across folds. Threshold-free
 metrics (AUROC, AUPRC, C-index, ...) are ``nan`` on a fold whose split holds a single
 class or no comparable pairs; such folds are excluded from ``*_mean`` / ``*_std`` and

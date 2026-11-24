@@ -19,6 +19,7 @@ A run filled each sample without features with a constant fitted on the train sp
 - **Set shape only.** Grid predictions cover every sample of their target source. A grid run, and grid predictions in `soma.evaluate` and `soma evaluate`, refuse `exclude`.
 - **`compare` stays strict.** A paired permutation test needs the same samples in every set, so `soma.evaluation.compare` takes no policy. Its error says to filter the targets and the sets to the ids every set predicts.
 - **The end of a run warns.** Under `exclude`, a warning names each split whose coverage is below 1.
+- **The panel and the leaderboard show coverage.** The run panel prints each split's coverage with its counts (means per fold over folds). `soma leaderboard` gives each row the mean coverage of its runs, and adds a `coverage` column only when a row is below 1, so a board of full runs reads as before.
 
 ## Considered and rejected
 

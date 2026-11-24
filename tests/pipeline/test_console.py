@@ -26,3 +26,20 @@ def test_the_completed_run_panel_shows_the_pooled_metric_when_subgroup_keys_come
     }
 
     assert "tune coverage  accuracy=0.7000" in _rendered(summary)
+
+
+def test_the_completed_run_panel_shows_the_mean_counts_per_fold_over_folds():
+    # Folds of 11, 10 and 10 test samples; fold 0 left one out: the rounded means would
+    # read 10/10 next to a coverage below 1.
+    summary = {
+        "test/auroc_mean": 0.8,
+        "test/auroc_std": 0.1,
+        "test/num_samples_mean": 31 / 3,
+        "test/num_samples_std": 0.58,
+        "test/num_predicted_mean": 10.0,
+        "test/num_predicted_std": 0.0,
+        "test/coverage_mean": (10 / 11 + 1 + 1) / 3,
+        "test/coverage_std": 0.05,
+    }
+
+    assert "test coverage  auroc=0.8000  ·  97.0% (10/10.33 per fold)" in _rendered(summary)

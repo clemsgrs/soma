@@ -56,6 +56,23 @@ def _not_predicted(path: Path) -> list[dict]:
     return pd.read_parquet(path).to_dict("records")
 
 
+def _panel_coverage(console: str, split: str) -> str:
+    """The coverage of ``split`` on the run panel a completed run prints."""
+    (line,) = [line for line in console.splitlines() if f"{split} coverage" in line]
+    return line.split("·")[-1].strip(" │")
+
+
+def _leaderboard(output_root: Path, capsys) -> tuple[int, list[str], dict]:
+    """``soma leaderboard`` over ``output_root``: its exit code, the header and rows of
+    the table it prints, and the JSON table it writes."""
+    capsys.readouterr()
+    with pytest.raises(SystemExit) as exit_info:
+        soma_main(["leaderboard", "--root", str(output_root)])
+    printed = capsys.readouterr().out.split("\n\nWrote:")[0].splitlines()[1:]
+    (board,) = (output_root / "leaderboards").glob("*.json")
+    return exit_info.value.code, printed, json.loads(board.read_text())
+
+
 class _FitWatcher:
     """A read-only runtime observer that notes each fit start and each epoch end."""
 
@@ -166,9 +183,10 @@ def test_a_later_fold_without_features_stops_the_run_before_the_first_fold_train
     artifact.assert_passed()
 
 
-def test_exclude_scores_the_predicted_samples_and_lists_the_others(tmp_path, new_artifact, caplog):
+def test_exclude_scores_the_predicted_samples_and_lists_the_others(tmp_path, new_artifact, caplog, capsys):
     """s15 has no tiles and s16's extraction failed (feature status ``error``): neither
-    has a bag, and both are listed with their reason."""
+    has a bag, and both are listed with their reason. The run panel and the
+    leaderboard show the coverage of the test split."""
     artifact = new_artifact("unpredicted_exclude")
     dataset_csv, splits_csv, feature_dir = write_cached_bags(
         tmp_path / "data", n=17, tileless=("s15",), statuses={"s16": "error"}
@@ -177,6 +195,7 @@ def test_exclude_scores_the_predicted_samples_and_lists_the_others(tmp_path, new
 
     with caplog.at_level(logging.WARNING, logger="soma"):
         run = run_soma(config, tmp_path / "config.yaml", "--feature-dir", str(feature_dir))
+    console = capsys.readouterr().out
     artifact.record_run("exclude", run)
 
     predictions = Predictions.from_parquet(run.run_dir / "predictions_test.parquet")
@@ -193,7 +212,15 @@ def test_exclude_scores_the_predicted_samples_and_lists_the_others(tmp_path, new
     artifact.check_equal(
         "warning", any("test scored 2 of 4 samples" in w and "not_predicted_test.parquet" in w for w in warnings), True
     )
+    artifact.check_equal("panel/test_coverage", _panel_coverage(console, "test"), "50.0% (2/4)")
     artifact.check_training_reduced_loss("exclude", run)
+
+    # The leaderboard shows the coverage of the run's row: a column the table adds for it.
+    code, (header, row), board = _leaderboard(tmp_path / "runs", capsys)
+    artifact.check_equal("leaderboard/exit_code", code, 0)
+    artifact.check_equal("leaderboard/header", header.split()[:4], ["#", "auroc", "n", "coverage"])
+    artifact.check_equal("leaderboard/row/coverage", row.split()[3], "0.5000")
+    artifact.check_equal("leaderboard/json/coverage", board["rows"][0]["coverage"], 0.5)
 
     # The run's predictions, scored again: the default refuses the target without one, and
     # exclude gives the run's own test metrics, through the CLI and through Python.
@@ -227,10 +254,12 @@ def test_exclude_scores_the_predicted_samples_and_lists_the_others(tmp_path, new
     artifact.assert_passed()
 
 
-def test_a_run_that_predicts_every_tune_and_test_sample_writes_an_empty_list(tmp_path, new_artifact, caplog):
+def test_a_run_that_predicts_every_tune_and_test_sample_writes_an_empty_list(
+    tmp_path, new_artifact, caplog, capsys
+):
     """s00 (no tiles) and s01 (feature status ``error``) are train samples without
     features: both are left out of training, with a log line counting them, and the
-    default policy does not stop the run."""
+    default policy does not stop the run. The leaderboard adds no coverage column."""
     artifact = new_artifact("unpredicted_none")
     dataset_csv, splits_csv, feature_dir = write_cached_bags(
         tmp_path / "data", tileless=("s00",), statuses={"s01": "error"}
@@ -239,6 +268,7 @@ def test_a_run_that_predicts_every_tune_and_test_sample_writes_an_empty_list(tmp
 
     with caplog.at_level(logging.INFO, logger="soma"):
         run = run_soma(config, tmp_path / "config.yaml", "--feature-dir", str(feature_dir))
+    console = capsys.readouterr().out
     artifact.record_run("none", run)
 
     not_predicted = pd.read_parquet(run.run_dir / "not_predicted_test.parquet")
@@ -251,5 +281,11 @@ def test_a_run_that_predicts_every_tune_and_test_sample_writes_an_empty_list(tmp
     artifact.check_equal("log/train_left_out", left_out, True)
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     artifact.check_equal("no_coverage_warning", [w for w in warnings if " scored " in w], [])
+    artifact.check_equal("panel/test_coverage", _panel_coverage(console, "test"), "100.0% (3/3)")
     artifact.check_training_reduced_loss("none", run)
+
+    code, (header, _row), board = _leaderboard(tmp_path / "runs", capsys)
+    artifact.check_equal("leaderboard/exit_code", code, 0)
+    artifact.check_equal("leaderboard/header", header.split(), ["#", "auroc", "n", "config", "diff"])
+    artifact.check_equal("leaderboard/json/coverage", board["rows"][0]["coverage"], 1.0)
     artifact.assert_passed()
