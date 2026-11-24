@@ -140,19 +140,22 @@ def test_whole_slides_with_a_tile_encoder_report_tiles_and_a_partial_resume(tmp_
     first = ImageManifest([images[sample_id] for sample_id in images.sample_ids[:3]])
     slide_phases = ["checking_cache", "tiling", "loading_model", "embedding", "finished"]
 
-    part = _extract_slides(first, encoder_name, tmp_path, "part")
+    part: list[ExtractionProgress] = []
+    part_source = _slides_source(first, encoder_name, tmp_path, "part", part.append)
     _check_cycle(artifact, "part", part, phases=slide_phases, total=len(first), cached=0)
-    resume = _extract_slides(images, encoder_name, tmp_path, "resume")
+    resume: list[ExtractionProgress] = []
+    resume_source = _slides_source(images, encoder_name, tmp_path, "resume", resume.append)
     _check_cycle(artifact, "resume", resume, phases=slide_phases, total=len(images), cached=3)
     warm = _extract_slides(images, encoder_name, tmp_path, "warm")
     _check_cycle(artifact, "warm", warm, phases=["checking_cache", "finished"], total=len(images), cached=6)
 
     # Every tile of the pending slides is counted, and the resume counts only the new slides'.
+    def bag_tiles(source, sample_ids) -> int:
+        return sum(int(source.load(sample_id).shape[0]) for sample_id in sample_ids)
+
     part_tiles, resume_tiles = _tiles_seen(part), _tiles_seen(resume)
-    artifact.check_equal("part/one_tile_total", len(part_tiles), 1)
-    artifact.check_equal("resume/one_tile_total", len(resume_tiles), 1)
-    artifact.check_at_least("part/tiles_total", part_tiles[0] if part_tiles else 0, 3)
-    artifact.check_at_least("resume/tiles_total", resume_tiles[0] if resume_tiles else 0, 3)
+    artifact.check_equal("part/tiles_total", part_tiles, [bag_tiles(part_source, first.sample_ids)])
+    artifact.check_equal("resume/tiles_total", resume_tiles, [bag_tiles(resume_source, images.sample_ids[3:])])
     artifact.facts["tiles_total"] = {"part": part_tiles, "resume": resume_tiles}
     artifact.assert_passed()
 

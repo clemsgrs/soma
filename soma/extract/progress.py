@@ -111,6 +111,8 @@ class ProgressFold:
         self._images_skipped = 0
         #: Whether the slide2vec call under way encodes in this process, after its model load.
         self._in_process = False
+        #: Whether the model finished loading during ``loading_model``.
+        self._model_ready = False
 
     def emit(self, event: Any) -> None:
         """Fold one event (anything with a ``kind`` and a ``payload``).
@@ -164,10 +166,16 @@ class ProgressFold:
                 self._regions_running = skipped
             else:
                 self._images_skipped += skipped
+            # On one GPU a resume check can load the model before the call starts, and the
+            # call encodes with it. On several GPUs that load is the parent's CPU copy.
+            if self._in_process and self._model_ready:
+                self._enter("embedding")
         elif kind == "model.ready":
             # On one GPU slide2vec loads the model inside the call and encodes right away.
-            if self._in_process and self._phase == "loading_model":
-                self._enter("embedding")
+            if self._phase == "loading_model":
+                self._model_ready = True
+                if self._in_process:
+                    self._enter("embedding")
         elif kind in _IMAGE_BATCHES:
             self._enter("embedding")
             if self._phase == "embedding":
@@ -217,6 +225,10 @@ class ProgressFold:
         """Move forward to ``phase`` (never back), starting its counters again."""
         if _ORDER.index(phase) <= _ORDER.index(self._phase):
             return
+        if self._pending == set() and phase != "finished":
+            # Every row is cached: work under way (a tile-cache repair under a complete
+            # slide cache) is no row's, so the check is followed by the end.
+            return
         self._phase = phase
         self._tiled = self._count = 0
         self._done = set()
@@ -254,11 +266,12 @@ class ProgressFold:
         )
 
     def _deliver(self) -> None:
+        # Throttle before building the snapshot: it sums over every pending row.
+        now = self._clock()
+        if self._last is not None and self._phase == self._last.phase and now - self._last_at < MIN_INTERVAL_S:
+            return
         snapshot = self._snapshot()
         if snapshot == self._last:
-            return
-        now = self._clock()
-        if self._last is not None and snapshot.phase == self._last.phase and now - self._last_at < MIN_INTERVAL_S:
             return
         self._last, self._last_at = snapshot, now
         try:

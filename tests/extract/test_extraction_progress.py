@@ -371,6 +371,9 @@ def test_rois_sampled_from_whole_slides_count_slides_and_regions_as_tiles() -> N
         ("soma.sample.tiled", {"sample_id": "s2"}),
         # Every ROI of "s0" is cached; "s1" lacks 3 ROIs and "s2" lacks 2.
         ("soma.checked", {"pending": ["s1", "s2"], "tiles": {"s1": 3, "s2": 2}}),
+        # The parent loads a CPU copy to check the regions on disk: the workers still load.
+        ("model.loading", {"model_name": "uni2"}),
+        ("model.ready", {"model_name": "uni2", "device": "cpu"}),
         # Two calls (one per read spacing), each on two GPUs.
         ("dense.regions.started", {"total": 3, "skipped": 0, "encoding": 3, "num_gpus": 2}),
         ("dense.batch.finished", {"rank": 0, "regions": 2}),
@@ -408,6 +411,9 @@ def test_rois_on_one_gpu_encode_from_the_model_load_and_count_regions_per_call()
     _feed(
         fold,
         ("soma.started", {"samples_total": 2}),
+        # The cache check's identity load is not the call's: the call loads its own model.
+        ("model.loading", {"model_name": "uni2"}),
+        ("model.ready", {"model_name": "uni2", "device": "cuda:0"}),
         ("soma.checked", {"pending": ["s0", "s1"], "tiles": {"s0": 4, "s1": 4}}),
         ("dense.regions.started", {"total": 8, "skipped": 0, "encoding": 8, "num_gpus": 1}),
         ("model.loading", {"model_name": "uni2"}),
@@ -425,6 +431,58 @@ def test_rois_on_one_gpu_encode_from_the_model_load_and_count_regions_per_call()
         ("embedding", 0, 0, 8, 8),
         ("embedding", 0, 2, 8, 8),
         ("finished", 0, 2, None, None),
+    ]
+
+
+def test_rois_on_one_gpu_encode_from_the_call_start_when_the_resume_check_loaded_the_model() -> None:
+    clock = Clock()
+    fold, received = _fold(clock)
+    _feed(
+        fold,
+        ("soma.started", {"samples_total": 2}),
+        ("soma.checked", {"pending": ["s0", "s1"], "tiles": {"s0": 4, "s1": 4}}),
+        # Before the call starts, slide2vec loads the model to check the transform of the
+        # regions on disk; the call then encodes with it, with no second load.
+        ("model.loading", {"model_name": "uni2"}),
+        ("model.ready", {"model_name": "uni2", "device": "cuda:0"}),
+        ("dense.regions.started", {"total": 8, "skipped": 3, "encoding": 5, "num_gpus": 1}),
+        ("dense.regions.finished", {"total": 8}),
+        ("soma.sample.embedded", {"sample_ids": ["s0", "s1"]}),
+        ("soma.finished",),
+        clock=clock,
+    )
+    assert _counters(received) == [
+        ("checking_cache", None, 0, None, None),
+        ("checking_cache", 0, 0, None, None),
+        ("loading_model", 0, 0, None, None),
+        ("embedding", 0, 0, 3, 8),
+        ("embedding", 0, 0, 8, 8),
+        ("embedding", 0, 2, 8, 8),
+        ("finished", 0, 2, None, None),
+    ]
+
+
+def test_a_tile_cache_repair_under_a_complete_slide_cache_checks_the_cache_then_finishes() -> None:
+    clock = Clock()
+    fold, received = _fold(clock, encoder="prism")
+    _feed(
+        fold,
+        ("soma.started", {"samples_total": 2}),
+        # Every slide feature is cached; the tile features of "a" are encoded again.
+        ("soma.checked", {"pending": [], "embedded": [], "tiles": {}}),
+        ("model.loading", {"model_name": "virchow"}),
+        ("model.ready", {"model_name": "virchow", "device": "cuda:0"}),
+        ("embedding.slide.started", {"sample_id": "a", "total_tiles": 10}),
+        ("embedding.tile.progress", {"sample_id": "a", "processed": 10, "total": 10}),
+        ("embedding.slide.finished", {"sample_id": "a", "num_tiles": 10}),
+        ("soma.aggregation.started", {"aggregated": []}),
+        ("soma.finished",),
+        clock=clock,
+    )
+    assert _counters(received) == [
+        ("checking_cache", None, 0, None, None),
+        ("checking_cache", 2, 0, None, None),
+        ("finished", 2, 0, None, None),
     ]
 
 
