@@ -38,6 +38,7 @@ from soma.extract.cache import (
     resolve_dense_cache,
     resolve_cache_dtype,
 )
+from soma.extract import progress
 from soma.extract.cache.options import CacheOptions
 from soma.models.encoders import EncoderLeaf
 from soma.data.manifests import ImageManifest
@@ -217,6 +218,7 @@ class _DenseImageExtractor:
             )
             payload_dir = cache_resolution.features_dir
             if cache_resolution.complete:
+                progress.report("soma.checked", pending=[])
                 logger.info("Reusing cached dense grids from %s", cache_resolution.features_dir)
                 return CachedGridSource(payload_dir)
             # slide2vec appends its own payload subdir, so it is handed the cache dir.
@@ -234,9 +236,10 @@ class _DenseImageExtractor:
         # slide2vec's numerical-equivalence contract rather than be byte-identical.
         if cache_resolution is not None:
             wanted = set(cache_resolution.missing_sample_ids())
-            if not wanted:
-                return CachedGridSource(payload_dir)
             records = [record for record in records if record.sample_id in wanted]
+        progress.report("soma.checked", pending=[record.sample_id for record in records])
+        if cache_resolution is not None and not records:
+            return CachedGridSource(payload_dir)
 
         with _dense_extract_lock():
             model = Model.from_preset(self._encoder.name, **self._encoder.params)

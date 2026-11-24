@@ -83,6 +83,99 @@ The source can be reused across experiments as long as the upstream dataset,
 preprocessing, and encoder settings do not change; :doc:`caching` gives the
 rules.
 
+.. _extraction-progress:
+
+Follow an extraction
+--------------------
+
+``soma.extract(..., on_progress=fn)`` calls ``fn`` with the state of the
+extraction each time it changes. Use it to show progress where there is no
+terminal: a batch job, or a user interface that runs soma. The terminal display
+does not change: ``on_progress`` comes in addition to it.
+
+.. code-block:: python
+
+   from soma.extract import ExtractionProgress
+
+   def show(progress: ExtractionProgress) -> None:
+       if progress.samples_cached is None:
+           print(f"{progress.encoder}: {progress.phase}")
+           return
+       pending = progress.samples_total - progress.samples_cached
+       line = f"{progress.encoder}: {progress.phase} {progress.samples_done}/{pending}"
+       if progress.tiles_total is not None:
+           line += f" ({progress.tiles_done}/{progress.tiles_total} tiles)"
+       print(line)
+
+   features = soma.extract(images, encoder="uni2", cache=cache, output_dir="output", on_progress=show)
+
+Each call gets the whole state, so ``fn`` needs to keep nothing. A sample is one
+row of the image manifest: a whole slide, or a pre-cropped image with
+``unit="tile"``. This is also true for dense grids and for ROIs sampled from
+slides.
+
+The phases come in this order. An extraction skips the phases it does not have,
+and a phase never comes back:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Phase
+     - When
+   * - ``checking_cache``
+     - Always first.
+   * - ``tiling``
+     - Whole slides only: tiling the slides, or sampling ROIs from them.
+   * - ``loading_model``
+     - Loading the encoder. With several GPUs, until the first GPU starts to
+       encode.
+   * - ``embedding``
+     - Encoding tiles, images or ROIs.
+   * - ``aggregating``
+     - Slide encoders only: the second pass, from tile features to one
+       feature per slide.
+   * - ``finished``
+     - Always the last call of an extraction that succeeds. An extraction that
+       fails raises and sends no ``finished``.
+
+When every sample is in the cache and no slide has to be tiled or sampled
+again, ``fn`` sees ``checking_cache``, then ``finished``. If a slide has to be
+tiled or sampled again, ``tiling`` comes between them.
+
+``samples_cached`` is ``None`` until the cache has been checked, then it does
+not change. Over whole slides that need tiling, the slides are tiled before the
+cache is checked, so ``samples_cached`` stays ``None`` during most of
+``tiling``. With ``rois=``, a slide of the manifest that has no ROI in ``rois``
+has nothing to encode, so it is counted in ``samples_cached``, even with the
+cache off. For a slide encoder, a sample is cached when its slide feature is.
+``samples_done`` counts the samples not cached that have completed the current
+phase, and starts again from 0 in each phase. A slide whose tile features are
+already cached counts as done in ``embedding`` from the start. ``tiles_done`` and
+``tiles_total`` count tiles over every pending sample and every GPU, and an ROI
+counts as one tile. They are set only during ``embedding``, and they are
+``None`` for pre-cropped images.
+
+.. autoclass:: soma.extract.ExtractionProgress
+
+Delivery:
+
+- Within a phase, ``fn`` is called at most twice a second. The first call of
+  each phase and ``finished`` are never held back. Nothing is sent when nothing
+  changed.
+- ``fn`` is called in your process, never in a GPU worker, and one call at a
+  time. It may be called from another thread.
+- The extraction waits for ``fn`` to return, so a slow ``fn`` slows the
+  extraction down.
+- If ``fn`` raises an ``Exception``, the extraction goes on. soma logs the first
+  error as a warning with its traceback and keeps calling ``fn``.
+
+``Pipeline(config, on_extraction_progress=fn)`` passes ``fn`` to every
+``soma.extract`` call the run makes. A composite encoder extracts once per
+member, so ``fn`` sees one cycle for each member, and ``encoder`` tells them
+apart. Like ``callback_factory``, ``fn`` is not part of the config, the plan or
+the experiment identity. The run extracts in your process, also with
+``devices``, so ``fn`` does not have to pickle.
+
 Evaluation settings and attention heatmaps
 ------------------------------------------
 

@@ -47,6 +47,7 @@ def test_extract_is_the_root_verb_and_the_namespace_of_the_live_encoder() -> Non
         "dense",
         "spacing_policy",
         "output_dir",
+        "on_progress",
     ]
     assert all(p.kind is p.KEYWORD_ONLY for name, p in parameters.items() if name != "images")
     assert not hasattr(soma, "FeatureExtractor")

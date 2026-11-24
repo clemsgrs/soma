@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
@@ -45,6 +45,7 @@ from soma.extract.cache import (
     resolve_cache_dtype,
     roi_sampling_signature,
 )
+from soma.extract import progress
 from soma.extract.cache.options import CacheOptions
 from soma.models.encoders import EncoderLeaf
 from soma.data.manifests import AnnotationManifest, ImageManifest
@@ -78,6 +79,7 @@ def sample_slide_rois(
     preprocessing: PreprocessingConfig,
     spacing_policy: str = "strict",
     sample_ids: Collection[str] | None = None,
+    on_sampled: Callable[[str], None] | None = None,
 ) -> dict[str, list[tuple[int, int]]]:
     """Run hs2p annotation sampling per slide; return level-0 ROI coords by slide id.
 
@@ -88,6 +90,7 @@ def sample_slide_rois(
     ``sample_ids`` restricts sampling to that subset of ``images``' slides (manifest
     order preserved) — the roi_sampling cache's partial-miss path samples only the
     missing slides without touching the hits. ``None`` (the default) samples every slide.
+    ``on_sampled`` is called with each slide's id once its ROIs are sampled.
     """
     from hs2p import SlideSpec, tile_slide
 
@@ -143,6 +146,8 @@ def sample_slide_rois(
         coords_by_slide[sid] = [
             (int(x), int(y)) for x, y in zip(merged.tiles.x.tolist(), merged.tiles.y.tolist())
         ]
+        if on_sampled is not None:
+            on_sampled(sid)
     return coords_by_slide
 
 
@@ -218,8 +223,11 @@ class _SlideRegionExtractor:
         spacing_policy: str = "strict",
         execution: ExecutionOptions | None = None,
         cache: CacheOptions | None = None,
+        sampled_empty: Collection[str] = (),
     ) -> None:
         self._rois = list(rois)
+        #: Slides this extraction sampled that hold no ROI: rows with nothing to encode.
+        self._sampled_empty = {str(slide_id) for slide_id in sampled_empty}
         self._images = ImageManifest([roi.image for roi in self._rois])
         self._encoder = encoder
         self._preprocessing = preprocessing
@@ -288,6 +296,7 @@ class _SlideRegionExtractor:
                 feature_identity=self._feature_identity_check(feature_dir, dtype=dense_dtype),
             )
             if cache_resolution.complete:
+                self._report_checked({})
                 logger.info(
                     "Reusing cached ROI dense grids from %s",
                     cache_resolution.features_dir,
@@ -303,6 +312,7 @@ class _SlideRegionExtractor:
         if cache_resolution is not None:
             wanted = set(cache_resolution.missing_sample_ids())
             if not wanted:
+                self._report_checked({})
                 return CachedGridSource(out_root, payload_stems=payload_stems)
 
         # Group ROI coordinates by parent slide: one SlideRegions per slide, so slide2vec
@@ -318,6 +328,7 @@ class _SlideRegionExtractor:
             image_path_by_slide[slide_id] = roi.slide.image_path
             spacing_by_slide[slide_id] = roi.slide.spacing_at_level_0
 
+        self._report_checked(coords_by_slide)
         if not coords_by_slide:
             return CachedGridSource(out_root, payload_stems=payload_stems)
 
@@ -349,6 +360,7 @@ class _SlideRegionExtractor:
                     execution=execution,
                 )
             )
+            progress.report("soma.sample.embedded", sample_ids=[region.sample_id for region in regions])
 
         if cache_resolution is not None and artifacts:
             cache_resolution = record_feature_dim(
@@ -362,6 +374,16 @@ class _SlideRegionExtractor:
                 validate_payloads=self._cache.validate_payloads,
             )
         return CachedGridSource(out_root, payload_stems=payload_stems)
+
+    def _report_checked(self, coords_by_slide: Mapping[str, Sequence[tuple[int, int]]]) -> None:
+        """Tell the progress hook which slides have ROIs to encode, and how many each."""
+        pending = set(coords_by_slide) | self._sampled_empty
+        progress.report(
+            "soma.checked",
+            pending=sorted(pending),
+            embedded=sorted(self._sampled_empty),
+            tiles={slide_id: len(coords_by_slide.get(slide_id, ())) for slide_id in pending},
+        )
 
     def _embed_execution(self, out_root: Path, *, dtype: str) -> ExecutionOptions:
         """The execution handed to :meth:`slide2vec.Model.embed_regions_dense`.
