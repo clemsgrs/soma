@@ -106,6 +106,34 @@ def test_a_tune_or_test_sample_without_features_stops_the_run_before_training(
     artifact.assert_passed()
 
 
+def test_a_tune_split_whose_extractions_all_failed_is_refused_not_replaced_by_train(tmp_path, new_artifact):
+    """Every tune sample has the feature status ``error``: the tune split is configured,
+    so ``cohort.allow_missing_tune`` does not stand train in for it and the default
+    policy refuses its samples."""
+    artifact = new_artifact("unpredicted_error_tune_all_failed")
+    dataset_csv, splits_csv, feature_dir = write_cached_bags(
+        tmp_path / "data", tileless=(), statuses=dict.fromkeys(("s10", "s11", "s12"), "error")
+    )
+    config = _config(tmp_path, dataset_csv, splits_csv)
+    config["cohort"]["allow_missing_tune"] = True
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+    seen: list = []
+    pipeline = soma.Pipeline(
+        soma.ExperimentConfig.from_yaml(config_path),
+        source=CachedSetSource(feature_dir),
+        callback_factory=lambda context: [_FitWatcher(seen)],
+    )
+
+    with pytest.raises(ValueError) as refused:
+        pipeline.run()
+
+    named = "tune: ['s10', 's11', 's12'] (feature status 'error')" in str(refused.value)
+    artifact.check_equal("message/names_the_samples", named, True)
+    artifact.check_equal("observer/no_fit_started", seen, [])
+    artifact.assert_passed()
+
+
 def test_exclude_scores_the_predicted_samples_and_lists_the_others(tmp_path, new_artifact, caplog):
     """s15 has no tiles and s16's extraction failed (feature status ``error``): neither
     has a bag, and both are listed with their reason."""
@@ -168,10 +196,13 @@ def test_exclude_scores_the_predicted_samples_and_lists_the_others(tmp_path, new
 
 
 def test_a_run_that_predicts_every_tune_and_test_sample_writes_an_empty_list(tmp_path, new_artifact, caplog):
-    """s00 is a train sample without features: it is left out of training, with a log
-    line, and the default policy does not stop the run."""
+    """s00 (no tiles) and s01 (feature status ``error``) are train samples without
+    features: both are left out of training, with a log line counting them, and the
+    default policy does not stop the run."""
     artifact = new_artifact("unpredicted_none")
-    dataset_csv, splits_csv, feature_dir = write_cached_bags(tmp_path / "data", tileless=("s00",))
+    dataset_csv, splits_csv, feature_dir = write_cached_bags(
+        tmp_path / "data", tileless=("s00",), statuses={"s01": "error"}
+    )
     config = _config(tmp_path, dataset_csv, splits_csv)
 
     with caplog.at_level(logging.INFO, logger="soma"):
@@ -184,7 +215,7 @@ def test_a_run_that_predicts_every_tune_and_test_sample_writes_an_empty_list(tmp
     metrics = json.loads((run.run_dir / "metrics.json").read_text())
     artifact.check_equal("metrics/test/counts", _counts(metrics["test"]), (3, 3, 1.0))
     artifact.check_equal("metrics/tune/counts", _counts(metrics["tune"]), (3, 3, 1.0))
-    left_out = "train=9" in caplog.text and "train empty dropped=1" in caplog.text
+    left_out = "train=8" in caplog.text and "train dropped (no features)=2" in caplog.text
     artifact.check_equal("log/train_left_out", left_out, True)
     warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
     artifact.check_equal("no_coverage_warning", [w for w in warnings if " scored " in w], [])

@@ -501,23 +501,22 @@ def _format_fold_summary(
     train_count: int,
     tune_count: int,
     tests_counts: dict[str, int],
-    empty_sample_ids_by_split: dict[str, list[str]] | None = None,
+    unserved_ids_by_split: dict[str, list[str]] | None = None,
 ) -> str:
     tests_str = " ".join(f"{name}={count}" for name, count in sorted(tests_counts.items()))
     base = f"Fold {fold}: train={train_count} tune={tune_count} {tests_str}"
-    if not empty_sample_ids_by_split:
+    if not unserved_ids_by_split:
         return base
-    empty_counts = {split: len(ids) for split, ids in empty_sample_ids_by_split.items()}
-    if not any(empty_counts.values()):
+    unserved_counts = {split: len(ids) for split, ids in unserved_ids_by_split.items()}
+    if not any(unserved_counts.values()):
         return base
     extras: list[str] = []
-    if empty_counts.get("train", 0):
-        extras.append(f"train empty dropped={empty_counts['train']}")
-    not_predicted = {split: count for split, count in empty_counts.items() if split != "train" and count}
+    if unserved_counts.get("train", 0):
+        extras.append(f"train dropped (no features)={unserved_counts['train']}")
+    not_predicted = {split: count for split, count in unserved_counts.items() if split != "train" and count}
     if not_predicted:
         extras.append(
-            "not predicted (no tiles): "
-            + ", ".join(f"{split}={count}" for split, count in sorted(not_predicted.items()))
+            "not predicted: " + ", ".join(f"{split}={count}" for split, count in sorted(not_predicted.items()))
         )
     return f"{base} | {' | '.join(extras)}" if extras else base
 
@@ -778,13 +777,14 @@ def _not_predicted_reason(status: str) -> str:
 def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, log: bool = True) -> _SetFoldRecords:
     """Resolve the fold's train / tune / test membership against the features on disk.
 
-    Samples the feature manifest records as ``empty`` (tiling kept no tile, so no bag)
-    leave training; in tune and test they stay targets the model cannot predict, which
-    ``evaluation.unpredicted`` refuses (:func:`check_unpredicted`) or leaves out of the
-    metrics. So do tune and test samples of any other status but ``success`` (an
-    extraction ``error``, a ``tbp`` never processed): the source serves no features for
-    them. ``tune_is_test``, ``allow_missing_tune`` and ``evaluation.holdout_test``
-    reshape the splits as their docs say. ``log=False`` resolves without logging.
+    The source serves no features for a sample the feature manifest records with any
+    status but ``success`` (``empty``: tiling kept no tile; an extraction ``error``; a
+    ``tbp`` never processed). Such samples leave training; in tune and test they stay
+    targets the model cannot predict, which ``evaluation.unpredicted`` refuses
+    (:func:`check_unpredicted`) or leaves out of the metrics, so a tune split made of
+    them does not fall back to train. ``tune_is_test``, ``allow_missing_tune`` and
+    ``evaluation.holdout_test`` reshape the splits as their docs say. ``log=False``
+    resolves without logging.
     """
     plan, samples, feature_store = inputs.plan, inputs.cohort, inputs.source
     cohort, evaluation = plan.cohort, inputs.evaluation
@@ -812,7 +812,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
                     f"Patient feature manifest is missing patient(s) required by fold {fold}: {missing}"
                 )
             expected = {pid for pid, status in statuses.items() if status == "success"}
-            empty = {pid for pid, status in statuses.items() if status == "empty"}
+            unserved = {pid for pid, status in statuses.items() if status != "success"}
             unexpected_missing = sorted(expected - set(feature_store.sample_ids))
             if unexpected_missing:
                 raise ValueError(
@@ -822,10 +822,10 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
             train_ids = [pid for pid in train_ids if pid in expected]
             tune_ids = [pid for pid in tune_ids if pid in expected]
             test_ids = {name: [pid for pid in ids if pid in expected] for name, ids in test_ids.items()}
-            empty_by_split: dict[str, list[str]] | None = {
-                "train": [pid for pid in raw_train_ids if pid in empty],
-                "tune": [pid for pid in raw_tune_ids if pid in empty],
-                **{name: [pid for pid in ids if pid in empty] for name, ids in raw_test_ids.items()},
+            unserved_by_split: dict[str, list[str]] | None = {
+                "train": [pid for pid in raw_train_ids if pid in unserved],
+                "tune": [pid for pid in raw_tune_ids if pid in unserved],
+                **{name: [pid for pid in ids if pid in unserved] for name, ids in raw_test_ids.items()},
             }
         else:
             missing = sorted(split_ids - set(feature_store.sample_ids))
@@ -834,21 +834,21 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
                     "Patient feature store is missing patient embedding(s) required by fold "
                     f"{fold}: {missing}"
                 )
-            empty_by_split = None
+            unserved_by_split = None
     elif statuses is not None:
         split_ids = set(fold_split.train) | set(fold_split.tune) | all_test_ids
         missing = sorted(split_ids - set(statuses))
         if missing:
             raise ValueError(f"Feature manifest is missing sample(s) required by fold {fold}: {missing}")
         expected = {sid for sid, status in statuses.items() if status == "success"}
-        empty = {sid for sid, status in statuses.items() if status == "empty"}
+        unserved = {sid for sid, status in statuses.items() if status != "success"}
         unexpected_missing = sorted(expected - set(feature_store.sample_ids))
         if unexpected_missing:
             raise ValueError(f"Feature store is missing expected sample(s) for fold {fold}: {unexpected_missing}")
-        empty_by_split = {
-            "train": [sid for sid in fold_split.train if sid in empty],
-            "tune": [sid for sid in fold_split.tune if sid in empty],
-            **{name: [sid for sid in ids if sid in empty] for name, ids in fold_split.tests.items()},
+        unserved_by_split = {
+            "train": [sid for sid in fold_split.train if sid in unserved],
+            "tune": [sid for sid in fold_split.tune if sid in unserved],
+            **{name: [sid for sid in ids if sid in unserved] for name, ids in fold_split.tests.items()},
         }
         train_records = [samples.record(sid) for sid in fold_split.train if sid in expected]
         tune_records = [samples.record(sid) for sid in fold_split.tune if sid in expected]
@@ -862,7 +862,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
         test_records_by_split = {
             name: [samples.record(sid) for sid in ids] for name, ids in fold_split.tests.items()
         }
-        empty_by_split = None
+        unserved_by_split = None
 
     tune_from_test: str | None = None
     if cohort.tune_is_test:
@@ -878,8 +878,8 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
         if patient:
             tune_ids = list(test_ids[tune_from_test])
             raw_tune_ids = list(raw_test_ids[tune_from_test])
-        if empty_by_split is not None:
-            empty_by_split["tune"] = list(empty_by_split.get(tune_from_test, []))
+        if unserved_by_split is not None:
+            unserved_by_split["tune"] = list(unserved_by_split.get(tune_from_test, []))
 
     if evaluation.holdout_test:
         # Tune-only model-selection run: no test loader, no test inference; metrics and
@@ -887,8 +887,8 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
         test_records_by_split = {}
         if patient:
             test_ids, raw_test_ids = {}, {}
-        if empty_by_split is not None:
-            empty_by_split = {k: v for k, v in empty_by_split.items() if k in ("train", "tune")}
+        if unserved_by_split is not None:
+            unserved_by_split = {k: v for k, v in unserved_by_split.items() if k in ("train", "tune")}
 
     train_items = train_ids if patient else train_records
     tune_items = tune_ids if patient else tune_records
@@ -896,7 +896,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
     unit = "patients" if patient else "samples"
     if not train_items:
         raise ValueError(f"{_fp} has no training {unit} with available features")
-    fallback_to_train = not tune_items and not (empty_by_split and empty_by_split.get("tune"))
+    fallback_to_train = not tune_items and not (unserved_by_split and unserved_by_split.get("tune"))
     if fallback_to_train and not cohort.allow_missing_tune:
         raise ValueError(f"{_fp} has no tuning {unit} with available features")
     if fallback_to_train:
@@ -912,8 +912,8 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
         if patient:
             raw_tune_ids = list(raw_train_ids)
     for name, items in tests_items.items():
-        split_empty = empty_by_split.get(name, []) if empty_by_split else []
-        if not items and not split_empty:
+        split_unserved = unserved_by_split.get(name, []) if unserved_by_split else []
+        if not items and not split_unserved:
             raise ValueError(f"{_fp} has no {unit} with available features in split '{name}'")
     if log:
         logger.info(
@@ -922,7 +922,7 @@ def _set_fold_records(inputs: RunInputs, fold: int, fold_split: FoldSplit, *, lo
                 train_count=len(train_items),
                 tune_count=len(tune_items),
                 tests_counts={name: len(items) for name, items in tests_items.items()},
-                empty_sample_ids_by_split=empty_by_split,
+                unserved_ids_by_split=unserved_by_split,
             )
         )
 
