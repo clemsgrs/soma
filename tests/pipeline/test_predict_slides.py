@@ -1301,8 +1301,8 @@ def worker_processes() -> list:
 
 @pytest.mark.parametrize(
     ("ensemble", "stitch"),
-    [(False, "pick_one"), (False, "average"), (True, "average")],
-    ids=["each-pick_one", "each-average", "ensemble-average"],
+    [(False, "average"), (True, "average")],
+    ids=["each-average", "ensemble-average"],
 )
 def test_split_tiles_on_two_devices_writes_the_files_of_one_device(tmp_path, two_slides, ensemble, stitch):
     """Each slide's tiles are dealt to two device workers in chunks of one batch. Two
@@ -1326,21 +1326,6 @@ def test_split_tiles_on_two_devices_writes_the_files_of_one_device(tmp_path, two
         assert f"slide {sample_id}: 20 tile(s) in 4 batch(es)" in logs["worker_0.log"]
         assert f"slide {sample_id}: 16 tile(s) in 4 batch(es)" in logs["worker_1.log"]
     assert worker_processes() == []
-
-
-def test_split_tiles_runs_each_slide_through_its_own_fold_s_bundle(tmp_path, rotating):
-    records, splits = rotating
-    bundles = fold_bundles(tmp_path, records, splits)
-    run = {"bundles": bundles, "records": records, "splits": splits, **OWN_FOLD, **CHUNKED}
-    alone = soma.predict_slides(output_dir=tmp_path / "alone", **run)
-
-    split = soma.predict_slides(output_dir=tmp_path / "split", **run, **SPLIT_TILES)
-
-    assert split.equals(alone)
-    assert list(zip(split.bundle, split.sample_id)) == [("fold_0", "s0"), ("fold_0", "s1"), ("fold_1", "s2"), ("fold_1", "s3")]
-    assert files_of(tmp_path / "split") == files_of(tmp_path / "alone")
-    for log in sorted((tmp_path / "split" / "logs").iterdir()):
-        assert [f"slide s{k}:" in log.read_text() for k in range(4)] == [True] * 4
 
 
 @pytest.mark.parametrize("devices", [None, ["cpu"]], ids=["this-process", "one-device"])

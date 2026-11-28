@@ -1002,6 +1002,8 @@ def _predict_on_devices(plan: dict[str, Any], ids: list[str], devices: Sequence[
 def _predict_tiles_on_devices(plan: dict[str, Any], ids: list[str], devices: Sequence[str]) -> None:
     """``split: tiles``: predict the slides one after another in this process, each slide's
     tiles dealt across one process per device (:mod:`soma.pipeline.tile_split`)."""
+    import torch
+
     from soma.pipeline.parallel import free_device_memory
     from soma.pipeline.tile_split import device_tile_outputs
 
@@ -1013,7 +1015,9 @@ def _predict_tiles_on_devices(plan: dict[str, Any], ids: list[str], devices: Seq
     with device_tile_outputs(
         bundles, devices, heads=heads, num_workers=plan["predict"]["num_workers"], log_dir=output_dir / "logs"
     ) as outputs:
-        _predict_slides(plan, ids, outputs)
+        # The heads run here, under inference mode as on a device (DeviceTileOutputs.batches).
+        with torch.inference_mode():
+            _predict_slides(plan, ids, outputs)
 
 
 def predict_shard(plan: Mapping[str, Any], sample_ids: Sequence[str]) -> list[str]:

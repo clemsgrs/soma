@@ -297,6 +297,7 @@ def _worker_main(
                 for batch in outputs.subset(indices).batches(tiles, batch_size=batch_size):
                     for output in batch.outputs:
                         _send(results, ("output", output.logits.detach().cpu()))
+                        del output  # not held while the next output is computed
                     count += 1
                 _send(results, ("end",))
                 print(f"slide {tiles.image.sample_id}: {len(tiles.origins)} tile(s) in {count} batch(es)", flush=True)
