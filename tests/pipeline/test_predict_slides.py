@@ -1328,6 +1328,31 @@ def test_split_tiles_on_two_devices_writes_the_files_of_one_device(tmp_path, two
     assert worker_processes() == []
 
 
+def test_split_tiles_restricted_to_the_mask_writes_the_files_of_one_device(tmp_path):
+    """This process stitches and emits the map's rows, so it applies the restriction: on
+    two device workers, the restricted maps, records and index are those of one device."""
+    records, in_scope = scoped_cohort(tmp_path, 2)
+    run = {
+        "bundles": save_bundle(tmp_path / "run" / "bundle"),
+        "records": records,
+        "restrict_to_mask": True,
+        "extraction": SCOPED,
+        "batch_size": 5,
+    }
+    alone = soma.predict_slides(output_dir=tmp_path / "alone", **run)
+
+    split = soma.predict_slides(output_dir=tmp_path / "split", **run, **SPLIT_TILES)
+
+    assert split.equals(alone)
+    assert files_of(tmp_path / "split") == files_of(tmp_path / "alone")
+    for row in split.itertuples():
+        restricted = read_map(tmp_path / "split" / row.path)
+        assert restricted.any() and not restricted[~in_scope[row.sample_id]].any()
+    logs = [path.read_text() for path in sorted((tmp_path / "split" / "logs").iterdir())]
+    assert [[f"slide {sample_id}:" in text for sample_id in ("s0", "s1")] for text in logs] == [[True, True]] * 2
+    assert worker_processes() == []
+
+
 @pytest.mark.parametrize("devices", [None, ["cpu"]], ids=["this-process", "one-device"])
 def test_split_tiles_with_one_device_is_a_single_device_run(tmp_path, two_slides, encoder_forwards, devices):
     bundle = save_bundle(tmp_path / "run" / "bundle")
