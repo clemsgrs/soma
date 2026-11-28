@@ -1,10 +1,8 @@
 """Detection points over whole slides, gathered while each slide streams tile by tile.
 
-The tiles are read, encoded and decoded as for the label maps
-(:mod:`soma.evaluation.whole_slide`): hs2p's slide grid, one
-:class:`~soma.data.images.RegionImageSource` read per kept tile, and one encoder forward
-for the models that share a stage. Each slide gets one parquet per output: every peak above
-the head's ``min_score``, with no operating threshold applied.
+The tiles lie on hs2p's slide grid, and their outputs come from the seam the label maps
+read (:class:`~soma.evaluation.whole_slide.TileOutputs`). Each slide gets one parquet per
+output: every peak above the head's ``min_score``, with no operating threshold applied.
 
 Per tile
 --------
@@ -51,9 +49,8 @@ import numpy as np
 import torch
 
 from soma._internal.atomic_io import atomic_write_bytes
-from soma.data.manifests import ImageEntry
 from soma.evaluation.detection import greedy_point_nms
-from soma.evaluation.whole_slide import stitch_margin_px, tile_id, tile_outputs, tile_source
+from soma.evaluation.whole_slide import SlideTiles, TileOutputs, stitch_margin_px, tile_id
 
 __all__ = ["SLIDE_POINTS_KIND", "predict_slide_points"]
 
@@ -63,10 +60,9 @@ _METADATA_KEY = b"soma"
 
 
 def predict_slide_points(
-    models: Sequence[Any],
+    outputs: TileOutputs,
     *,
-    image: ImageEntry,
-    origins: Sequence[tuple[int, int]],
+    tiles: SlideTiles,
     tile_px: int,
     step_px: float,
     overlap: float,
@@ -74,53 +70,40 @@ def predict_slide_points(
     level0_spacing_um: float,
     paths: Sequence[str | Path],
     metadata: Sequence[Mapping[str, Any]],
-    spacing_um: float,
     ensemble: bool = False,
-    backend: str = "auto",
-    tolerance: float = 0.05,
     batch_size: int = 8,
-    num_workers: int = 0,
 ) -> list[int]:
     """Write one slide's detection points as parquets at ``paths``.
 
-    ``models`` are :class:`~soma.models.model.DenseModel` models with a detection head and
-    a frozen encoder stage, in eval mode on their device. ``origins`` are the level-0
-    origins of the kept tiles on the slide grid, and ``step_px`` is the grid's step in the
-    pixels of a ``tile_px`` tile; ``slide_size`` is the slide's level-0
-    ``(width, height)`` at ``level0_spacing_um``. Each tile is read at ``spacing_um``
-    (``tolerance``, ``backend``) from ``image``. Without ``ensemble`` there is one path
-    (and one ``metadata`` mapping, stored in the file) per model; with it there is one,
-    and the peaks come from the models' mean heatmap, with the first model's head. Each
-    ``metadata`` mapping holds the class scheme: ``classes`` (one entry per class of its
-    head, in class order) and ``drop``. A slide without a kept tile gets a parquet
-    without rows. Returns each parquet's point count.
+    ``outputs`` gives each batch's results (:class:`~soma.evaluation.whole_slide.TileOutputs`)
+    for the detection bundles it runs. ``tiles`` are the slide's kept tiles on the slide
+    grid, and ``step_px`` is the grid's step in the pixels of a ``tile_px`` tile;
+    ``slide_size`` is the slide's level-0 ``(width, height)`` at ``level0_spacing_um``.
+    Without ``ensemble`` there is one path (and one ``metadata`` mapping, stored in the
+    file) per bundle; with it there is one, and the peaks come from the bundles' mean
+    heatmap, with the first bundle's head. Each ``metadata`` mapping holds the class
+    scheme: ``classes`` (one entry per class of its head, in class order) and ``drop``. A
+    slide without a kept tile gets a parquet without rows. Returns each parquet's point
+    count.
     """
-    models = list(models)
+    bundle_heads = list(outputs.heads)
     paths = [Path(path) for path in paths]
-    expected = 1 if ensemble else len(models)
-    if not models:
-        raise ValueError("predict_slide_points needs at least one model")
+    expected = 1 if ensemble else len(bundle_heads)
+    if not bundle_heads:
+        raise ValueError("predict_slide_points needs at least one bundle")
     if len(paths) != expected or len(metadata) != expected:
         raise ValueError(f"{expected} parquet(s) to write, got {len(paths)} path(s) and {len(metadata)} metadata")
-    heads = [models[0].head] if ensemble else [model.head for model in models]
+    heads = bundle_heads[:1] if ensemble else bundle_heads
     margin = stitch_margin_px(int(tile_px), overlap)
     width, height = (int(v) for v in slide_size)
-    ordered = sorted(((int(x), int(y)) for x, y in origins), key=lambda origin: (origin[1], origin[0]))
     kept: list[list[np.ndarray]] = [[] for _ in heads]
-    if ordered:
-        source = tile_source(
-            models, image=image, origins=ordered, spacing_um=spacing_um, backend=backend, tolerance=tolerance
-        )
-        for batch_origins, outputs in tile_outputs(
-            models, source=source, origins=ordered, batch_size=batch_size, num_workers=num_workers
-        ):
+    if tiles.origins:
+        source = tiles.source(heads[0].geometry.target_size)
+        for batch_origins, results in outputs.batches(tiles, batch_size=batch_size):
             if ensemble:
-                peaks = [heads[0].frame_peaks(_mean_heatmap(outputs))]
+                peaks = [heads[0].frame_peaks(_mean_heatmap(results))]
             else:
-                peaks = [
-                    model.head.frame_peaks(output.logits.float())
-                    for model, output in zip(models, outputs, strict=True)
-                ]
+                peaks = [head.frame_peaks(output.logits.float()) for head, output in zip(heads, results, strict=True)]
             for found, per_tile in zip(kept, peaks):
                 for origin, rows in zip(batch_origins, per_tile):
                     geometry = source.geometry(tile_id(origin))
