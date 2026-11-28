@@ -306,6 +306,28 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
         changed = float((label_map != label_maps[row.sample_id]).mean())
         artifact.check_at_most(f"average/{row.sample_id}/changed_fraction", changed, 0.05)
 
+    # split: tiles on two CPU device workers: each slide's tiles are dealt to both in
+    # chunks of one batch, and with either stitch the maps, records and index are byte for
+    # byte those of one device. This process only stitches: it encodes no tile.
+    maps_dir = index.path[0].split("/", 1)[0]
+    for stitch, alone in (("pick_one", output_dir), ("average", averaged_dir)):
+        name = f"split_{stitch}"
+        split = {**config, "predict": {**config["predict"], "output_dir": name, "stitch": stitch, "devices": ["cpu", "cpu"], "split": "tiles"}}
+        (tmp_path / f"{name}.yaml").write_text(yaml.safe_dump(split, sort_keys=False))
+        encoded_images.clear()
+        soma_main(["predict", f"{name}.yaml"])
+        split_dir = tmp_path / name
+        artifact.check_equal(f"{name}/plan/split", yaml.safe_load((split_dir / "plan.yaml").read_text())["predict"]["split"], "tiles")
+        artifact.check_equal(f"{name}/main_process_tiles_encoded", sum(encoded_images), 0)
+        artifact.check_equal(f"{name}/files_unchanged", files_of(split_dir / maps_dir) == files_of(alone / maps_dir), True)
+        same_index = pd.read_parquet(split_dir / "index.parquet").equals(pd.read_parquet(alone / "index.parquet"))
+        artifact.check_equal(f"{name}/index_unchanged", same_index, True)
+        logs = {path.name: path.read_text() for path in sorted((split_dir / "logs").iterdir())}
+        artifact.check_equal(f"{name}/logs", sorted(logs), ["worker_0.log", "worker_1.log"])
+        for sample_id in ("slide0", "slide1"):
+            took_part = [f"slide {sample_id}:" in text for text in logs.values()]
+            artifact.check_equal(f"{name}/{sample_id}/both_workers", took_part, [True, True])
+
     # predict.restrict_to_mask with the annotation raster as mask_path: min_coverage 0 keeps
     # every tile the raster's annotated values (0, 1 and 2) touch, here every tile, and the
     # map is 0 where the raster is not annotated (255, its first rows). With and without
@@ -513,6 +535,21 @@ def test_predict_writes_a_points_parquet_per_slide_from_a_trained_bundle(
     artifact.check_equal("replay/tiles_encoded", sum(encoded_images), 0)
     artifact.check_equal("replay/points_unchanged", sha256(path) == before, True)
 
+    # split: tiles on two CPU device workers: the slide's 24 tiles are dealt to both in
+    # chunks of one batch, and the points, record and index are byte for byte those of one
+    # device. This process only finds the peaks and stitches them: it encodes no tile.
+    split = {**config, "predict": {**config["predict"], "output_dir": "split", "devices": ["cpu", "cpu"], "split": "tiles"}}
+    (tmp_path / "split.yaml").write_text(yaml.safe_dump(split, sort_keys=False))
+    encoded_images.clear()
+    soma_main(["predict", "split.yaml"])
+    split_dir = tmp_path / "split"
+    artifact.check_equal("split/main_process_tiles_encoded", sum(encoded_images), 0)
+    artifact.check_equal("split/files_unchanged", files_of(split_dir / run.run_dir.name) == files_of(path.parent), True)
+    same_index = pd.read_parquet(split_dir / "index.parquet").equals(pd.read_parquet(output_dir / "index.parquet"))
+    artifact.check_equal("split/index_unchanged", same_index, True)
+    took_part = ["slide slide0:" in log.read_text() for log in sorted((split_dir / "logs").iterdir())]
+    artifact.check_equal("split/both_workers", took_part, [True, True])
+
     # soma evaluate on the output directory: the points at the bundle's threshold, against
     # the slide's cells. The annotated points hold the run's ids (0 light, 1 dark) and one
     # dropped point (id 2). The ignore mask, at a quarter of the slide's resolution, marks
@@ -656,7 +693,9 @@ def test_predict_gives_each_fold_bundle_the_slides_its_fold_held_out(
 ):
     """A 3-fold rotating cross-validation, each fold with its own test slides. One
     ``soma predict`` with ``cohort.fold: bundle`` predicts each fold's bundle on its own
-    fold's test slides, and writes the files of three calls with an explicit fold."""
+    fold's test slides, and writes the files of three calls with an explicit fold. With
+    ``predict.split: tiles`` on two CPU devices, it and calls with several bundles and an
+    ensemble write the files of one device."""
     artifact = new_artifact("predict_rotating_cv_folds")
     slides_csv, _ = make_segmentation_slides(tmp_path / "data", size=FOLD_SLIDE_PX)
     slides = pd.read_csv(slides_csv)
@@ -678,9 +717,9 @@ def test_predict_gives_each_fold_bundle_the_slides_its_fold_held_out(
         rows.append({**row._asdict(), "mask_path": str(mask)})
     pd.DataFrame(rows).drop(columns="Index").to_csv(tmp_path / "slides.csv", index=False)
 
-    def predict(name, bundles, fold):
+    def predict(name, bundles, fold, **settings):
         config = {
-            "predict": {"output_dir": name, "bundles": bundles, "batch_size": 8},
+            "predict": {"output_dir": name, "bundles": bundles, "batch_size": 8, **settings},
             "cohort": {"records": "slides.csv", "splits": "splits.csv", "fold": fold},
             "extraction": {"tiling": {"mask_backend": "tifffile"}},
         }
@@ -713,6 +752,23 @@ def test_predict_gives_each_fold_bundle_the_slides_its_fold_held_out(
         alone = pd.read_parquet(single / "index.parquet")
         mine = index[index.bundle == f"fold_{k}"].reset_index(drop=True)
         artifact.check_equal(f"fold_{k}/index", mine.equals(alone), True)
+
+    # split: tiles on two CPU device workers (each slide's 9 tiles in a chunk of 8 and one
+    # of 1) writes the files of one device: each fold's bundle on its own fold's slides,
+    # and the three bundles on fold 0's test slides, each its own map or one ensemble map.
+    on_two = {"devices": ["cpu", "cpu"], "split": "tiles"}
+    split = predict("split", run_dir, "bundle", **on_two)
+    for k in range(NUM_FOLDS):
+        artifact.check_equal(f"split/fold_{k}/files", files_of(split / f"fold_{k}") == files_of(output_dir / f"fold_{k}"), True)
+    artifact.check_equal("split/index", pd.read_parquet(split / "index.parquet").equals(index), True)
+    for ensemble, maps in ((False, [f"fold_{k}" for k in range(NUM_FOLDS)]), (True, ["ensemble"])):
+        name = "ensemble" if ensemble else "each"
+        alone = predict(f"{name}_alone", run_dir, 0, ensemble=ensemble)
+        split = predict(f"{name}_split", run_dir, 0, ensemble=ensemble, **on_two)
+        artifact.check_equal(f"{name}/files_per_map", [len(files_of(alone / m)) for m in maps], [2 * len(tests[0])] * len(maps))
+        artifact.check_equal(f"{name}/split_files", [files_of(split / m) == files_of(alone / m) for m in maps], [True] * len(maps))
+        same_index = pd.read_parquet(split / "index.parquet").equals(pd.read_parquet(alone / "index.parquet"))
+        artifact.check_equal(f"{name}/split_index", same_index, True)
 
     # Each fold is scored on its own, with its fold.
     for k in range(NUM_FOLDS):
