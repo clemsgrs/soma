@@ -8,6 +8,7 @@ A prediction config has three sections::
       bundles: [runs/beetle/fold_0/bundle, runs/beetle/fold_1/bundle]   # or one run directory
       ensemble: false
       stitch: pick_one            # or average (segmentation only)
+      restrict_to_mask: false     # true: 0 outside the mask (segmentation only)
       batch_size: 8
       num_workers: 0
       devices: [0, 1]
@@ -51,6 +52,7 @@ import json
 import logging
 import warnings
 from collections.abc import Mapping, Sequence
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any
 
@@ -69,7 +71,9 @@ PROVENANCE_FILENAME = "provenance.json"
 INDEX_FILENAME = "index.parquet"
 #: The directory of the one map ``ensemble: true`` writes per slide.
 ENSEMBLE_NAME = "ensemble"
-PREDICT_KEYS = ("output_dir", "bundles", "ensemble", "stitch", "batch_size", "num_workers", "devices")
+PREDICT_KEYS = (
+    "output_dir", "bundles", "ensemble", "stitch", "restrict_to_mask", "batch_size", "num_workers", "devices"
+)
 COHORT_KEYS = ("records", "splits", "subset", "fold")
 #: The ``cohort.fold`` that gives each bundle the slides of its own fold.
 BUNDLE_FOLD = "bundle"
@@ -97,6 +101,7 @@ def predict_slides(
     fold: int | str | None = None,
     ensemble: bool = False,
     stitch: str = "pick_one",
+    restrict_to_mask: bool = False,
     batch_size: int = 8,
     num_workers: int = 0,
     devices: Sequence[str | int] | None = None,
@@ -106,11 +111,11 @@ def predict_slides(
     for a segmentation bundle and a points parquet for a detection bundle.
 
     One keyword per config key (see the module docstring for the config): ``output_dir``,
-    ``bundles``, ``ensemble``, ``stitch``, ``batch_size``, ``num_workers`` and ``devices``
-    are the ``predict`` section, ``records``, ``splits``, ``subset`` and ``fold`` the
-    ``cohort`` section, and ``extraction`` the ``extraction`` section (a mapping, or a
-    ``slide2vec.PreprocessingConfig``). Relative paths resolve against the working
-    directory.
+    ``bundles``, ``ensemble``, ``stitch``, ``restrict_to_mask``, ``batch_size``,
+    ``num_workers`` and ``devices`` are the ``predict`` section, ``records``, ``splits``,
+    ``subset`` and ``fold`` the ``cohort`` section, and ``extraction`` the ``extraction``
+    section (a mapping, or a ``slide2vec.PreprocessingConfig``). Relative paths resolve
+    against the working directory.
 
     ``bundles`` are segmentation or detection bundles (:func:`soma.save`), all of one
     family, that agree on tile size and read spacing, or one run directory, which stands
@@ -127,6 +132,15 @@ def predict_slides(
     labels the margin that pick one leaves at 0. Averaging also holds, per map, float32 sums
     over one tile's height of rows and the map's width, one plane per class. Class ``k`` is
     stored as ``k + 1``; 0 is "not predicted". ``average`` is refused for detection bundles.
+    ``restrict_to_mask=True`` sets each map to 0 wherever the slide's mask is out of scope,
+    after stitching and after an ensemble's averaging: a mask pixel is in scope when its
+    value maps, through ``extraction.masks.pixel_mapping``, to a class that
+    ``extraction.masks.min_coverage`` names. It does not change which tiles are kept. The
+    mask is read on the map's grid with ``extraction.tiling.mask_backend``, and a map pixel
+    it does not cover is out of scope. ``not_predicted_fraction`` is then the share of the
+    in-scope pixels that are 0 (0.0 for a slide with none), not of all the map's pixels.
+    It is refused for detection bundles and, before any slide is predicted, for a cohort
+    with a slide without a ``mask_path``.
     Detection: each tile keeps the peaks in the region it contributes, lifted to level-0
     pixels, and one per-class NMS over the slide removes the duplicates across seams
     (:mod:`soma.evaluation.whole_slide_points`). The parquet holds every peak above the
@@ -171,6 +185,7 @@ def predict_slides(
         fold=fold,
         ensemble=ensemble,
         stitch=stitch,
+        restrict_to_mask=restrict_to_mask,
         batch_size=batch_size,
         num_workers=num_workers,
         devices=devices,
@@ -219,6 +234,7 @@ def resolve_slide_prediction(
     fold=None,
     ensemble=False,
     stitch="pick_one",
+    restrict_to_mask=False,
     batch_size=8,
     num_workers=0,
     devices=None,
@@ -229,6 +245,8 @@ def resolve_slide_prediction(
 
     if not isinstance(ensemble, bool):
         raise ValueError(f"predict.ensemble must be true or false, got {ensemble!r}")
+    if not isinstance(restrict_to_mask, bool):
+        raise ValueError(f"predict.restrict_to_mask must be true or false, got {restrict_to_mask!r}")
     if stitch not in STITCHES:
         raise ValueError(f"predict.stitch must be {' or '.join(map(repr, STITCHES))}, got {stitch!r}")
     if ensemble and fold == BUNDLE_FOLD:
@@ -253,6 +271,11 @@ def resolve_slide_prediction(
             "predict.stitch: average applies to segmentation only: it averages the tiles' "
             f"softmax, and these are {family} bundles. Use predict.stitch: pick_one."
         )
+    if restrict_to_mask and family != "segmentation":
+        raise ValueError(
+            "predict.restrict_to_mask applies to segmentation only: it sets the label map to 0 "
+            f"outside the mask, and these are {family} bundles. Use predict.restrict_to_mask: false."
+        )
     tile_px, spacing_um, tolerance = _shared_tile(infos)
     if ensemble:
         _check_ensemble(infos, family)
@@ -273,6 +296,7 @@ def resolve_slide_prediction(
             "bundles": [str(path) for path in bundle_dirs],
             "ensemble": ensemble,
             "stitch": stitch,
+            "restrict_to_mask": restrict_to_mask,
             "batch_size": batch_size,
             "num_workers": num_workers,
             "devices": devices,
@@ -577,7 +601,9 @@ def _comparable(plan: Mapping[str, Any]) -> dict[str, Any]:
     predict = payload.get("predict") or {}
     for key in PLACEMENT_KEYS:
         predict.pop(key, None)
-    predict.setdefault("stitch", STITCHES[0])  # a plan without the key stitched with the default
+    # A plan written before these keys predicted with their defaults.
+    predict.setdefault("stitch", STITCHES[0])
+    predict.setdefault("restrict_to_mask", False)
     return payload
 
 
@@ -800,6 +826,14 @@ def _write_provenance(output_dir: Path, plan: Mapping[str, Any], identities) -> 
 def _run(plan: dict[str, Any]) -> pd.DataFrame:
     output_dir = Path(plan["predict"]["output_dir"])
     work, folds = _work(plan)
+    if plan["predict"]["restrict_to_mask"]:
+        bare = [entry.sample_id for entry, _ in work if entry.mask_path is None]
+        if bare:
+            raise ValueError(
+                f"predict.restrict_to_mask needs a mask_path for every slide, and {len(bare)} "
+                f"slide(s) have none: {bare}. Add their mask_path to {plan['cohort']['records']}, "
+                "or set predict.restrict_to_mask: false."
+            )
     _guard_plan(output_dir, plan)
     identities = _identities(plan)
     if folds is not None:
@@ -985,6 +1019,7 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
         level0_spacing_um=grid.tiles.base_spacing_um,
     )
     ensemble = plan["predict"]["ensemble"]
+    restricted = plan["predict"]["restrict_to_mask"]
     shared = {
         "sample_id": entry.sample_id,
         "ensemble": ensemble,
@@ -992,6 +1027,7 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
         "tile_size_px": int(tiling.requested_tile_size_px),
         "overlap": float(tiling.overlap),
         "stitch": plan["predict"]["stitch"],
+        "restrict_to_mask": restricted,
     }
     if ensemble:
         metadata = [{**shared, **_class_scheme(models[0].head), "bundles": identities}]
@@ -1001,21 +1037,23 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
             for model, identity in zip(models, identities)
         ]
     file = f"{entry.sample_id}.tif"
-    fractions = predict_slide_label_maps(
-        models,
-        image=entry,
-        origins=origins,
-        frame=frame,
-        paths=[output_dir / name / file for name in names],
-        metadata=metadata,
-        spacing_um=float(tiling.requested_spacing_um),
-        ensemble=ensemble,
-        stitch=plan["predict"]["stitch"],
-        backend=tiling.backend,
-        tolerance=float(tiling.tolerance),
-        batch_size=plan["predict"]["batch_size"],
-        num_workers=plan["predict"]["num_workers"],
-    )
+    with _mask_scope(entry, extraction, grid, frame) if restricted else nullcontext() as scope:
+        fractions = predict_slide_label_maps(
+            models,
+            image=entry,
+            origins=origins,
+            frame=frame,
+            paths=[output_dir / name / file for name in names],
+            metadata=metadata,
+            spacing_um=float(tiling.requested_spacing_um),
+            ensemble=ensemble,
+            stitch=plan["predict"]["stitch"],
+            backend=tiling.backend,
+            tolerance=float(tiling.tolerance),
+            batch_size=plan["predict"]["batch_size"],
+            num_workers=plan["predict"]["num_workers"],
+            scope=scope,
+        )
     for name, fraction in zip(names, fractions):
         record = {
             "sample_id": entry.sample_id,
@@ -1026,8 +1064,31 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
             "read_spacing_um": float(tiling.requested_spacing_um),
             "num_tiles": len(origins),
             "not_predicted_fraction": fraction,
+            "restrict_to_mask": restricted,
         }
         atomic_write_text(_record_path(output_dir, name, entry.sample_id), json.dumps(record, indent=2) + "\n")
+
+
+@contextmanager
+def _mask_scope(entry, extraction, grid, frame):
+    """The slide's ``mask_path`` as a :class:`~soma.evaluation.whole_slide.MaskScope` on
+    the map's grid: read with ``extraction.tiling.mask_backend`` against
+    ``extraction.masks.pixel_mapping``, aligned to the slide's level 0 as hs2p tiled it,
+    with the values of the classes that select tiles (``extraction.masks.min_coverage``)
+    in scope."""
+    from hs2p import AnnotationLabels, Mask
+
+    from soma.evaluation.whole_slide import MaskScope
+
+    masks = extraction.masks
+    values = {int(value) for name in masks.min_coverage for value in masks.pixel_mapping[name]}
+    labels = AnnotationLabels(pixel_mapping={name: list(ids) for name, ids in masks.pixel_mapping.items()})
+    with Mask(path=Path(entry.mask_path), labels=labels, backend=extraction.tiling.mask_backend) as mask:
+        aligned = mask.align_to(
+            reference_spacing_um=float(grid.tiles.base_spacing_um),
+            reference_dimensions=tuple(int(v) for v in grid.tiles.slide_dimensions),
+        )
+        yield MaskScope(aligned, values, frame)
 
 
 def _write_slide_points(plan, models, names, identities, entry, output_dir: Path, *, extraction, origins, grid) -> None:

@@ -9,7 +9,9 @@ tile behind its frozen encoder stage, and writes one label TIFF per slide. ``som
 evaluate`` scores the maps against the slides' annotation rasters.
 
 The same slides are predicted again with ``predict.stitch: average``: each map pixel is
-the argmax of the Hann-weighted mean softmax of the tiles that cover it.
+the argmax of the Hann-weighted mean softmax of the tiles that cover it. Then they are
+predicted with the annotation rasters as their masks, with and without
+``predict.restrict_to_mask``: restricted, the map is 0 where the raster is not annotated.
 
 The detection run trains on the dense detection ROIs (small squares of two colours, their
 centres the points). ``soma predict`` writes one points parquet per slide, and ``soma
@@ -303,6 +305,59 @@ def test_predict_writes_a_label_tiff_per_slide_from_a_trained_bundle(
         # The two stitches differ only near the tiles' seams.
         changed = float((label_map != label_maps[row.sample_id]).mean())
         artifact.check_at_most(f"average/{row.sample_id}/changed_fraction", changed, 0.05)
+
+    # predict.restrict_to_mask with the annotation raster as mask_path: min_coverage 0 keeps
+    # every tile the raster's annotated values (0, 1 and 2) touch, here every tile, and the
+    # map is 0 where the raster is not annotated (255, its first rows). With and without
+    # the flag, the maps are the same in scope, and soma evaluate, which leaves out the
+    # rows that are not annotated, gives the same rows and scores.
+    pd.DataFrame([{**row, "mask_path": row["label_mask_path"]} for row in rows]).to_csv(
+        tmp_path / "annotated.csv", index=False
+    )
+    annotated = {"pixel_mapping": {"unannotated": [255], "annotated": [0, 1, 2]}, "min_coverage": {"annotated": 0}}
+    restricting, scores = {}, {}
+    for restrict in (False, True):
+        name = f"restricted_{str(restrict).lower()}"
+        (tmp_path / f"{name}.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "predict": {**config["predict"], "output_dir": name, "restrict_to_mask": restrict},
+                    "cohort": {"records": "annotated.csv"},
+                    "extraction": {**config["extraction"], "masks": annotated},
+                },
+                sort_keys=False,
+            )
+        )
+        soma_main(["predict", f"{name}.yaml"])
+        soma_main(["evaluate", name, "--cohort", "annotated.csv", "--metrics", "mean_dice", "--out", f"{name}.json"])
+        restricting[restrict] = pd.read_parquet(tmp_path / name / "index.parquet")
+        scores[restrict] = json.loads((tmp_path / f"{name}.json").read_text())
+    restricted_plan = yaml.safe_load((tmp_path / "restricted_true" / "plan.yaml").read_text())
+    artifact.check_equal("restrict/plan/restrict_to_mask", restricted_plan["predict"]["restrict_to_mask"], True)
+    artifact.check_equal("restrict/num_tiles", list(restricting[True].num_tiles), list(index.num_tiles))
+    artifact.check_equal("restrict/unrestricted/num_tiles", list(restricting[False].num_tiles), list(index.num_tiles))
+    for on, off in zip(restricting[True].itertuples(), restricting[False].itertuples()):
+        with tifffile.TiffFile(tmp_path / "restricted_true" / on.path) as tiff:
+            restricted = tiff.pages[0].asarray()
+            metadata = json.loads(tiff.pages[0].description)
+        with tifffile.TiffFile(tmp_path / "restricted_false" / off.path) as tiff:
+            unrestricted = tiff.pages[0].asarray()
+        sid = on.sample_id
+        artifact.check_equal(f"restrict/{sid}/shape", list(restricted.shape), list(truths[sid].shape))
+        artifact.check_equal(f"restrict/{sid}/metadata", metadata["restrict_to_mask"], True)
+        # Unrestricted, the tiles are the first run's, and so is the map: every pixel predicted.
+        artifact.check_equal(f"restrict/{sid}/unrestricted_map", np.array_equal(unrestricted, label_maps[sid]), True)
+        artifact.check_equal(f"restrict/{sid}/out_of_scope_px", int(np.count_nonzero(restricted[:IGNORED_ROWS])), 0)
+        artifact.check_equal(
+            f"restrict/{sid}/in_scope_as_unrestricted",
+            np.array_equal(restricted[IGNORED_ROWS:], unrestricted[IGNORED_ROWS:]),
+            True,
+        )
+        # Every in-scope pixel is predicted, so none counts as not predicted.
+        artifact.check_equal(f"restrict/{sid}/not_predicted_fraction", on.not_predicted_fraction, 0.0)
+    same_rows = scores[True]["per_sample"] == scores[False]["per_sample"]
+    artifact.check_equal("restrict/evaluate/per_sample", same_rows, True)
+    artifact.check_equal("restrict/evaluate/metrics", scores[True]["metrics"], scores[False]["metrics"])
     artifact.assert_passed()
 
 

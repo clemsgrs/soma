@@ -374,6 +374,176 @@ def test_with_overlap_zero_average_writes_the_pick_one_map(tmp_path):
     assert rows["average"].not_predicted_fraction == rows["pick_one"].not_predicted_fraction
 
 
+# --- restricted to the mask ----------------------------------------------------------- #
+
+#: A mask vocabulary where values 1 and 2 select tiles: they are in scope. 0 and 3 are
+#: declared, but select no tile, so they are out of scope.
+SCOPED_MASKS = {"pixel_mapping": {"background": [0], "tissue": [1, 2], "other": [3]}, "min_coverage": {"tissue": 0}}
+#: Overlap 0.5 with the scoped vocabulary.
+SCOPED = {**HALF, "masks": SCOPED_MASKS}
+
+
+def scoped_slide(tmp_path, name: str = "s1", *, height: int = 96, width: int = 128, seed: int = 0):
+    """A slide and its mask at the slide's resolution, the map's grid: values 0 to 3 in
+    4 px squares over the left half, 0 over the right half. Returns the slide's row and
+    where the mask is in scope (values 1 and 2)."""
+    rng = np.random.default_rng(seed)
+    values = rng.integers(0, 4, size=(height // 4, width // 4), dtype=np.uint8).repeat(4, 0).repeat(4, 1)
+    values[:, width // 2 :] = 0
+    slide = write_slide(tmp_path / f"{name}.tif", blocky(height, width, seed=seed))
+    mask = write_mask(tmp_path / f"{name}_mask.tif", values)
+    return {"sample_id": name, "image_path": str(slide), "mask_path": str(mask)}, (values == 1) | (values == 2)
+
+
+def test_restrict_to_mask_writes_0_out_of_scope_and_the_unrestricted_labels_in_scope(tmp_path):
+    row, in_scope = scoped_slide(tmp_path)
+    records = write_records(tmp_path / "dataset.csv", [row])
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    maps = {}
+    for restrict in (False, True):
+        index = soma.predict_slides(
+            output_dir=tmp_path / f"restrict_{restrict}",
+            bundles=bundle,
+            records=records,
+            extraction=SCOPED,
+            restrict_to_mask=restrict,
+        )
+        (map_row,) = index.itertuples()
+        maps[restrict] = read_map(tmp_path / f"restrict_{restrict}" / map_row.path)
+
+    # Unrestricted, the kept tiles are predicted in full, also out of scope.
+    assert maps[False][~in_scope].any()
+    np.testing.assert_array_equal(maps[True], np.where(in_scope, maps[False], 0))
+    assert maps[True][in_scope].all()
+
+
+def scoped_cohort(tmp_path, count: int) -> tuple[str, dict[str, np.ndarray]]:
+    """The records of ``count`` scoped slides ``s0``, ``s1``, ... and where each is in scope."""
+    rows, in_scope = [], {}
+    for k in range(count):
+        row, in_scope[f"s{k}"] = scoped_slide(tmp_path, f"s{k}", seed=k)
+        rows.append(row)
+    return write_records(tmp_path / "dataset.csv", rows), in_scope
+
+
+def restricted_and_not(tmp_path, records, bundles, **kwargs) -> dict[bool, dict[tuple[str, str], np.ndarray]]:
+    """Each map of a call with and without ``restrict_to_mask``, by ``(bundle, sample_id)``."""
+    maps = {}
+    for restrict in (False, True):
+        output_dir = tmp_path / f"restrict_{restrict}"
+        index = soma.predict_slides(
+            output_dir=output_dir, bundles=bundles, records=records, restrict_to_mask=restrict, **kwargs
+        )
+        maps[restrict] = {(row.bundle, row.sample_id): read_map(output_dir / row.path) for row in index.itertuples()}
+    return maps
+
+
+@pytest.mark.parametrize(
+    "how",
+    [{}, {"stitch": "average"}, {"ensemble": True}, {"stitch": "average", "ensemble": True}],
+    ids=["pick_one", "average", "pick_one-ensemble", "average-ensemble"],
+)
+def test_restrict_to_mask_applies_to_each_bundle_s_map_and_to_the_ensemble_s(tmp_path, how):
+    """Two bundles over two slides: the restriction applies after stitching and after the
+    ensemble's averaging, so each restricted map is its unrestricted map, 0 out of scope."""
+    records, in_scope = scoped_cohort(tmp_path, 2)
+    bundles = [save_bundle(tmp_path / name / "bundle", seed=seed) for seed, name in enumerate(("a", "b"))]
+
+    maps = restricted_and_not(tmp_path, records, bundles, extraction=SCOPED, **how)
+
+    assert len(maps[True]) == (1 if how.get("ensemble") else 2) * 2
+    assert maps[True].keys() == maps[False].keys()
+    for (bundle, sample_id), restricted in maps[True].items():
+        unrestricted = maps[False][bundle, sample_id]
+        assert unrestricted[~in_scope[sample_id]].any()
+        np.testing.assert_array_equal(restricted, np.where(in_scope[sample_id], unrestricted, 0))
+
+
+def test_restrict_to_mask_applies_to_the_maps_of_each_bundle_s_own_fold(tmp_path):
+    records, in_scope = scoped_cohort(tmp_path, 4)
+    splits = tmp_path / "splits.csv"
+    pd.DataFrame(ROTATING).to_csv(splits, index=False)
+    bundles = fold_bundles(tmp_path, records, splits)
+
+    maps = restricted_and_not(
+        tmp_path, records, bundles, splits=splits, fold="bundle", stitch="average", extraction=SCOPED
+    )
+
+    assert list(maps[True]) == [("fold_0", "s0"), ("fold_0", "s1"), ("fold_1", "s2"), ("fold_1", "s3")]
+    for (bundle, sample_id), restricted in maps[True].items():
+        np.testing.assert_array_equal(restricted, np.where(in_scope[sample_id], maps[False][bundle, sample_id], 0))
+
+
+def test_restricted_not_predicted_fraction_is_the_share_of_the_in_scope_pixels(tmp_path):
+    """Overlap 0 on 32 px tiles, kept at a tissue coverage of 0.5. In ``s1``, tile (0, 0) is
+    all tissue and kept; an 8 x 8 px patch of tissue in the next tile covers 1/16 of it, so
+    that tile is not kept. Restricted, 64 of the 1,088 tissue pixels are not predicted.
+    Unrestricted, every map pixel outside the kept tile is: 8,192 of 9,216. ``s2``'s mask
+    is empty: no pixel is in scope, so its fraction is 0.0 restricted and 1.0 unrestricted."""
+    tissue = np.zeros((96, 96), dtype=np.uint8)
+    tissue[:32, :32] = 1
+    tissue[8:16, 48:56] = 1
+    rows = []
+    for name, mask in (("s1", tissue), ("s2", np.zeros_like(tissue))):
+        slide = write_slide(tmp_path / f"{name}.tif", blocky(96, 96))
+        mask_path = write_mask(tmp_path / f"{name}_mask.tif", mask)
+        rows.append({"sample_id": name, "image_path": str(slide), "mask_path": str(mask_path)})
+    records = write_records(tmp_path / "dataset.csv", rows)
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    fractions = {}
+    for restrict in (False, True):
+        with pytest.warns(UserWarning, match="slide 's2' has no kept tile"):
+            index = soma.predict_slides(
+                output_dir=tmp_path / f"restrict_{restrict}",
+                bundles=bundle,
+                records=records,
+                extraction={**OVERLAP_ZERO, "filter": {"a_t": 0}},
+                restrict_to_mask=restrict,
+            )
+        assert list(index.num_tiles) == [1, 0]
+        fractions[restrict] = dict(zip(index.sample_id, index.not_predicted_fraction))
+
+    assert fractions[True] == {"s1": pytest.approx(64 / 1088), "s2": 0.0}
+    assert fractions[False] == {"s1": pytest.approx(8192 / 9216), "s2": 1.0}
+
+
+def test_a_coarser_mask_is_read_on_the_map_s_grid_and_a_pixel_beyond_its_canvas_is_out_of_scope(tmp_path):
+    """A 193 x 160 px slide at 0.25 um/px, read at 0.5 um/px: each map pixel is 2 x 2
+    slide pixels, and the map is 97 px wide, so its last column lies half off the slide.
+    The tissue mask is 25 x 20 px, about 8 slide pixels per mask pixel: tissue in its
+    columns from 12 and its rows below 10. hs2p aligns it to the slide, and each map pixel
+    takes the mask value under its top-left corner. The last map column is predicted
+    without the restriction and is 0 with it, because the mask's canvas (the slide) does
+    not cover it."""
+    slide = write_slide(tmp_path / "s1.tif", blocky(160, 193), spacing_um=0.25)
+    tissue = np.zeros((20, 25), dtype=np.uint8)
+    tissue[:10, 12:] = 1
+    mask = write_mask(tmp_path / "s1_mask.tif", tissue, spacing_um=0.25 * 193 / 25)
+    records = write_records(
+        tmp_path / "dataset.csv", [{"sample_id": "s1", "image_path": str(slide), "mask_path": str(mask)}]
+    )
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    maps = {}
+    for restrict in (False, True):
+        index = soma.predict_slides(
+            output_dir=tmp_path / f"restrict_{restrict}",
+            bundles=bundle,
+            records=records,
+            extraction=HALF,
+            restrict_to_mask=restrict,
+        )
+        (row,) = index.itertuples()
+        maps[restrict] = read_map(tmp_path / f"restrict_{restrict}" / row.path)
+
+    assert maps[True].shape == (80, 97)
+    columns, rows = np.arange(97), np.arange(80)
+    under = tissue[2 * rows * 20 // 160][:, 2 * columns * 25 // 193]  # the mask pixel under each corner
+    in_scope = (under == 1) & (columns < 96)[None]
+    np.testing.assert_array_equal(maps[True], np.where(in_scope, maps[False], 0))
+    assert maps[False][:40, 96].all() and not maps[True][:, 96].any()
+    assert maps[True][:40, 50:96].all()
+
+
 # --- not predicted -------------------------------------------------------------------- #
 
 
@@ -554,16 +724,58 @@ def test_another_stitch_is_refused_naming_the_two_allowed(tmp_path, cohort, stit
     assert not (tmp_path / "predictions").exists()
 
 
-def test_a_plan_without_the_stitch_key_is_pick_one_and_resumes(tmp_path, two_slides, encoder_forwards):
-    """A ``plan.yaml`` written without ``predict.stitch`` replays as ``pick_one``, and a
-    relaunch into its directory with the default is not refused."""
+@pytest.mark.parametrize("restrict", [False, True])
+def test_the_record_and_the_map_s_metadata_hold_restrict_to_mask(tmp_path, cohort, restrict):
+    import tifffile
+
+    index = predict(tmp_path, cohort, save_bundle(tmp_path / "run" / "bundle"), restrict_to_mask=restrict)
+
+    (row,) = index.itertuples()
+    path = tmp_path / "predictions" / row.path
+    with tifffile.TiffFile(path) as tiff:
+        metadata = json.loads(tiff.pages[0].description)
+    assert metadata["restrict_to_mask"] is restrict
+    assert json.loads(path.with_suffix(".json").read_text())["restrict_to_mask"] is restrict
+
+
+def test_restrict_to_mask_refuses_slides_without_a_mask_path_before_any_is_predicted(tmp_path):
+    """Without a mask, hs2p's tissue segmentation keeps the tiles, and there is no mask to
+    restrict the map to. The refusal names every such slide; nothing is written."""
+    slides = [write_slide(tmp_path / f"s{k}.tif", blocky(96, 96)) for k in range(3)]
+    rows = [{"sample_id": f"s{k}", "image_path": str(slide)} for k, slide in enumerate(slides)]
+    rows[0]["mask_path"] = str(write_mask(tmp_path / "s0_mask.tif", np.ones((96, 96))))
+    records = write_records(tmp_path / "dataset.csv", rows)
+
+    with pytest.raises(
+        ValueError,
+        match=r"predict.restrict_to_mask needs a mask_path for every slide, and 2 slide\(s\) have none: \['s1', 's2'\]",
+    ):
+        predict(tmp_path, records, save_bundle(tmp_path / "run" / "bundle"), restrict_to_mask=True)
+    assert not (tmp_path / "predictions").exists()
+
+
+@pytest.mark.parametrize("restrict", ["yes", 1, None])
+def test_restrict_to_mask_is_true_or_false(tmp_path, cohort, restrict):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    with pytest.raises(ValueError, match=f"predict.restrict_to_mask must be true or false, got {restrict!r}"):
+        predict(tmp_path, cohort, bundle, restrict_to_mask=restrict)
+    assert not (tmp_path / "predictions").exists()
+
+
+def test_a_plan_without_the_stitch_or_restrict_to_mask_key_takes_the_defaults_and_resumes(
+    tmp_path, two_slides, encoder_forwards
+):
+    """A ``plan.yaml`` written before ``predict.stitch`` and ``predict.restrict_to_mask``
+    replays as ``pick_one``, unrestricted, and a relaunch into its directory with the
+    defaults is not refused."""
     from soma.pipeline.slide_prediction import slide_prediction_kwargs
 
     bundle = save_bundle(tmp_path / "run" / "bundle")
     output_dir = tmp_path / "predictions"
     first = soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
     saved = yaml.safe_load((output_dir / "plan.yaml").read_text())
-    del saved["predict"]["stitch"]
+    del saved["predict"]["stitch"], saved["predict"]["restrict_to_mask"]
     (output_dir / "plan.yaml").write_text(yaml.safe_dump(saved, sort_keys=False))
     encoder_forwards.clear()
 
@@ -571,7 +783,8 @@ def test_a_plan_without_the_stitch_key_is_pick_one_and_resumes(tmp_path, two_sli
 
     assert encoder_forwards == []
     assert replayed.equals(first)
-    assert yaml.safe_load((output_dir / "plan.yaml").read_text())["predict"]["stitch"] == "pick_one"
+    predict_section = yaml.safe_load((output_dir / "plan.yaml").read_text())["predict"]
+    assert (predict_section["stitch"], predict_section["restrict_to_mask"]) == ("pick_one", False)
 
 
 def test_a_plan_s_own_tile_size_and_spacing_are_accepted(tmp_path, cohort):
@@ -853,6 +1066,21 @@ def test_a_changed_overlap_is_refused_in_the_same_directory(tmp_path, two_slides
             extraction={"tiling": {"overlap": 0.25, **TIFFFILE}},
             batch_size=4,
         )
+    assert (output_dir / "plan.yaml").read_text() == plan
+
+
+@pytest.mark.parametrize("first", [False, True])
+def test_a_changed_restrict_to_mask_is_refused_in_the_same_directory(tmp_path, two_slides, first):
+    """The maps of either value stay in the directory as written; a relaunch with the other
+    value would mix restricted and unrestricted maps."""
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+    soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, restrict_to_mask=first, **RESUME)
+    plan = (output_dir / "plan.yaml").read_text()
+    assert yaml.safe_load(plan)["predict"]["restrict_to_mask"] is first
+
+    with pytest.raises(ValueError, match=r"differs from the current plan \(differing keys: \['predict.restrict_to_mask'\]\)"):
+        soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, restrict_to_mask=not first, **RESUME)
     assert (output_dir / "plan.yaml").read_text() == plan
 
 

@@ -49,6 +49,14 @@ are 0. The sums are float32, one plane per class, over one tile's height of rows
 map's width; a row goes to the band once no later tile row covers it. With ``overlap: 0``
 each pixel has one tile, and averaging writes the map picking does.
 
+Restricting to the mask
+-----------------------
+With a :class:`MaskScope`, each row of map pixels becomes final in the band after both
+stitches (and after an ensemble's mean), and is then set to 0 wherever the slide's mask
+is out of scope, before it is written and counted. The mask is read for those rows only,
+on the map's grid, so one band-sized array is added. ``not_predicted_fraction`` is then
+the share of the in-scope pixels that are 0, and 0.0 when none is in scope.
+
 Values: class ``k`` is written as ``k + 1``.
 """
 
@@ -265,21 +273,68 @@ class _LabelTiffStream:
         self._thread.join()
 
 
+class MaskScope:
+    """The map pixels a slide's mask keeps in scope: those whose mask value is one of
+    ``values``.
+
+    ``mask`` is an open hs2p mask aligned to the slide's level 0
+    (:meth:`hs2p.Mask.align_to`). It is read on the map's grid, as ``soma evaluate``
+    reads an annotation raster: each map pixel takes the mask value under its top-left
+    corner, and a map pixel that lies partly off the slide is out of scope. The last rows
+    read are kept, so the maps of a slide's bundles share each read.
+    """
+
+    def __init__(self, mask, values, frame: SlideFrame) -> None:
+        self._mask = mask
+        self._frame = frame
+        self._lut = np.zeros(256, dtype=bool)
+        self._lut[sorted(int(value) for value in values)] = True
+        self._last: tuple[int, int, np.ndarray] | None = None
+
+    def rows(self, top: int, height: int) -> np.ndarray:
+        """Whether each pixel of map rows ``[top, top + height)`` is in scope,
+        ``(height, width)`` bool."""
+        if self._last is not None and self._last[:2] == (top, height):
+            return self._last[2]
+        from soma.evaluation.slide_label_maps import _annotation_window
+
+        frame = self._frame
+        # A read starts on a lattice row, whose level-0 row is whole.
+        first = top // frame.stride_px * frame.stride_px
+        inside = np.zeros((height, frame.width), dtype=bool)
+        raw = _annotation_window(self._mask, frame, (0, first), (frame.width, top - first + height))
+        if raw is not None:
+            raw = raw[top - first :]
+            inside[: raw.shape[0], : raw.shape[1]] = self._lut[raw]
+        self._last = (top, height, inside)
+        return inside
+
+
 class _Band:
     """The map rows still being filled: full rows of storage tiles go to ``stream``.
 
     Writes arrive in row order, so the first row a write touches never decreases: every
     map row above it is final. The band holds one row of storage tiles plus one model
-    tile, enough for any write (at most a tile's rows).
+    tile, enough for any write (at most a tile's rows). With a ``scope``, a final row is 0
+    wherever the scope is out.
     """
 
-    def __init__(self, frame: SlideFrame, stream: _LabelTiffStream, tile_px: int) -> None:
+    def __init__(
+        self, frame: SlideFrame, stream: _LabelTiffStream, tile_px: int, scope: MaskScope | None = None
+    ) -> None:
         self._frame = frame
         self._stream = stream
         self._tile_px = tile_px
+        self._scope = scope
         self._rows = np.zeros((tile_px + frame.tile_px, frame.width), dtype=np.uint8)
         self._top = 0
+        self.in_scope = 0
         self.not_predicted = 0
+
+    @property
+    def not_predicted_fraction(self) -> float:
+        """The share of the in-scope pixels emitted so far that hold 0; 0.0 without one."""
+        return self.not_predicted / self.in_scope if self.in_scope else 0.0
 
     def place(self, x: int, y: int, values: np.ndarray) -> None:
         """Pick one: write the part of the tile at level-0 ``(x, y)`` that it contributes."""
@@ -303,7 +358,15 @@ class _Band:
     def _emit(self) -> None:
         height = min(self._tile_px, self._frame.height - self._top)
         block = self._rows[:height]
-        self.not_predicted += int(block.size - np.count_nonzero(block))
+        if self._scope is None:
+            in_scope = block.size
+        else:
+            inside = self._scope.rows(self._top, height)
+            np.multiply(block, inside, out=block)
+            in_scope = int(np.count_nonzero(inside))
+        # Every pixel out of scope is 0 now, so the nonzero pixels are all in scope.
+        self.in_scope += in_scope
+        self.not_predicted += in_scope - int(np.count_nonzero(block))
         for start in range(0, self._frame.width, self._tile_px):
             # A copy: the band is refilled before the writer takes the tile.
             self._stream.put(block[:, start : start + self._tile_px].copy())
@@ -331,8 +394,8 @@ class _AveragingBand:
         self._top = 0
 
     @property
-    def not_predicted(self) -> int:
-        return self._labels.not_predicted
+    def not_predicted_fraction(self) -> float:
+        return self._labels.not_predicted_fraction
 
     def place(self, x: int, y: int, probabilities: np.ndarray) -> None:
         """Add the ``(classes, tile, tile)`` softmax of the tile at level-0 ``(x, y)``."""
@@ -414,6 +477,7 @@ def predict_slide_label_maps(
     tolerance: float = 0.05,
     batch_size: int = 8,
     num_workers: int = 0,
+    scope: MaskScope | None = None,
 ) -> list[float]:
     """Write one slide's label maps as label TIFFs at ``paths``, tile by tile.
 
@@ -424,8 +488,10 @@ def predict_slide_label_maps(
     ``image``. Without ``ensemble`` there is one path (and one ``metadata`` mapping, stored
     in the file) per model, and each map holds that model's classes; with it there is one
     path, and the map holds the argmax of the models' mean softmax. ``stitch`` combines
-    overlapping tiles (see the module docstring): ``pick_one`` or ``average``. A slide
-    without a kept tile gets an all-zero map. Returns each map's not-predicted fraction.
+    overlapping tiles (see the module docstring): ``pick_one`` or ``average``. With a
+    ``scope``, every map is 0 where the scope is out. A slide without a kept tile gets an
+    all-zero map. Returns each map's not-predicted fraction: over all its pixels, or over
+    the in-scope pixels with a ``scope``.
     """
     models = list(models)
     paths = [Path(path) for path in paths]
@@ -451,7 +517,7 @@ def predict_slide_label_maps(
         for path, meta in zip(paths, metadata)
     ]
     try:
-        bands = [_Band(frame, stream, WRITE_TILE_PX) for stream in streams]
+        bands = [_Band(frame, stream, WRITE_TILE_PX, scope) for stream in streams]
         if average:
             classes = [models[0].head.num_classes] if ensemble else [model.head.num_classes for model in models]
             bands = [_AveragingBand(frame, band, int(count)) for band, count in zip(bands, classes)]
@@ -480,8 +546,7 @@ def predict_slide_label_maps(
         for stream in streams:
             stream.abort()
         raise
-    total = frame.width * frame.height
-    return [band.not_predicted / total for band in bands]
+    return [band.not_predicted_fraction for band in bands]
 
 
 def _predicted_tiles(
