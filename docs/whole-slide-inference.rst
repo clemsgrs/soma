@@ -121,27 +121,20 @@ working directory. The keys:
        :ref:`whole-slide-plan`).
    * - ``predict.num_workers``
      - Worker processes that read tiles while the model runs (default 0: the
-       main process reads them).
+       process that runs the model reads them). With several devices, each
+       device process has its own.
    * - ``predict.devices``
      - ``null`` (default): predict in this process, on the GPU when one is
        visible, else on the CPU. A list such as ``[0, 1]`` or ``["cpu"]``: one
-       new process per device, with the slides split across them. Each process
-       logs to ``<output_dir>/logs/worker_<k>.log``.
+       new process per device, with the work shared across them as
+       ``predict.split`` says. Each process logs to
+       ``<output_dir>/logs/worker_<k>.log``.
    * - ``predict.split``
-     - How the work is shared across ``predict.devices``. ``slides`` (default):
-       each device process predicts whole slides. ``tiles``: the slides are
+     - What is shared across ``predict.devices``. ``slides`` (default): each
+       device process predicts whole slides. ``tiles``: the slides are
        predicted one after another, and each slide's tiles are shared across
-       the devices. Use it when one slide takes most of the time, or when there
-       are fewer slides than devices. The main process tiles the slide, gives
-       batch ``i`` of its tiles to device ``i mod N``, takes the results back in
-       order, and stitches and writes them. It uses no device. Each device
-       process loads the bundles once, reads its tiles with
-       ``predict.num_workers`` processes, and logs to
-       ``<output_dir>/logs/worker_<k>.log``. On CPU devices, the files are byte
-       for byte those of a run on one device. On GPUs, the main process
-       computes the softmax and finds the peaks on the CPU, so a few pixels or
-       scores can differ from a run on one GPU. With one device, or with
-       ``predict.devices: null``, ``tiles`` is the same as ``slides``.
+       all the devices. With one device, or with ``predict.devices: null``,
+       ``tiles`` is the same as ``slides``. See :ref:`whole-slide-devices`.
    * - ``cohort.records``
      - The slides: a CSV with ``sample_id`` and ``image_path``, and optionally
        ``mask_path`` and ``spacing_at_level_0`` (see :doc:`dataset`). Required.
@@ -409,6 +402,98 @@ as hs2p measures coverage on the mask. On BEETLE slide TCGA-EW-A1PH, this keeps
 the same Dice. When every value that the class scheme scores is in scope, the
 flag changes no score: ``soma evaluate`` scores the annotated pixels only, and
 they keep their labels.
+
+.. _whole-slide-devices:
+
+Predict on several devices
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``predict.devices`` lists the devices, such as ``[0, 1]`` for two GPUs.
+``predict.split`` says what is shared across them:
+
+- ``split: slides`` (the default) gives each device whole slides. Each device
+  process tiles its slides, predicts them, and stitches and writes their files.
+- ``split: tiles`` predicts the slides one after another. All the devices work
+  on the tiles of the current slide.
+
+soma does not choose the mode. Choose it by the size of the slides, as below.
+
+**When to use each mode.** Use ``slides`` for many slides with little model
+work each. An example is a prediction restricted to the annotated regions (see
+:ref:`whole-slide-restrict`): it keeps few tiles per slide, so tiling,
+stitching and writing take a large share of each slide's time. With
+``slides``, each device process does this work for its own slides, at the same
+time as the others. With ``tiles``, the main process does it for every slide,
+one slide at a time, and the devices wait while it tiles a slide and finishes
+writing its files. Use ``tiles`` for few large slides, such as full-tissue
+maps, where the model takes almost all the time (see :ref:`whole-slide-cost`).
+It is also the only mode in which a second device helps when there is a single
+slide to predict.
+
+**How tiles are shared.** With ``split: tiles``, soma starts one process per
+device, once for the whole run. Each device process loads every bundle once.
+Then, for each slide in turn:
+
+1. The main process tiles the slide. It cuts the kept tiles, in row order, into
+   chunks of ``predict.batch_size`` tiles. Each chunk is the batch that a run on
+   one device would form.
+2. Chunk ``i`` goes to device ``i mod N``, where ``N`` is the number of
+   devices. All the devices start at the same time.
+3. Each device process reads its tiles, runs the encoder and the decoders, and
+   sends back the raw outputs of each batch.
+4. The main process takes the results back in chunk order. It turns them into
+   classes or peaks (the softmax, the argmax, the peak finding), stitches the
+   tiles, and writes the slide's files and records.
+
+A device process that gets ahead waits until the main process has read its
+earlier results. So each device holds about one batch of results, and no
+process holds the results of a whole slide. The memory that stitching and
+writing need (see :ref:`whole-slide-cost`) is in the main process.
+
+The main process holds no GPU. It builds each bundle's head from the bundle's
+``model.json``, and runs the heads on the CPU. So ``split: tiles`` needs each
+bundle to record its head in ``model.json`` (``params.head``). A bundle that
+``soma run`` saves records it. A segmentation bundle that does not is refused,
+with an error that names it, before any slide is predicted. It still predicts
+with ``split: slides``.
+
+One step can still use a GPU in the main process: tissue segmentation, which
+runs when a slide without a ``mask_path`` is tiled. With
+``extraction.segmentation.method: sam2`` and ``sam2_device: cuda``, SAM2 runs
+on a GPU from the main process. The default ``sam2_device`` is ``cpu``.
+
+**Reader processes.** Each device process reads its own tiles with
+``predict.num_workers`` reader processes, as with ``split: slides``. So up to
+devices × ``num_workers`` reader processes run at a time: 16 for
+``devices: [0, 1]`` and ``num_workers: 8``. The main process reads no tiles.
+
+**Output.** The models get the same batches, in the same order, as on one
+device, and the main process stitches the results in the same order. So the
+effect of the batch size in fp16 (see :ref:`whole-slide-plan`) does not change
+with the number of devices.
+
+- On CPU devices, such as ``devices: ["cpu", "cpu"]``, the files are byte for
+  byte those of a run on one device.
+- On GPUs, a map matches a run on one GPU up to the hardware's own differences.
+  The main process computes the softmax, the argmax and the peaks on the CPU,
+  where a run on one GPU computes them on the GPU. The two can round
+  differently, so a pixel where two classes are almost tied, or a peak near a
+  tie, can differ. GPUs of different models can also round fp16 differently,
+  so a run that mixes them can differ a little more.
+
+**Failure and resume.** When a device process raises an error or dies, for
+example because it ran out of memory, the run stops:
+
+- the slide in progress leaves no partial map, points file or record;
+- the other device processes are stopped;
+- the error names the device and its log, ``<output_dir>/logs/worker_<k>.log``.
+
+The slides already written keep their files and records. Launch the run again
+to resume: the finished slides are skipped, and the slide that was in progress
+is predicted again from its start. The relaunch may change
+``predict.devices``, ``predict.split``, ``predict.num_workers`` and
+``predict.batch_size`` (see :ref:`whole-slide-plan`). For example, after an
+out-of-memory error, resume with a smaller batch.
 
 .. _whole-slide-outputs:
 
@@ -864,8 +949,8 @@ One slide of 92,819 × 45,702 px, with 10,117 kept tiles:
   whole map, also where nothing was predicted.
 - **File size.** The maps compress well. The slide above takes 53 MB, for a
   raw map of 3.95 GiB. The largest slide takes 181 MB.
-- **A test set.** 10 slides (38,617 kept tiles) took 47.6 min on 3 GPUs, and
-  622 MB of maps.
+- **A test set.** 10 slides (38,617 kept tiles) took 47.6 min on 3 GPUs with
+  ``split: slides``, and 622 MB of maps.
 - **Overlap.** An overlap of 0.5 gave four times the tiles and the time on one
   small slide, and the same score within 0.010.
 - **Scoring.** ``soma evaluate`` reads every window of the annotation raster,
