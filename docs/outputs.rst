@@ -362,9 +362,10 @@ columns:
   no kept tile contributed;
 - ``num_points`` (detection): the points in the file.
 
-Each ``<sample_id>.json`` record holds the same values and the file's name. A
-slide is done when its record parses and its file exists: a relaunch predicts
-only the other slides. The index is rebuilt from the records at the end of each
+Each ``<sample_id>.json`` record holds the same values, the file's name and
+the ``batch_size`` the slide was predicted with (a relaunch may change it, see
+:ref:`whole-slide-plan`). A slide is done when its record parses and its file
+exists: a relaunch predicts only the other slides. The index is rebuilt from the records at the end of each
 launch.
 
 Run index

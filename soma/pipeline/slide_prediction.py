@@ -34,7 +34,9 @@ prediction file and one record (``<sample_id>.json``) per slide it predicts, and
 ``index.parquet``, assembled from the records at the end. A segmentation bundle writes a
 label TIFF per slide (:mod:`soma.evaluation.whole_slide`), a detection bundle a points parquet
 (:mod:`soma.evaluation.whole_slide_points`). A slide is done when each of its records
-exists and parses; a relaunch predicts the others only.
+exists and parses; a relaunch predicts the others only. A relaunch may change
+``devices``, ``num_workers`` and ``batch_size``; each record holds the ``batch_size`` its
+slide was predicted with.
 
 With ``cohort.fold: bundle`` each bundle predicts the ``subset`` split of its own fold, the
 fold its ``provenance.json`` records, after a check that the fold's assignments in
@@ -75,6 +77,9 @@ COHORT_KEYS = ("records", "splits", "subset", "fold")
 BUNDLE_FOLD = "bundle"
 #: Plan keys that only place the work: a relaunch may change them.
 PLACEMENT_KEYS = ("devices", "num_workers")
+#: Plan keys a relaunch may change although a map can depend on them slightly: each
+#: slide's record holds the value it was predicted with.
+RECORDED_KEYS = ("batch_size",)
 #: The tile fields the bundles decide.
 BUNDLE_TILING_KEYS = ("requested_tile_size_px", "requested_spacing_um")
 #: The task families soma predict writes a prediction for, one file kind each.
@@ -575,7 +580,7 @@ def _comparable(plan: Mapping[str, Any]) -> dict[str, Any]:
 
     payload = copy.deepcopy(dict(plan))
     predict = payload.get("predict") or {}
-    for key in PLACEMENT_KEYS:
+    for key in (*PLACEMENT_KEYS, *RECORDED_KEYS):
         predict.pop(key, None)
     predict.setdefault("stitch", STITCHES[0])  # a plan without the key stitched with the default
     return payload
@@ -591,7 +596,8 @@ def _differences(saved: Any, current: Any, where: str = "") -> list[str]:
 
 
 def _guard_plan(output_dir: Path, plan: Mapping[str, Any]) -> None:
-    """Refuse a launch whose plan differs from the one ``output_dir`` was written with."""
+    """Refuse a launch whose plan differs from the one ``output_dir`` was written with,
+    but for the keys a relaunch may change; log a changed ``batch_size``."""
     path = output_dir / PLAN_FILENAME
     if not path.is_file():
         return
@@ -602,6 +608,16 @@ def _guard_plan(output_dir: Path, plan: Mapping[str, Any]) -> None:
             f"Refusing to predict into {output_dir}: its {PLAN_FILENAME} differs from the "
             f"current plan (differing keys: {differing}).{_reader_hint(saved, plan, differing)} "
             "Use another predict.output_dir, or the settings it was written with."
+        )
+    before, now = (saved.get("predict") or {}).get("batch_size"), plan["predict"]["batch_size"]
+    if before is not None and before != now:
+        logger.info(
+            "predict.batch_size changed from %s to %s: the slides already done in %s keep "
+            "theirs, recorded in their <sample_id>.json, and the others are predicted with %s",
+            before,
+            now,
+            output_dir,
+            now,
         )
 
 
@@ -1026,6 +1042,7 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
             "read_spacing_um": float(tiling.requested_spacing_um),
             "num_tiles": len(origins),
             "not_predicted_fraction": fraction,
+            "batch_size": plan["predict"]["batch_size"],
         }
         atomic_write_text(_record_path(output_dir, name, entry.sample_id), json.dumps(record, indent=2) + "\n")
 
@@ -1094,6 +1111,7 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
             "read_spacing_um": float(tiling.requested_spacing_um),
             "num_tiles": len(origins),
             "num_points": count,
+            "batch_size": plan["predict"]["batch_size"],
         }
         atomic_write_text(_record_path(output_dir, name, entry.sample_id), json.dumps(record, indent=2) + "\n")
 
