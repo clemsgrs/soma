@@ -20,6 +20,7 @@ import torch
 
 from soma.data.manifests import ImageEntry
 from soma.evaluation.whole_slide import (
+    DealtTileOutputs,
     DeviceTileOutputs,
     SlideFrame,
     SlideTiles,
@@ -93,6 +94,91 @@ def test_the_seam_yields_each_batch_of_the_kept_tiles_in_the_writer_s_order_with
     assert [origins for origins, _ in alone] == [origins for origins, _ in batches]
     for (_, (logits,)), (_, both) in zip(alone, batches):
         np.testing.assert_array_equal(logits.numpy(), both[1].numpy())
+
+
+# --- several devices: the chunks dealt round-robin ---------------------------------------- #
+
+
+class Recording:
+    """A model-free device: it cuts the tiles it is given into batches, as a device does,
+    and logs each batch when it computes it. Each output holds its tiles' level-0 x."""
+
+    def __init__(self, name, log: list, heads=("head",)) -> None:
+        self.name, self._log, self.heads = name, log, list(heads)
+
+    def subset(self, indices):
+        return Recording(self.name, self._log, [self.heads[index] for index in indices])
+
+    def batches(self, tiles: SlideTiles, *, batch_size: int):
+        for start in range(0, len(tiles.origins), batch_size):
+            origins = tiles.origins[start : start + batch_size]
+            self._log.append((self.name, origins))
+            yield TileBatch(origins, [DenseModelOutput(logits=torch.tensor([x for x, _ in origins])) for _ in self.heads])
+
+
+def slide_tiles(origins) -> SlideTiles:
+    return SlideTiles(image=ImageEntry(sample_id="s1", image_path="s1.tif"), origins=origins, spacing_um=SPACING_UM)
+
+
+#: :data:`ORIGINS` in the writer's order, cut into chunks of four: the last one shorter.
+CHUNKS_OF_FOUR = [
+    ((32, 0), (64, 0), (96, 0), (32, 32)),
+    ((64, 32), (96, 32), (32, 64), (64, 64)),
+    ((96, 64),),
+]
+
+
+@pytest.mark.parametrize(
+    ("origins", "num_devices", "chunks", "dealt"),
+    [
+        (ORIGINS, 2, CHUNKS_OF_FOUR, {0: [0, 2], 1: [1]}),
+        (ORIGINS, 3, CHUNKS_OF_FOUR, {0: [0], 1: [1], 2: [2]}),
+        # Two chunks for three devices: the third device is given nothing.
+        ([(64, 32), (32, 0), (96, 0), (32, 32), (64, 0)], 3, CHUNKS_OF_FOUR[:1] + [((64, 32),)], {0: [0], 1: [1]}),
+        ([], 2, [], {}),
+    ],
+    ids=["last-chunk-short", "one-chunk-each", "fewer-chunks-than-devices", "no-tile"],
+)
+def test_dealt_outputs_give_chunk_i_to_device_i_mod_n_and_collect_the_batches_of_one_device_in_order(
+    origins, num_devices, chunks, dealt
+):
+    log: list = []
+    outputs = DealtTileOutputs([Recording(k, log) for k in range(num_devices)])
+
+    batches = [(b.origins, [o.logits.tolist() for o in b.outputs]) for b in outputs.batches(slide_tiles(origins), batch_size=4)]
+
+    # The batches one device would form, in its order, each with its own results.
+    assert [batch_origins for batch_origins, _ in batches] == chunks
+    assert [results for _, results in batches] == [[[x for x, _ in chunk]] for chunk in chunks]
+    # Each device computed exactly its chunks, in order, as the batches of its own tiles.
+    computed = {name: [chunks.index(batch_origins) for device, batch_origins in log if device == name] for name, _ in log}
+    assert computed == dealt
+
+
+def test_dealt_outputs_subset_every_device_and_take_the_heads_of_the_first():
+    log: list = []
+    outputs = DealtTileOutputs([Recording(k, log, heads=("a", "b")) for k in range(2)])
+
+    second = outputs.subset([1])
+
+    assert outputs.heads == ["a", "b"]
+    assert second.heads == ["b"]
+    batches = [[o.logits.tolist() for o in b.outputs] for b in second.batches(slide_tiles(ORIGINS), batch_size=4)]
+    assert batches == [[[x for x, _ in chunk]] for chunk in CHUNKS_OF_FOUR]  # one output: the one bundle's
+
+
+def test_dealt_outputs_hold_one_chunk_at_a_time():
+    """Chunk ``i`` is asked of its device only once chunk ``i - 1`` was read: however
+    fast the devices are, the collection holds one chunk's results at a time."""
+    log: list = []
+    outputs = DealtTileOutputs([Recording(k, log) for k in range(3)])
+
+    held = []
+    for consumed, batch in enumerate(outputs.batches(slide_tiles(ORIGINS), batch_size=1)):
+        held.append(len(log) - consumed)
+        list(batch.outputs)
+
+    assert held == [1] * len(ORIGINS)
 
 
 # --- the writers read the seam alone ------------------------------------------------------ #

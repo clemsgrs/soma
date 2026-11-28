@@ -742,6 +742,15 @@ def test_another_stitch_is_refused_naming_the_two_allowed(tmp_path, cohort, stit
     assert not (tmp_path / "predictions").exists()
 
 
+@pytest.mark.parametrize("split", ["tile", None, "Slides"])
+def test_another_split_is_refused_when_the_plan_is_built(tmp_path, cohort, split):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+
+    with pytest.raises(ValueError, match=r"predict\.split must be 'slides' or 'tiles', got"):
+        predict(tmp_path, cohort, bundle, split=split, devices=["cpu", "cpu"])
+    assert not (tmp_path / "predictions").exists()
+
+
 @pytest.mark.parametrize("restrict", [False, True])
 def test_the_record_and_the_map_s_metadata_hold_restrict_to_mask(tmp_path, cohort, restrict):
     import tifffile
@@ -1273,6 +1282,259 @@ def test_devices_split_the_slides_across_one_process_each(tmp_path):
     assert maps_of(tmp_path / "parallel") == maps_of(tmp_path / "in_turn")
     logs = sorted(path.name for path in (tmp_path / "parallel" / "logs").iterdir())
     assert logs == ["worker_0.log", "worker_1.log"]
+
+
+# --- split: tiles ---------------------------------------------------------------------- #
+
+#: Two device workers on the CPU that share each slide's tiles.
+SPLIT_TILES = {"devices": ["cpu", "cpu"], "split": "tiles"}
+#: Overlap 0.5 and batches of five: each 96 px slide's 36 tiles make 8 chunks, the last of one tile.
+CHUNKED = {"extraction": {"tiling": {"overlap": 0.5, **TIFFFILE}}, "batch_size": 5}
+
+
+def worker_processes() -> list:
+    """This process's live child processes: the device workers left running."""
+    import multiprocessing
+
+    return multiprocessing.active_children()
+
+
+@pytest.mark.parametrize(
+    ("ensemble", "stitch"),
+    [(False, "average"), (True, "average")],
+    ids=["each-average", "ensemble-average"],
+)
+def test_split_tiles_on_two_devices_writes_the_files_of_one_device(tmp_path, two_slides, ensemble, stitch):
+    """Each slide's tiles are dealt to two device workers in chunks of one batch. Two
+    bundles write each its own map, or one ensemble map, byte for byte the maps of one
+    device, with the same records and index; each worker logs to its own file."""
+    bundles = [save_bundle(tmp_path / name / "bundle", seed=seed) for name, seed in (("a", 0), ("b", 1))]
+    run = {"bundles": bundles, "records": two_slides, "ensemble": ensemble, "stitch": stitch, **CHUNKED}
+    alone = soma.predict_slides(output_dir=tmp_path / "alone", **run)
+
+    split = soma.predict_slides(output_dir=tmp_path / "split", **run, **SPLIT_TILES)
+
+    assert split.equals(alone)
+    assert files_of(tmp_path / "split") == files_of(tmp_path / "alone")
+    assert len(files_of(tmp_path / "alone")) == (1 if ensemble else 2) * 2 * 2  # a map and a record per slide
+    assert yaml.safe_load((tmp_path / "split" / "plan.yaml").read_text())["predict"]["split"] == "tiles"
+    # Both workers take part in every slide: worker 0 gets chunks 0, 2, 4 and 6 of five
+    # tiles, worker 1 chunks 1, 3, 5 and 7, the last of one tile.
+    logs = {path.name: path.read_text() for path in sorted((tmp_path / "split" / "logs").iterdir())}
+    assert sorted(logs) == ["worker_0.log", "worker_1.log"]
+    for sample_id in ("s1", "s2"):
+        assert f"slide {sample_id}: 20 tile(s) in 4 batch(es)" in logs["worker_0.log"]
+        assert f"slide {sample_id}: 16 tile(s) in 4 batch(es)" in logs["worker_1.log"]
+    assert worker_processes() == []
+
+
+def test_split_tiles_restricted_to_the_mask_writes_the_files_of_one_device(tmp_path):
+    """This process stitches and emits the map's rows, so it applies the restriction: on
+    two device workers, the restricted maps, records and index are those of one device."""
+    records, in_scope = scoped_cohort(tmp_path, 2)
+    run = {
+        "bundles": save_bundle(tmp_path / "run" / "bundle"),
+        "records": records,
+        "restrict_to_mask": True,
+        "extraction": SCOPED,
+        "batch_size": 5,
+    }
+    alone = soma.predict_slides(output_dir=tmp_path / "alone", **run)
+
+    split = soma.predict_slides(output_dir=tmp_path / "split", **run, **SPLIT_TILES)
+
+    assert split.equals(alone)
+    assert files_of(tmp_path / "split") == files_of(tmp_path / "alone")
+    for row in split.itertuples():
+        restricted = read_map(tmp_path / "split" / row.path)
+        assert restricted.any() and not restricted[~in_scope[row.sample_id]].any()
+    logs = [path.read_text() for path in sorted((tmp_path / "split" / "logs").iterdir())]
+    assert [[f"slide {sample_id}:" in text for sample_id in ("s0", "s1")] for text in logs] == [[True, True]] * 2
+    assert worker_processes() == []
+
+
+@pytest.mark.parametrize("devices", [None, ["cpu"]], ids=["this-process", "one-device"])
+def test_split_tiles_with_one_device_is_a_single_device_run(tmp_path, two_slides, encoder_forwards, devices):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    alone = soma.predict_slides(output_dir=tmp_path / "alone", bundles=bundle, records=two_slides, **CHUNKED)
+    forwards = list(encoder_forwards)
+    encoder_forwards.clear()
+
+    one = soma.predict_slides(
+        output_dir=tmp_path / "one", bundles=bundle, records=two_slides, devices=devices, split="tiles", **CHUNKED
+    )
+
+    assert one.equals(alone)
+    assert files_of(tmp_path / "one") == files_of(tmp_path / "alone")
+    # Without devices, this process predicts, in the batches of a run without split.
+    assert encoder_forwards == (forwards if devices is None else [])
+
+
+def test_split_tiles_writes_a_slide_without_a_kept_tile_as_one_device_does(tmp_path):
+    """s1's mask is empty: it gets an all-zero map, a record with no tile and a warning, as
+    on one device, and s2 is predicted around it."""
+    rows = []
+    for k, tissue in enumerate((np.zeros((96, 96)), np.ones((96, 96)))):
+        slide = write_slide(tmp_path / f"s{k + 1}.tif", blocky(96, 96, seed=k))
+        mask = write_mask(tmp_path / f"s{k + 1}_mask.tif", tissue)
+        rows.append({"sample_id": f"s{k + 1}", "image_path": str(slide), "mask_path": str(mask)})
+    records = write_records(tmp_path / "dataset.csv", rows)
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    with pytest.warns(UserWarning, match="slide 's1' has no kept tile"):
+        alone = soma.predict_slides(output_dir=tmp_path / "alone", bundles=bundle, records=records, **CHUNKED)
+
+    with pytest.warns(UserWarning, match="slide 's1' has no kept tile"):
+        split = soma.predict_slides(output_dir=tmp_path / "split", bundles=bundle, records=records, **CHUNKED, **SPLIT_TILES)
+
+    assert split.equals(alone)
+    assert list(split.num_tiles) == [0, 36]
+    assert files_of(tmp_path / "split") == files_of(tmp_path / "alone")
+    assert not read_map(tmp_path / "split" / "run" / "s1.tif").any()
+
+
+def write_unreadable_slide(path, image: np.ndarray, *, rows: slice):
+    """``image`` as a zlib-compressed tiled slide whose 16 px blocks in the pixel rows
+    ``rows`` cannot be decoded: it is tiled from its mask, and reading those rows raises."""
+    import tifffile
+
+    resolution = (px_per_cm(SPACING_UM), px_per_cm(SPACING_UM))
+    tifffile.imwrite(
+        path, image, photometric="rgb", tile=(16, 16), compression="zlib", resolution=resolution, resolutionunit="CENTIMETER"
+    )
+    with tifffile.TiffFile(path) as tiff:
+        page = tiff.pages[0]
+        blocks = list(zip(page.dataoffsets, page.databytecounts))
+        per_row = image.shape[1] // 16
+    with open(path, "r+b") as file:
+        for index, (offset, count) in enumerate(blocks):
+            if rows.start <= (index // per_row) * 16 < rows.stop:
+                file.seek(offset)
+                file.write(b"\xff" * count)
+    return path
+
+
+def described(error: BaseException) -> str:
+    """An error's message and its notes."""
+    return "\n".join([str(error), *getattr(error, "__notes__", [])])
+
+
+def test_a_device_worker_that_raises_aborts_its_slide_stops_the_other_and_a_resume_predicts_the_slide(tmp_path):
+    """With no overlap and batches of three, each chunk of s2's 3 x 3 tiles is one row:
+    worker 0 reads rows 0 and 2, worker 1 row 1, which cannot be decoded. s2 leaves no map
+    and no record, the error names worker 1's device and log, and worker 0, waiting with
+    row 2, is stopped. Once s2 is readable, a resume skips s1 and predicts s2: the files
+    are those of an uninterrupted run on one device."""
+    images = [blocky(96, 96, seed=k) for k in range(2)]
+    rows = []
+    for k, image in enumerate(images):
+        slide = write_slide(tmp_path / f"s{k + 1}.tif", image)
+        mask = write_mask(tmp_path / f"s{k + 1}_mask.tif", np.ones((96, 96)))
+        rows.append({"sample_id": f"s{k + 1}", "image_path": str(slide), "mask_path": str(mask)})
+    write_unreadable_slide(tmp_path / "s2.tif", images[1], rows=slice(32, 64))
+    records = write_records(tmp_path / "dataset.csv", rows)
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    run = {"bundles": bundle, "records": records, "extraction": {"tiling": {"overlap": 0.0, **TIFFFILE}}, "batch_size": 3}
+    output_dir = tmp_path / "predictions"
+    logs = output_dir / "logs"
+
+    with pytest.raises(Exception) as failure:
+        soma.predict_slides(output_dir=output_dir, **run, **SPLIT_TILES)
+
+    assert "device worker 1 on cpu" in described(failure.value)
+    assert str(logs / "worker_1.log") in described(failure.value)
+    assert sorted(path.name for path in (output_dir / "run").iterdir()) == ["s1.json", "s1.tif"]
+    assert not (output_dir / "index.parquet").exists()
+    assert worker_processes() == []
+    assert "Traceback" in (logs / "worker_1.log").read_text()
+    assert "Traceback" not in (logs / "worker_0.log").read_text()
+    s1 = (output_dir / "run" / "s1.tif").stat().st_mtime_ns
+
+    write_slide(tmp_path / "s2.tif", images[1])
+    resumed = soma.predict_slides(output_dir=output_dir, **run, **SPLIT_TILES)
+
+    assert (output_dir / "run" / "s1.tif").stat().st_mtime_ns == s1
+    for log in ("worker_0.log", "worker_1.log"):
+        assert (logs / log).read_text().count("slide s1:") == 1  # predicted by the first run only
+    assert "slide s2:" in (logs / "worker_1.log").read_text()
+    alone = soma.predict_slides(output_dir=tmp_path / "alone", **run)
+    assert resumed.equals(alone)
+    assert files_of(output_dir) == files_of(tmp_path / "alone")
+    assert worker_processes() == []
+
+
+@pytest.fixture
+def after_tiling_s2(monkeypatch):
+    """Runs a given action in this process once hs2p has tiled s2, before its tiles are dealt."""
+    import hs2p
+
+    actions = []
+    tile_slide = hs2p.tile_slide
+
+    def tiles_then_acts(spec, **kwargs):
+        result = tile_slide(spec, **kwargs)
+        if spec.sample_id == "s2":
+            for action in actions:
+                action()
+        return result
+
+    monkeypatch.setattr(hs2p, "tile_slide", tiles_then_acts)
+    return actions
+
+
+def test_a_device_worker_that_dies_stops_the_call_naming_its_device_and_log(tmp_path, two_slides, after_tiling_s2):
+    """The device workers are killed once s2 is tiled (say, for running out of memory):
+    the call raises naming a worker, its device, its log and the signal, and s2 leaves no
+    map and no record."""
+    import os
+    import signal
+
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+    after_tiling_s2.append(lambda: [os.kill(worker.pid, signal.SIGKILL) for worker in worker_processes()])
+
+    with pytest.raises(RuntimeError) as failure:
+        soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME, **SPLIT_TILES)
+
+    found = re.search(r"device worker (\d) on cpu ended \(signal SIGKILL\)", described(failure.value))
+    assert found is not None, described(failure.value)
+    assert str(output_dir / "logs" / f"worker_{found.group(1)}.log") in described(failure.value)
+    assert sorted(path.name for path in (output_dir / "run").iterdir()) == ["s1.json", "s1.tif"]
+    assert worker_processes() == []
+
+
+def test_an_interrupt_in_this_process_stops_every_device_worker(tmp_path, two_slides, after_tiling_s2):
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+
+    def interrupts():
+        assert len(worker_processes()) == 2  # the workers are up, waiting for s2
+        raise KeyboardInterrupt
+
+    after_tiling_s2.append(interrupts)
+
+    with pytest.raises(KeyboardInterrupt):
+        soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME, **SPLIT_TILES)
+
+    assert worker_processes() == []
+    assert sorted(path.name for path in (output_dir / "run").iterdir()) == ["s1.json", "s1.tif"]
+
+
+def test_a_run_resumed_with_another_split_skips_the_finished_slides(tmp_path, two_slides, stopped_in_s2):
+    """``split`` only places the work: a run stopped in s2 with the slides split resumes
+    with the tiles split, s1 untouched, and its files are those of an uninterrupted run."""
+    output_dir, bundle = stopped_in_s2
+    s1 = (output_dir / "run" / "s1.tif").stat().st_mtime_ns
+
+    index = soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME, **SPLIT_TILES)
+
+    assert (output_dir / "run" / "s1.tif").stat().st_mtime_ns == s1
+    for log in sorted((output_dir / "logs").iterdir()):
+        assert "slide s1:" not in log.read_text()
+        assert "slide s2:" in log.read_text()
+    assert yaml.safe_load((output_dir / "plan.yaml").read_text())["predict"]["split"] == "tiles"
+    alone = soma.predict_slides(output_dir=tmp_path / "alone", bundles=bundle, records=two_slides, **RESUME)
+    assert index.equals(alone)
+    assert maps_of(output_dir) == maps_of(tmp_path / "alone")
 
 
 def test_a_bundle_changed_in_place_is_refused_in_the_same_directory(tmp_path, two_slides):

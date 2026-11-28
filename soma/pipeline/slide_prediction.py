@@ -12,6 +12,7 @@ A prediction config has three sections::
       batch_size: 8
       num_workers: 0
       devices: [0, 1]
+      split: slides               # or tiles: each slide's tiles across the devices
     cohort:
       records: dataset.csv
       splits: splits.csv          # optional
@@ -36,8 +37,8 @@ prediction file and one record (``<sample_id>.json``) per slide it predicts, and
 label TIFF per slide (:mod:`soma.evaluation.whole_slide`), a detection bundle a points parquet
 (:mod:`soma.evaluation.whole_slide_points`). A slide is done when each of its records
 exists and parses; a relaunch predicts the others only. A relaunch may change
-``devices``, ``num_workers`` and ``batch_size``; each record holds the ``batch_size`` its
-slide was predicted with.
+``devices``, ``num_workers``, ``split`` and ``batch_size``; each record holds the
+``batch_size`` its slide was predicted with.
 
 With ``cohort.fold: bundle`` each bundle predicts the ``subset`` split of its own fold, the
 fold its ``provenance.json`` records, after a check that the fold's assignments in
@@ -74,18 +75,20 @@ INDEX_FILENAME = "index.parquet"
 #: The directory of the one map ``ensemble: true`` writes per slide.
 ENSEMBLE_NAME = "ensemble"
 PREDICT_KEYS = (
-    "output_dir", "bundles", "ensemble", "stitch", "restrict_to_mask", "batch_size", "num_workers", "devices"
+    "output_dir", "bundles", "ensemble", "stitch", "restrict_to_mask", "batch_size", "num_workers", "devices", "split"
 )
 COHORT_KEYS = ("records", "splits", "subset", "fold")
 #: The ``cohort.fold`` that gives each bundle the slides of its own fold.
 BUNDLE_FOLD = "bundle"
 #: Plan keys that only place the work: a relaunch may change them.
-PLACEMENT_KEYS = ("devices", "num_workers")
+PLACEMENT_KEYS = ("devices", "num_workers", "split")
 #: Plan keys a relaunch may change although a map can depend on them slightly: each
 #: slide's record holds the value it was predicted with.
 RECORDED_KEYS = ("batch_size",)
 #: The tile fields the bundles decide.
 BUNDLE_TILING_KEYS = ("requested_tile_size_px", "requested_spacing_um")
+#: What ``predict.split`` deals to the devices: whole slides (the default) or one slide's tiles.
+SPLITS = ("slides", "tiles")
 #: The task families soma predict writes a prediction for, one file kind each.
 FAMILIES = ("segmentation", "detection")
 #: The ``extraction.segmentation`` paths, stored absolute in the plan.
@@ -110,6 +113,7 @@ def predict_slides(
     batch_size: int = 8,
     num_workers: int = 0,
     devices: Sequence[str | int] | None = None,
+    split: str = "slides",
     extraction: Mapping[str, Any] | Any = None,
 ) -> pd.DataFrame:
     """Predict over every slide of a cohort: one file per slide and bundle, a label TIFF
@@ -117,10 +121,10 @@ def predict_slides(
 
     One keyword per config key (see the module docstring for the config): ``output_dir``,
     ``bundles``, ``ensemble``, ``stitch``, ``restrict_to_mask``, ``batch_size``,
-    ``num_workers`` and ``devices`` are the ``predict`` section, ``records``, ``splits``,
-    ``subset`` and ``fold`` the ``cohort`` section, and ``extraction`` the ``extraction``
-    section (a mapping, or a ``slide2vec.PreprocessingConfig``). Relative paths resolve
-    against the working directory.
+    ``num_workers``, ``devices`` and ``split`` are the ``predict`` section, ``records``,
+    ``splits``, ``subset`` and ``fold`` the ``cohort`` section, and ``extraction`` the
+    ``extraction`` section (a mapping, or a ``slide2vec.PreprocessingConfig``). Relative
+    paths resolve against the working directory.
 
     ``bundles`` are segmentation or detection bundles (:func:`soma.save`), all of one
     family, that agree on tile size and read spacing, or one run directory, which stands
@@ -173,6 +177,16 @@ def predict_slides(
     threshold recorded.
     ``devices`` (``[0, 1]``, ``["cpu"]``) predicts in one new process per device, the
     slides split across them; by default the slides are predicted in this process.
+    ``split`` names what is split across the devices: ``"slides"`` (the default) or
+    ``"tiles"``. With ``"tiles"`` the slides are predicted one after another: this process
+    tiles each slide, gives chunk ``i`` of ``batch_size`` of its kept tiles, in order, to
+    device ``i mod N``, takes the results back in order, and stitches and writes them on
+    the CPU, holding no device. Each device process loads every bundle once and reads its
+    tiles with ``num_workers`` processes; each logs to ``<output_dir>/logs/worker_<k>.log``.
+    On CPU devices the files are byte for byte those of one device. A device process that
+    raises or dies stops the call, the slide being written leaves no file, and the error
+    names the device and its log. With one device, or without ``devices``, ``"tiles"`` is
+    ``"slides"``.
 
     Returns the index of the files, also written as ``index.parquet``: one row per file
     with its ``bundle`` directory, ``sample_id``, ``path`` (relative to ``output_dir``),
@@ -194,6 +208,7 @@ def predict_slides(
         batch_size=batch_size,
         num_workers=num_workers,
         devices=devices,
+        split=split,
         extraction=extraction,
     )
     return _run(plan)
@@ -243,6 +258,7 @@ def resolve_slide_prediction(
     batch_size=8,
     num_workers=0,
     devices=None,
+    split="slides",
     extraction=None,
 ) -> dict[str, Any]:
     """The plan of a prediction: the config with every value resolved (see the module)."""
@@ -254,6 +270,8 @@ def resolve_slide_prediction(
         raise ValueError(f"predict.restrict_to_mask must be true or false, got {restrict_to_mask!r}")
     if stitch not in STITCHES:
         raise ValueError(f"predict.stitch must be {' or '.join(map(repr, STITCHES))}, got {stitch!r}")
+    if split not in SPLITS:
+        raise ValueError(f"predict.split must be {' or '.join(map(repr, SPLITS))}, got {split!r}")
     if ensemble and fold == BUNDLE_FOLD:
         raise ValueError(
             "predict.ensemble averages the bundles over each slide, but cohort.fold: bundle "
@@ -305,6 +323,7 @@ def resolve_slide_prediction(
             "batch_size": batch_size,
             "num_workers": num_workers,
             "devices": devices,
+            "split": split,
         },
         "cohort": _cohort(records, splits, subset, fold),
         "extraction": plain(preprocessing),
@@ -377,7 +396,7 @@ def _bundle_info(path: Path) -> dict[str, Any]:
         info["ignore_index"] = int(preprocessing.get("ignore_index", 255))
         info["label_remap"] = preprocessing.get("label_remap")
     else:
-        head = _detection_head(path)
+        head = _bundle_head(path)
         info["class_names"] = [str(name) for name in head.classes]
         info["class_scheme"] = _detection_scheme(preprocessing, head.classes, where=where)
         info["match_distance_um"] = float(head.match_distance)
@@ -409,18 +428,30 @@ def _read_settings(preprocessing: Mapping[str, Any], path) -> dict[str, Any]:
     }
 
 
-def _detection_head(path: Path):
-    """A detection bundle's head, built from its ``model.json`` alone: its distances are
-    there, and building the whole model would load the encoder."""
-    from soma.learn.bundle import MODEL, _decode
+def _bundle_head(path: Path, *, weights: bool = False):
+    """A bundle's head, built from its ``model.json`` alone: building the whole model would
+    load the encoder. A detection head's distances are there. With ``weights``, the head's
+    own weights (none for the segmentation and detection heads) are loaded too, and it is
+    put in eval mode: the head ``split: tiles`` stitches with, in a process without a
+    device."""
+    from soma.learn.bundle import MODEL, WEIGHTS, _decode
     from soma.models.heads.registry import task_registry
 
     recipe = json.loads((path / MODEL).read_text(encoding="utf-8"))
     spec = (recipe.get("params") or {}).get("head")
     if not isinstance(spec, Mapping) or "name" not in spec:
-        raise ValueError(f"bundle {path} records no head in its {MODEL}, so soma predict cannot read its NMS distance")
+        raise ValueError(f"bundle {path} records no head in its {MODEL}, so soma predict cannot rebuild its head")
     spec = _decode(dict(spec))
-    return task_registry.resolve(spec["name"])(**spec.get("params", {}))
+    head = task_registry.resolve(spec["name"])(**spec.get("params", {}))
+    if weights:
+        from safetensors import safe_open
+
+        # The grid model holds its head as ``head``: its weights are those under ``head.``.
+        with safe_open(str(path / WEIGHTS), framework="pt", device="cpu") as stored:
+            state = {key.removeprefix("head."): stored.get_tensor(key) for key in stored.keys() if key.startswith("head.")}
+        head.load_state_dict(state)
+        head.eval()
+    return head
 
 
 def _shared_family(infos: Sequence[Mapping[str, Any]]) -> str:
@@ -873,6 +904,8 @@ def _run(plan: dict[str, Any]) -> pd.DataFrame:
     devices = plan["predict"]["devices"]
     if ids and devices is None:
         predict_shard(plan, ids)
+    elif ids and plan["predict"]["split"] == "tiles" and len(devices) > 1:
+        _predict_tiles_on_devices(plan, ids, devices)
     elif ids:
         _predict_on_devices(plan, ids, devices)
     index = _index(output_dir, plan, names, work, _RECORD_FIELDS[_plan_family(plan)])
@@ -966,13 +999,41 @@ def _predict_on_devices(plan: dict[str, Any], ids: list[str], devices: Sequence[
     run_on_devices(jobs, devices)
 
 
+def _predict_tiles_on_devices(plan: dict[str, Any], ids: list[str], devices: Sequence[str]) -> None:
+    """``split: tiles``: predict the slides one after another in this process, each slide's
+    tiles dealt across one process per device (:mod:`soma.pipeline.tile_split`)."""
+    import torch
+
+    from soma.pipeline.parallel import free_device_memory
+    from soma.pipeline.tile_split import device_tile_outputs
+
+    output_dir = Path(plan["predict"]["output_dir"])
+    bundles = plan["predict"]["bundles"]
+    # This process holds no device: it stitches with heads built from the bundles' files.
+    heads = [_bundle_head(Path(path), weights=True) for path in bundles]
+    free_device_memory()
+    with device_tile_outputs(
+        bundles, devices, heads=heads, num_workers=plan["predict"]["num_workers"], log_dir=output_dir / "logs"
+    ) as outputs:
+        # The heads run here, under inference mode as on a device (DeviceTileOutputs.batches).
+        with torch.inference_mode():
+            _predict_slides(plan, ids, outputs)
+
+
 def predict_shard(plan: Mapping[str, Any], sample_ids: Sequence[str]) -> list[str]:
     """Predict the slides ``sample_ids`` of ``plan`` in this process (a device job's
     target); returns the ids predicted."""
     from soma.evaluation.whole_slide import DeviceTileOutputs
 
-    output_dir = Path(plan["predict"]["output_dir"])
     outputs = DeviceTileOutputs.load(plan["predict"]["bundles"], num_workers=plan["predict"]["num_workers"])
+    _predict_slides(plan, sample_ids, outputs)
+    return list(sample_ids)
+
+
+def _predict_slides(plan: Mapping[str, Any], sample_ids: Sequence[str], outputs) -> None:
+    """Predict the slides ``sample_ids`` in turn with every bundle of ``outputs`` (a
+    :class:`~soma.evaluation.whole_slide.TileOutputs`)."""
+    output_dir = Path(plan["predict"]["output_dir"])
     names = _output_names(plan)
     identities = _identities(plan)
     by_id = {entry.sample_id: (entry, carriers) for entry, carriers in _work(plan)[0]}
@@ -987,7 +1048,6 @@ def predict_shard(plan: Mapping[str, Any], sample_ids: Sequence[str]) -> list[st
             entry,
             output_dir,
         )
-    return list(sample_ids)
 
 
 def _predict_slide(plan, outputs, names, identities, entry, output_dir: Path) -> None:

@@ -72,7 +72,7 @@ from __future__ import annotations
 import queue
 import threading
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, NamedTuple, Protocol
 
@@ -85,6 +85,7 @@ from soma.data.manifests import ImageEntry
 from soma.models.model import DenseModelOutput, forward_sharing_encoder, mean_softmax
 
 __all__ = [
+    "DealtTileOutputs",
     "DeviceTileOutputs",
     "SlideFrame",
     "SlideTiles",
@@ -604,6 +605,64 @@ class DeviceTileOutputs:
                 origins = tiles.origins[start : start + count]
                 start += count
                 yield TileBatch(origins, forward_sharing_encoder(self._models, pixels.to(input_device), pixels))
+
+
+class DealtTileOutputs:
+    """The bundles on several devices, each with its own :class:`TileOutputs`.
+
+    :meth:`batches` cuts a slide's kept tiles, in their order, into chunks of
+    ``batch_size`` tiles: the batches one device would form. Chunk ``i`` goes to device
+    ``i mod N``, which gets its chunks as a slide of its own tiles, in order, and cuts
+    them into the same batches. A device with no chunk is given nothing. The chunks'
+    results are collected in order, and chunk ``i`` is asked of its device only once
+    chunk ``i - 1`` was read, so this object holds one chunk's results at a time.
+    ``heads`` are the first device's, and :meth:`subset` takes the same bundles on every
+    device.
+    """
+
+    def __init__(self, devices: Sequence[TileOutputs]) -> None:
+        if not devices:
+            raise ValueError("DealtTileOutputs needs at least one device")
+        self._devices = list(devices)
+
+    @property
+    def heads(self) -> Sequence[Any]:
+        return self._devices[0].heads
+
+    def subset(self, indices: Sequence[int]) -> "DealtTileOutputs":
+        return DealtTileOutputs([device.subset(indices) for device in self._devices])
+
+    def batches(self, tiles: SlideTiles, *, batch_size: int) -> Iterator[TileBatch]:
+        size = int(batch_size)
+        chunks = [tiles.origins[start : start + size] for start in range(0, len(tiles.origins), size)]
+        count = len(self._devices)
+        # Every device is asked for its chunks before the first is read, so all start at once.
+        streams = [
+            iter(
+                device.batches(
+                    replace(tiles, origins=tuple(origin for chunk in chunks[k::count] for origin in chunk)),
+                    batch_size=size,
+                )
+            )
+            for k, device in enumerate(self._devices[: len(chunks)])
+        ]
+        try:
+            for index, chunk in enumerate(chunks):
+                batch = next(streams[index % count], None)
+                if batch is None or tuple(batch.origins) != chunk:
+                    raise RuntimeError(
+                        f"device {index % count} did not give chunk {index} of slide "
+                        f"'{tiles.image.sample_id}' (tiles {chunk[0]} to {chunk[-1]})"
+                    )
+                yield batch
+            for k, stream in enumerate(streams):
+                if next(stream, None) is not None:
+                    raise RuntimeError(f"device {k} gave more batches than slide '{tiles.image.sample_id}' has chunks")
+        finally:
+            for stream in streams:
+                close = getattr(stream, "close", None)
+                if close is not None:
+                    close()
 
 
 class _Tiles(Dataset):

@@ -50,6 +50,7 @@ Write a config with three sections:
      batch_size: 8
      num_workers: 8
      devices: null                 # or [0, 1]: one process per GPU
+     split: slides                 # or tiles: share each slide's tiles across the devices
    cohort:
      records: dataset.csv
      splits: splits.csv
@@ -126,6 +127,21 @@ working directory. The keys:
        visible, else on the CPU. A list such as ``[0, 1]`` or ``["cpu"]``: one
        new process per device, with the slides split across them. Each process
        logs to ``<output_dir>/logs/worker_<k>.log``.
+   * - ``predict.split``
+     - How the work is shared across ``predict.devices``. ``slides`` (default):
+       each device process predicts whole slides. ``tiles``: the slides are
+       predicted one after another, and each slide's tiles are shared across
+       the devices. Use it when one slide takes most of the time, or when there
+       are fewer slides than devices. The main process tiles the slide, gives
+       batch ``i`` of its tiles to device ``i mod N``, takes the results back in
+       order, and stitches and writes them. It uses no device. Each device
+       process loads the bundles once, reads its tiles with
+       ``predict.num_workers`` processes, and logs to
+       ``<output_dir>/logs/worker_<k>.log``. On CPU devices, the files are byte
+       for byte those of a run on one device. On GPUs, the main process
+       computes the softmax and finds the peaks on the CPU, so a few pixels or
+       scores can differ from a run on one GPU. With one device, or with
+       ``predict.devices: null``, ``tiles`` is the same as ``slides``.
    * - ``cohort.records``
      - The slides: a CSV with ``sample_id`` and ``image_path``, and optionally
        ``mask_path`` and ``spacing_at_level_0`` (see :doc:`dataset`). Required.
@@ -200,8 +216,9 @@ stopped prediction resumes when you launch it again.
 A launch into an existing output directory is refused when:
 
 - the directory's ``plan.yaml`` differs from the new plan. The error names the
-  keys that differ. ``predict.devices`` and ``predict.num_workers`` may change,
-  because they decide where the work runs, not what it computes.
+  keys that differ. ``predict.devices``, ``predict.num_workers`` and
+  ``predict.split`` may change, because they decide where the work runs, not
+  what it computes.
   ``predict.batch_size`` may change too (see below).
 - a bundle changed since the directory was written. ``provenance.json`` records
   the SHA-256 of each bundle's files and, with ``cohort.fold: bundle``, the fold
