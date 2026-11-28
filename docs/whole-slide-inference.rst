@@ -451,8 +451,9 @@ process holds the results of a whole slide. The memory that stitching and
 writing need (see :ref:`whole-slide-cost`) is in the main process.
 
 The main process holds no GPU. It builds each bundle's head from the bundle's
-``model.json``, and runs the heads on the CPU. So ``split: tiles`` needs each
-bundle to record its head in ``model.json`` (``params.head``). A bundle that
+``model.json``, and uses it on the CPU to turn the raw outputs into classes or
+peaks. So ``split: tiles`` needs each bundle to record its head in
+``model.json`` (``params.head``). A bundle that
 ``soma run`` saves records it. A segmentation bundle that does not is refused,
 with an error that names it, before any slide is predicted. It still predicts
 with ``split: slides``.
@@ -487,6 +488,8 @@ example because it ran out of memory, the run stops:
 - the slide in progress leaves no partial map, points file or record;
 - the other device processes are stopped;
 - the error names the device and its log, ``<output_dir>/logs/worker_<k>.log``.
+  A one-line ``Error:`` message from ``soma predict`` does not: the full error
+  is then at the end of one of these logs.
 
 The slides already written keep their files and records. Launch the run again
 to resume: the finished slides are skipped, and the slide that was in progress

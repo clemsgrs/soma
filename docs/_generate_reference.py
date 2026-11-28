@@ -215,8 +215,9 @@ def build_cli_rst() -> str:
            Predict over whole slides with trained segmentation or detection
            bundles, all of one family.
            The config has three sections: ``predict`` (``output_dir``,
-           ``bundles``, ``ensemble``, ``stitch``, ``batch_size``,
-           ``num_workers``, ``devices``), ``cohort`` (``records``, and
+           ``bundles``, ``ensemble``, ``stitch``, ``restrict_to_mask``,
+           ``batch_size``, ``num_workers``, ``devices``, ``split``),
+           ``cohort`` (``records``, and
            optionally ``splits``, ``subset`` and ``fold``: a fold, or
            ``bundle`` for each bundle's own fold) and ``extraction`` (the
            ``features.extraction`` schema). The tile size and the read spacing
