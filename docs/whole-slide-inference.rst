@@ -482,14 +482,17 @@ with the number of devices.
   tie, can differ. GPUs of different models can also round fp16 differently,
   so a run that mixes them can differ a little more.
 
-**Failure and resume.** When a device process raises an error or dies, for
-example because it ran out of memory, the run stops:
+**Failure and resume.** With ``split: tiles``, when a device process raises an
+error or dies, for example because it ran out of memory, the run stops:
 
 - the slide in progress leaves no partial map, points file or record;
 - the other device processes are stopped;
 - the error names the device and its log, ``<output_dir>/logs/worker_<k>.log``.
   A one-line ``Error:`` message from ``soma predict`` does not: the full error
   is then at the end of one of these logs.
+
+With ``split: slides``, the other device processes first finish their own
+slides, then the run ends with the error.
 
 The slides already written keep their files and records. Launch the run again
 to resume: the finished slides are skipped, and the slide that was in progress
