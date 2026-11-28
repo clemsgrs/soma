@@ -110,7 +110,8 @@ working directory. The keys:
        ``average``. ``average`` is for segmentation only. See
        :ref:`whole-slide-stitching`.
    * - ``predict.batch_size``
-     - Tiles per forward pass (default 8).
+     - Tiles per forward pass (default 8). A relaunch may change it (see
+       :ref:`whole-slide-plan`).
    * - ``predict.num_workers``
      - Worker processes that read tiles while the model runs (default 0: the
        main process reads them).
@@ -194,9 +195,23 @@ A launch into an existing output directory is refused when:
 - the directory's ``plan.yaml`` differs from the new plan. The error names the
   keys that differ. ``predict.devices`` and ``predict.num_workers`` may change,
   because they decide where the work runs, not what it computes.
+  ``predict.batch_size`` may change too (see below).
 - a bundle changed since the directory was written. ``provenance.json`` records
   the SHA-256 of each bundle's files and, with ``cohort.fold: bundle``, the fold
   and the ``fold_assignments`` that each bundle records.
+
+A relaunch with another ``predict.batch_size`` predicts the slides that are not
+done with the new value. For example, after an out-of-memory error, resume with
+a smaller batch. The slides already done are not predicted again, so they keep
+the batch size they were predicted with. The launch logs one line with the old
+and the new value.
+
+The batch size can change a map slightly. In fp16, a tile's output depends a
+little on the other tiles of its batch, so two batch sizes can give maps that
+differ in a few pixels. Each slide is predicted from start to finish in one
+launch, so with one batch size. Its record, ``<sample_id>.json``, holds that
+``batch_size``: to reproduce a map, use the value in its record.
+``plan.yaml`` holds the value of the latest launch.
 
 .. _whole-slide-tiling:
 
