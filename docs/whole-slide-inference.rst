@@ -46,6 +46,7 @@ Write a config with three sections:
      bundles: runs/beetle          # a run directory: the bundle of each fold
      ensemble: false
      stitch: pick_one              # or average (segmentation only)
+     restrict_to_mask: false       # true: 0 outside the mask (segmentation only)
      batch_size: 8
      num_workers: 8
      devices: null                 # or [0, 1]: one process per GPU
@@ -109,6 +110,11 @@ working directory. The keys:
      - How a label map combines overlapping tiles: ``pick_one`` (default) or
        ``average``. ``average`` is for segmentation only. See
        :ref:`whole-slide-stitching`.
+   * - ``predict.restrict_to_mask``
+     - ``false`` (default): each kept tile is predicted in full. ``true``: a
+       label map is 0 at every pixel outside the slide's mask. It is for
+       segmentation only, and every slide needs a ``mask_path``. See
+       :ref:`whole-slide-restrict`.
    * - ``predict.batch_size``
      - Tiles per forward pass (default 8). A relaunch may change it (see
        :ref:`whole-slide-plan`).
@@ -167,7 +173,8 @@ working directory. The keys:
        kept where those classes cover it, as in
        :ref:`preprocessing-source-masks`: for example, to predict only the
        tiles a tumour mask covers. Each kept tile is predicted in full, also
-       outside the mask. Such a mapping needs a ``mask_path`` on every
+       outside the mask, unless ``predict.restrict_to_mask`` is ``true``
+       (see :ref:`whole-slide-restrict`). Such a mapping needs a ``mask_path`` on every
        predicted slide, because a slide without one stops the run instead of
        being segmented.
 
@@ -226,7 +233,8 @@ A tile is kept when tissue covers at least ``extraction.masks.min_coverage`` of
 it. The tissue is the slide's ``mask_path`` raster when the records give one,
 and hs2p's tissue segmentation otherwise. A tile with no tissue is never kept.
 The tissue selects tiles, not pixels or points: each kept tile is predicted in
-full, also where it holds no tissue.
+full, also where it holds no tissue. To set a label map to 0 outside the mask,
+see :ref:`whole-slide-restrict`.
 
 With the default ``extraction.filter``, hs2p first drops each tissue region
 whose area is at most four tiles (``a_t: 4``, see :doc:`preprocessing`), and
@@ -315,6 +323,76 @@ head sets one. With an overlap, the margin must be at least the NMS distance,
 so that a tile sees the whole neighbourhood of each peak it keeps. A smaller
 margin is refused, and the error says which overlap works.
 
+.. _whole-slide-restrict:
+
+Restrict a label map to the mask
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The mask selects tiles, and each kept tile is predicted in full. So a map made
+with a tumour mask, or with an annotation raster as the mask, also holds
+predictions in a band around each masked region. With
+``predict.restrict_to_mask: true``, the label map is 0, "not predicted", at
+every pixel outside the mask. In Python, pass ``restrict_to_mask=True`` to
+:func:`soma.predict_slides`.
+
+A mask pixel is in scope when its value maps, through
+``extraction.masks.pixel_mapping``, to a class that
+``extraction.masks.min_coverage`` names: the classes that select tiles. For
+example, ``pixel_mapping: {background: [0], tissue: [1, 2, 3, 4]}`` with
+``min_coverage: {tissue: 0}`` puts the values 1 to 4 in scope. With the default
+masks, the tissue (value 1) is in scope.
+
+- The flag does not change which tiles are kept. The map keeps its size, spacing
+  and pyramid.
+- The mask is read with ``extraction.tiling.mask_backend``, on the map's pixel
+  grid, as ``soma evaluate`` reads an annotation raster: each map pixel takes the
+  mask value under its top-left corner. A mask at another resolution works: hs2p
+  aligns it to the slide. A map pixel that lies partly off the slide is out of
+  scope.
+- The flag applies after the tiles are combined and after an ensemble averages
+  its bundles. So it works the same way with ``pick_one`` and ``average``, for
+  each bundle's map, for an ensemble and with ``cohort.fold: bundle``.
+- The map's metadata and the slide's record hold ``restrict_to_mask``.
+
+With the flag, ``not_predicted_fraction`` counts the pixels in scope only: the
+pixels in scope that are 0, over all pixels in scope. A slide with no pixel in
+scope gets 0.0. Without the flag, it is the share of all the map's pixels that
+are 0, as before. ``soma evaluate`` does not change: it computes its own
+fraction over the annotated pixels.
+
+These are refused before any slide is predicted:
+
+- ``restrict_to_mask: true`` with detection bundles;
+- a slide without a ``mask_path``. hs2p's tissue segmentation is too coarse to
+  cut a map with, so there is no fallback. The error names the slides.
+
+**Predict the annotated regions only.** Give each slide's annotation raster as
+its ``mask_path``, name the annotated values as the class that selects tiles,
+and keep every tile they touch:
+
+.. code-block:: yaml
+
+   predict:
+     output_dir: predictions/beetle-annotated
+     bundles: runs/beetle
+     restrict_to_mask: true
+   cohort:
+     records: annotated.csv          # mask_path: the annotation raster
+   extraction:
+     masks:
+       pixel_mapping:
+         background: [0]             # not annotated
+         tissue: [1, 2, 3, 4]        # the annotated classes
+       min_coverage:
+         tissue: 0
+
+``min_coverage: {tissue: 0}`` keeps every tile that the annotated values touch,
+as hs2p measures coverage on the mask. On BEETLE slide TCGA-EW-A1PH, this keeps
+121 tiles, against 40,283 for the whole tissue (40 s against 118 min), and gives
+the same Dice. When every value that the class scheme scores is in scope, the
+flag changes no score: ``soma evaluate`` scores the annotated pixels only, and
+they keep their labels.
+
 .. _whole-slide-outputs:
 
 What it writes
@@ -340,7 +418,8 @@ holds stored values only, never an average.
 
 The values are shifted by one:
 
-- ``0`` means "not predicted": no kept tile contributed the pixel.
+- ``0`` means "not predicted": no kept tile contributed the pixel, or, with
+  ``predict.restrict_to_mask: true``, the pixel is outside the mask.
 - Class ``k`` is stored as ``k + 1``. A map holds at most 255 classes.
 
 The PNG label maps that a run writes for its ROIs (``predictions_<split>/``)
@@ -355,8 +434,8 @@ The description of the first page holds a JSON record of what the map means:
 - ``ignore``: the raw annotation values left out of the loss and the metrics;
 - ``pixel_mapping``: the vocabulary that hs2p reads the annotation rasters with;
 - ``sample_id``, ``ensemble``, ``read_spacing_um``, ``tile_size_px``,
-  ``overlap``, ``stitch``, and ``bundles``: the name, path and SHA-256 of each
-  bundle.
+  ``overlap``, ``stitch``, ``restrict_to_mask``, and ``bundles``: the name, path
+  and SHA-256 of each bundle.
 
 ``soma evaluate`` scores the map with this class scheme. Any TIFF library reads
 the map:

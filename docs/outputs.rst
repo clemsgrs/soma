@@ -359,13 +359,16 @@ columns:
   own spacing is ``spacing_um``);
 - ``num_tiles``: the kept tiles;
 - ``not_predicted_fraction`` (segmentation): the share of the map's pixels that
-  no kept tile contributed;
+  no kept tile contributed. With ``predict.restrict_to_mask: true``, the share
+  of the pixels inside the mask, and 0.0 for a slide with none (see
+  :ref:`whole-slide-restrict`);
 - ``num_points`` (detection): the points in the file.
 
 Each ``<sample_id>.json`` record holds the same values, the file's name and
 the ``batch_size`` the slide was predicted with (a relaunch may change it, see
-:ref:`whole-slide-plan`). A slide is done when its record parses and its file
-exists: a relaunch predicts only the other slides. The index is rebuilt from the records at the end of each
+:ref:`whole-slide-plan`). A label map's record also holds ``restrict_to_mask``.
+A slide is done when its record parses and its file exists: a relaunch predicts
+only the other slides. The index is rebuilt from the records at the end of each
 launch.
 
 Run index

@@ -413,6 +413,18 @@ def test_a_class_scheme_written_by_hand_is_checked_before_anything_is_written(tm
     assert not output_dir.exists()
 
 
+def test_restrict_to_mask_is_refused_for_detection_before_anything_is_written(tmp_path, cohort, decoders):
+    bundle = save_detection_bundle(tmp_path / "run" / "bundle", decoder=decoders["marker"])
+    output_dir = tmp_path / "predictions"
+
+    refusal = r"predict.restrict_to_mask applies to segmentation only.*detection bundles.*restrict_to_mask: false"
+    with pytest.raises(ValueError, match=refusal):
+        soma.predict_slides(
+            output_dir=output_dir, bundles=bundle, records=cohort, extraction=OVERLAP_ZERO, restrict_to_mask=True
+        )
+    assert not output_dir.exists()
+
+
 def test_segmentation_and_detection_bundles_are_not_mixed(tmp_path, cohort, decoders):
     from tests.whole_slides import save_bundle
 
