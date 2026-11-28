@@ -633,13 +633,18 @@ def test_an_ensemble_takes_the_peaks_of_the_mean_heatmap_and_records_no_threshol
 # --- resume -------------------------------------------------------------------------------- #
 
 
-def test_a_parquet_without_its_record_is_predicted_again_to_the_same_bytes(tmp_path, decoders, encoder_forwards):
+def two_marker_slides(tmp_path) -> str:
+    """The records of slides ``s1`` and ``s2``, one object each, tissue everywhere."""
     rows = []
     for k, sample_id in enumerate(("s1", "s2")):
         slide = write_slide(tmp_path / f"{sample_id}.tif", marker_slide(96, 96, [(20 + 30 * k, 40, 120)]))
         mask = write_mask(tmp_path / f"{sample_id}_mask.tif", np.ones((96, 96)))
         rows.append({"sample_id": sample_id, "image_path": str(slide), "mask_path": str(mask)})
-    records = write_records(tmp_path / "dataset.csv", rows)
+    return write_records(tmp_path / "dataset.csv", rows)
+
+
+def test_a_parquet_without_its_record_is_predicted_again_to_the_same_bytes(tmp_path, decoders, encoder_forwards):
+    records = two_marker_slides(tmp_path)
     bundle = save_detection_bundle(tmp_path / "run" / "bundle", decoder=decoders["marker"])
     output_dir = tmp_path / "predictions"
     run = {"output_dir": output_dir, "bundles": bundle, "records": records, "extraction": OVERLAP_ZERO, "batch_size": 4}
@@ -655,3 +660,19 @@ def test_a_parquet_without_its_record_is_predicted_again_to_the_same_bytes(tmp_p
     assert {name: (output_dir / "run" / name).read_bytes() for name in before} == before
     assert again.equals(first)
     assert pd.read_parquet(output_dir / "index.parquet").equals(first)
+
+
+def test_each_points_record_holds_the_batch_size_its_slide_was_predicted_with(tmp_path, decoders):
+    """s1 lost its record and is predicted again by a run resumed with another batch
+    size: its record holds the new value, and s2's, done before, the old one."""
+    records = two_marker_slides(tmp_path)
+    bundle = save_detection_bundle(tmp_path / "run" / "bundle", decoder=decoders["marker"])
+    output_dir = tmp_path / "predictions"
+    run = {"output_dir": output_dir, "bundles": bundle, "records": records, "extraction": OVERLAP_ZERO}
+    soma.predict_slides(**run, batch_size=4)
+    (output_dir / "run" / "s1.json").unlink()
+
+    soma.predict_slides(**run, batch_size=3)
+
+    batch_sizes = {sid: json.loads((output_dir / "run" / f"{sid}.json").read_text())["batch_size"] for sid in ("s1", "s2")}
+    assert batch_sizes == {"s1": 3, "s2": 4}

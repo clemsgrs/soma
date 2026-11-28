@@ -8,6 +8,7 @@ recipe, and everything runs on the CPU. A map is read back through hs2p; its val
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 from dataclasses import dataclass
@@ -1099,6 +1100,87 @@ def test_a_changed_restrict_to_mask_is_refused_in_the_same_directory(tmp_path, t
     with pytest.raises(ValueError, match=r"differs from the current plan \(differing keys: \['predict.restrict_to_mask'\]\)"):
         soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, restrict_to_mask=not first, **RESUME)
     assert (output_dir / "plan.yaml").read_text() == plan
+
+
+@pytest.fixture
+def stopped_in_s2(tmp_path, two_slides, encoder_forwards, monkeypatch):
+    """A prediction of :data:`RESUME` (``batch_size: 4``) stopped in its second slide: s1
+    is done, s2 is not. Returns the output directory and the bundle."""
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    output_dir = tmp_path / "predictions"
+    forward = soma.extract.FrozenEncoder.forward
+
+    def stops_once_s1_is_done(self, pixels):
+        if (output_dir / "run" / "s1.json").exists():
+            raise KeyboardInterrupt
+        return forward(self, pixels)
+
+    with monkeypatch.context() as patched:
+        patched.setattr(soma.extract.FrozenEncoder, "forward", stops_once_s1_is_done)
+        with pytest.raises(KeyboardInterrupt):
+            soma.predict_slides(output_dir=output_dir, bundles=bundle, records=two_slides, **RESUME)
+    assert sorted(path.name for path in (output_dir / "run").iterdir()) == ["s1.json", "s1.tif"]
+    encoder_forwards.clear()
+    return output_dir, bundle
+
+
+def test_a_run_resumed_with_another_batch_size_predicts_the_slides_left_with_it(
+    tmp_path, two_slides, stopped_in_s2, encoder_forwards
+):
+    """A stopped prediction (say, out of GPU memory) resumes with a smaller batch: the
+    finished slide is skipped, the other is predicted in batches of the new size, and
+    ``plan.yaml`` records the new value."""
+    output_dir, bundle = stopped_in_s2
+    s1 = sha256(output_dir / "run" / "s1.tif")
+
+    index = soma.predict_slides(
+        output_dir=output_dir, bundles=bundle, records=two_slides, **{**RESUME, "batch_size": 3}
+    )
+
+    assert encoder_forwards == [3] * 12  # s2's 36 tiles; s1 is not predicted again
+    assert sha256(output_dir / "run" / "s1.tif") == s1
+    assert list(index.sample_id) == ["s1", "s2"]
+    assert yaml.safe_load((output_dir / "plan.yaml").read_text())["predict"]["batch_size"] == 3
+
+
+@pytest.mark.parametrize("devices", [None, ["cpu"]], ids=["this-process", "device-process"])
+def test_each_record_holds_the_batch_size_its_slide_was_predicted_with(tmp_path, two_slides, stopped_in_s2, devices):
+    """A tile's fp16 output depends slightly on the tiles that share its batch, so each
+    slide's record keeps the batch size that reproduces its map: after a resume with
+    another one, the slide done before holds the old value and the slide done after the
+    new one, whether this process or a device process predicts it."""
+    output_dir, bundle = stopped_in_s2
+
+    soma.predict_slides(
+        output_dir=output_dir, bundles=bundle, records=two_slides, devices=devices, **{**RESUME, "batch_size": 3}
+    )
+
+    batch_sizes = {sid: json.loads((output_dir / "run" / f"{sid}.json").read_text())["batch_size"] for sid in ("s1", "s2")}
+    assert batch_sizes == {"s1": 4, "s2": 3}
+
+
+def test_a_resume_with_another_batch_size_logs_the_change_once(tmp_path, two_slides, monkeypatch, caplog):
+    """The first run stops at its first batch, so the resume predicts both slides: one
+    line names the old and the new batch size, not one per slide, and a relaunch with the
+    same batch size logs none."""
+    bundle = save_bundle(tmp_path / "run" / "bundle")
+    run = {"output_dir": tmp_path / "predictions", "bundles": bundle, "records": two_slides}
+
+    def stops(self, pixels):
+        raise KeyboardInterrupt
+
+    with monkeypatch.context() as patched:
+        patched.setattr(soma.extract.FrozenEncoder, "forward", stops)
+        with pytest.raises(KeyboardInterrupt):
+            soma.predict_slides(**run, **RESUME)
+
+    with caplog.at_level(logging.INFO, logger="soma"):
+        index = soma.predict_slides(**run, **{**RESUME, "batch_size": 3})
+        soma.predict_slides(**run, **{**RESUME, "batch_size": 3})
+
+    assert list(index.sample_id) == ["s1", "s2"]
+    (line,) = [record.getMessage() for record in caplog.records if "predict.batch_size" in record.getMessage()]
+    assert re.search(r"predict\.batch_size changed from 4 to 3\b.*slides already done .*keep theirs", line)
 
 
 def test_a_directory_predicted_with_another_reader_is_refused_with_how_to_keep_it(tmp_path, cohort):
