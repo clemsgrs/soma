@@ -935,48 +935,48 @@ def _predict_on_devices(plan: dict[str, Any], ids: list[str], devices: Sequence[
 def predict_shard(plan: Mapping[str, Any], sample_ids: Sequence[str]) -> list[str]:
     """Predict the slides ``sample_ids`` of ``plan`` in this process (a device job's
     target); returns the ids predicted."""
-    import torch
+    from soma.evaluation.whole_slide import DeviceTileOutputs
 
     output_dir = Path(plan["predict"]["output_dir"])
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    models = _models(plan["predict"]["bundles"], device)
+    outputs = DeviceTileOutputs.load(plan["predict"]["bundles"], num_workers=plan["predict"]["num_workers"])
     names = _output_names(plan)
     identities = _identities(plan)
     by_id = {entry.sample_id: (entry, carriers) for entry, carriers in _work(plan)[0]}
     for sample_id in sample_ids:
         # Only the slide's own bundles run; those sharing an encoder recipe share its forward.
         entry, carriers = by_id[sample_id]
-        mine = [models[index] for index in carriers]
         _predict_slide(
-            plan, mine, _names_of(plan, names, carriers), [identities[index] for index in carriers], entry, output_dir
+            plan,
+            outputs.subset(carriers),
+            _names_of(plan, names, carriers),
+            [identities[index] for index in carriers],
+            entry,
+            output_dir,
         )
     return list(sample_ids)
 
 
-def _models(bundle_paths: Sequence[str], device) -> list:
-    from soma.learn import load
-    from soma.models.model import DenseModel
-    from soma.pipeline.build import bundle_encoder_stage
-
-    models = []
-    for path in bundle_paths:
-        bundle = load(path)
-        stage = bundle_encoder_stage(bundle)
-        model = bundle.model
-        if model.encoder is None:
-            model = DenseModel(model.decoder, model.head, encoder=stage, adaptor=model.adaptor)
-        models.append(model.to(device).eval())
-    return models
-
-
-def _predict_slide(plan, models, names, identities, entry, output_dir: Path) -> None:
+def _predict_slide(plan, outputs, names, identities, entry, output_dir: Path) -> None:
+    """Predict one slide with the bundles of ``outputs`` (a
+    :class:`~soma.evaluation.whole_slide.TileOutputs`), the one source of every tile's
+    results."""
     import slide2vec
+
+    from soma.evaluation.whole_slide import SlideTiles
 
     extraction = hydrate(slide2vec.PreprocessingConfig, plan["extraction"], "extraction")
     origins, grid = _kept_tiles(entry, extraction)
+    tiling = extraction.tiling
+    tiles = SlideTiles(
+        image=entry,
+        origins=origins,
+        spacing_um=float(tiling.requested_spacing_um),
+        backend=tiling.backend,
+        tolerance=float(tiling.tolerance),
+    )
     for name in names:
         (output_dir / name).mkdir(parents=True, exist_ok=True)
-    detection = models[0].head.task_family == "detection"
+    detection = outputs.heads[0].task_family == "detection"
     if not origins:
         empty = "its points file has no rows" if detection else "its label map is all zeros, not predicted"
         warnings.warn(
@@ -985,11 +985,11 @@ def _predict_slide(plan, models, names, identities, entry, output_dir: Path) -> 
             stacklevel=2,
         )
     write = _write_slide_points if detection else _write_label_maps
-    write(plan, models, names, identities, entry, output_dir, extraction=extraction, origins=origins, grid=grid)
+    write(plan, outputs, names, identities, entry, output_dir, extraction=extraction, tiles=tiles, grid=grid)
     logger.info("Predicted slide %s: %d tile(s)", entry.sample_id, len(origins))
 
 
-def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, *, extraction, origins, grid) -> None:
+def _write_label_maps(plan, outputs, names, identities, entry, output_dir: Path, *, extraction, tiles, grid) -> None:
     from soma.evaluation.whole_slide import SlideFrame, predict_slide_label_maps
 
     tiling = extraction.tiling
@@ -1009,28 +1009,23 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
         "overlap": float(tiling.overlap),
         "stitch": plan["predict"]["stitch"],
     }
+    heads = outputs.heads
     if ensemble:
-        metadata = [{**shared, **_class_scheme(models[0].head), "bundles": identities}]
+        metadata = [{**shared, **_class_scheme(heads[0]), "bundles": identities}]
     else:
         metadata = [
-            {**shared, **_class_scheme(model.head), "bundles": [identity]}
-            for model, identity in zip(models, identities)
+            {**shared, **_class_scheme(head), "bundles": [identity]} for head, identity in zip(heads, identities)
         ]
     file = f"{entry.sample_id}.tif"
     fractions = predict_slide_label_maps(
-        models,
-        image=entry,
-        origins=origins,
+        outputs,
+        tiles=tiles,
         frame=frame,
         paths=[output_dir / name / file for name in names],
         metadata=metadata,
-        spacing_um=float(tiling.requested_spacing_um),
         ensemble=ensemble,
         stitch=plan["predict"]["stitch"],
-        backend=tiling.backend,
-        tolerance=float(tiling.tolerance),
         batch_size=plan["predict"]["batch_size"],
-        num_workers=plan["predict"]["num_workers"],
     )
     for name, fraction in zip(names, fractions):
         record = {
@@ -1040,29 +1035,29 @@ def _write_label_maps(plan, models, names, identities, entry, output_dir: Path, 
             "height": frame.height,
             "spacing_um": frame.spacing_um,
             "read_spacing_um": float(tiling.requested_spacing_um),
-            "num_tiles": len(origins),
+            "num_tiles": len(tiles.origins),
             "not_predicted_fraction": fraction,
             "batch_size": plan["predict"]["batch_size"],
         }
         atomic_write_text(_record_path(output_dir, name, entry.sample_id), json.dumps(record, indent=2) + "\n")
 
 
-def _write_slide_points(plan, models, names, identities, entry, output_dir: Path, *, extraction, origins, grid) -> None:
+def _write_slide_points(plan, outputs, names, identities, entry, output_dir: Path, *, extraction, tiles, grid) -> None:
     from soma.evaluation.whole_slide_points import predict_slide_points
 
     tiling = extraction.tiling
     ensemble = plan["predict"]["ensemble"]
-    tiles = grid.tiles
-    level0_spacing = float(tiles.base_spacing_um)
-    width, height = (int(v) for v in tiles.slide_dimensions)
+    geometry = grid.tiles
+    level0_spacing = float(geometry.base_spacing_um)
+    width, height = (int(v) for v in geometry.slide_dimensions)
     # hs2p rounds the step in the pixels it reads, so in tile pixels it is not always
     # tile - 2 * margin (on a slide resampled to the read spacing).
     step_px = (
         grid.step_px_lv0
         * level0_spacing
-        / float(tiles.read_spacing_um)
+        / float(geometry.read_spacing_um)
         * int(tiling.requested_tile_size_px)
-        / int(tiles.read_tile_size_px)
+        / int(geometry.read_tile_size_px)
     )
     step_px = round(step_px, 6)  # float noise must not move a whole-pixel boundary
     shared = {
@@ -1072,21 +1067,21 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
         "tile_size_px": int(tiling.requested_tile_size_px),
         "overlap": float(tiling.overlap),
     }
+    heads = outputs.heads
     if ensemble:
         # An ensemble's scores are a mean no bundle was tuned on: it has no threshold. Its
         # bundles share one class scheme (the plan checks it).
-        recorded = _recorded_points(identities[0]["path"], models[0].head)
+        recorded = _recorded_points(identities[0]["path"], heads[0])
         metadata = [{**shared, **recorded, "bundles": identities, "threshold": None}]
     else:
         metadata = [
-            {**shared, **_recorded_points(identity["path"], model.head), "bundles": [identity]}
-            for model, identity in zip(models, identities)
+            {**shared, **_recorded_points(identity["path"], head), "bundles": [identity]}
+            for head, identity in zip(heads, identities)
         ]
     file = f"{entry.sample_id}.parquet"
     counts = predict_slide_points(
-        models,
-        image=entry,
-        origins=origins,
+        outputs,
+        tiles=tiles,
         tile_px=int(tiling.requested_tile_size_px),
         step_px=step_px,
         overlap=float(tiling.overlap),
@@ -1094,12 +1089,8 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
         level0_spacing_um=level0_spacing,
         paths=[output_dir / name / file for name in names],
         metadata=metadata,
-        spacing_um=float(tiling.requested_spacing_um),
         ensemble=ensemble,
-        backend=tiling.backend,
-        tolerance=float(tiling.tolerance),
         batch_size=plan["predict"]["batch_size"],
-        num_workers=plan["predict"]["num_workers"],
     )
     for name, count in zip(names, counts):
         record = {
@@ -1109,7 +1100,7 @@ def _write_slide_points(plan, models, names, identities, entry, output_dir: Path
             "height": height,
             "spacing_um": level0_spacing,
             "read_spacing_um": float(tiling.requested_spacing_um),
-            "num_tiles": len(origins),
+            "num_tiles": len(tiles.origins),
             "num_points": count,
             "batch_size": plan["predict"]["batch_size"],
         }

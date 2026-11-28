@@ -1,13 +1,20 @@
 """Segmentation label maps over whole slides, written while each slide streams tile by tile.
 
-A slide's tiles lie on hs2p's slide grid (``TilingConfig(grid="slide")``). Each kept tile
-is read through a :class:`~soma.data.images.RegionImageSource`, encoded once by the frozen
-encoder stage its models share, and decoded by every model
-(:func:`~soma.models.model.forward_sharing_encoder`). The class of each pixel goes into a
-rolling band of map rows, and full rows of the band go, in order, to hs2p's label-TIFF
-writer (:func:`hs2p.write_label_tiff`). Neither a slide's map nor all of its tiles' outputs
-are ever held in memory: only the band (and, to average, the float sums of one tile's
-rows), a few rows of tiles in flight to the writer, and the writer's own reduced level.
+A slide's tiles lie on hs2p's slide grid (``TilingConfig(grid="slide")``). The bundles'
+outputs come from one seam, :class:`TileOutputs`: given a slide's kept tiles in the order
+the writer takes them (:class:`SlideTiles`) and a batch size, it yields each batch with
+every bundle's output for it, in order. The label maps here and the detection points
+(:mod:`soma.evaluation.whole_slide_points`) read nothing else. Behind it,
+:class:`DeviceTileOutputs` reads each kept tile through a
+:class:`~soma.data.images.RegionImageSource`, encodes it once by the frozen encoder stage
+its models share, and decodes it by every model
+(:func:`~soma.models.model.forward_sharing_encoder`), on one device of this process.
+
+The class of each pixel goes into a rolling band of map rows, and full rows of the band go,
+in order, to hs2p's label-TIFF writer (:func:`hs2p.write_label_tiff`). Neither a slide's
+map nor all of its tiles' outputs are ever held in memory: only the band (and, to average,
+the float sums of one tile's rows), a few rows of tiles in flight to the writer, and the
+writer's own reduced level.
 
 Output frame
 ------------
@@ -56,10 +63,10 @@ from __future__ import annotations
 
 import queue
 import threading
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple, Protocol
 
 import numpy as np
 import torch
@@ -67,9 +74,19 @@ from torch.utils.data import DataLoader, Dataset
 
 from soma.data.images import RegionImageSource
 from soma.data.manifests import ImageEntry
-from soma.models.model import forward_sharing_encoder, mean_softmax
+from soma.models.model import DenseModelOutput, forward_sharing_encoder, mean_softmax
 
-__all__ = ["SlideFrame", "STITCHES", "predict_slide_label_maps", "stitch_margin_px", "WRITE_TILE_PX"]
+__all__ = [
+    "DeviceTileOutputs",
+    "SlideFrame",
+    "SlideTiles",
+    "STITCHES",
+    "TileBatch",
+    "TileOutputs",
+    "predict_slide_label_maps",
+    "stitch_margin_px",
+    "WRITE_TILE_PX",
+]
 
 #: Side of the square tiles a label TIFF is stored in (hs2p needs a multiple of 16).
 WRITE_TILE_PX = 256
@@ -385,6 +402,140 @@ def _classes(sums: np.ndarray) -> np.ndarray:
     return labels
 
 
+# --- the seam: an ordered stream of batch results ---------------------------------------- #
+
+
+def tile_id(origin: tuple[int, int]) -> str:
+    """The id of the tile at level-0 ``origin`` in :meth:`SlideTiles.source`."""
+    return f"{int(origin[0])}_{int(origin[1])}"
+
+
+@dataclass(frozen=True)
+class SlideTiles:
+    """A slide's kept tiles, in the order the map writer takes them, and how they are read.
+
+    ``origins`` are the tiles' level-0 origins on the slide grid, put in row order of the
+    lattice (by row, then by column): the bands only move down. Each tile is read from
+    ``image`` at ``spacing_um`` (``backend``, ``tolerance``).
+    """
+
+    image: ImageEntry
+    origins: tuple[tuple[int, int], ...]
+    spacing_um: float
+    backend: str = "auto"
+    tolerance: float = 0.05
+
+    def __post_init__(self) -> None:
+        ordered = sorted(((int(x), int(y)) for x, y in self.origins), key=lambda origin: (origin[1], origin[0]))
+        object.__setattr__(self, "origins", tuple(ordered))
+
+    def source(self, size: int | tuple[int, int]) -> RegionImageSource:
+        """The tiles as ``size`` px windows at ``spacing_um``, one id per origin
+        (:func:`tile_id`)."""
+        ids = [tile_id(origin) for origin in self.origins]
+        image = self.image
+        return RegionImageSource(
+            {
+                tid: ImageEntry(sample_id=tid, image_path=image.image_path, spacing_at_level_0=image.spacing_at_level_0)
+                for tid in ids
+            },
+            regions=dict(zip(ids, self.origins)),
+            size=size,
+            spacing_um=self.spacing_um,
+            backend=self.backend,
+            tolerance=self.tolerance,
+        )
+
+
+class TileBatch(NamedTuple):
+    """One batch's results: the origins of its tiles, in order, and every bundle's output
+    for the batch, in the bundles' order. ``outputs`` may compute each output when it is
+    read: read it to its end before the next batch."""
+
+    origins: tuple[tuple[int, int], ...]
+    outputs: Iterable[DenseModelOutput]
+
+
+class TileOutputs(Protocol):
+    """Where a whole-slide prediction takes its per-tile results from.
+
+    An implementation owns the bundles' models and the device or devices they run on.
+    ``heads`` are the bundles' task heads, in order. :meth:`batches` cuts a slide's kept
+    tiles, in their order, into batches of ``batch_size`` tiles (the last one shorter) and
+    yields each batch's results, in order. :meth:`subset` gives the same results for the
+    bundles at ``indices`` only. The stitching and the point collection read nothing else.
+    """
+
+    @property
+    def heads(self) -> Sequence[Any]: ...
+
+    def subset(self, indices: Sequence[int]) -> "TileOutputs": ...
+
+    def batches(self, tiles: SlideTiles, *, batch_size: int) -> Iterator[TileBatch]: ...
+
+
+class DeviceTileOutputs:
+    """The bundles' models on one device of this process.
+
+    ``models`` are :class:`~soma.models.model.DenseModel` models with a frozen encoder
+    stage, in eval mode on their device. Each batch is read by ``num_workers`` reader
+    processes (``0``: in this process), encoded once by each encoder stage the models
+    share, and decoded by every model (:func:`~soma.models.model.forward_sharing_encoder`),
+    each output computed when it is read.
+    """
+
+    def __init__(self, models: Sequence[Any], *, num_workers: int = 0) -> None:
+        self._models = list(models)
+        self._num_workers = int(num_workers)
+
+    @classmethod
+    def load(cls, bundle_paths: Sequence[str | Path], *, num_workers: int = 0) -> "DeviceTileOutputs":
+        """The bundles at ``bundle_paths`` on this process's device: CUDA when there is
+        one, else the CPU. A bundle trained on cached grids runs behind the frozen encoder
+        stage of the encoder recipe it records
+        (:func:`soma.pipeline.build.bundle_encoder_stage`), one stage for every bundle with
+        the same recipe."""
+        from soma.learn import load as load_bundle
+        from soma.models.model import DenseModel
+        from soma.pipeline.build import bundle_encoder_stage
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        models = []
+        for path in bundle_paths:
+            bundle = load_bundle(path)
+            stage = bundle_encoder_stage(bundle)
+            model = bundle.model
+            if model.encoder is None:
+                model = DenseModel(model.decoder, model.head, encoder=stage, adaptor=model.adaptor)
+            models.append(model.to(device).eval())
+        return cls(models, num_workers=num_workers)
+
+    @property
+    def heads(self) -> list[Any]:
+        return [model.head for model in self._models]
+
+    def subset(self, indices: Sequence[int]) -> "DeviceTileOutputs":
+        return DeviceTileOutputs([self._models[index] for index in indices], num_workers=self._num_workers)
+
+    def batches(self, tiles: SlideTiles, *, batch_size: int) -> Iterator[TileBatch]:
+        if not tiles.origins:
+            return
+        source = tiles.source(self._models[0].head.geometry.target_size)
+        ids = [tile_id(origin) for origin in tiles.origins]
+        loader = DataLoader(
+            _Tiles(source, ids), batch_size=int(batch_size), num_workers=self._num_workers, shuffle=False
+        )
+        encoder = self._models[0].encoder
+        input_device = torch.device(getattr(encoder, "input_device", None) or _device_of(self._models[0]))
+        start = 0
+        with torch.inference_mode():
+            for pixels in loader:
+                count = int(pixels.shape[0])
+                origins = tiles.origins[start : start + count]
+                start += count
+                yield TileBatch(origins, forward_sharing_encoder(self._models, pixels.to(input_device), pixels))
+
+
 class _Tiles(Dataset):
     """The kept tiles of one slide, in order, as ``(3, tile, tile)`` uint8 pixels."""
 
@@ -399,53 +550,52 @@ class _Tiles(Dataset):
         return self._source.load(self._ids[index])
 
 
+def _device_of(model) -> torch.device:
+    parameter = next(model.parameters(), None)
+    return torch.device("cpu") if parameter is None else parameter.device
+
+
+# --- the label maps ------------------------------------------------------------------------ #
+
+
 def predict_slide_label_maps(
-    models: Sequence[Any],
+    outputs: TileOutputs,
     *,
-    image: ImageEntry,
-    origins: Sequence[tuple[int, int]],
+    tiles: SlideTiles,
     frame: SlideFrame,
     paths: Sequence[str | Path],
     metadata: Sequence[Mapping[str, Any]],
-    spacing_um: float,
     ensemble: bool = False,
     stitch: str = "pick_one",
-    backend: str = "auto",
-    tolerance: float = 0.05,
     batch_size: int = 8,
-    num_workers: int = 0,
 ) -> list[float]:
     """Write one slide's label maps as label TIFFs at ``paths``, tile by tile.
 
-    ``models`` are :class:`~soma.models.model.DenseModel` models with a frozen encoder
-    stage, in eval mode on their device; models that share a stage encode each batch once.
-    ``origins`` are the level-0 origins of the kept tiles on the slide grid ``frame`` was
-    built for. Each tile is read at ``spacing_um`` (``tolerance``, ``backend``) from
-    ``image``. Without ``ensemble`` there is one path (and one ``metadata`` mapping, stored
-    in the file) per model, and each map holds that model's classes; with it there is one
-    path, and the map holds the argmax of the models' mean softmax. ``stitch`` combines
+    ``outputs`` gives each batch's results (:class:`TileOutputs`) for the segmentation
+    bundles it runs. ``tiles`` are the slide's kept tiles, on the slide grid ``frame`` was
+    built for. Without ``ensemble`` there is one path (and one ``metadata`` mapping, stored
+    in the file) per bundle, and each map holds that bundle's classes; with it there is one
+    path, and the map holds the argmax of the bundles' mean softmax. ``stitch`` combines
     overlapping tiles (see the module docstring): ``pick_one`` or ``average``. A slide
     without a kept tile gets an all-zero map. Returns each map's not-predicted fraction.
     """
-    models = list(models)
+    heads = list(outputs.heads)
     paths = [Path(path) for path in paths]
-    expected = 1 if ensemble else len(models)
-    if not models:
-        raise ValueError("predict_slide_label_maps needs at least one model")
+    expected = 1 if ensemble else len(heads)
+    if not heads:
+        raise ValueError("predict_slide_label_maps needs at least one bundle")
     if stitch not in STITCHES:
         raise ValueError(f"stitch must be {' or '.join(map(repr, STITCHES))}, got {stitch!r}")
     # With no margin every pixel has one tile, and averaging writes the map picking does.
     average = stitch == "average" and frame.margin_px > 0
     if len(paths) != expected or len(metadata) != expected:
         raise ValueError(f"{expected} map(s) to write, got {len(paths)} path(s) and {len(metadata)} metadata")
-    for model in models:
-        if int(model.head.num_classes) > MAX_CLASSES:
+    for head in heads:
+        if int(head.num_classes) > MAX_CLASSES:
             raise ValueError(
                 f"a label map holds at most {MAX_CLASSES} classes (class k is stored as k + 1 "
-                f"in uint8), got a head with {model.head.num_classes}"
+                f"in uint8), got a head with {head.num_classes}"
             )
-    # Row order of the lattice: the band only moves down.
-    ordered = sorted(((int(x), int(y)) for x, y in origins), key=lambda origin: (origin[1], origin[0]))
     streams = [
         _LabelTiffStream(path, frame=frame, metadata=meta, tile_px=WRITE_TILE_PX)
         for path, meta in zip(paths, metadata)
@@ -453,19 +603,10 @@ def predict_slide_label_maps(
     try:
         bands = [_Band(frame, stream, WRITE_TILE_PX) for stream in streams]
         if average:
-            classes = [models[0].head.num_classes] if ensemble else [model.head.num_classes for model in models]
+            classes = [heads[0].num_classes] if ensemble else [head.num_classes for head in heads]
             bands = [_AveragingBand(frame, band, int(count)) for band, count in zip(bands, classes)]
         for batch_origins, values in _predicted_tiles(
-            models,
-            image=image,
-            origins=ordered,
-            ensemble=ensemble,
-            average=average,
-            spacing_um=spacing_um,
-            backend=backend,
-            tolerance=tolerance,
-            batch_size=batch_size,
-            num_workers=num_workers,
+            outputs, tiles=tiles, ensemble=ensemble, average=average, batch_size=batch_size
         ):
             # Strict: draining ``values`` to its end also frees the batch's encoder grid.
             for band, maps in zip(bands, values, strict=True):
@@ -484,105 +625,27 @@ def predict_slide_label_maps(
     return [band.not_predicted / total for band in bands]
 
 
-def _predicted_tiles(
-    models,
-    *,
-    image: ImageEntry,
-    origins: Sequence[tuple[int, int]],
-    ensemble: bool,
-    average: bool,
-    spacing_um: float,
-    backend: str,
-    tolerance: float,
-    batch_size: int,
-    num_workers: int,
-):
+def _predicted_tiles(outputs: TileOutputs, *, tiles: SlideTiles, ensemble: bool, average: bool, batch_size: int):
     """Yield ``(origins, values)`` per batch: ``values`` gives one array per map, the
     ``(B, tile, tile)`` uint8 classes, class ``k`` as ``k + 1``, or with ``average`` the
     ``(B, classes, tile, tile)`` float32 softmax. With ``average`` and without ``ensemble``,
     each array is computed when it is asked for: consume ``values`` to its end before the
     next batch."""
-    if not origins:
-        return
-    source = tile_source(
-        models, image=image, origins=origins, spacing_um=spacing_um, backend=backend, tolerance=tolerance
-    )
-    for batch_origins, outputs in tile_outputs(
-        models, source=source, origins=origins, batch_size=batch_size, num_workers=num_workers
-    ):
+    heads = list(outputs.heads)
+    for batch_origins, results in outputs.batches(tiles, batch_size=batch_size):
         if average:
             if ensemble:
-                yield batch_origins, [mean_softmax(outputs).float().cpu().numpy()]
+                yield batch_origins, [mean_softmax(results).float().cpu().numpy()]
             else:
                 # Each bundle's softmax goes to the host, and into its band, before the
                 # next bundle is decoded.
-                yield batch_origins, (torch.softmax(o.logits.float(), dim=1).cpu().numpy() for o in outputs)
+                yield batch_origins, (torch.softmax(o.logits.float(), dim=1).cpu().numpy() for o in results)
             continue
         if ensemble:
-            maps = [mean_softmax(outputs).argmax(dim=1).to(torch.uint8).cpu().numpy()]
+            maps = [mean_softmax(results).argmax(dim=1).to(torch.uint8).cpu().numpy()]
         else:
             maps = [
-                model.head.postprocess(output.logits.float())["prediction"]
-                for model, output in zip(models, outputs, strict=True)
+                head.postprocess(output.logits.float())["prediction"]
+                for head, output in zip(heads, results, strict=True)
             ]
         yield batch_origins, [np.asarray(m, dtype=np.uint8) + np.uint8(1) for m in maps]
-
-
-def tile_id(origin: tuple[int, int]) -> str:
-    """The id of the tile at level-0 ``origin`` in :func:`tile_source`."""
-    return f"{int(origin[0])}_{int(origin[1])}"
-
-
-def tile_source(
-    models,
-    *,
-    image: ImageEntry,
-    origins: Sequence[tuple[int, int]],
-    spacing_um: float,
-    backend: str,
-    tolerance: float,
-) -> RegionImageSource:
-    """The kept tiles of one slide, one id per origin (:func:`tile_id`), at the models'
-    tile size and ``spacing_um``."""
-    ids = [tile_id(origin) for origin in origins]
-    return RegionImageSource(
-        {
-            tid: ImageEntry(sample_id=tid, image_path=image.image_path, spacing_at_level_0=image.spacing_at_level_0)
-            for tid in ids
-        },
-        regions=dict(zip(ids, ((int(x), int(y)) for x, y in origins))),
-        size=models[0].head.geometry.target_size,
-        spacing_um=spacing_um,
-        backend=backend,
-        tolerance=tolerance,
-    )
-
-
-def tile_outputs(
-    models,
-    *,
-    source: RegionImageSource,
-    origins: Sequence[tuple[int, int]],
-    batch_size: int,
-    num_workers: int,
-):
-    """Yield ``(origins, outputs)`` per batch of the tiles at ``origins``, in order:
-    ``outputs`` lazily yields each model's output, behind one encoder forward for the
-    models that share a stage (:func:`~soma.models.model.forward_sharing_encoder`).
-    Consume ``outputs`` before the next batch."""
-    ids = [tile_id(origin) for origin in origins]
-    loader = DataLoader(_Tiles(source, ids), batch_size=int(batch_size), num_workers=int(num_workers), shuffle=False)
-    encoder = models[0].encoder
-    input_device = torch.device(getattr(encoder, "input_device", None) or _device_of(models[0]))
-    start = 0
-    with torch.inference_mode():
-        for pixels in loader:
-            count = int(pixels.shape[0])
-            batch_origins = origins[start : start + count]
-            start += count
-            yield batch_origins, forward_sharing_encoder(models, pixels.to(input_device), pixels)
-
-
-def _device_of(model) -> torch.device:
-    parameter = next(model.parameters(), None)
-    return torch.device("cpu") if parameter is None else parameter.device
