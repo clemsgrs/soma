@@ -16,6 +16,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import tifffile
 import torch
 import yaml
 
@@ -33,6 +34,7 @@ from tests.whole_slides import (
     fold_provenance,
     model_of,
     peak_rss_of,
+    px_per_cm,
     read_map,
     save_bundle,
     tile_pixels,
@@ -395,28 +397,6 @@ def scoped_slide(tmp_path, name: str = "s1", *, height: int = 96, width: int = 1
     return {"sample_id": name, "image_path": str(slide), "mask_path": str(mask)}, (values == 1) | (values == 2)
 
 
-def test_restrict_to_mask_writes_0_out_of_scope_and_the_unrestricted_labels_in_scope(tmp_path):
-    row, in_scope = scoped_slide(tmp_path)
-    records = write_records(tmp_path / "dataset.csv", [row])
-    bundle = save_bundle(tmp_path / "run" / "bundle")
-    maps = {}
-    for restrict in (False, True):
-        index = soma.predict_slides(
-            output_dir=tmp_path / f"restrict_{restrict}",
-            bundles=bundle,
-            records=records,
-            extraction=SCOPED,
-            restrict_to_mask=restrict,
-        )
-        (map_row,) = index.itertuples()
-        maps[restrict] = read_map(tmp_path / f"restrict_{restrict}" / map_row.path)
-
-    # Unrestricted, the kept tiles are predicted in full, also out of scope.
-    assert maps[False][~in_scope].any()
-    np.testing.assert_array_equal(maps[True], np.where(in_scope, maps[False], 0))
-    assert maps[True][in_scope].all()
-
-
 def scoped_cohort(tmp_path, count: int) -> tuple[str, dict[str, np.ndarray]]:
     """The records of ``count`` scoped slides ``s0``, ``s1``, ... and where each is in scope."""
     rows, in_scope = [], {}
@@ -542,6 +522,43 @@ def test_a_coarser_mask_is_read_on_the_map_s_grid_and_a_pixel_beyond_its_canvas_
     np.testing.assert_array_equal(maps[True], np.where(in_scope, maps[False], 0))
     assert maps[False][:40, 96].all() and not maps[True][:, 96].any()
     assert maps[True][:40, 50:96].all()
+
+
+def write_levels(path, levels, *, spacing_um: float, **options):
+    """A tiled TIFF whose level ``k`` is ``levels[k]``, level 0 at ``spacing_um``."""
+    with tifffile.TiffWriter(path) as tiff:
+        for k, level in enumerate(levels):
+            resolution = px_per_cm(spacing_um * levels[0].shape[1] / level.shape[1])
+            place = {"subifds": len(levels) - 1} if k == 0 else {"subfiletype": 1}
+            options.update(resolution=(resolution, resolution), resolutionunit="CENTIMETER")
+            tiff.write(level, tile=(16, 16), **place, **options)
+    return path
+
+
+def test_a_mask_finer_than_the_map_is_read_in_windows_under_hs2p_s_read_cap(tmp_path, monkeypatch):
+    """The mask's levels are at 0.25 and 1 um/px, so the map's grid (0.5 um/px) is read
+    from level 0, four mask pixels per map pixel; tiling reads level 1, for the slide's
+    2 um/px level. With hs2p's read cap at 20,000 px, the 128 x 96 px map's rows read in
+    one window (256 x 192 mask pixels) are refused; read in 32 px wide windows (64 x 192)
+    they are not. The restricted map is the unrestricted one, 0 out of scope."""
+    values = np.random.default_rng(0).integers(0, 4, size=(24, 32), dtype=np.uint8).repeat(4, 0).repeat(4, 1)
+    values[:, 64:] = 0
+    fine = values.repeat(2, 0).repeat(2, 1)
+    mask = write_levels(tmp_path / "s1_mask.tif", [fine, fine[::4, ::4]], spacing_um=0.25)
+    image = blocky(96, 128)
+    slide = write_levels(tmp_path / "s1.tif", [image, image[::4, ::4]], spacing_um=SPACING_UM, photometric="rgb")
+    records = write_records(
+        tmp_path / "dataset.csv", [{"sample_id": "s1", "image_path": str(slide), "mask_path": str(mask)}]
+    )
+    monkeypatch.setattr("hs2p.mask.MAX_MASK_READ_PX", 20_000)
+    monkeypatch.setattr("soma.evaluation.whole_slide._MASK_WINDOW_PX", 32)
+
+    maps = restricted_and_not(tmp_path, records, save_bundle(tmp_path / "run" / "bundle"), extraction=SCOPED)
+
+    (unrestricted,), (restricted,) = maps[False].values(), maps[True].values()
+    in_scope = (values == 1) | (values == 2)
+    assert unrestricted[~in_scope].any()
+    np.testing.assert_array_equal(restricted, np.where(in_scope, unrestricted, 0))
 
 
 # --- not predicted -------------------------------------------------------------------- #

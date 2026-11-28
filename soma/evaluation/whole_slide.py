@@ -89,6 +89,9 @@ _POLL_SECONDS = 0.5
 STITCHES = ("pick_one", "average")
 #: The rows of averaged sums turned into classes at a time: it bounds the temporaries.
 _RELEASE_ROWS = 32
+#: The widest mask window a band is read in, in map pixels: ``soma evaluate``'s side. It
+#: keeps each read under hs2p's cap on a mask without a level near the map's spacing.
+_MASK_WINDOW_PX = 1024
 
 
 def stitch_margin_px(tile_px: int, overlap: float) -> int:
@@ -279,9 +282,10 @@ class MaskScope:
 
     ``mask`` is an open hs2p mask aligned to the slide's level 0
     (:meth:`hs2p.Mask.align_to`). It is read on the map's grid, as ``soma evaluate``
-    reads an annotation raster: each map pixel takes the mask value under its top-left
-    corner, and a map pixel that lies partly off the slide is out of scope. The last rows
-    read are kept, so the maps of a slide's bundles share each read.
+    reads an annotation raster, in windows no wider than its: each map pixel takes the
+    mask value under its top-left corner, and a map pixel that lies partly off the slide is
+    out of scope. The last rows read are kept, so the maps of a slide's bundles share each
+    read.
     """
 
     def __init__(self, mask, values, frame: SlideFrame) -> None:
@@ -299,13 +303,16 @@ class MaskScope:
         from soma.evaluation.slide_label_maps import _annotation_window
 
         frame = self._frame
-        # A read starts on a lattice row, whose level-0 row is whole.
+        # A read starts on a lattice row and column, whose level-0 row and column are whole.
         first = top // frame.stride_px * frame.stride_px
+        side = frame.stride_px * max(1, _MASK_WINDOW_PX // frame.stride_px)
         inside = np.zeros((height, frame.width), dtype=bool)
-        raw = _annotation_window(self._mask, frame, (0, first), (frame.width, top - first + height))
-        if raw is not None:
-            raw = raw[top - first :]
-            inside[: raw.shape[0], : raw.shape[1]] = self._lut[raw]
+        for left in range(0, frame.width, side):
+            size = (min(side, frame.width - left), top - first + height)
+            raw = _annotation_window(self._mask, frame, (left, first), size)
+            if raw is not None:
+                raw = raw[top - first :]
+                inside[: raw.shape[0], left : left + raw.shape[1]] = self._lut[raw]
         self._last = (top, height, inside)
         return inside
 
